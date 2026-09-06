@@ -1,6 +1,6 @@
 # TSM.US — 台积电 / Taiwan Semiconductor Manufacturing Company
 
-> 林奇：`fast_grower` | 更新：2026-09-04 | eval: eval/TSM.US.py
+> 🟡 林奇：`fast_grower` | 更新：2026-09-04 | eval: eval/TSM.US.py
 > 主尺：SOTP v2 — wafer PE 15/18/22 on eps_wafer_2027e + max(CoWoS capacity×UV, 非晶圆 EPS×PE)
 
 ## 0. 现行结论

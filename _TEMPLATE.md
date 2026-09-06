@@ -1,6 +1,6 @@
 # TICKER — 公司中文名 / 英文名
 
-> 林奇：`lynch_primary`[ / `lynch_secondary`] | 更新：YYYY-MM-DD | eval: eval/TICKER.py
+> ⬜ 林奇：`lynch_primary`[ / `lynch_secondary`] | 更新：YYYY-MM-DD | eval: eval/TICKER.py
 > 主尺：（一句话索引，例：SOTP — A腿 PE 带 + B腿 PB 期权；细节在 §0 / §3）
 
 ## 0. 现行结论

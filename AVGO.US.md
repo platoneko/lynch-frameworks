@@ -1,6 +1,6 @@
 # AVGO.US — 博通 / Broadcom Inc.
 
-> 林奇：`fast_grower` | 更新：2026-09-04 | eval: eval/AVGO.US.py
+> 🟡 林奇：`fast_grower` | 更新：2026-09-04 | eval: eval/AVGO.US.py
 > 主尺：SOTP — XPU（已承销 vs 实验室两档）+ AI 网络 + 非 AI semi + 软件；L/M=FY27，H=FY28 EPS×20
 
 ## 0. 现行结论

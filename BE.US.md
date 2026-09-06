@@ -1,6 +1,6 @@
 # BE.US — 布鲁姆能源 / Bloom Energy Corporation
 
-> 林奇：`fast_grower` / `turnaround` | 更新：2026-09-05 | eval: eval/BE.US.py
+> 🔴 林奇：`fast_grower` / `turnaround` | 更新：2026-09-05 | eval: eval/BE.US.py
 > 主尺：FY+2 Non-GAAP EPS×PE（18/24/30，FY+2 PE≤30）+ RPO(产品+安装)+customer deposits 订单闸门；融资货架仅叙事；稀缺窗口见 A10/A11
 
 ## 0. 现行结论

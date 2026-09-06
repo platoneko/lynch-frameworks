@@ -105,6 +105,17 @@ def main() -> int:
             print(f"FAIL: {k}={i[k]} exceeds court fresh-start anchor {EVS_HARD_CAP}", file=sys.stderr)
             return 1
 
+    # A1 counts converted shares, so A4 must exclude the debt those shares
+    # replace. Deducting full principal alongside shares_fd double-counts it.
+    if "debt_total" in i and i["debt"] >= i["debt_total"] - 1e-9:
+        print(
+            f"FAIL: debt={i['debt']} is the full principal ({i['debt_total']}); "
+            "shares_fd already prices the converts, so debt must be the "
+            "non-convertible balance only (see A1/A4)",
+            file=sys.stderr,
+        )
+        return 1
+
     net_debt = i["debt"] - i["cash"]
     ev = {k: i[f"rev_{k}"] * i[f"evs_{k}"] for k in ("l", "m", "h")}
     eq = {k: v - net_debt for k, v in ev.items()}

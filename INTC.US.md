@@ -1,6 +1,6 @@
 # INTC.US — 英特尔 / Intel Corporation
 
-> 林奇：`turnaround` / `cyclical` | 更新：2026-09-04 | eval: eval/INTC.US.py
+> 🟡 林奇：`turnaround` / `cyclical` | 更新：2026-09-04 | eval: eval/INTC.US.py
 > 主尺：SOTP — CPU cyclical PE 12–18 + Foundry asset_play PB option
 
 ## 0. 现行结论
