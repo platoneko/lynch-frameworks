@@ -15,6 +15,12 @@ import re
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.axes import check_cowos_mount  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "AVGO.US.md"
 TOL = 0.15
 
@@ -94,6 +100,9 @@ def main() -> int:
         "pe_sw_l",
         "pe_sw_m",
         "pe_h_fy28",
+        "cowos_quota_l",
+        "cowos_quota_m",
+        "cowos_quota_h",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -102,6 +111,12 @@ def main() -> int:
 
     s, t = inp["shares"], inp["tax_rate"]
     xpu_s = inp["xpu_share_ai"]
+
+    # Shared axis (_AXIS.cowos-capacity.md): AVGO reads the allocation states
+    # inverted from NVDA -- its L is state γ, where NVDA keeps its full quota.
+    # The L scenario therefore has to move the *numerator*, not just multiples:
+    # a fast_grower's L must be a worse world, not the same world priced lower.
+    quota_ratio_l = inp["cowos_quota_l"] / inp["cowos_quota_m"]
 
     rev_xpu_27 = inp["rev_ai_27"] * xpu_s
     rev_net_27 = inp["rev_ai_27"] * (1.0 - xpu_s)
@@ -114,6 +129,11 @@ def main() -> int:
         "nonai": eps_leg(inp["rev_nonai_27"], inp["om_nonai"], t, s),
         "sw": eps_leg(inp["rev_sw_27"], inp["om_sw"], t, s),
     }
+    # Only the CoWoS-constrained legs scale with the quota; software and non-AI
+    # do not sit on the axis (axis §4).
+    e27_low = dict(e27)
+    e27_low["xpu"] = eps_leg(rev_xpu_27 * quota_ratio_l, inp["om_xpu"], t, s)
+    e27_low["net"] = eps_leg(rev_net_27 * quota_ratio_l, inp["om_net"], t, s)
     e28 = {
         "xpu": eps_leg(rev_xpu_28, inp["om_xpu"], t, s),
         "net": eps_leg(rev_net_28, inp["om_net"], t, s),
@@ -124,21 +144,25 @@ def main() -> int:
     # below-the-line drag (A14): pro-rata across legs; preserves leg sums = gross - bl
     bl = inp["below_line_ps"]
     f27 = (sum(e27.values()) - bl) / sum(e27.values())
+    f27_low = (sum(e27_low.values()) - bl) / sum(e27_low.values())
     f28 = (sum(e28.values()) - bl) / sum(e28.values())
     e27 = {k: v * f27 for k, v in e27.items()}
+    e27_low = {k: v * f27_low for k, v in e27_low.items()}
     e28 = {k: v * f28 for k, v in e28.items()}
 
     # XPU two-tier split (A15): underwritten (LTA) vs lab-dependent; FY27 L/M only, H stays untiered
     uw = inp["xpu_uw_share"]
     e27_uw = e27["xpu"] * uw
     e27_lab = e27["xpu"] * (1.0 - uw)
+    e27_low_uw = e27_low["xpu"] * uw
+    e27_low_lab = e27_low["xpu"] * (1.0 - uw)
 
     L = (
-        e27_uw * inp["pe_xpu_uw_l"]
-        + e27_lab * inp["pe_xpu_lab_l"]
-        + e27["net"] * inp["pe_net_l"]
-        + e27["nonai"] * inp["pe_nonai_l"]
-        + e27["sw"] * inp["pe_sw_l"]
+        e27_low_uw * inp["pe_xpu_uw_l"]
+        + e27_low_lab * inp["pe_xpu_lab_l"]
+        + e27_low["net"] * inp["pe_net_l"]
+        + e27_low["nonai"] * inp["pe_nonai_l"]
+        + e27_low["sw"] * inp["pe_sw_l"]
     )
     M = (
         e27_uw * inp["pe_xpu_uw_m"]
@@ -170,8 +194,29 @@ def main() -> int:
     for leg in ("xpu", "net", "nonai", "sw"):
         print(f"  {leg}: eps27={e27[leg]:.3f} eps28={e28[leg]:.3f}")
     print(f"  xpu split: uw={e27_uw:.3f} lab={e27_lab:.3f} (uw_share={uw:.2f})")
+    print(
+        f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/"
+        f"{inp['cowos_quota_m'] / 1e4:.1f}/{inp['cowos_quota_h'] / 1e4:.1f}万片"
+        f"  (L 状态 γ, 量 {quota_ratio_l - 1.0:+.1%} vs M)"
+        f"  eps27_low={sum(e27_low.values()):.3f}"
+    )
+    # H uses the FY28 numerator while L/M use FY27 (skill A2e-3). Re-running H's
+    # own multiple on the FY27 numerator shows how much of H is the extra year
+    # rather than a better world -- the number needed to compare H/M across
+    # tickers whose three tiers share one year.
+    h_same_year = sum(e27.values()) * inp["pe_h_fy28"]
+    print(
+        f"year drift: H uses FY28, L/M use FY27. Same-year H (FY27 x "
+        f"{inp['pe_h_fy28']:.0f}) = {h_same_year:.1f} -> H/M = "
+        f"{h_same_year / M:.2f} same-year vs {H / M:.2f} as stated"
+    )
 
     ok = True
+    for err in check_cowos_mount(
+        "AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"]
+    ):
+        print(f"MISMATCH axis: {err}", file=sys.stderr)
+        ok = False
     for key, val in [("L", L), ("M", M), ("H", H)]:
         if key in stated and abs(val - stated[key]) > TOL:
             print(f"MISMATCH {key}: computed={val:.1f} stated={stated[key]}", file=sys.stderr)

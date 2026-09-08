@@ -11,8 +11,9 @@ FULLY DILUTED shares. Post-Chapter-11 the three converts are deep in the money,
 so basic share count understates the equity base by ~2.3x — using it is the
 single largest error available on this name (see A1).
 
-Deliberately NO asset floor on L: equity sits behind $1.78bn of debt and book
-value is already a fresh-start fair value, so L may approach zero (see A8).
+Deliberately NO asset floor on L: equity sits behind the $932.3M of
+non-convertible debt and book value is already a fresh-start fair value, so L
+may approach zero (see A8).
 
 Run:  python3 eval/WOLF.US.py
 """
@@ -92,7 +93,7 @@ def main() -> int:
 
     i = parse_inputs(md)
     required = [
-        "price", "shares_fd", "cash", "debt",
+        "price", "shares_fd", "cash", "debt", "warrant_proceeds",
         "rev_l", "rev_m", "rev_h", "evs_l", "evs_m", "evs_h",
     ]
     missing = [k for k in required if k not in i]
@@ -116,7 +117,20 @@ def main() -> int:
         )
         return 1
 
-    net_debt = i["debt"] - i["cash"]
+    # The split must reconcile: a midpoint guess that happens to sit below
+    # debt_total passes the check above but is still wrong (this exact bug
+    # shipped once). Note 11 gives both legs, so they must add up.
+    if {"conv_principal", "debt_total"} <= i.keys():
+        total = i["debt"] + i["conv_principal"]
+        if abs(total - i["debt_total"]) > 0.1:
+            print(
+                f"FAIL: debt({i['debt']}) + conv_principal({i['conv_principal']}) "
+                f"= {total}, does not reconcile to debt_total({i['debt_total']})",
+                file=sys.stderr,
+            )
+            return 1
+
+    net_debt = i["debt"] - i["cash"] - i["warrant_proceeds"]
     ev = {k: i[f"rev_{k}"] * i[f"evs_{k}"] for k in ("l", "m", "h")}
     eq = {k: v - net_debt for k, v in ev.items()}
     val = {k: v * MM / i["shares_fd"] for k, v in eq.items()}
