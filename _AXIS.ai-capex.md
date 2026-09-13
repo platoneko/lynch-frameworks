@@ -1,12 +1,14 @@
 # _AXIS.ai-capex — AI 资本开支情景轴
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-08 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-12 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US
 > 口径：**2027 日历年、前五大 hyperscaler（Amazon / Microsoft / Google / Meta / Oracle）总资本开支，USD**
 
 共享情景轴（`AGENTS.md`「锚点语义」§共享情景轴）。挂载票的 §3 Inputs **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。
 **MUST NOT** 各票自造 capex 下行。
 
 **加速器三票（NVDA / AVGO / TSM）不挂本轴**，改挂 `_AXIS.cowos-capacity.md`：它们受 CoWoS 产能这个**物理瓶颈**直接约束（2027 需求 269.4 万片 > 供应 240 万片），且彼此**零和**，用 capex 总量轴会掩盖分配这个真正的变量。本轴挂载的四票是光互连与测试环节，需求跟随**部署金额与 GW**，不受 CoWoS 配额直接约束。
+
+**CPO/NPO 光引擎出货不进本轴**：形态与有效 OE 颗数另见 `_AXIS.optical-comms.md`（与本轴**正交**；LITE / COHR 可同挂两轴，AVGO / NOK 挂 optical-comms 而不挂本轴的 capex 乘子）。
 
 本文不是框架，不进标的池（`_` 前缀已被 `eval/lib/frameworks.py` 排除）。
 
@@ -59,6 +61,7 @@
 |------|----|------|
 | **需求方** | COHR / GLW / LITE / AEHR | 收入跟随轴；分子 = 轴 × 份额 × 单价（见 §2） |
 | **构成方** | **GOOG.US** | 本身是前五大 hyperscaler 之一，其 capex 指引 **$1,950–2,050 亿（2026）** 就在轴的基数里。轴对它的约束是**反向**的：它 **MUST NOT** 独立断言一个比轴更悲观的 capex 情景；其云腿倍数命名的「AI capex 周期见顶」须与轴的 L 档口径一致（当前轴 L 仍是 **+32%** 高增长，不是转负）。构成方**不消费**轴值作分子 |
+| **构成方** | **ORCL.US** | 前五大之一（Oracle），FY27（截 2027-05）capex 指引 **$900–950 亿**，占轴 2026 基数 ~**11–12%**。同 GOOG：不消费轴值作分子，L 档命名的「OCI 回报退潮」不得比轴 L 档更悲观；其 OCI 腿底牌按 g=0 定价、第二段增长走 \(V_{opt}\)（见 `ORCL.US.md` A6/A9/A16） |
 
 **待补**：`eval/lib/axes.py` 尚无 capex 轴的 checker——构成方的 capex 指引与轴基数目前靠人工对齐，未做逐格校验。
 

@@ -39,6 +39,12 @@ import re
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.axes import check_optical_oe_mount  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NOK.US.md"
 FORMULA_ID = "nok_sotp_ni2028_ts_annuity_ran_v1"
 
@@ -61,6 +67,7 @@ REQUIRED = (
     "ev_ebit_ts_l", "ev_ebit_ts_m", "ev_ebit_ts_h",
     "ev_ebit_mi_l", "ev_ebit_mi_m", "ev_ebit_mi_h",
     "ev_ebit_corp",
+    "oe_l", "oe_m", "oe_h",
 ) + CLOSING_COMPONENTS
 
 
@@ -89,8 +96,11 @@ def parse_inputs(text: str) -> tuple[dict, list[str]]:
     return inputs, gaps
 
 
+CELL = r"([\d.]+)(?:（[^）]*）)?"
+
+
 def parse_stated(text: str) -> dict:
-    """Parse anchors, cut-points, zone-table bounds and zone id from §3 Outputs."""
+    """Parse anchors, cut-points, 表1 legs, zone-table bounds and zone id."""
     out = text.split("### Outputs", 1)[1].split("## 4.", 1)[0]
     anchors = re.search(
         r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", out)
@@ -98,6 +108,16 @@ def parse_stated(text: str) -> dict:
     zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
     if not (anchors and cuts and zone):
         sys.exit("FATAL: cannot parse Outputs section (anchors/cuts/zone line)")
+    # 表1: 档 | NI | 授权 | RAN | 闭合项 | 合计
+    legs: dict[str, tuple[float, float, float, float, float]] = {}
+    row_re = re.compile(
+        rf"\|\s*([LMH])\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|"
+        rf"\s*{CELL}\s*\|\s*(?:\*\*)?{CELL}(?:\*\*)?\s*\|"
+    )
+    for line in out.splitlines():
+        m = row_re.match(line)
+        if m:
+            legs[m.group(1)] = tuple(float(m.group(i)) for i in range(2, 7))
     # Only the price-interval column (index 2) carries boundary numbers; the
     # scenario column holds narrative figures that must not enter table_nums.
     table = "\n".join(
@@ -108,6 +128,7 @@ def parse_stated(text: str) -> dict:
         "H": float(anchors.group(3)),
         "A": float(cuts.group(1)), "B": float(cuts.group(2)),
         "zone": zone.group(1),
+        "legs": legs,
         "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
     }
 
@@ -196,6 +217,12 @@ def main() -> None:
                    f"group EBIT {v['ebit_group_fy26'] / bn:.2f}bn inside FY26 guidance "
                    f"[{v['guide_ebit_low'] / bn:.1f}, {v['guide_ebit_high'] / bn:.1f}]bn"))
 
+    # 1b. optical-comms axis mount (OE shipment ladder)
+    for err in check_optical_oe_mount((v["oe_l"], v["oe_m"], v["oe_h"])):
+        checks.append((False, f"optical axis: {err}"))
+    else:
+        checks.append((True, "optical OE L/M/H match _AXIS.optical-comms.md"))
+
     # 2. ordering / policy invariants
     checks.append((v["ebit_ni_2028_l"] < v["ebit_ni_2028_m"] < v["ebit_ni_2028_h"],
                    "NI 2028E EBIT scenarios ordered l < m < h"))
@@ -220,6 +247,26 @@ def main() -> None:
     checks.append((stated["table_nums"] == expected_bounds,
                    f"zone table bounds {sorted(stated['table_nums'])} "
                    f"== {sorted(expected_bounds)}"))
+
+    checks.append((set(stated["legs"]) == {"L", "M", "H"},
+                   f"leg table rows {sorted(stated['legs'])} == ['H', 'L', 'M']"))
+    closing_ps = (c["ev_corp"] + c["adj"]) * c["unit"]
+    for tag in SCENARIOS:
+        row = stated["legs"].get(tag.upper())
+        if row is None:
+            continue
+        want = (
+            c["ev_ni"][tag] * c["unit"],
+            c["ev_ts"][tag] * c["unit"],
+            c["ev_mi"][tag] * c["unit"],
+            closing_ps,
+            c[tag.upper()],
+        )
+        names = ("NI", "授权", "RAN", "闭合项", "合计")
+        for name, got, exp in zip(names, row, want):
+            checks.append((abs(got - exp) <= TOL,
+                           f"leg table {tag.upper()}/{name}: stated {got} "
+                           f"vs computed {exp:.4f}"))
 
     # 4. zone
     z = zone_of(v["price"], c)

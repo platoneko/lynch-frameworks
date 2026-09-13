@@ -31,6 +31,12 @@ import re
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.axes import check_optical_oe_mount  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "COHR.US.md"
 FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_v1"
 TOL = 0.05  # outputs rounded to 2 decimals
@@ -116,6 +122,9 @@ def main() -> int:
         "t_disc",
         "net_debt_ps",
         "eps_cons_fy28",
+        "oe_l",
+        "oe_m",
+        "oe_h",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -124,6 +133,7 @@ def main() -> int:
 
     # --- Step 0: sanity guards on the inputs themselves -------------------
     guards: list[str] = []
+    guards.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
     if not (inp["pe_dcc_l"] < inp["pe_dcc_m"] < inp["pe_dcc_h"]):
         guards.append(
             f"pe_dcc order violated: {inp['pe_dcc_l']}/{inp['pe_dcc_m']}/{inp['pe_dcc_h']}"
@@ -199,6 +209,24 @@ def main() -> int:
 
     # --- Step 4: reconcile against the stated Outputs ---------------------
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
+    errors: list[str] = []
+    triples = re.findall(
+        r"L = \*\*[0-9.]+\*\* · M = \*\*[0-9.]+\*\* · H = \*\*[0-9.]+\*\*", out_sec
+    )
+    if len(triples) != 1:
+        errors.append(
+            f"### Outputs must state the L/M/H triple exactly once, found {len(triples)}"
+        )
+    vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
+    if vo is None or abs(float(vo.group(1))) > 1e-9:
+        errors.append(
+            f"V_opt must be stated as 0 (SiC is not an option leg), got "
+            f"{vo.group(1) if vo else None}"
+        )
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
+
     stated = {
         "L": first_float(r"L = \*\*([0-9.]+)\*\*", out_sec),
         "M": first_float(r"M = \*\*([0-9.]+)\*\*", out_sec),
@@ -207,7 +235,6 @@ def main() -> int:
         "B": first_float(r"B = \*\*([0-9.]+)\*\*", out_sec),
     }
     recomputed = {"L": L, "M": M, "H": H, "A": A, "B": B}
-    errors: list[str] = []
     for k, v in recomputed.items():
         s = stated.get(k)
         if s is None:
@@ -225,8 +252,17 @@ def main() -> int:
         f"econ EPS FY28  L/M/H = {eps_l:.2f}/{eps_m:.2f}/{eps_h:.2f}"
         f"   (street non-GAAP {inp['eps_cons_fy28']}, M dev {dev:+.1%})"
     )
-    print(f"DC&C  $/sh     L/M/H = {v_dcc_l:.2f}/{v_dcc_m:.2f}/{v_dcc_h:.2f}  pe={inp['pe_dcc_l']}/{inp['pe_dcc_m']}/{inp['pe_dcc_h']}")
-    print(f"Indus $/sh     L/M/H = {v_ind_l:.2f}/{v_ind_m:.2f}/{v_ind_h:.2f}  pe={inp['pe_ind']}")
+    print(
+        f"表1 数通  L/M/H = {v_dcc_l * disc:.2f}/{v_dcc_m * disc:.2f}/{v_dcc_h * disc:.2f}"
+        f"  pe={inp['pe_dcc_l']:.0f}/{inp['pe_dcc_m']:.0f}/{inp['pe_dcc_h']:.0f}  (disc={disc:.4f})"
+    )
+    print(
+        f"表1 工业  L/M/H = {v_ind_l * disc:.2f}/{v_ind_m * disc:.2f}/{v_ind_h * disc:.2f}"
+        f"  pe={inp['pe_ind']:.0f}"
+    )
+    print(f"表1 闭合项 = {inp['net_debt_ps']}  V_opt=0")
+    print(f"undisc dcc  L/M/H = {v_dcc_l:.2f}/{v_dcc_m:.2f}/{v_dcc_h:.2f}")
+    print(f"undisc ind  L/M/H = {v_ind_l:.2f}/{v_ind_m:.2f}/{v_ind_h:.2f}")
     print(f"sum undisc     L/M/H = {sum_l:.2f}/{sum_m:.2f}/{sum_h:.2f}  disc={disc:.4f}  net_debt_ps={inp['net_debt_ps']}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(

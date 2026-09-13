@@ -8,15 +8,14 @@ enforcement layer that keeps its number chain honest:
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
-formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v1
+formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v2
 
 Main ruler: SOTP — e-commerce leg (Alibaba E-commerce Group adjusted EBITA,
 annualized and taxed, x PE 7/11/14) + cloud leg (FY2027E segment revenue
-x PS 4/6/8) - loss leg (everything outside those two, capitalized at 3.0/1.5/0
-years of the current burn rate) + investment-portfolio NAV x (1 - discount
-50/35/20%) + net cash incl. the Aug-2026 placement, all over diluted shares.
-Both operating legs are unlevered/EV-basis, so interest and net cash are
-counted exactly once, in the closing items.
+x PS 4/6/8) - loss leg (non-ALA residual only, capitalized at 3.0/1.5/0
+years) + NAV x (1-d) + net cash. AI Labs burn is NOT capitalized as negative
+equity; upside is V_opt = ALA revenue annualized x ala_ps (A19).
+Both operating legs are unlevered/EV-basis; interest/net cash only in closing.
 
 Ticket-specific sanity checks (mirror of framework §3 Formula step 1 and §2):
   1. segment identity: AEG + cloud + rest == group adjusted EBITA
@@ -35,7 +34,7 @@ import sys
 from pathlib import Path
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "9988.HK.md"
-FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v1"
+FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2"
 TOL = 0.05  # Outputs are rounded to 2 decimals
 YI = 1e8  # 亿, for human-readable reporting
 
@@ -48,6 +47,7 @@ LOSS_YEARS_BAND = (0.0, 5.0)  # A7
 REQUIRED = (
     "price", "shares", "fx_cny_hkd", "tax_rate",
     "ebita_aeg_q_cny", "ebita_cloud_q_cny", "ebita_rest_q_cny", "ebita_group_q_cny",
+    "ebita_ala_q_cny", "rev_ala_q_cny", "ala_ps",
     "pe_ecom_l", "pe_ecom_m", "pe_ecom_h",
     "rev_cloud_fy27e_cny", "ps_cloud_l", "ps_cloud_m", "ps_cloud_h",
     "loss_years_l", "loss_years_m", "loss_years_h",
@@ -82,8 +82,11 @@ def parse_inputs(md: str) -> tuple[dict[str, float], list[str]]:
     return inputs, gaps
 
 
+CELL = r"([−-]?[0-9]+(?:\.[0-9]+)?)(?:（[^）]*）)?"
+
+
 def parse_stated(md: str) -> dict:
-    """Parse anchors, cut-points, zone-table boundaries and zone id from §3 Outputs.
+    """Parse anchors, cut-points, 表1 legs, zone-table boundaries and zone id.
 
     The 交叉校验 table that follows carries narrative figures, so the Outputs
     slice stops at it rather than at the next `##`.
@@ -95,12 +98,31 @@ def parse_stated(md: str) -> dict:
     zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
     if not (anchors and cuts and zone):
         sys.exit("FATAL: cannot parse §3 Outputs (anchors / cut-points / zone line)")
+    # 表1: 档 | 电商 | 云 | 亏损腿 | NAV+现金 | 合计
+    legs: dict[str, list[float]] = {}
+    row_re = re.compile(
+        rf"\|\s*([LMH])\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|"
+        rf"\s*{CELL}\s*\|\s*(?:\*\*)?{CELL}(?:\*\*)?\s*\|"
+    )
+    for line in out.splitlines():
+        m = row_re.match(line)
+        if m:
+            legs[m.group(1)] = [
+                float(m.group(i).replace("−", "-")) for i in range(2, 7)
+            ]
     # Only the price-interval column (index 2) carries boundary numbers; the
     # scenario column holds narrative figures that must not enter the check.
     table = "\n".join(
         line.strip().strip("|").split("|")[2]
         for line in out.splitlines()
         if line.lstrip().startswith("|") and "`" in line)
+    vopt_m = re.search(
+        r"V_\{?opt\}?\\?\)?\s*=\s*\*\*([\d.]+)\*\*", out)
+    ptier_m = re.search(
+        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*=\s*\*\*"
+        r"\s*([\d.]+)\s*/\s*([\d.]+)\s*/\s*([\d.]+)\s*\*\*", out)
+    if not vopt_m or not ptier_m:
+        sys.exit("FATAL: cannot parse V_opt / p_tiers from Outputs")
     return {
         "L": float(anchors.group(1)),
         "M": float(anchors.group(2)),
@@ -108,7 +130,12 @@ def parse_stated(md: str) -> dict:
         "A": float(cuts.group(1)),
         "B": float(cuts.group(2)),
         "zone": zone.group(1),
+        "legs": legs,
         "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
+        "V_opt": float(vopt_m.group(1)),
+        "p_L": float(ptier_m.group(1)),
+        "p_M": float(ptier_m.group(2)),
+        "p_H": float(ptier_m.group(3)),
     }
 
 
@@ -119,9 +146,12 @@ def compute(v: dict[str, float]) -> dict:
     fx = v["fx_cny_hkd"]
     base_ecom = v["ebita_aeg_q_cny"] * 4 * (1 - v["tax_rate"]) * fx
     base_cloud = v["rev_cloud_fy27e_cny"] * fx
-    burn = -v["ebita_rest_q_cny"] * 4 * fx  # positive: annual cash burn, HKD
+    # Non-ALA residual only — ALA burn stays out of the bottom card (A19).
+    non_ala = v["ebita_rest_q_cny"] - v["ebita_ala_q_cny"]
+    burn = -non_ala * 4 * fx  # positive: annual cash burn, HKD
     nav = v["nav_cny"] * fx
     cash = v["net_cash_cny"] * fx + v["placement_hkd"]
+    v_opt = v["rev_ala_q_cny"] * 4 * v["ala_ps"] * fx / v["shares"]
 
     legs: dict[str, dict[str, float]] = {}
     anchors: dict[str, float] = {}
@@ -139,7 +169,8 @@ def compute(v: dict[str, float]) -> dict:
     L, M, H = anchors["L"], anchors["M"], anchors["H"]
     return {
         "base_ecom": base_ecom, "base_cloud": base_cloud, "burn": burn,
-        "nav": nav, "cash": cash, "legs": legs,
+        "nav": nav, "cash": cash, "legs": legs, "V_opt": v_opt,
+        "non_ala_q": non_ala,
         "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
     }
 
@@ -186,6 +217,13 @@ def main() -> int:
     checks.append((abs(seg_sum - v["ebita_group_q_cny"]) < 1e6,
                    f"segment identity AEG+cloud+rest = group "
                    f"({seg_sum / YI:.2f} vs {v['ebita_group_q_cny'] / YI:.2f} 亿 CNY)"))
+    # ALA is a component of rest (same sign, |ala| <= |rest|)
+    checks.append((v["ebita_ala_q_cny"] < 0 and v["ebita_rest_q_cny"] < 0
+                   and abs(v["ebita_ala_q_cny"]) <= abs(v["ebita_rest_q_cny"]) + 1e6,
+                   f"ALA inside rest (ala={v['ebita_ala_q_cny']/YI:.2f}, "
+                   f"rest={v['ebita_rest_q_cny']/YI:.2f} 亿)"))
+    checks.append((v["rev_ala_q_cny"] > 0 and v["ala_ps"] > 0,
+                   f"ALA V_opt inputs positive (rev={v['rev_ala_q_cny']/YI:.2f}, ps={v['ala_ps']})"))
 
     # 2. bands and ordering
     for name, band, keys, ascending in (
@@ -212,15 +250,38 @@ def main() -> int:
     checks.append((stated["table_nums"] == expected,
                    f"zone table boundaries {sorted(stated['table_nums'])} == {sorted(expected)}"))
 
+    checks.append((set(stated["legs"]) == {"L", "M", "H"},
+                   f"leg table rows {sorted(stated['legs'])} == ['H', 'L', 'M']"))
+    for tag in SCENARIOS:
+        row = stated["legs"].get(tag.upper())
+        if row is None:
+            continue
+        got = c["legs"][tag]
+        want = [got["ecom"], got["cloud"], got["loss"],
+                got["nav"] + got["cash"], sum(got.values())]
+        names = ("电商", "云", "亏损腿", "NAV+现金", "合计")
+        for name, stated_v, exp in zip(names, row, want):
+            checks.append((abs(stated_v - exp) <= TOL,
+                           f"leg table {tag.upper()}/{name}: stated {stated_v} "
+                           f"vs computed {exp:.4f}"))
+
     # 4. zone
     z = zone_of(v["price"], c)
     checks.append((z == stated["zone"],
                    f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
+    checks.append((abs(stated["V_opt"] - c["V_opt"]) <= TOL,
+                   f"stated V_opt={stated['V_opt']} matches computed {c['V_opt']:.4f}"))
+    checks.append((stated["p_L"] == 0 and stated["p_H"] == 1,
+                   f"p_L/p_H endpoints ({stated['p_L']}/{stated['p_H']})"))
+    checks.append((0 <= stated["p_M"] <= 1,
+                   f"p_M in [0,1] ({stated['p_M']})"))
 
     print(f"framework : {FRAMEWORK.name}   formula_id={FORMULA_ID}")
     print(f"segments  : AEG {v['ebita_aeg_q_cny'] / YI:.2f} + cloud "
           f"{v['ebita_cloud_q_cny'] / YI:.2f} + rest {v['ebita_rest_q_cny'] / YI:.2f} "
           f"= {v['ebita_group_q_cny'] / YI:.2f} 亿 CNY/季")
+    print(f"  of which ALA {v['ebita_ala_q_cny']/YI:.2f} · non-ALA burn base "
+          f"{c['non_ala_q']/YI:.2f} 亿/季")
     print(f"leg bases : ecom {c['base_ecom'] / YI:.1f} · cloud {c['base_cloud'] / YI:.1f} · "
           f"burn/yr {c['burn'] / YI:.1f} · nav {c['nav'] / YI:.1f} · cash {c['cash'] / YI:.1f} 亿 HKD")
     for k in SCENARIOS:
@@ -229,6 +290,12 @@ def main() -> int:
               + f"  ->  {sum(legs.values()):.2f}")
     print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f} "
           f"(A {c['A']:.2f} · B {c['B']:.2f})")
+    print(f"V_opt     : {c['V_opt']:.2f} HKD  (ALA rev×4×PS {v['ala_ps']:.0f})"
+          f"  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
+          f"  V_opt/M={c['V_opt']/c['M']:.1%}")
+    print(f"zone+V    : L {c['L']+stated['p_L']*c['V_opt']:.2f}"
+          f" · M {c['M']+stated['p_M']*c['V_opt']:.2f}"
+          f" · H {c['H']+stated['p_H']*c['V_opt']:.2f}")
     print(f"price     : {v['price']} -> zone `{z}`")
 
     if "eps_fy28e_hkd" in v:

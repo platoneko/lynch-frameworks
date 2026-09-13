@@ -21,8 +21,8 @@ profit to parent -> x counter-cyclical PE.
 Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
 
 Beyond the anchor comparison, the shared-ladder guard checks the USD gold and
-copper ladders cell by cell against frameworks/601899.SH.md — the two tickers
-price the same metals, and keeping that in a comment is how they drifted.
+copper ladders cell by cell against frameworks/_AXIS.fed-path-gold-copper.md
+(and, as a dual check, the peer mount 601899.SH).
 
 Run:  python3 eval/603993.SH.py
 """
@@ -33,13 +33,16 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.axes import check_au_cu_mount  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "603993.SH.md"
 PEER = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
 FORMULA_ID = "cmoc_fed_path_cu_au_ladder_gp_bridge_pe_v2"
 TOL = 0.05  # anchors are stated to 2 decimals
 YI = 1e8  # 亿
 
-# The shared USD ladder: our field -> the peer framework's field.
+# Peer field aliases (dual check after the axis mount).
 SHARED_LADDER = {
     "p_cu_l": "lme_cu_l",
     "p_cu_m": "lme_cu_m",
@@ -181,7 +184,11 @@ def main() -> int:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
-    # --- shared-ladder guard vs 601899.SH ------------------------------------
+    # --- shared-ladder guard vs axis (+ peer dual check) ---------------------
+    errors += check_au_cu_mount(
+        (inp["lme_au_l"], inp["lme_au_m"], inp["lme_au_h"]),
+        (inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"]),
+    )
     peer = parse_inputs(PEER.read_text(encoding="utf-8"))
     for ours, theirs in SHARED_LADDER.items():
         if theirs not in peer:
@@ -262,7 +269,7 @@ def main() -> int:
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print("shared ladder OK vs 601899.SH: cu " + "/".join(
+    print("shared ladder OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH): cu " + "/".join(
         f"{inp[k]:g}" for k in ("p_cu_l", "p_cu_m", "p_cu_h")
     ) + " $/t, au " + "/".join(
         f"{inp[k]:g}" for k in ("lme_au_l", "lme_au_m", "lme_au_h")

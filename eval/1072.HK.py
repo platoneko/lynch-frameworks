@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""1072.HK (Dongfang Electric) valuation eval.
+
+frameworks/1072.HK.md is the source of truth; this script re-derives
+L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+
+formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v5
+
+G50 + G200 are V_opt (A2e-7): current profit ≈ 0 and units are unverified, so
+neither enters the base L/M/H. 表3 recovers the pre-split anchors via
+p_k = (0, G50_M / (G50_H+G200_H), 1) — G200 is 0 in the M world (2027 下线).
+
+Main ruler: split the NUMERATOR by leg, then let each tier name a PERPETUAL
+GROWTH RATE per leg and read the multiple off Gordon.
+
+  E   = jv_ni * jv_stake        equity income of the 49% Mitsubishi associate
+  R   = NI - E                  residual group profit
+  NI_C = E + R * gpw_C,  NI_A = R * gpw_A,  NI_B = R * gpw_B
+  w_i = NI_i / NI               leg profit weight
+  g   = sum(w_i * g_i)          blended perpetual growth
+  PE  = (1 - g/ROE) / (r - g),  r = 10%  ->  a no-growth business is worth 10x
+
+Assign what has a known home, then spread the rest.  The one piece of profit
+with a documented leg is 三菱重工东方燃气轮机（广州）— 49%, equity-accounted, so
+the M701F hot-parts and LTSA service margin lands in 投资收益 and never touches
+the 气电 segment's revenue or cost.  Ignoring it understates leg C; folding it
+into a gross-profit weight numerator would mix pre-tax gross profit with
+after-tax net income in one ratio.  Assigning it and spreading the residual on
+measured segment gross profit (A2/A3/A14) is the only dimensionally clean read.
+`variant_band` re-prices the two rejected treatments every run and requires all
+three to land in the same zone — the moment they diverge, the treatment has
+stopped being a bookkeeping choice.
+
+Two things make this ticker different from the other Gordon mounts.
+
+First, the residual weights are not estimated — they are the「营业收入、营业成本
+按板块」note, verbatim, for each tier's own period.  That note carries the whole
+finding, and the off-balance-sheet pool sharpens rather than softens it: on
+gross profit leg C is flat at 4.80% / 4.78% / 4.58%, and on the profit weight
+that includes the JV it is *falling* — 10.52% (FY2024) -> 7.29% (FY2025) ->
+7.37% (TTM) -> 6.76% (H1'26 annualised), because the associate's net income
+halved while DEC's own grew.  `leg_c_weight_cap` guards the claim, but only on
+the M tier (A15): L and H are scenario tiers whose leg mix swings for reasons
+that are not about how big the leg structurally is — FY2024 pairs DEC's own
+trough with the associate's peak and prints 10.53% for that reason alone.
+
+Second, ROE(TTM) = 10.05% sits on top of r = 10%.  In that regime growth is
+value-neutral, the multiple is pinned near 1/r whatever g does, and inverting a
+price for g returns a number rather than a reading — `implied_g` flags all three
+market quotes as ill-conditioned.  The framework therefore rests on the
+numerator and the leg weights, and §3 states the g/r ambiguity both ways (A9).
+
+The multiples are NOT quantiles of the ticker's own historical PE: a realised PE
+carries whatever growth the market was pricing that year.  Per AGENTS.md
+「永续增长口径」this overrides skill A2e-2b.  The measured H-share band survives
+as a fence in `pe_own_lo/hi` — a generated multiple outside [7.04, 11.97] means
+the normative anchor has walked past any price this stock has printed, and the
+construction goes back to the conversation.
+
+Run:  python3 eval/1072.HK.py
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.gordon import implied_g, payout, perpetual_pe  # noqa: E402
+from lib.inputs import (  # noqa: E402
+    check_against_stated, check_missing, ladder, parse_inputs, report,
+)
+from lib.zones import cut_points, zone_of  # noqa: E402
+
+FRAMEWORKS = Path(__file__).resolve().parent.parent / "frameworks"
+FRAMEWORK = FRAMEWORKS / "1072.HK.md"
+AXIS_SOUTHBOUND = FRAMEWORKS / "_AXIS.southbound-repricing.md"
+FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v5"
+
+TIERS = ("l", "m", "h")
+LEGS = ("a", "b", "c")
+LEG_CN = {"a": "周期装备", "b": "两翼", "c": "燃机"}
+
+# The H/A ratio is read off two live prices; a stale stated value would feed the
+# shared axis a number that no longer matches either quote.
+HA_TOL = 0.005
+
+REQUIRED = (
+    ["price", "price_a", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
+     "ha_ratio", "net_cash", "tp_street", "leg_c_weight_cap",
+     "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
+     "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
+     "g50_usdkw_lo", "g50_usdkw_hi",
+     "g200_mw", "g200_units_l", "g200_units_m", "g200_units_h"]
+    + [f"jv_ni_{t}" for t in TIERS]
+    + [f"ni_{t}" for t in TIERS]
+    + [f"gp_{leg}_{t}" for leg in LEGS for t in TIERS]
+    + [f"g_{leg}_{t}" for leg in LEGS for t in TIERS]
+    + [f"g50_{f}_{t}" for f in ("units", "gm", "g", "lag") for t in TIERS]
+)
+
+
+def nondecreasing(name: str, *values: float) -> list[str]:
+    """Assert a non-decreasing ladder.
+
+    Several ladders here legitimately repeat a value: the mature gas leg's
+    perpetual g is 0 at both L and M, and the G50 option leg's g is 0 until it
+    has capacity to grow into.  A strict ladder would force a fake difference.
+    """
+    if all(a <= b + 1e-12 for a, b in zip(values, values[1:])):
+        return []
+    return [f"{name} non-decreasing ladder violated: "
+            f"{' <= '.join(f'{v:g}' for v in values)} is false"]
+
+
+def gross_weights(inp: dict[str, float], tag: str) -> dict[str, float]:
+    """Leg share of that tier's own measured segment gross profit — the key the
+    residual profit is spread on, not the ruler's leg weight."""
+    gp = {leg: inp[f"gp_{leg}_{tag}"] for leg in LEGS}
+    total = sum(gp.values())
+    return {leg: v / total for leg, v in gp.items()}
+
+
+def weights(inp: dict[str, float], tag: str) -> dict[str, float]:
+    """Leg profit weight under the ruler: assign the JV, spread the residual."""
+    return variant_weights(inp, tag, "assign")
+
+
+def blended_g(inp: dict[str, float], tag: str) -> float:
+    w = weights(inp, tag)
+    return sum(w[leg] * inp[f"g_{leg}_{tag}"] for leg in LEGS)
+
+
+def forward_roe(inp: dict[str, float], tag: str) -> float:
+    return inp[f"ni_{tag}"] / inp["equity"]
+
+
+def multiple(inp: dict[str, float], tag: str) -> float:
+    return perpetual_pe(blended_g(inp, tag), forward_roe(inp, tag), inp["r_perp"])
+
+
+def g50_leg(inp: dict[str, float], tag: str) -> tuple[float, float, float]:
+    """(net income, multiple, discounted value) of the domestic-G50 option leg.
+
+    Additive, not a weight.  The leg earns ~nothing today — the first complete
+    unit shipped 2026-08-28 — so a profit weight would round it to zero and the
+    story would end up living in leg C's growth rate, which skill A2e-2c-ex
+    forbids ("有新业务值钱 → 做成一条腿（分子）").  Same shape as 000338.SZ's
+    M-series leg: units x price x margin, and zero at L.
+
+    Only this leg is discounted.  `perpetual_pe` already prices next-period
+    earnings, so a tier whose earnings start exactly next period needs no
+    discount; H's 25 units/yr is end-2027 capacity, first full year FY2028,
+    one period later — hence g50_lag_h = 1 (A17).
+    """
+    ni = inp[f"g50_units_{tag}"] * inp["g50_price"] * inp[f"g50_gm_{tag}"] * inp["g50_k"]
+    if ni <= 0:
+        return 0.0, 0.0, 0.0
+    pe = perpetual_pe(inp[f"g50_g_{tag}"], forward_roe(inp, tag), inp["r_perp"])
+    return ni, pe, ni * pe / (1.0 + inp["r_disc"]) ** inp[f"g50_lag_{tag}"]
+
+
+def g50_usd_per_kw(inp: dict[str, float]) -> float:
+    """Unit price translated to the global heavy-frame quoting convention."""
+    return inp["g50_price"] * 1e8 / inp["g50_mw"] / inp["usdcny"] / 1e3
+
+
+def to_hkd(inp: dict[str, float], cny: float) -> float:
+    """CNY market value (亿元) -> HKD per share."""
+    return cny * 1e8 / inp["shares"] / inp["fx_hkdcny"]
+
+
+def incumbent_cny(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
+    """存量三腿 CNY 市值（亿元）。G50 不进底牌（A2e-7）。"""
+    pe = flat_pe if flat_pe is not None else multiple(inp, tag)
+    return inp[f"ni_{tag}"] * pe
+
+
+def anchor(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
+    """底牌 HKD/股 = 存量三腿；G50 计 0."""
+    return to_hkd(inp, incumbent_cny(inp, tag, flat_pe))
+
+
+def g50_ps(inp: dict[str, float], tag: str) -> float:
+    """G50 腿 HKD/股（未乘 p_k）。"""
+    return to_hkd(inp, g50_leg(inp, tag)[2])
+
+
+def g200_price(inp: dict[str, float]) -> float:
+    """亿元/台 = G50 单价按 MW 放大，同一 $/kW。"""
+    return inp["g50_price"] * (inp["g200_mw"] / inp["g50_mw"])
+
+
+def g200_leg(inp: dict[str, float], tag: str) -> tuple[float, float, float]:
+    """G200 option: same $/kW and H-tier gm/g/lag as G50; units 0 at L and M.
+
+    2027 下线, not a current run-rate — M-world credit is 0.  H-tier 3 units
+    come from the same UBS sentence that set g50_units_h = 25.
+    """
+    units = inp[f"g200_units_{tag}"]
+    if units <= 0:
+        return 0.0, 0.0, 0.0
+    ni = units * g200_price(inp) * inp[f"g50_gm_{tag}"] * inp["g50_k"]
+    pe = perpetual_pe(inp[f"g50_g_{tag}"], forward_roe(inp, tag), inp["r_perp"])
+    return ni, pe, ni * pe / (1.0 + inp["r_disc"]) ** inp[f"g50_lag_{tag}"]
+
+
+def g200_ps(inp: dict[str, float], tag: str) -> float:
+    return to_hkd(inp, g200_leg(inp, tag)[2])
+
+
+def option_mv(inp: dict[str, float], tag: str) -> float:
+    """G50 + G200 CNY 市值（亿元）。"""
+    return g50_leg(inp, tag)[2] + g200_leg(inp, tag)[2]
+
+
+def variant_weights(inp: dict[str, float], tag: str, mode: str) -> dict[str, float]:
+    """Leg weights under the three candidate treatments of the JV (A14).
+
+    The gas-turbine leg's fattest profit pool — M701F hot parts and the LTSA
+    service contracts — sits in a 49%-held associate carried at equity, so it
+    lands in 投资收益 and never touches the 气电 segment's revenue or cost.
+    Whether it belongs in leg C's weight is an open construction question; all
+    three answers are priced here so the choice is made against numbers.
+
+      base    leg weights are segment gross profit, full stop (rejected: the
+              filings show the JV's profit exists and belongs to leg C)
+      assign  the JV's equity income goes to leg C, the rest of group NI is
+              split on gross-profit weights (THE RULER, A14)
+      addw    the JV's equity income is added to leg C's weight numerator
+              (rejected: mixes pre-tax gross profit with after-tax net income)
+    """
+    w = gross_weights(inp, tag)
+    if mode == "base":
+        return w
+    equity_income = inp[f"jv_ni_{tag}"] * inp["jv_stake"]
+    if mode == "assign":
+        residual = inp[f"ni_{tag}"] - equity_income
+        legs = {
+            "a": residual * w["a"],
+            "b": residual * w["b"],
+            "c": equity_income + residual * w["c"],
+        }
+    elif mode == "addw":
+        legs = {leg: inp[f"gp_{leg}_{tag}"] for leg in LEGS}
+        legs["c"] += equity_income
+    else:
+        raise ValueError(f"unknown variant: {mode}")
+    total = sum(legs.values())
+    return {leg: v / total for leg, v in legs.items()}
+
+
+def variant_band(inp: dict[str, float], mode: str) -> tuple[list[float], list[float]]:
+    """(anchors, leg-C weights) for one JV treatment."""
+    anchors, wc = [], []
+    for t in TIERS:
+        w = variant_weights(inp, t, mode)
+        g = sum(w[leg] * inp[f"g_{leg}_{t}"] for leg in LEGS)
+        pe = perpetual_pe(g, forward_roe(inp, t), inp["r_perp"])
+        anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe))
+        wc.append(w["c"])
+    return anchors, wc
+
+
+def check_southbound_mount(md: str) -> list[str]:
+    """Axis §3 rule 3: a mounted ticker reports both bands and the live H/A.
+
+    The southbound axis is a weak axis — it locks no numerator and, since
+    AGENTS.md「永续增长口径」took multiples away from historical quantiles, no
+    multiple either.  What it still locks is the reporting contract that makes
+    its own §4 cross-ticker direction check possible, so that is what is
+    enforced here, plus the mount being declared on the axis side.
+    """
+    errors: list[str] = []
+    if not AXIS_SOUTHBOUND.exists():
+        return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
+    axis = AXIS_SOUTHBOUND.read_text(encoding="utf-8")
+    if "1072.HK" not in axis:
+        errors.append(
+            "1072.HK is not declared on _AXIS.southbound-repricing.md — "
+            "a mount has to exist on both sides"
+        )
+    if "A 股对照带" not in md:
+        errors.append("framework lacks the A-share companion band (axis §3 rule 3)")
+    if not re.search(r"H/A\s*=\s*\*{0,2}0\.\d+", md):
+        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
+    return errors
+
+
+def main() -> int:
+    md = FRAMEWORK.read_text(encoding="utf-8")
+    if FORMULA_ID not in md:
+        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
+        return 1
+
+    inp = parse_inputs(md)
+    errors = check_missing(inp, REQUIRED)
+    if errors:
+        return report(errors)
+
+    r = inp["r_perp"]
+    lo, hi = inp["pe_own_lo"], inp["pe_own_hi"]
+
+    # --- Step 1: numerators and leg weights ---------------------------------
+    errors += ladder("ni", *(inp[f"ni_{t}"] for t in TIERS))
+    if inp["equity"] <= 0:
+        errors.append(f"equity={inp['equity']} must be positive")
+    for t in TIERS:
+        total = sum(inp[f"gp_{leg}_{t}"] for leg in LEGS)
+        if total <= 0:
+            errors.append(f"tier {t.upper()}: segment gross profit sums to {total}")
+    if errors:
+        return report(errors, "FAIL (numerators)")
+
+    w = {t: weights(inp, t) for t in TIERS}
+
+    # --- Step 2: growth ladders and convergence ------------------------------
+    for leg in LEGS:
+        errors += nondecreasing(f"g_{leg} ({LEG_CN[leg]})",
+                                *(inp[f"g_{leg}_{t}"] for t in TIERS))
+    for field in ("units", "gm", "g"):
+        errors += nondecreasing(f"g50_{field}", *(inp[f"g50_{field}_{t}"] for t in TIERS))
+    g = {t: blended_g(inp, t) for t in TIERS}
+    errors += ladder("g blended", *(g[t] for t in TIERS))
+    for t in TIERS:
+        if r - g[t] <= 0:
+            errors.append(f"g_{t}={g[t]:.4f} >= r={r} — perpetuity diverges")
+    if errors:
+        return report(errors, "FAIL (ladders/convergence)")
+
+    # --- Step 3: normative guards -------------------------------------------
+    # "Modelled success" cannot be a business that shrinks forever.
+    if g["h"] < -1e-12:
+        errors.append(
+            f"H tier implies g={g['h']:.2%} < 0 — the optimistic tier cannot price "
+            "perpetual decline"
+        )
+    # A8: generated multiples must stay inside prices this stock has printed.
+    pe = {t: multiple(inp, t) for t in TIERS}
+    for t in TIERS:
+        if not (lo - 1e-9 <= pe[t] <= hi + 1e-9):
+            errors.append(
+                f"PE_{t.upper()}={pe[t]:.2f} outside H-share own-year band "
+                f"[{lo}, {hi}] — the normative anchor left the ticker's history (A8)"
+            )
+    # A12: growth is paid for out of retained earnings; a shrinking business is
+    # not assumed to hand back more than it earns.
+    for t in TIERS:
+        pay = payout(g[t], forward_roe(inp, t))
+        if not 0.0 < pay <= 1.0 + 1e-12:
+            errors.append(f"payout_{t}={pay:.3f} outside (0, 1]")
+        if g[t] <= 0 and abs(pay - 1.0) > 1e-12:
+            errors.append(f"payout_{t}={pay:.3f} but g={g[t]:.2%} <= 0 — cap not binding")
+    # §1 属性 F / A15: the gas-turbine leg is an option leg *because* it is
+    # small.  Only the M tier can carry that structural claim — it is the tier
+    # that states current known facts long-run.  L and H are scenario tiers, and
+    # L in particular pairs DEC's own trough year with the associate's peak, so
+    # its leg mix says something about FY2024's arithmetic, not about the leg.
+    cap = inp["leg_c_weight_cap"]
+    if w["m"]["c"] >= cap:
+        errors.append(
+            f"leg C weight {w['m']['c']:.2%} at the M tier >= cap {cap:.0%} — "
+            "the gas-turbine leg is no longer an option leg; revisit lynch_primary"
+        )
+    over = [t.upper() for t in ("l", "h") if w[t]["c"] >= cap]
+    # Leg C must remain the smallest leg at M, or the three-leg split is mislabelled.
+    if not (w["m"]["c"] < w["m"]["a"] and w["m"]["c"] < w["m"]["b"]):
+        errors.append("M tier: leg C is not the smallest leg")
+    # A16: the option leg must vanish at L, or L stops being "the measured bad".
+    if inp["g50_units_l"] != 0:
+        errors.append(
+            f"g50_units_l={inp['g50_units_l']} — the option leg MUST be zero at L"
+        )
+    if inp["g200_units_l"] != 0 or inp["g200_units_m"] != 0:
+        errors.append(
+            f"g200_units L/M = {inp['g200_units_l']:.0f}/{inp['g200_units_m']:.0f} "
+            "— G200 2027 下线, MUST be zero until H"
+        )
+    if abs(inp["g200_mw"] / inp["g50_mw"] - 4.0) > 1e-9:
+        errors.append(
+            f"g200_mw/g50_mw = {inp['g200_mw'] / inp['g50_mw']:.3f} — "
+            "the name is 200 MW vs 50 MW, ratio must be 4"
+        )
+    # A16: the unit price has to be comparable to what heavy frames actually
+    # quote for.  Citi's CNY 2.0e8 per 50 MW is $596/kW against GEV's ~$600/kW
+    # for 2027; a price outside the global cluster means the two口径 are not the
+    # same thing and the leg is being fed a number from a different scope.
+    usdkw = g50_usd_per_kw(inp)
+    if not (inp["g50_usdkw_lo"] <= usdkw <= inp["g50_usdkw_hi"]):
+        errors.append(
+            f"g50 unit price = ${usdkw:.0f}/kW outside the global heavy-frame "
+            f"cluster [{inp['g50_usdkw_lo']:.0f}, {inp['g50_usdkw_hi']:.0f}] — "
+            "the price scope is not comparable (A16)"
+        )
+    # The option leg must not push the whole-company multiple outside anything
+    # this stock has printed.  The incumbent legs are fenced above; this fences
+    # the sum, which is what a reader actually compares to a market PE.
+    # G50-only implied multiple must stay in the printed band.  G200 is a 2027
+    # machine that is not in the 2019-2025 own-year PE history, so the combined
+    # 表3 multiple may overshoot pe_own_hi — printed, not a fail (A18).
+    for t in TIERS:
+        implied_g50 = (inp[f"ni_{t}"] * pe[t] + g50_leg(inp, t)[2]) / inp[f"ni_{t}"]
+        if not (lo - 1e-9 <= implied_g50 <= hi + 1e-9):
+            errors.append(
+                f"G50-only implied multiple at {t.upper()} = {implied_g50:.2f} "
+                f"outside own-year band [{lo}, {hi}]"
+            )
+    # A13: the axis reads H/A off the two live prices; a stale input shows here.
+    ha_live = inp["price"] * inp["fx_hkdcny"] / inp["price_a"]
+    if abs(ha_live - inp["ha_ratio"]) > HA_TOL:
+        errors.append(
+            f"ha_ratio stated {inp['ha_ratio']} vs live {ha_live:.3f} — "
+            "_AXIS.southbound-repricing cross-check would use a stale value"
+        )
+    # Comparison-only fields must not have leaked into the multiple path.
+    for key in ("pe_own_mid", "pe_own_a_mid"):
+        if abs(inp[key] - pe["m"]) < 1e-9:
+            errors.append(f"{key} leaked into the multiple path — it is a comparison field")
+    if errors:
+        return report(errors, "FAIL (guards)")
+
+    errors += check_southbound_mount(md)
+    if errors:
+        return report(errors, "FAIL (shared axis)")
+
+    # --- Step 4: anchors -----------------------------------------------------
+    L, M, H = (anchor(inp, t) for t in TIERS)
+    if not (L < M < H):
+        print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
+        return 1
+    A, B = cut_points(L, M, H)
+    zone = zone_of(inp["price"], L, M, H)
+    v_g50 = g50_ps(inp, "h")
+    v_g200 = g200_ps(inp, "h")
+    v_opt = v_g50 + v_g200
+    p_m = (g50_ps(inp, "m") / v_opt) if v_opt else 0.0
+    p_k = (0.0, p_m, 1.0)
+    adj_band = [base + pk * v_opt for base, pk in zip((L, M, H), p_k)]
+
+    flat = {t: anchor(inp, t, flat_pe=pe["m"]) for t in TIERS}
+    errors += ladder("flat-multiple", *(flat[t] for t in TIERS))
+    errors += ladder("base", L, M, H)
+    if abs(adj_band[0] - L) > 1e-9:
+        errors.append(f"p leaked into the base: 表3 L {adj_band[0]:.4f} != {L:.4f}")
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
+
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+
+    # --- report --------------------------------------------------------------
+    fx = inp["fx_hkdcny"]
+    print(f"formula_id={FORMULA_ID}  (r={r:.0%}, 零增长={1 / r:.1f}x)")
+    print(f"{'档':<3}{'归母(亿)':>10}{'w_A':>8}{'w_B':>8}{'w_C':>8}"
+          f"{'g':>9}{'ROE':>8}{'派息':>8}{'PE':>8}{'锚点HKD':>10}{'A股CNY':>9}")
+    for t in TIERS:
+        roe = forward_roe(inp, t)
+        print(f"{t.upper():<3}{inp[f'ni_{t}']:10.2f}{w[t]['a']:8.2%}{w[t]['b']:8.2%}"
+              f"{w[t]['c']:8.2%}{g[t]:9.2%}{roe:8.2%}{payout(g[t], roe):8.1%}"
+              f"{pe[t]:8.2f}{anchor(inp, t):10.2f}{anchor(inp, t) * fx:9.2f}")
+
+    print(f"腿 D 自主 G50（加总式期权腿，L 档归零）— 单价 {inp['g50_price']}亿/台 / "
+          f"{inp['g50_mw']:.0f}MW = ${g50_usd_per_kw(inp):.0f}/kW "
+          f"（护栏 [{inp['g50_usdkw_lo']:.0f}, {inp['g50_usdkw_hi']:.0f}]，GEV 2027 报价 ~$600）✓")
+    print(f"{'档':<3}{'台数':>6}{'毛利率':>8}{'G50归母':>9}{'g':>7}{'腿D PE':>8}"
+          f"{'折现年':>7}{'腿D市值':>9}{'合计市值':>10}{'整体倍数':>9}")
+    for t in TIERS:
+        ni50, pe50, mv50 = g50_leg(inp, t)
+        tot = inp[f"ni_{t}"] * pe[t] + option_mv(inp, t)
+        print(f"{t.upper():<3}{inp[f'g50_units_{t}']:6.0f}{inp[f'g50_gm_{t}']:8.0%}{ni50:9.2f}"
+              f"{inp[f'g50_g_{t}']:7.0%}{pe50:8.2f}{inp[f'g50_lag_{t}']:7.0f}{mv50:9.1f}"
+              f"{tot:10.1f}{tot / inp[f'ni_{t}']:9.2f}")
+    ni200, pe200, mv200 = g200_leg(inp, "h")
+    print(f"G200  H {inp['g200_units_h']:.0f} 台 × {g200_price(inp):.1f}亿/台 "
+          f"({inp['g200_mw']:.0f}MW, 同 ${g50_usd_per_kw(inp):.0f}/kW)  "
+          f"NI {ni200:.2f}亿  PE {pe200:.2f}  折{inp['g50_lag_h']:.0f}年  "
+          f"V={v_g200:.2f} HKD")
+    implied_all_h = (inp["ni_h"] * pe["h"] + option_mv(inp, "h")) / inp["ni_h"]
+    if implied_all_h > hi + 1e-9:
+        print(f"  ⚠ 表3 整体隐含倍数 H={implied_all_h:.2f} 越过 own-year 顶 {hi:g} "
+              f"— 越出来自 G200（2019–2025 带里没有这台机），G50-only 仍在带内")
+    print(f"表3  V_opt={v_opt:.2f} (G50 {v_g50:.2f} + G200 {v_g200:.2f})"
+          f"  p_k={p_k[0]:.2f}/{p_k[1]:.3f}/{p_k[2]:.2f}  "
+          + "  ".join(
+              f"{n}:{b:.2f}+{pk:.3f}xV={a:.2f}"
+              for n, b, pk, a in zip("LMH", (L, M, H), p_k, adj_band)))
+    if v_opt > 0 and inp["price"] > H:
+        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
+    print(f"V_opt/M={v_opt / M:.1%}")
+
+    gw = {t: gross_weights(inp, t) for t in TIERS}
+    print(f"腿 C 分部毛利权重 {gw['l']['c']:.2%} / {gw['m']['c']:.2%} / {gw['h']['c']:.2%}"
+          f"  →  含表外利润权重 {w['l']['c']:.2%} / {w['m']['c']:.2%} / {w['h']['c']:.2%}")
+    print(f"  上限守卫 {inp['leg_c_weight_cap']:.0%} 只硬约束 M 档（A15）：M {w['m']['c']:.2%} ✓"
+          + (f"；{'/'.join(over)} 档超限 ⚠（情景档，不报错）" if over else ""))
+
+    # The single most load-bearing sensitivity: leg C cannot move the anchor.
+    stress = 0.20
+    w_m = w["m"]
+    g_stress = (w_m["a"] * inp["g_a_m"] + w_m["b"] * inp["g_b_m"] + w_m["c"] * stress)
+    pe_stress = perpetual_pe(g_stress, forward_roe(inp, "m"), r)
+    m_stress = inp["ni_m"] * pe_stress * 1e8 / inp["shares"] / fx
+    print(f"腿 C 压力测试：g_C {inp['g_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
+          f"({m_stress / M - 1:+.1%})，现价 {inp['price']} 仍 "
+          f"{'高于' if inp['price'] > H else '低于'} H={H:.2f}")
+
+    # A14 — the open construction question, priced rather than argued.  All
+    # three treatments have to land in the same zone, or the choice stops being
+    # a bookkeeping detail and becomes a call the framework cannot defer.
+    print("A14 腿 C 表外利润（三菱重工东方燃机 49% 权益法，不进气电分部）三个构造：")
+    for mode, label in (("base", "备选① 纯毛利权重"), ("assign", "现行 指派腿C"),
+                        ("addw", "备选② 并入权重分子")):
+        anchors, wc = variant_band(inp, mode)
+        z = zone_of(inp["price"], *anchors)
+        cap_hits = [t.upper() for t, x in zip(TIERS, wc) if x >= inp["leg_c_weight_cap"]]
+        trip = f" ⚠ {'/'.join(cap_hits)} 档 w_C 超 {inp['leg_c_weight_cap']:.0%}" if cap_hits else ""
+        print(f"  {label:<14} w_C {wc[0]:6.2%}/{wc[1]:6.2%}/{wc[2]:6.2%}  "
+              f"L/M/H {anchors[0]:5.2f}/{anchors[1]:5.2f}/{anchors[2]:5.2f}  zone={z}{trip}")
+        if z != zone:
+            errors.append(
+                f"A14 variant '{mode}' lands in zone {z} vs current {zone} — the JV "
+                "treatment has stopped being a bookkeeping choice and must be settled"
+            )
+
+    print(f"三档 PE {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} 落在 H 股 own-year 实测带 "
+          f"[{lo}, {hi}] 内 (p50={inp['pe_own_mid']:g}) ✓")
+    print(f"flat-multiple @PE={pe['m']:.2f}: {flat['l']:.2f}/{flat['m']:.2f}/{flat['h']:.2f}")
+    print(f"L={L:.2f} A={A:.2f} M={M:.2f} B={B:.2f} H={H:.2f}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
+    print(f"分子比 L/M={inp['ni_l'] / inp['ni_m']:.3f} H/M={inp['ni_h'] / inp['ni_m']:.3f} | "
+          f"倍数比 L/M={pe['l'] / pe['m']:.3f} H/M={pe['h'] / pe['m']:.3f}")
+
+    # What the market, the street and book are each paying for, in g terms.
+    # ROE sits on r here, so every one of these comes back ill-conditioned — the
+    # flag is the point, not the number (A9).
+    mcap_h = inp["price"] * fx * inp["shares"] / 1e8
+    mcap_a = inp["price_a"] * inp["shares"] / 1e8
+    roe_m = forward_roe(inp, "m")
+    print(f"price(H)={inp['price']} zone={zone} | "
+          f"price(A)={inp['price_a']} zone_a="
+          f"{zone_of(inp['price_a'], L * fx, M * fx, H * fx)}")
+    for label, cny in (("H 股现价", mcap_h), ("A 股现价", mcap_a),
+                       ("卖方 TP", inp["tp_street"] * fx * inp["shares"] / 1e8),
+                       ("账面 PB=1.0", inp["bps"] * inp["shares"] / 1e8)):
+        p = cny / inp["ni_m"]
+        gi, ok = implied_g(p, roe_m, r)
+        print(f"  {label:<10} 隐含 PE={p:6.2f}x → g={gi:+.2%}"
+              f"{'' if ok else '  ⚠ ROE≈r，只能当方向读 (A9)'}")
+
+    # A12 — the open question this framework hands back to research.
+    tp_pe = inp["tp_street"] * fx * inp["shares"] / 1e8 / inp["ni_m"]
+    print(f"A12 未解释项：卖方 TP {inp['tp_street']} HKD 对 TTM 隐含 {tp_pe:.2f}x = "
+          f"own-year 带顶 {hi} 的 {tp_pe / hi:.1f} 倍 — 分歧在倍数，不在盈利年份；逐机构口径仍 待补")
+
+    # Market-implied value of the option leg, backed out rather than assumed.
+    ni_ab = inp["ni_m"] * (w_m["a"] + w_m["b"])
+    gas_framework = inp["ni_m"] * w_m["c"] * pe["m"] + option_mv(inp, "m")
+    for label, cny in (("H 股", mcap_h), ("A 股", mcap_a)):
+        implied_gas = cny - ni_ab * pe["m"]
+        print(f"  市价倒算燃机业务 腿C+腿D（{label}）：{cny:.1f} − 腿AB@{pe['m']:.2f}x "
+              f"{ni_ab * pe['m']:.1f} = {implied_gas:.1f} 亿，而框架给 {gas_framework:.1f} 亿 "
+              f"= {implied_gas / gas_framework:.2f}x")
+    print(f"净现金 {inp['net_cash']:.2f} 亿 = 每股 {inp['net_cash'] * 1e8 / inp['shares']:.2f} CNY "
+          f"/ {inp['net_cash'] * 1e8 / inp['shares'] / fx:.2f} HKD = H 口径市值的 "
+          f"{inp['net_cash'] / mcap_h:.1%}（不进主公式，A11）")
+    print(f"H/A = {ha_live:.3f} | BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD")
+
+    return report(errors)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

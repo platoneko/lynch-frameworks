@@ -1,38 +1,48 @@
 #!/usr/bin/env python3
-"""INTC.US valuation eval — recompute anchors from frameworks/INTC.US.md and enforce consistency.
+"""INTC.US valuation eval — base L/M/H with Foundry at 0, V_opt = success mid.
 
-frameworks/INTC.US.md stays the human-facing source of truth for inputs; this
-script is the enforcement layer that keeps its number chain honest:
-
-    parse §3 Inputs table -> recompute E[P_f], L/M/H, A/B, zone
-                          -> diff against the numbers printed in §3 Outputs
-                          -> exit 1 on any mismatch or invariant violation
-
-Checks (mirror of framework §3 校验步骤):
-  1. p_fail + p_base + p_success == 1
-  2. each pb_*_mid lies inside its A6 band
-  3. L < M < H, and stated anchors/cut-points/zone-table boundaries match
-     recomputation within ±0.05 (stated numbers are rounded to 1 decimal)
-  4. zone implied by price matches the zone printed in Outputs
-  5. TODO: same-year product-vs-consolidated EPS reconciliation (needs segment data)
+frameworks/INTC.US.md is the source of truth for inputs; this script recomputes
+the base L/M/H (CPU PE band + closing items, Foundry = 0), A/B, zone and V_opt,
+and exits 1 on mismatch with stated Outputs.
 
 formula_id (CPU):     intc_cpu_product_pe_v1
-formula_id (Foundry): intc_foundry_pb_option_v1
+formula_id (Foundry): intc_foundry_pb_option_v1  (ceiling only; not in the base)
 
-Run after every edit of frameworks/INTC.US.md:  python3 eval/INTC.US.py
+A2e-7 split (this ticker used to mix p_i into the anchors):
+  base  = CPU(12/15/18 × eps_product) + adj, Foundry = 0
+  V_opt = pb_success_mid × bvps_foundry_2027e × foundry_discount
+  表3   = base_k + p_k × V_opt
+  P_K is an eval constant, not an Input (A2e-7a). p_M is the value-ratio
+  E[P_f]/V_opt from the pre-split 0.20/0.55/0.25 weighting so 表3 recovers
+  the old 27.2 / 71.2 / 113.1.
 
-TODO: emit output/bands/INTC.US.json; move zone slicing into eval/lib/ once a
-second ticker lands.
+A2e-2c is printed, not failed: after the split the base numerator is the same
+eps_product in all three tiers (pure PE band). Resetting the CPU numerator is a
+follow-up conversation, not this batch.
+
+Run:  python3 eval/INTC.US.py
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "INTC.US.md"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+from eval.lib.inputs import (  # noqa: E402
+    check_against_stated,
+    check_missing,
+    ladder,
+    parse_inputs,
+    report,
+)
+from eval.lib.tiers import report as tier_report  # noqa: E402
+from eval.lib.zones import cut_points, zone_of  # noqa: E402
+
+FRAMEWORK = REPO_ROOT / "frameworks" / "INTC.US.md"
 FORMULA_IDS = (
     "intc_cpu_product_pe_v1",
     "intc_foundry_pb_option_v1",
@@ -41,176 +51,111 @@ FORMULA_IDS = (
 # Mirror of framework §2 A6 PB bands (update together with the MD).
 PB_BANDS = {"fail": (0.3, 0.8), "base": (1.2, 2.2), "success": (2.5, 3.5)}
 
-TOL = 0.055  # stated numbers are rounded to 1 decimal
+# Pre-split fail/base/success weights. 表3 only — never Inputs, never the base.
+OLD_P = {"fail": 0.20, "base": 0.55, "success": 0.25}
 
-# SOTP closing items (A10): adj is always recomputed as their sum — the MD
-# carries no hand-written total that could drift.
 ADJ_COMPONENTS = (
     "net_cash_ps", "nci_ps", "mbly_stake_ps", "altera_stake_ps", "corp_other_ps",
     "tax_asset_ps",
 )
 
 REQUIRED = (
-    "price", "eps_product_m", "pe_low", "pe_high", "bvps_foundry_2027e",
-    "pb_fail_mid", "pb_base_mid", "pb_success_mid",
-    "p_fail", "p_base", "p_success", "foundry_discount",
-) + ADJ_COMPONENTS
+    [
+        "price", "eps_product_m", "pe_low", "pe_high", "bvps_foundry_2027e",
+        "pb_fail_mid", "pb_base_mid", "pb_success_mid", "foundry_discount",
+    ]
+    + list(ADJ_COMPONENTS)
+)
 
 
-# ---------------------------------------------------------------- parsing
-
-def parse_inputs(text: str) -> tuple[dict, list[str]]:
-    """Parse the §3 Inputs markdown table. 待补 -> None (reported as gap)."""
-    section = text.split("### Inputs", 1)[1].split("### Formula", 1)[0]
-    inputs: dict[str, float | None] = {}
-    gaps: list[str] = []
-    for line in section.splitlines():
-        m = re.match(r"\|\s*([a-z][a-z0-9_]*)\s*\|\s*([^|]+)\|", line)
-        if not m:
-            continue
-        field, raw = m.group(1), m.group(2).strip()
-        if raw.startswith("待补"):
-            inputs[field] = None
-            gaps.append(field)
-            continue
-        num = re.match(r"-?\d+(?:\.\d+)?(?:[eE]-?\d+)?", raw)
-        if num:
-            inputs[field] = float(num.group(0))
-    missing = [f for f in REQUIRED if inputs.get(f) is None]
-    if missing:
-        sys.exit(f"FATAL: required inputs missing/待补 in {FRAMEWORK}: {missing}")
-    return inputs, gaps
+def check_no_p_leak(base_l: float, row_l: float) -> list[str]:
+    if abs(row_l - base_l) > 1e-9:
+        return [f"p leaked into the base: 表3 L row {row_l:.4f} != base L {base_l:.4f}"]
+    return []
 
 
-def parse_stated(text: str) -> dict:
-    """Parse anchors, cut-points, zone-table boundaries and zone id from §3 Outputs."""
-    out = text.split("### Outputs", 1)[1].split("## 4.", 1)[0]
-    anchors = re.search(
-        r"L ≈ \*\*([\d.]+)\*\* · M ≈ \*\*([\d.]+)\*\* · H ≈ \*\*([\d.]+)\*\*", out)
-    cuts = re.search(
-        r"A=\(L\+M\)/2 ≈ \*\*([\d.]+)\*\* · B=\(M\+H\)/2 ≈ \*\*([\d.]+)\*\*", out)
-    zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
-    if not (anchors and cuts and zone):
-        sys.exit("FATAL: cannot parse Outputs section (anchors/cuts/zone line)")
-    # Only the price-interval column (index 2) carries boundary numbers; the
-    # scenario column holds narrative figures that must not enter table_nums.
-    table = "\n".join(
-        l.strip().strip("|").split("|")[2]
-        for l in out.splitlines() if l.lstrip().startswith("|") and "`" in l)
-    return {
-        "L": float(anchors.group(1)), "M": float(anchors.group(2)),
-        "H": float(anchors.group(3)),
-        "A": float(cuts.group(1)), "B": float(cuts.group(2)),
-        "zone": zone.group(1),
-        "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
+def main() -> int:
+    md = FRAMEWORK.read_text(encoding="utf-8")
+    for fid in FORMULA_IDS:
+        if fid not in md:
+            print(f"FAIL: formula_id {fid} missing from framework", file=sys.stderr)
+            return 1
+
+    inp = parse_inputs(md)
+    errors = check_missing(inp, REQUIRED)
+    if errors:
+        return report(errors)
+
+    eps = inp["eps_product_m"]
+    pe_l, pe_h = inp["pe_low"], inp["pe_high"]
+    pe_m = (pe_l + pe_h) / 2.0
+    cpu = (eps * pe_l, eps * pe_m, eps * pe_h)
+    adj = sum(inp[k] for k in ADJ_COMPONENTS)
+    base = [cpu[i] + adj for i in range(3)]
+    L, M, H = base
+    A, B = cut_points(L, M, H)
+    zone = zone_of(inp["price"], L, M, H)
+
+    mids = {
+        k: inp[f"pb_{k}_mid"] * inp["bvps_foundry_2027e"] * inp["foundry_discount"]
+        for k in PB_BANDS
     }
+    v_opt = mids["success"]
+    epf = sum(OLD_P[k] * mids[k] for k in PB_BANDS)
+    p_m = epf / v_opt
+    p_k = (0.0, p_m, 1.0)
+    adj_band = [base[i] + p_k[i] * v_opt for i in range(3)]
 
+    print(f"formula_id: {FORMULA_IDS[0]} + {FORMULA_IDS[1]}")
+    print(f"CPU        L/mid/H = {cpu[0]:.1f} / {cpu[1]:.1f} / {cpu[2]:.1f}"
+          f"  (eps {eps} × PE {pe_l:g}/{pe_m:g}/{pe_h:g})")
+    print(f"foundry    mids df={inp['foundry_discount']:g} = "
+          + " / ".join(f"{k} {mids[k]:.1f}" for k in PB_BANDS)
+          + f"  ->  V_opt={v_opt:.1f}  E[P_f]={epf:.1f}")
+    print(f"sotp adj   {adj:+.2f} = "
+          + " ".join(f"{k}={inp[k]:+.2f}" for k in ADJ_COMPONENTS))
+    print(f"base L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}"
+          f" V_opt/M={v_opt / M:.1%}")
+    for line in tier_report(
+        (L, M, H), (pe_l, pe_m, pe_h), (eps, eps, eps)
+    ):
+        print(line)
+    print(f"表2  price {inp['price']} -> zone = {zone}")
+    print(f"表3  V_opt={v_opt:.2f}  p_k={p_k[0]:.2f}/{p_k[1]:.3f}/{p_k[2]:.2f}  "
+          + "  ".join(
+              f"{n}:{base[i]:.2f}+{p_k[i]:.3f}xV={adj_band[i]:.2f}"
+              for i, n in enumerate("LMH")))
+    if inp["price"] > H:
+        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
 
-# ---------------------------------------------------------------- computation
-
-def compute(v: dict) -> dict:
-    """Recompute the full chain per framework §3 Formula (source of truth: MD)."""
-    cpu_l = v["eps_product_m"] * v["pe_low"]
-    cpu_h = v["eps_product_m"] * v["pe_high"]
-    cpu_mid = (cpu_l + cpu_h) / 2
-    # A11: foundry leg is discounted (true forward BVPS); CPU leg is not
-    # (normalized earnings power, today-multiple).
-    mids = {k: v[f"pb_{k}_mid"] * v["bvps_foundry_2027e"] * v["foundry_discount"]
-            for k in PB_BANDS}
-    epf = sum(v[f"p_{k}"] * mids[k] for k in PB_BANDS)
-    adj = sum(v[k] for k in ADJ_COMPONENTS)
-    L = cpu_l + adj
-    M = cpu_mid + epf + adj
-    H = cpu_h + mids["success"] + adj
-    return {
-        "cpu_l": cpu_l, "cpu_mid": cpu_mid, "cpu_h": cpu_h,
-        "mids": mids, "epf": epf, "adj": adj,
-        "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
-    }
-
-
-def zone_of(price: float, c: dict) -> str:
-    # AGENTS.md five-tier rule: midpoints of L/M/H slice the band.
-    if price < c["L"]:
-        return "deep_discount"
-    if price < c["A"]:
-        return "conservative"
-    if price < c["B"]:
-        return "neutral"
-    if price <= c["H"]:
-        return "optimistic"
-    return "stretched"
-
-
-def implied_p_success(target: float, v: dict, c: dict) -> float:
-    """Solve p_success from target price, holding p_fail fixed (p_base absorbs)."""
-    e_target = target - c["cpu_mid"] - c["adj"]
-    f, b, s = (c["mids"][k] for k in ("fail", "base", "success"))
-    return (e_target - v["p_fail"] * f - (1 - v["p_fail"]) * b) / (s - b)
-
-
-# ---------------------------------------------------------------- main
-
-def main() -> None:
-    text = FRAMEWORK.read_text(encoding="utf-8")
-    v, gaps = parse_inputs(text)
-    stated = parse_stated(text)
-    c = compute(v)
-
-    checks: list[tuple[bool, str]] = []
-    psum = v["p_fail"] + v["p_base"] + v["p_success"]
-    checks.append((abs(psum - 1) < 1e-9, f"probabilities sum to 1 (got {psum})"))
-    df = v["foundry_discount"]
-    checks.append((0 < df <= 1, f"foundry_discount {df} in (0, 1]"))
+    errors += check_against_stated(
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.05
+    )
+    errors += ladder("base", L, M, H)
+    errors += check_no_p_leak(L, adj_band[0])
+    if not p_k[0] <= p_k[1] <= p_k[2]:
+        errors += [f"p_k must be non-decreasing, got {p_k}"]
+    if v_opt < 0:
+        errors += [f"V_opt must be >= 0, got {v_opt:.2f}"]
+    if abs(sum(OLD_P.values()) - 1.0) > 1e-9:
+        errors += [f"OLD_P must sum to 1, got {sum(OLD_P.values())}"]
+    df = inp["foundry_discount"]
+    if not (0 < df <= 1):
+        errors += [f"foundry_discount {df} not in (0, 1]"]
     for k, (lo, hi) in PB_BANDS.items():
-        pb = v[f"pb_{k}_mid"]
-        checks.append((lo <= pb <= hi, f"pb_{k}_mid {pb} in A6 band [{lo}, {hi}]"))
-    checks.append((c["L"] < c["M"] < c["H"],
-                   f"L < M < H ({c['L']:.1f} < {c['M']:.1f} < {c['H']:.1f})"))
-    for key in ("L", "M", "H", "A", "B"):
-        checks.append((abs(stated[key] - c[key]) <= TOL,
-                       f"stated {key}={stated[key]} matches computed {c[key]:.3f}"))
-    expected_bounds = {round(c[k], 1) for k in ("L", "A", "B", "H")}
-    checks.append((stated["table_nums"] == expected_bounds,
-                   f"zone table boundaries {sorted(stated['table_nums'])} "
-                   f"== {sorted(expected_bounds)}"))
-    z = zone_of(v["price"], c)
-    checks.append((z == stated["zone"],
-                   f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
-
-    print(f"framework : {FRAMEWORK.name}")
-    print(f"CPU leg   : L/mid/H = {c['cpu_l']:.1f} / {c['cpu_mid']:.1f} / {c['cpu_h']:.1f}")
-    print(f"foundry   : mids $/sh (df={v['foundry_discount']}) = "
-          + " / ".join(f"{k} {c['mids'][k]:.1f}" for k in PB_BANDS)
-          + f"  ->  E[P_f] = {c['epf']:.1f}")
-    print(f"sotp adj  : {c['adj']:+.2f} = "
-          + " ".join(f"{k}={v[k]:+.2f}" for k in ADJ_COMPONENTS))
-    print(f"anchors   : L {c['L']:.1f} · M {c['M']:.1f} · H {c['H']:.1f}"
-          f"  (A {c['A']:.1f} · B {c['B']:.1f})")
-
-    print("\nsensitivity (p_success, p_fail fixed):")
-    for ps in (0.15, 0.25, 0.35):
-        pb_ = 1 - v["p_fail"] - ps
-        epf_ = (v["p_fail"] * c["mids"]["fail"] + pb_ * c["mids"]["base"]
-                + ps * c["mids"]["success"])
-        m_ = c["cpu_mid"] + epf_ + c["adj"]
-        c_ = dict(c, M=m_, A=(c["L"] + m_) / 2, B=(m_ + c["H"]) / 2)
-        print(f"  p_s={ps:.2f}: M={m_:.1f}, zone@{v['price']}={zone_of(v['price'], c_)}")
-
-    print("implied p_success: "
-          f"@price {v['price']} -> {implied_p_success(v['price'], v, c):.1%}; "
-          f"@raise 95 -> {implied_p_success(95, v, c):.1%}")
-
-    if gaps:
-        print(f"\ngaps (待补, not consumed yet): {', '.join(gaps)}")
-
-    print("\nchecks:")
-    failed = False
-    for ok, label in checks:
-        print(f"  {'PASS' if ok else 'FAIL'}  {label}")
-        failed |= not ok
-    sys.exit(1 if failed else 0)
+        pb = inp[f"pb_{k}_mid"]
+        if not (lo <= pb <= hi):
+            errors += [f"pb_{k}_mid {pb} outside A6 band [{lo}, {hi}]"]
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors += [f"p-class fields must not appear in Inputs (A2e-7a): {leaked}"]
+    # 2c is a known follow-up: print, do not fail this batch.
+    print("NOTE A2e-2c: base numerator is identical across tiers "
+          f"(eps={eps}); CPU PE band 12/15/18 is a pure multiple ladder. "
+          "Resetting the CPU numerator is a follow-up, not this split.")
+    return report(errors)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

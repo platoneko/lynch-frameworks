@@ -164,7 +164,7 @@ def main() -> int:
         elif abs(float(m.group(1)) - val) > TOL:
             errors.append(f"{key}: stated {m.group(1)} vs recomputed {val:.4f}")
     for key, val in (("A", A), ("B", B)):
-        m = re.search(rf"{key} = ([0-9.]+)", out_sec)
+        m = re.search(rf"{key} = \**([0-9.]+)", out_sec)
         if not m:
             errors.append(f"stated cut point {key} not found")
         elif abs(float(m.group(1)) - val) > TOL:
@@ -185,10 +185,16 @@ def main() -> int:
                 errors.append(f"leg table {tag}/{name}: stated {got} vs recomputed {exp:.2f}")
 
     # --- five-zone boundary table -------------------------------------------
+    # Only the price-interval column (index 2) carries boundaries; 场景 must
+    # not leak narrative figures into the check.
     zone_nums = set()
     for line in out_sec.splitlines():
         if line.startswith("| `") and "|" in line:
-            zone_nums.update(float(x) for x in re.findall(r"([0-9]+\.[0-9]+)", line))
+            cells = line.strip().strip("|").split("|")
+            if len(cells) >= 3:
+                zone_nums.update(
+                    float(x) for x in re.findall(r"([0-9]+\.[0-9]+)", cells[2])
+                )
     for name, val in (("L", L), ("A", A), ("B", B), ("H", H)):
         if not any(abs(val - z) <= TOL for z in zone_nums):
             errors.append(f"zone table missing boundary {name}={val:.1f}")

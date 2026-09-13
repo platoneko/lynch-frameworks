@@ -21,6 +21,17 @@ import re
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.axes import (  # noqa: E402
+    check_optical_narrow_attach,
+    check_optical_oe_mount,
+    optical_attachment,
+    optical_narrow_rev,
+)
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "LITE.US.md"
 FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_v1"
 TOL = 0.05  # outputs are rounded to 2 decimals
@@ -111,6 +122,11 @@ def main() -> int:
         "pe_m",
         "pe_h",
         "shares_dil",
+        "oe_l",
+        "oe_m",
+        "oe_h",
+        "laser_usd_per_oe",
+        "lite_laser_share",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -118,6 +134,16 @@ def main() -> int:
         return 1
 
     errors = check_inputs(inp)
+    errors.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
+    opt_rev = {
+        tier: optical_narrow_rev(
+            inp[f"oe_{tier.lower()}"],
+            inp["laser_usd_per_oe"],
+            inp["lite_laser_share"],
+        )
+        for tier in ("L", "M", "H")
+    }
+    errors.extend(check_optical_narrow_attach(opt_rev))
 
     # Step 1-3: normalized non-GAAP EPS per cycle state, then the cycle PE band.
     eps_adj = inp["eps_fy27"] * (1.0 - inp["sbc_haircut"])
@@ -172,6 +198,13 @@ def main() -> int:
           f"  price={mcap(inp['price']):.1f}")
     print(f"price={inp['price']} -> fwd PE on consensus {inp['price'] / inp['eps_fy27']:.1f}x,"
           f" on eps_adj {inp['price'] / eps_adj:.1f}x, zone={zone}")
+    att = {t: optical_attachment(opt_rev[t], t) for t in ("L", "M", "H")}
+    print(
+        "optical narrow (A14): rev L/M/H = "
+        f"${opt_rev['L']/1e9:.3f}B/${opt_rev['M']/1e9:.3f}B/${opt_rev['H']/1e9:.3f}B "
+        f"(laser ${inp['laser_usd_per_oe']:.0f}/OE × share {inp['lite_laser_share']:.0%}); "
+        f"attach vs oe×$450 = {att['L']:.1%}/{att['M']:.1%}/{att['H']:.1%}"
+    )
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

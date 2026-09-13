@@ -59,13 +59,17 @@ def parse_inputs(md: str) -> dict[str, float]:
 def parse_stated(md: str) -> dict[str, float]:
     """Pull the stated L/M/H and A/B out of §3 Outputs."""
     out: dict[str, float] = {}
-    m = re.search(r"- L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", md)
+    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
+    m = re.search(
+        r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*",
+        out_sec,
+    )
     if m:
         out["L"], out["M"], out["H"] = (float(g) for g in m.groups())
-    m = re.search(r"- A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", md)
+    m = re.search(r"A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", out_sec)
     if m:
         out["A"], out["B"] = (float(g) for g in m.groups())
-    m = re.search(r"- zone = \*\*`(\w+)`\*\*", md)
+    m = re.search(r"zone = \*\*`(\w+)`\*\*", out_sec)
     if m:
         out["zone"] = m.group(1)  # type: ignore[assignment]
     return out

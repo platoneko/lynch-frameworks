@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.axes import check_cowos_mount  # noqa: E402
+from eval.lib.axes import check_cowos_mount, check_optical_oe_mount  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "AVGO.US.md"
 TOL = 0.15
@@ -177,20 +177,55 @@ def main() -> int:
     B = (M + H) / 2
     z = zone_of(inp["price"], L, M, H)
 
+    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
+    errors: list[str] = []
+    triples = re.findall(
+        r"L = \*\*[0-9.]+\*\* · M = \*\*[0-9.]+\*\* · H = \*\*[0-9.]+\*\*", out_sec
+    )
+    if len(triples) != 1:
+        errors.append(
+            f"### Outputs must state the L/M/H triple exactly once, found {len(triples)}"
+        )
+    vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
+    if vo is None or abs(float(vo.group(1))) > 1e-9:
+        errors.append(
+            f"V_opt must be stated as 0 (lab XPU is in the FY27 multiples, not an option), got "
+            f"{vo.group(1) if vo else None}"
+        )
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
+
     stated = {}
     for key, pat in [
         ("L", r"L = \*\*([0-9.]+)\*\*"),
         ("M", r"M = \*\*([0-9.]+)\*\*"),
         ("H", r"H = \*\*([0-9.]+)\*\*"),
+        ("A", r"A = \*\*([0-9.]+)\*\*"),
+        ("B", r"B = \*\*([0-9.]+)\*\*"),
     ]:
-        m = re.search(pat, md)
+        m = re.search(pat, out_sec)
         if m:
             stated[key] = float(m.group(1))
 
     print(f"formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_28_v3")
-    print(f"eps27={sum(e27.values()):.3f} eps28={eps28:.3f}")
+    print(f"eps27={sum(e27.values()):.3f} eps28={eps28:.3f}  eps27_low={sum(e27_low.values()):.3f}")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
-    print(f"zone={z} price={inp['price']}")
+    print(f"zone={z} price={inp['price']}  V_opt=0")
+    print(
+        f"表1 L: uw={e27_low_uw * inp['pe_xpu_uw_l']:.1f} lab={e27_low_lab * inp['pe_xpu_lab_l']:.1f}"
+        f" net={e27_low['net'] * inp['pe_net_l']:.1f} nonai={e27_low['nonai'] * inp['pe_nonai_l']:.1f}"
+        f" sw={e27_low['sw'] * inp['pe_sw_l']:.1f}"
+    )
+    print(
+        f"表1 M: uw={e27_uw * inp['pe_xpu_uw_m']:.1f} lab={e27_lab * inp['pe_xpu_lab_m']:.1f}"
+        f" net={e27['net'] * inp['pe_net_m']:.1f} nonai={e27['nonai'] * inp['pe_nonai_m']:.1f}"
+        f" sw={e27['sw'] * inp['pe_sw_m']:.1f}"
+    )
+    print(
+        f"表1 H: xpu={e28['xpu'] * inp['pe_h_fy28']:.1f} (unsplit) net={e28['net'] * inp['pe_h_fy28']:.1f}"
+        f" nonai={e28['nonai'] * inp['pe_h_fy28']:.1f} sw={e28['sw'] * inp['pe_h_fy28']:.1f}"
+    )
     for leg in ("xpu", "net", "nonai", "sw"):
         print(f"  {leg}: eps27={e27[leg]:.3f} eps28={e28[leg]:.3f}")
     print(f"  xpu split: uw={e27_uw:.3f} lab={e27_lab:.3f} (uw_share={uw:.2f})")
@@ -212,19 +247,33 @@ def main() -> int:
     )
 
     ok = True
+    for err in errors:
+        print(f"MISMATCH: {err}", file=sys.stderr)
+        ok = False
     for err in check_cowos_mount(
         "AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"]
     ):
         print(f"MISMATCH axis: {err}", file=sys.stderr)
         ok = False
-    for key, val in [("L", L), ("M", M), ("H", H)]:
+    for err in check_optical_oe_mount(
+        (inp["oe_l"], inp["oe_m"], inp["oe_h"])
+    ):
+        print(f"MISMATCH axis: {err}", file=sys.stderr)
+        ok = False
+    for key, val in [("L", L), ("M", M), ("H", H), ("A", A), ("B", B)]:
         if key in stated and abs(val - stated[key]) > TOL:
             print(f"MISMATCH {key}: computed={val:.1f} stated={stated[key]}", file=sys.stderr)
             ok = False
+        elif key not in stated:
+            print(f"MISMATCH {key}: stated not found in ### Outputs", file=sys.stderr)
+            ok = False
 
-    zone_m = re.search(r"zone = \*\*`([a-z_]+)`\*\*", md)
+    zone_m = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
     if zone_m and zone_m.group(1) != z:
         print(f"MISMATCH zone: computed={z} stated={zone_m.group(1)}", file=sys.stderr)
+        ok = False
+    elif not zone_m:
+        print("MISMATCH zone: stated not found in ### Outputs", file=sys.stderr)
         ok = False
 
     return 0 if ok else 1

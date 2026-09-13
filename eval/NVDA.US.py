@@ -82,11 +82,8 @@ REQUIRED = [
 ]
 
 _ANCHORS = re.compile(
-    r"^- L = \*\*([0-9.]+)\*\* · M = \*\*([0-9.]+)\*\* · H = \*\*([0-9.]+)\*\*\s*$",
-    re.MULTILINE,
-)
-_CUTS = re.compile(
-    r"^- 切点 A = \*\*([0-9.]+)\*\* · B = \*\*([0-9.]+)\*\*\s*$",
+    r"^- 底牌 L = \*\*([0-9.]+)\*\* · M = \*\*([0-9.]+)\*\* · H = \*\*([0-9.]+)\*\*"
+    r" · 切点 A = \*\*([0-9.]+)\*\* · B = \*\*([0-9.]+)\*\*",
     re.MULTILINE,
 )
 _ZONE = re.compile(r"zone = \*\*`([a-z_]+)`\*\*")
@@ -247,21 +244,14 @@ def main() -> int:
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    am, cm, zm = _ANCHORS.search(out_sec), _CUTS.search(out_sec), _ZONE.search(out_sec)
+    am, zm = _ANCHORS.search(out_sec), _ZONE.search(out_sec)
     if not am:
-        errors.append("stated L/M/H line not found in ### Outputs")
-    if not cm:
-        errors.append("stated 切点 A/B line not found in ### Outputs")
+        errors.append("stated 底牌 L/M/H · 切点 A/B line not found in ### Outputs")
     if not zm:
         errors.append("stated zone not found in ### Outputs")
 
-    if am and cm:
-        stated = dict(
-            zip(
-                ("L", "M", "H", "A", "B"),
-                [float(x) for x in am.groups()] + [float(x) for x in cm.groups()],
-            )
-        )
+    if am:
+        stated = dict(zip(("L", "M", "H", "A", "B"), [float(x) for x in am.groups()]))
         for k, v in {"L": L, "M": M, "H": H, "A": A, "B": Bcut}.items():
             if abs(stated[k] - v) > TOL:
                 errors.append(f"{k}: stated {stated[k]} vs recomputed {v:.4f}")
