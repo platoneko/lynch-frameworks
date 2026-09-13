@@ -18,7 +18,7 @@ costs — is derived, not chosen:
     Google Cloud                ROE 16.0%   (equity 160.0B, from HSBC 2027E ROIC)
 
 The tier ladder lives ENTIRELY in the numerator: g2_svc = 5.5% and
-g2_cld = 6.5% are identical in L, M and H, so the multiple ratio across tiers
+g2_cld = 6.0% (6.5% capped) are identical in L, M and H, so the multiple ratio across tiers
 is exactly 1.000 and every point of tier spread is a consensus-EPS point
 (A2e-2a / A2e-2c). The one derived exception is the L tier's cloud multiple:
 A18 retreats that segment's OI margin to a realised 20.7%, which shrinks the

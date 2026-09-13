@@ -12,6 +12,7 @@
 - [GOOG.US](./GOOG.US.md)
 - [INTC.US](./INTC.US.md)
 - [LITE.US](./LITE.US.md)
+- [MRVL.US](./MRVL.US.md)
 - [NOK.US](./NOK.US.md)
 - [NVDA.US](./NVDA.US.md)
 - [TSM.US](./TSM.US.md)
