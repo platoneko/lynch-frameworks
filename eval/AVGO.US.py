@@ -1,10 +1,33 @@
 #!/usr/bin/env python3
 """AVGO.US valuation eval — recompute anchors from frameworks/AVGO.US.md.
 
-frameworks/AVGO.US.md is the source of truth for inputs; this script recomputes
-L/M/H / A/B / zone and exits 1 on mismatch with stated Outputs.
+formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v4
 
-formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_28_v3
+Five legs on FY27 numerators (XPU-underwritten / XPU-lab / AI networking /
+non-AI semi / software).  The tier ladder lives in the numerator: the two
+CoWoS-constrained legs (XPU, networking) scale with the shared quota axis
+(_AXIS.cowos-capacity.md), L <- γ, M <- β, H <- α -- the mirror image of NVDA.
+Multiples are generated, not borrowed: each leg names a perpetual g2 (peer
+cross-section reverse-solve, capped at G_CAP), tier ROE = EPS_x × shares /
+equity, and the two AI legs run ONE named transition year (FY28 sell-side
+consensus EPS growth) through `two_stage_pe` in M/H only.  L is the digest
+world -- FY28 gets no credit -- so it calls `perpetual_pe` directly.  The lab
+tier of XPU is conditional cash flow (XPV financing + RVG), so it discounts at
+the 13% tier; everything else at 10%.
+
+Numerator year (valuation-rules 裁决顺序 ②, A21): FY27 is the furthest year with a
+>=2-house consensus *range* (47 houses); FY28 is visible to three houses but only
+as point estimates, so it is the g1 layer, not the numerator.  Guardrail (③,
+A19): every blended tier multiple must sit inside the ticker's own realised
+next-FY PE band (`pe_own_min/max`); the band-edge Δg printed below is the
+uniform shift of all four legs' g2 that would take the M-tier blended multiple
+to either edge -- evidence of what the market has paid for, not an input.
+The AI legs' M/H two-stage multiple is on the FY27 numerator with FY27 = t=1
+(same valuation date as L's `perpetual_pe`, valuation-rules「两段式过渡 · 估值时点」
+2026-09-14): divided by (1 + g1) it is the multiple on FY28 (= steady-state
+Gordon discounted one year) and must read below the steady-state cap
+perpetual_pe(g2); the zone must also survive the AI legs' g2 shifted ±1pp
+(valuation-rules「g₂ 的杠杆 MUST 显式」) or the eval reports BLOCKED.
 
 Run:  python3 eval/AVGO.US.py
 """
@@ -20,263 +43,347 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_cowos_mount, check_optical_oe_mount  # noqa: E402
+from eval.lib.gordon import (  # noqa: E402
+    G_CAP,
+    R_CONDITIONAL,
+    R_OPERATING,
+    check_g_cap,
+    check_r,
+    check_transition_years,
+    implied_g,
+    perpetual_pe,
+    two_stage_pe,
+)
+from eval.lib.inputs import (  # noqa: E402
+    check_against_stated,
+    check_missing,
+    ladder,
+    parse_inputs,
+    report,
+)
+from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
+from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "AVGO.US.md"
+FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
+FORMULA_ID = "avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v4"
 TOL = 0.15
+MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
+BRIDGE_TOL = 0.15  # A8: guidance bridge vs consensus
+
+REQUIRED = [
+    "price",
+    "shares",
+    "equity",
+    "tax_rate",
+    "below_line_ps",
+    "rev_ai_27",
+    "rev_ai_28",
+    "xpu_share_ai",
+    "rev_nonai_27",
+    "rev_nonai_28",
+    "rev_sw_27",
+    "rev_sw_28",
+    "om_xpu",
+    "om_net",
+    "om_nonai",
+    "om_sw",
+    "xpu_uw_share",
+    "eps_fy27_cons",
+    "eps_fy28_cons",
+    "n_stage",
+    "n_consensus",
+    "r_perp",
+    "r_lab",
+    "g2_xpu",
+    "g2_net",
+    "g2_nonai",
+    "g2_sw",
+    "pe_own_min",
+    "pe_own_max",
+    "cowos_quota_l",
+    "cowos_quota_m",
+    "cowos_quota_h",
+    "oe_l",
+    "oe_m",
+    "oe_h",
+]
+TIERS = ("L", "M", "H")
+LEGS = ("uw", "lab", "net", "nonai", "sw")
+# Which g2 / r each leg reads.  uw and lab are the same business (XPU) split by
+# customer quality, so they share g2 and differ only in the r tier.
+LEG_G2 = {"uw": "g2_xpu", "lab": "g2_xpu", "net": "g2_net", "nonai": "g2_nonai", "sw": "g2_sw"}
+LEG_R = {"uw": "r_perp", "lab": "r_lab", "net": "r_perp", "nonai": "r_perp", "sw": "r_perp"}
+TRANSITION_LEGS = ("uw", "lab", "net")  # FY28 consensus growth is an AI story (A4/A5 flat)
 
 
-def parse_inputs(md: str) -> dict[str, float]:
-    out: dict[str, float] = {}
-    in_inputs = False
-    for line in md.splitlines():
-        if line.startswith("### Inputs"):
-            in_inputs = True
-            continue
-        if in_inputs and line.startswith("### "):
-            break
-        if not in_inputs or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        key, raw = cells[0], cells[1]
-        if key in ("字段名", "--------", "---") or raw in ("取值",):
-            continue
-        if raw in ("待补", ""):
-            continue
-        try:
-            out[key] = float(raw.replace(",", ""))
-        except ValueError:
-            continue
-    return out
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A = (L + M) / 2
-    B = (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", md.split("### Outputs", 1)[-1])
+    return float(m.group(1)) if m else None
 
 
 def eps_leg(rev: float, om: float, tax_rate: float, shares: float) -> float:
     return rev * om * (1.0 - tax_rate) / shares
 
 
+def sanity_checks(inp: dict[str, float]) -> list[str]:
+    errs: list[str] = []
+    errs += check_r(inp["r_perp"], "r_perp")
+    errs += check_r(inp["r_lab"], "r_lab")
+    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
+        errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
+    if abs(inp["r_lab"] - R_CONDITIONAL) > 1e-9:
+        errs.append(f"r_lab={inp['r_lab']}: lab XPU is conditional cash flow (A7), expected {R_CONDITIONAL}")
+    for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw"):
+        errs += check_g_cap(inp[key], key)
+        gap = inp["r_perp"] - inp[key]
+        if gap <= 0:
+            errs.append(f"perpetuity diverges on {key}: g2 >= r")
+        elif gap < MIN_R_MINUS_G:
+            errs.append(f"r - {key} = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    # Only FY28 carries a >=2-house consensus (A8); FY29 is a story.
+    errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
+    if inp["eps_fy28_cons"] <= inp["eps_fy27_cons"]:
+        errs.append("FY28 consensus below FY27: the transition year has no growth to name")
+    # Quota states must be ordered the AVGO way (γ < β < α); the axis check confirms the values.
+    errs += ladder("cowos quota (γ<β<α)", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"])
+    p_fields = [k for k in inp if k == "p" or k.startswith("p_")]
+    if p_fields:
+        errs.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
+    return errs
+
+
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
-    inp = parse_inputs(md)
-    required = [
-        "price",
-        "shares",
-        "tax_rate",
-        "rev_ai_27",
-        "rev_ai_28",
-        "xpu_share_ai",
-        "rev_nonai_27",
-        "rev_nonai_28",
-        "rev_sw_27",
-        "rev_sw_28",
-        "below_line_ps",
-        "om_xpu",
-        "om_net",
-        "om_nonai",
-        "om_sw",
-        "xpu_uw_share",
-        "pe_xpu_uw_l",
-        "pe_xpu_uw_m",
-        "pe_xpu_lab_l",
-        "pe_xpu_lab_m",
-        "pe_net_l",
-        "pe_net_m",
-        "pe_nonai_l",
-        "pe_nonai_m",
-        "pe_sw_l",
-        "pe_sw_m",
-        "pe_h_fy28",
-        "cowos_quota_l",
-        "cowos_quota_m",
-        "cowos_quota_h",
-    ]
-    missing = [k for k in required if k not in inp]
-    if missing:
-        print(f"missing inputs: {missing}", file=sys.stderr)
+    if FORMULA_ID not in md:
+        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
         return 1
+    inp = parse_inputs(md)
+    errors = check_missing(inp, REQUIRED)
+    if errors:
+        return report(errors)
+    errors = sanity_checks(inp)
 
-    s, t = inp["shares"], inp["tax_rate"]
-    xpu_s = inp["xpu_share_ai"]
+    s, t, bl = inp["shares"], inp["tax_rate"], inp["below_line_ps"]
+    xpu_s, uw = inp["xpu_share_ai"], inp["xpu_uw_share"]
+    r, n = inp["r_perp"], int(inp["n_stage"])
 
-    # Shared axis (_AXIS.cowos-capacity.md): AVGO reads the allocation states
-    # inverted from NVDA -- its L is state γ, where NVDA keeps its full quota.
-    # The L scenario therefore has to move the *numerator*, not just multiples:
-    # a fast_grower's L must be a worse world, not the same world priced lower.
-    quota_ratio_l = inp["cowos_quota_l"] / inp["cowos_quota_m"]
-
+    # ---- Step 1: FY27 gross leg EPS on the β (nominal guidance) world ----
     rev_xpu_27 = inp["rev_ai_27"] * xpu_s
     rev_net_27 = inp["rev_ai_27"] * (1.0 - xpu_s)
-    rev_xpu_28 = inp["rev_ai_28"] * xpu_s
-    rev_net_28 = inp["rev_ai_28"] * (1.0 - xpu_s)
-
-    e27 = {
+    gross_m = {
         "xpu": eps_leg(rev_xpu_27, inp["om_xpu"], t, s),
         "net": eps_leg(rev_net_27, inp["om_net"], t, s),
         "nonai": eps_leg(inp["rev_nonai_27"], inp["om_nonai"], t, s),
         "sw": eps_leg(inp["rev_sw_27"], inp["om_sw"], t, s),
     }
-    # Only the CoWoS-constrained legs scale with the quota; software and non-AI
-    # do not sit on the axis (axis §4).
-    e27_low = dict(e27)
-    e27_low["xpu"] = eps_leg(rev_xpu_27 * quota_ratio_l, inp["om_xpu"], t, s)
-    e27_low["net"] = eps_leg(rev_net_27 * quota_ratio_l, inp["om_net"], t, s)
-    e28 = {
-        "xpu": eps_leg(rev_xpu_28, inp["om_xpu"], t, s),
-        "net": eps_leg(rev_net_28, inp["om_net"], t, s),
-        "nonai": eps_leg(inp["rev_nonai_28"], inp["om_nonai"], t, s),
-        "sw": eps_leg(inp["rev_sw_28"], inp["om_sw"], t, s),
+
+    # ---- Step 2: tier numerators from the shared quota axis (A16) ----
+    # Only the CoWoS-constrained legs scale; software and non-AI are off-axis.
+    # Below-the-line drag (A14) is spread pro-rata so leg sums = gross - bl.
+    quota_scale = {
+        "L": inp["cowos_quota_l"] / inp["cowos_quota_m"],
+        "M": 1.0,
+        "H": inp["cowos_quota_h"] / inp["cowos_quota_m"],
     }
 
-    # below-the-line drag (A14): pro-rata across legs; preserves leg sums = gross - bl
-    bl = inp["below_line_ps"]
-    f27 = (sum(e27.values()) - bl) / sum(e27.values())
-    f27_low = (sum(e27_low.values()) - bl) / sum(e27_low.values())
-    f28 = (sum(e28.values()) - bl) / sum(e28.values())
-    e27 = {k: v * f27 for k, v in e27.items()}
-    e27_low = {k: v * f27_low for k, v in e27_low.items()}
-    e28 = {k: v * f28 for k, v in e28.items()}
+    def tier_legs(scale: float) -> dict[str, float]:
+        gross = dict(gross_m)
+        gross["xpu"] *= scale
+        gross["net"] *= scale
+        f = (sum(gross.values()) - bl) / sum(gross.values())
+        net = {k: v * f for k, v in gross.items()}
+        # XPU two-tier split (A15): underwritten LTA vs lab-dependent, every tier.
+        return {
+            "uw": net["xpu"] * uw,
+            "lab": net["xpu"] * (1.0 - uw),
+            "net": net["net"],
+            "nonai": net["nonai"],
+            "sw": net["sw"],
+        }
 
-    # XPU two-tier split (A15): underwritten (LTA) vs lab-dependent; FY27 L/M only, H stays untiered
-    uw = inp["xpu_uw_share"]
-    e27_uw = e27["xpu"] * uw
-    e27_lab = e27["xpu"] * (1.0 - uw)
-    e27_low_uw = e27_low["xpu"] * uw
-    e27_low_lab = e27_low["xpu"] * (1.0 - uw)
+    eps = {tier: tier_legs(quota_scale[tier]) for tier in TIERS}
+    eps_total = {tier: sum(eps[tier].values()) for tier in TIERS}
+    errors += ladder("numerator (γ/β/α)", eps_total["L"], eps_total["M"], eps_total["H"])
 
-    L = (
-        e27_low_uw * inp["pe_xpu_uw_l"]
-        + e27_low_lab * inp["pe_xpu_lab_l"]
-        + e27_low["net"] * inp["pe_net_l"]
-        + e27_low["nonai"] * inp["pe_nonai_l"]
-        + e27_low["sw"] * inp["pe_sw_l"]
-    )
-    M = (
-        e27_uw * inp["pe_xpu_uw_m"]
-        + e27_lab * inp["pe_xpu_lab_m"]
-        + e27["net"] * inp["pe_net_m"]
-        + e27["nonai"] * inp["pe_nonai_m"]
-        + e27["sw"] * inp["pe_sw_m"]
-    )
-    eps28 = sum(e28.values())
-    H = eps28 * inp["pe_h_fy28"]
-    A = (L + M) / 2
-    B = (M + H) / 2
-    z = zone_of(inp["price"], L, M, H)
+    # ---- Step 3: tier ROE from one equity field; company ROE for every leg (A3 SOTP rule) ----
+    roe = {tier: eps_total[tier] * s / inp["equity"] for tier in TIERS}
 
-    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    errors: list[str] = []
-    triples = re.findall(
-        r"L = \*\*[0-9.]+\*\* · M = \*\*[0-9.]+\*\* · H = \*\*[0-9.]+\*\*", out_sec
+    # ---- Step 4: the FY28 transition year, consensus-to-consensus, carried by the AI legs only ----
+    g1_co = inp["eps_fy28_cons"] / inp["eps_fy27_cons"] - 1.0
+    ai_m = eps["M"]["uw"] + eps["M"]["lab"] + eps["M"]["net"]
+    flat_m = eps["M"]["nonai"] + eps["M"]["sw"]
+    g1_ai = ((1.0 + g1_co) * eps_total["M"] - flat_m) / ai_m - 1.0
+
+    # ---- Step 5: multiples per leg per tier; L runs no transition (digest world) ----
+    def leg_pe(leg: str, tier: str, transition: bool) -> float:
+        g2, rr = inp[LEG_G2[leg]], inp[LEG_R[leg]]
+        if transition and leg in TRANSITION_LEGS:
+            return two_stage_pe(g1_ai, n, g2, roe[tier], rr)
+        return perpetual_pe(g2, roe[tier], rr)
+
+    pes = {tier: {leg: leg_pe(leg, tier, transition=(tier != "L")) for leg in LEGS} for tier in TIERS}
+    legs_ps = {tier: {leg: eps[tier][leg] * pes[tier][leg] for leg in LEGS} for tier in TIERS}
+    anchors = {tier: sum(legs_ps[tier].values()) for tier in TIERS}
+    blended = {tier: anchors[tier] / eps_total[tier] for tier in TIERS}
+    L, M, H = (anchors[tier] for tier in TIERS)
+    if not (L < M < H):
+        errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
+
+    # Guardrail (裁决顺序 ③, A19): every blended tier multiple inside the ticker's own
+    # realised next-FY PE band.
+    for tier in TIERS:
+        if not (inp["pe_own_min"] <= blended[tier] <= inp["pe_own_max"]):
+            errors.append(
+                f"{tier} blended PE {blended[tier]:.1f}x outside own realised band "
+                f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
+            )
+
+    # Re-price one tier with a g2 shift on a subset of legs (same construction as above).
+    def anchor_at(tier: str, delta: float, shifted: tuple[str, ...]) -> float:
+        out = 0.0
+        for leg in LEGS:
+            g2, rr = inp[LEG_G2[leg]] + (delta if leg in shifted else 0.0), inp[LEG_R[leg]]
+            pe = (
+                two_stage_pe(g1_ai, n, g2, roe[tier], rr)
+                if tier != "L" and leg in TRANSITION_LEGS
+                else perpetual_pe(g2, roe[tier], rr)
+            )
+            out += eps[tier][leg] * pe
+        return out
+
+    # Band-edge Δg (③ 带即证据): shift every leg's g2 by the same Δ until the M-tier
+    # blended multiple reaches each edge of the own band.  Reported, never used.
+    def blended_at(tier: str, delta: float) -> float:
+        return anchor_at(tier, delta, LEGS) / eps_total[tier]
+
+    def delta_to(target: float, tier: str) -> float:
+        lo, hi = -0.20, r - max(inp[k] for k in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw")) - 1e-4
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if blended_at(tier, mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    band_edge_dg = (delta_to(inp["pe_own_min"], "M"), delta_to(inp["pe_own_max"], "M"))
+
+    # ---- Step 6: A2e-2c flat ladder + A2e-5 decomposition ----
+    flat_errs, flat = flat_multiple_ladder((eps_total["L"], eps_total["M"], eps_total["H"]), blended["M"])
+    errors += flat_errs
+    if not (flat[0] < flat[1] < flat[2]):
+        errors.append(f"flat-multiple ladder broken: {flat}")
+    dec = decompose((L, M, H), (blended["L"], blended["M"], blended["H"]))
+    # Same split on the FY28 basis: L's digest world holds FY28 = FY27, M/H carry the AI
+    # legs' g1.  On this basis the L gap is a numerator statement and the multiples sit
+    # flat -- the FY27-basis "L gap is mostly multiple" is that same statement projected
+    # onto the numerator year, not a multiple policy (A2e-2d does not fire).
+    eps28 = {
+        tier: sum(eps[tier][leg] * ((1.0 + g1_ai) if tier != "L" and leg in TRANSITION_LEGS else 1.0) for leg in LEGS)
+        for tier in TIERS
+    }
+    dec28 = decompose((L, M, H), tuple(anchors[tier] / eps28[tier] for tier in TIERS))
+
+    # ---- Step 7: A8 bridge guard — guidance bridge vs consensus, both years ----
+    dev27 = eps_total["M"] / inp["eps_fy27_cons"] - 1.0
+    eps28_guide = (
+        eps_leg(inp["rev_ai_28"] * xpu_s, inp["om_xpu"], t, s)
+        + eps_leg(inp["rev_ai_28"] * (1.0 - xpu_s), inp["om_net"], t, s)
+        + eps_leg(inp["rev_nonai_28"], inp["om_nonai"], t, s)
+        + eps_leg(inp["rev_sw_28"], inp["om_sw"], t, s)
+        - bl
     )
-    if len(triples) != 1:
+    dev28 = eps28_guide / inp["eps_fy28_cons"] - 1.0
+    if abs(dev27) > BRIDGE_TOL:
+        errors.append(f"FY27 bridge deviates {dev27:+.1%} from consensus (> {BRIDGE_TOL:.0%})")
+    if abs(dev28) > BRIDGE_TOL:
+        errors.append(f"FY28 guidance bridge deviates {dev28:+.1%} from consensus (> {BRIDGE_TOL:.0%})")
+
+    # ---- Step 8: zone, stated values, axis mounts ----
+    A, B = cut_points(L, M, H)
+    zone = zone_of(inp["price"], L, M, H)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v) > 1e-9:
+        errors.append(f"V_opt must be stated as 0 (lab XPU is a leg at r=13%, not an option), got {said_v}")
+    errors += [f"axis: {e}" for e in check_cowos_mount("AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"])]
+    errors += [f"axis: {e}" for e in check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))]
+
+    # ---- Step 9: g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」) ----
+    # The AI legs' g2 shifted ±1pp together (lab reads g2_xpu too); +1pp sits above
+    # G_CAP and is not a legal state.  The zone must survive, else BLOCKED.
+    lever = []
+    for delta in (-0.01, +0.01):
+        if inp["g2_xpu"] + delta > G_CAP + 1e-9:
+            continue
+        lmh = tuple(anchor_at(tier, delta, TRANSITION_LEGS) for tier in TIERS)
+        lever.append((delta, *lmh, zone_of(inp["price"], *lmh)))
+    if any(z != zone for *_, z in lever):
         errors.append(
-            f"### Outputs must state the L/M/H triple exactly once, found {len(triples)}"
+            "zone not stable under AI-leg g2 ±1pp: "
+            + ", ".join(f"{d:+.2%} -> {z}" for d, *_, z in lever)
+            + " — BLOCKED, back to dialogue (valuation-rules「g₂ 的杠杆 MUST 显式」)"
         )
-    vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
-    if vo is None or abs(float(vo.group(1))) > 1e-9:
-        errors.append(
-            f"V_opt must be stated as 0 (lab XPU is in the FY27 multiples, not an option), got "
-            f"{vo.group(1) if vo else None}"
-        )
-    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
-    if leaked:
-        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
 
-    stated = {}
-    for key, pat in [
-        ("L", r"L = \*\*([0-9.]+)\*\*"),
-        ("M", r"M = \*\*([0-9.]+)\*\*"),
-        ("H", r"H = \*\*([0-9.]+)\*\*"),
-        ("A", r"A = \*\*([0-9.]+)\*\*"),
-        ("B", r"B = \*\*([0-9.]+)\*\*"),
-    ]:
-        m = re.search(pat, out_sec)
-        if m:
-            stated[key] = float(m.group(1))
-
-    print(f"formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_28_v3")
-    print(f"eps27={sum(e27.values()):.3f} eps28={eps28:.3f}  eps27_low={sum(e27_low.values()):.3f}")
+    # ---- Report ----
+    print(f"formula_id={FORMULA_ID}")
+    print(
+        f"g1 company (FY28 cons {inp['eps_fy28_cons']:g} / FY27 cons {inp['eps_fy27_cons']:g} - 1) = {g1_co:.4f}"
+        f" -> AI legs g1_ai = {g1_ai:.4f} (n={n}; software / non-AI flat)  r={r:g} / lab {inp['r_lab']:g}"
+        f"  g2 xpu/net/nonai/sw = {inp['g2_xpu']:.4f}/{inp['g2_net']:.4f}/{inp['g2_nonai']:.4f}/{inp['g2_sw']:.4f}"
+    )
+    print(f"tier EPS (FY27, after below-line) L/M/H = {eps_total['L']:.3f}/{eps_total['M']:.3f}/{eps_total['H']:.3f}"
+          f"  quota scale {quota_scale['L']:.4f}/1/{quota_scale['H']:.4f}")
+    print(f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} (equity {inp['equity']:.4g})")
+    for tier in TIERS:
+        p1 = 1.0 - g1_ai / roe[tier]
+        tag = "no transition (digest)" if tier == "L" else ("issuance-funded" if p1 < 0 else "self-funded")
+        cells = " / ".join(f"{leg} {legs_ps[tier][leg]:.1f} ({pes[tier][leg]:.1f}x)" for leg in LEGS)
+        print(f"{tier}: eps {eps_total[tier]:.3f} x blended {blended[tier]:.2f}x = {anchors[tier]:.1f}  [{cells}]"
+              f"  stage-1 payout {p1:+.3f} ({tag})")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
-    print(f"zone={z} price={inp['price']}  V_opt=0")
+    print(f"flat-multiple ladder @ M {blended['M']:.2f}x: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
+    ai_cap_hit = inp["g2_xpu"] + band_edge_dg[1] > G_CAP + 1e-9
     print(
-        f"表1 L: uw={e27_low_uw * inp['pe_xpu_uw_l']:.1f} lab={e27_low_lab * inp['pe_xpu_lab_l']:.1f}"
-        f" net={e27_low['net'] * inp['pe_net_l']:.1f} nonai={e27_low['nonai'] * inp['pe_nonai_l']:.1f}"
-        f" sw={e27_low['sw'] * inp['pe_sw_l']:.1f}"
+        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge Δg @ M ROE (all legs shifted): "
+        f"lower {band_edge_dg[0]:+.4f} / upper {band_edge_dg[1]:+.4f}"
+        f"{' (upper edge needs AI g2 above the 6% cap — unreachable under ①)' if ai_cap_hit else ''}"
     )
     print(
-        f"表1 M: uw={e27_uw * inp['pe_xpu_uw_m']:.1f} lab={e27_lab * inp['pe_xpu_lab_m']:.1f}"
-        f" net={e27['net'] * inp['pe_net_m']:.1f} nonai={e27['nonai'] * inp['pe_nonai_m']:.1f}"
-        f" sw={e27['sw'] * inp['pe_sw_m']:.1f}"
+        f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
+        f"H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | "
+        f"width {(H - L) / (2 * M):.3f} | V_opt/M 0"
     )
     print(
-        f"表1 H: xpu={e28['xpu'] * inp['pe_h_fy28']:.1f} (unsplit) net={e28['net'] * inp['pe_h_fy28']:.1f}"
-        f" nonai={e28['nonai'] * inp['pe_h_fy28']:.1f} sw={e28['sw'] * inp['pe_h_fy28']:.1f}"
+        f"FY28-basis (L: FY28 = FY27; M/H: AI legs x {1 + g1_ai:.3f}) EPS {eps28['L']:.2f}/{eps28['M']:.2f}/{eps28['H']:.2f}: "
+        f"L/M = num {dec28['num_lm']:.3f} x pe {dec28['pe_lm']:.3f} | H/M = num {dec28['num_hm']:.3f} x pe {dec28['pe_hm']:.3f}"
     )
-    for leg in ("xpu", "net", "nonai", "sw"):
-        print(f"  {leg}: eps27={e27[leg]:.3f} eps28={e28[leg]:.3f}")
-    print(f"  xpu split: uw={e27_uw:.3f} lab={e27_lab:.3f} (uw_share={uw:.2f})")
+    for tier in ("M", "H"):
+        print(
+            f"AI legs {tier}: uw/net {pes[tier]['uw']:.1f}x FY27 = {pes[tier]['uw'] / (1 + g1_ai):.1f}x FY28"
+            f" (steady-state cap {perpetual_pe(inp['g2_xpu'], roe[tier], r):.1f}x); "
+            f"lab {pes[tier]['lab']:.1f}x FY27 = {pes[tier]['lab'] / (1 + g1_ai):.1f}x FY28"
+        )
     print(
-        f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/"
-        f"{inp['cowos_quota_m'] / 1e4:.1f}/{inp['cowos_quota_h'] / 1e4:.1f}万片"
-        f"  (L 状态 γ, 量 {quota_ratio_l - 1.0:+.1%} vs M)"
-        f"  eps27_low={sum(e27_low.values()):.3f}"
+        "g2 leverage (AI legs ±1pp): "
+        + " | ".join(f"{d:+.0%}: {l:.1f}/{m:.1f}/{h:.1f} zone={z}" for d, l, m, h, z in lever)
+        + ("  (+1pp above the 6% cap, skipped)" if len(lever) == 1 else "")
     )
-    # H uses the FY28 numerator while L/M use FY27 (skill A2e-3). Re-running H's
-    # own multiple on the FY27 numerator shows how much of H is the extra year
-    # rather than a better world -- the number needed to compare H/M across
-    # tickers whose three tiers share one year.
-    h_same_year = sum(e27.values()) * inp["pe_h_fy28"]
-    print(
-        f"year drift: H uses FY28, L/M use FY27. Same-year H (FY27 x "
-        f"{inp['pe_h_fy28']:.0f}) = {h_same_year:.1f} -> H/M = "
-        f"{h_same_year / M:.2f} same-year vs {H / M:.2f} as stated"
-    )
-
-    ok = True
-    for err in errors:
-        print(f"MISMATCH: {err}", file=sys.stderr)
-        ok = False
-    for err in check_cowos_mount(
-        "AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"]
-    ):
-        print(f"MISMATCH axis: {err}", file=sys.stderr)
-        ok = False
-    for err in check_optical_oe_mount(
-        (inp["oe_l"], inp["oe_m"], inp["oe_h"])
-    ):
-        print(f"MISMATCH axis: {err}", file=sys.stderr)
-        ok = False
-    for key, val in [("L", L), ("M", M), ("H", H), ("A", A), ("B", B)]:
-        if key in stated and abs(val - stated[key]) > TOL:
-            print(f"MISMATCH {key}: computed={val:.1f} stated={stated[key]}", file=sys.stderr)
-            ok = False
-        elif key not in stated:
-            print(f"MISMATCH {key}: stated not found in ### Outputs", file=sys.stderr)
-            ok = False
-
-    zone_m = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    if zone_m and zone_m.group(1) != z:
-        print(f"MISMATCH zone: computed={z} stated={zone_m.group(1)}", file=sys.stderr)
-        ok = False
-    elif not zone_m:
-        print("MISMATCH zone: stated not found in ### Outputs", file=sys.stderr)
-        ok = False
-
-    return 0 if ok else 1
+    l_with_transition = sum(eps["L"][leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
+    m_no_transition = sum(eps["M"][leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
+    h_no_transition = sum(eps["H"][leg] * leg_pe(leg, "H", transition=False) for leg in LEGS)
+    print(f"cross-check: L with FY28 transition = {l_with_transition:.1f}; M/H without transition = "
+          f"{m_no_transition:.1f}/{h_no_transition:.1f}")
+    print(f"A8 bridge: FY27 {eps_total['M']:.3f} vs cons {inp['eps_fy27_cons']:g} ({dev27:+.1%}) | "
+          f"FY28 guidance bridge {eps28_guide:.3f} vs cons {inp['eps_fy28_cons']:g} ({dev28:+.1%}) | "
+          f"FY28 implied by g1 = {eps_total['M'] * (1 + g1_co):.3f}")
+    g_mkt, ok = implied_g(inp["price"] / eps_total["M"], roe["M"], r)
+    print(f"market-implied (P / FY27 M-EPS = {inp['price'] / eps_total['M']:.1f}x, no transition): g = {g_mkt:.4f}"
+          f" ({'well' if ok else 'ill'}-conditioned) — reference only")
+    print(f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/{inp['cowos_quota_m'] / 1e4:.1f}/"
+          f"{inp['cowos_quota_h'] / 1e4:.1f}万片 (L γ / M β / H α); optical OE mount checked")
+    print(f"price={inp['price']:.2f} zone={zone}  P/L={inp['price'] / L - 1:+.1%}  P/M={inp['price'] / M - 1:+.1%}")
+    return report(errors)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.gordon import implied_g, payout, perpetual_pe  # noqa: E402
+from lib.gordon import G_CAP, check_g_cap, check_r, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -80,7 +80,7 @@ TIERS = ("l", "m", "h")
 FORMULA_FIELDS = frozenset({
     "shares", "equity_core", "r_perp",
     "nic_l", "nic_m", "nic_h",
-    "g_l", "g_m", "g_h",
+    "g2_l", "g2_m", "g2_h",
     "smoore_book", "smoore_mv", "disc_m", "disc_h",
 })
 
@@ -95,7 +95,7 @@ P_K = (0.0, 0.10, 1.0)
 
 REQUIRED = sorted(FORMULA_FIELDS | VOPT_FIELDS | {
     "price", "bps",
-    "pe_own_hi", "pe_own_lo",
+    "pe_own_hi", "pe_own_lo", "pe_own_ttm_lo", "pe_own_ttm_hi", "eps_fy2027e",
     "ni_group_fy2025", "ni_excl_fy2025",
     "smoore_equity_fy2025", "smoore_equity_h1", "eps_fy2026e",
     "tp_street", "net_debt", "ocf_h1",
@@ -110,7 +110,7 @@ def core_roe(inp: dict[str, float], tag: str) -> float:
 
 
 def multiple(inp: dict[str, float], tag: str) -> float:
-    return perpetual_pe(inp[f"g_{tag}"], core_roe(inp, tag), inp["r_perp"])
+    return perpetual_pe(inp[f"g2_{tag}"], core_roe(inp, tag), inp["r_perp"])
 
 
 def leg_a(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
@@ -142,7 +142,7 @@ def convergence_option(inp: dict[str, float], base_h: float) -> dict[str, float]
     delta_ni = delta_gp * (1.0 - inp["tax_conv"])
     nic_conv = inp["nic_h"] + delta_ni
     roe_conv = nic_conv / inp["equity_core"]
-    pe_conv = perpetual_pe(inp["g_h"], roe_conv, inp["r_perp"])
+    pe_conv = perpetual_pe(inp["g2_h"], roe_conv, inp["r_perp"])
     anchor_conv = (nic_conv * pe_conv + leg_b(inp, "h")) * 1e8 / inp["shares"]
     return {
         "gap": gap, "delta_gp": delta_gp, "delta_ni": delta_ni,
@@ -166,7 +166,8 @@ def main() -> int:
 
     # --- Step 1: ladders ----------------------------------------------------
     errors += ladder("nic", inp["nic_l"], inp["nic_m"], inp["nic_h"])
-    errors += ladder("g", inp["g_l"], inp["g_m"], inp["g_h"])
+    errors += ladder("g2", inp["g2_l"], inp["g2_m"], inp["g2_h"])
+    errors += check_r(r, "r_perp")
     if inp["equity_core"] <= 0:
         errors.append(f"equity_core={inp['equity_core']} must be positive")
     if errors:
@@ -178,9 +179,10 @@ def main() -> int:
     for t in TIERS:
         if roe[t] <= 0:
             errors.append(f"ROE_core_{t}={roe[t]:.4f} must be positive")
-        g = inp[f"g_{t}"]
+        g = inp[f"g2_{t}"]
+        errors += check_g_cap(g, f"g2_{t}")  # AGENTS 永续增长口径: g2 <= 6%
         if r - g <= 0:
-            errors.append(f"g_{t}={g:.4f} >= r={r} — perpetuity diverges")
+            errors.append(f"g2_{t}={g:.4f} >= r={r} — perpetuity diverges")
         pay = payout(g, roe[t])
         if not 0.0 < pay <= 1.0 + 1e-12:
             errors.append(f"payout_{t}={pay:.3f} outside (0, 1]")
@@ -265,7 +267,7 @@ def main() -> int:
     print(f"{'档':<3}{'核心扣非':>10}{'ROEcore':>10}{'g':>7}{'派息':>8}{'PE':>8}"
           f"{'V_A':>9}{'V_B':>9}{'合计':>10}{'锚点CNY':>10}")
     for t in TIERS:
-        g = inp[f"g_{t}"]
+        g = inp[f"g2_{t}"]
         print(f"{t.upper():<3}{inp[f'nic_{t}']:10.2f}{roe[t]:10.2%}{g:7.1%}"
               f"{payout(g, roe[t]):8.3f}{pe[t]:8.2f}{leg_a(inp, t):9.2f}"
               f"{vb[t]:9.2f}{leg_a(inp, t) + vb[t]:10.2f}{anchor(inp, t):10.2f}")
@@ -314,16 +316,29 @@ def main() -> int:
     core_mv = inp["price"] * inp["shares"] / 1e8 - vb["m"]
     pe_imp = core_mv / inp["nic_m"]
     gi, ok = implied_g(pe_imp, roe["m"], r)
-    r_alt = payout(inp["g_m"], roe["m"]) / pe_imp + inp["g_m"]
+    r_alt = payout(inp["g2_m"], roe["m"]) / pe_imp + inp["g2_m"]
     print(f"  现价核心业务隐含 PE={pe_imp:.2f}×（市值 "
           f"{inp['price'] * inp['shares'] / 1e8:.1f} 亿 − 思摩尔 M 腿 {vb['m']:.1f} 亿）")
     print(f"  ⚠ 显式歧义，两个读数等价，MUST 都报：")
     print(f"      读数一 固定 r={r:.0%}      → g={gi:+.2%}")
-    print(f"      读数二 固定 g={inp['g_m']:.0%}       → r={r_alt:+.2%}")
+    print(f"      读数二 固定 g={inp['g2_m']:.0%}       → r={r_alt:+.2%}")
     print(f"      well_conditioned={ok}；|ROE−r|={abs(roe['m'] - r):.2%} (<3pp)、"
           f"r−g={r - gi:.2%} (<2pp) —— 双重病态，只作市价参照，不进任何一档")
     print(f"  三档 PE {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} **全部低于** "
           f"own-year 实测下沿 {inp['pe_own_lo']:g}× —— 与市场的实质分歧（B10）")
+    # 校验步骤 12 (B16): 裁决顺序 ③ status.  Printed, not enforced — every tier's
+    # ROE sits too low for any g <= G_CAP to reach the realised band, which is a
+    # user-level ruling (BLOCKED), not something this script may dial around.
+    edge = {t: implied_g(inp["pe_own_ttm_lo"], roe[t], r)[0] for t in ("m", "h")}
+    at_cap = {t: perpetual_pe(G_CAP, roe[t], r) for t in ("m", "h")}
+    reach = all(inp["pe_own_ttm_lo"] <= pe[t] <= inp["pe_own_ttm_hi"] for t in TIERS)
+    print(f"  裁决顺序 ③ (B16): 自身 5y 月频 TTM 带 [{inp['pe_own_ttm_lo']}, {inp['pe_own_ttm_hi']}]；"
+          f"带下沿反解 g M {edge['m']:+.2%} / H {edge['h']:+.2%} (cap {G_CAP:.0%})；"
+          f"g=cap 时 PE M {at_cap['m']:.2f} / H {at_cap['h']:.2f}；L 档 ROE {roe['l']:.1%} < r 顶在 {1 / r:.0f}× → "
+          f"{'带内 ✓' if reach else 'BLOCKED（任何 g ≤ 6% 都到不了带，等用户裁定；锚点未动）'}")
+    print(f"  裁决顺序 ② 坐标: FY2027E 共识均值 {inp['eps_fy2027e']:.3f}（yfinance n=7 带区间）→ 核心扣非 "
+          f"{inp['eps_fy2027e'] * inp['shares'] / 1e8 * 0.69:.1f} 亿、ROE {inp['eps_fy2027e'] * inp['shares'] / 1e8 * 0.69 / inp['equity_core']:.1%}；"
+          f"是否作分子并入 B16 裁定")
     print(f"  卖方一致 TP {inp['tp_street']:.2f} 高于 H {inp['tp_street'] / H - 1:+.1%}"
           f"，落 stretched（B11）")
     print(f"  整公司 FY2026E PE（归母口径）="

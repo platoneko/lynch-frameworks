@@ -46,7 +46,7 @@ from lib.axes import (  # noqa: E402
     check_africa_jiayou_window,
     load_africa_rungs,
 )
-from lib.gordon import annuity_factor, implied_g, payout, perpetual_pe  # noqa: E402
+from lib.gordon import annuity_factor, check_g_cap, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -61,7 +61,7 @@ TIERS = ("l", "m", "h")
 REQUIRED = [
     "price", "shares", "bps", "r_perp", "concession_years", "equity",
     "ni_group_l", "ni_group_m", "ni_group_h", "w_afr",
-    "g_mgl_l", "g_mgl_m", "g_mgl_h",
+    "g2_mgl_l", "g2_mgl_m", "g2_mgl_h",
     "g_afr_l", "g_afr_m", "g_afr_h",
     "africa_window_h_cap",
     "ni_ttm", "net_cash", "tp_street", "pe_own_hi", "pe_own_lo",
@@ -79,7 +79,7 @@ def g_equivalent(g: float, r: float, n: float) -> float:
 def blended_g(inp: dict[str, float], tag: str) -> float:
     r, n = inp["r_perp"], inp["concession_years"]
     g_afr_eq = g_equivalent(inp[f"g_afr_{tag}"], r, n)
-    return (1.0 - inp["w_afr"]) * inp[f"g_mgl_{tag}"] + inp["w_afr"] * g_afr_eq
+    return (1.0 - inp["w_afr"]) * inp[f"g2_mgl_{tag}"] + inp["w_afr"] * g_afr_eq
 
 
 def forward_roe(inp: dict[str, float], tag: str) -> float:
@@ -104,7 +104,7 @@ def leg_contrib(inp: dict[str, float], tag: str) -> tuple[float, float, float, f
     w = inp["w_afr"]
     ni = inp[f"ni_group_{tag}"]
     roe = forward_roe(inp, tag)
-    g_mgl = inp[f"g_mgl_{tag}"]
+    g_mgl = inp[f"g2_mgl_{tag}"]
     g_afr_eq = g_equivalent(inp[f"g_afr_{tag}"], r, n)
     pe_mgl = perpetual_pe(g_mgl, roe, r)
     pe_afr = perpetual_pe(g_afr_eq, roe, r)
@@ -155,7 +155,7 @@ def main() -> int:
     errors += ladder(
         "ni_group", inp["ni_group_l"], inp["ni_group_m"], inp["ni_group_h"]
     )
-    errors += ladder("g_mgl", inp["g_mgl_l"], inp["g_mgl_m"], inp["g_mgl_h"])
+    errors += ladder("g_mgl", inp["g2_mgl_l"], inp["g2_mgl_m"], inp["g2_mgl_h"])
     errors += ladder("g_afr_window", inp["g_afr_l"], inp["g_afr_m"], inp["g_afr_h"])
     if not 0.0 < inp["w_afr"] < 1.0:
         errors.append(f"w_afr={inp['w_afr']} outside (0, 1)")
@@ -169,6 +169,14 @@ def main() -> int:
     g = {t: blended_g(inp, t) for t in TIERS}
     errors += ladder("g_afr_eq", *(g_eq[t] for t in TIERS))
     errors += ladder("g blended", *(g[t] for t in TIERS))
+    # AGENTS.md 永续上限 6% applies to perpetual rates only: the Mongolia leg,
+    # the Africa leg's *equivalent* perpetual g, and the blend.  `g_afr_*` are
+    # 22-year annuity window rates (annuity_factor), not perpetuities — the H
+    # window sits at 9% by construction and is fenced by the < r check below.
+    for t in TIERS:
+        errors += check_g_cap(inp[f"g2_mgl_{t}"], f"g2_mgl_{t}")
+        errors += check_g_cap(g_eq[t], f"g_afr_eq_{t}")
+        errors += check_g_cap(g[t], f"g_blended_{t}")
     if inp["equity"] <= 0:
         errors.append(f"equity={inp['equity']} must be positive")
     for t in TIERS:
@@ -287,7 +295,7 @@ def main() -> int:
     print(f"{'档':<3}{'归母(亿)':>10}{'g_mgl':>8}{'g_afr窗口':>11}{'年金因子':>10}"
           f"{'g_afr等效':>11}{'合成g':>9}{'ROE':>8}{'派息':>8}{'PE':>8}{'价值(亿)':>10}{'锚点CNY':>10}")
     for t in TIERS:
-        print(f"{t.upper():<3}{inp[f'ni_group_{t}']:10.2f}{inp[f'g_mgl_{t}']:8.0%}"
+        print(f"{t.upper():<3}{inp[f'ni_group_{t}']:10.2f}{inp[f'g2_mgl_{t}']:8.0%}"
               f"{inp[f'g_afr_{t}']:11.2%}"
               f"{annuity_factor(inp[f'g_afr_{t}'], r, n):10.3f}"
               f"{g_eq[t]:11.2%}{g[t]:9.2%}{forward_roe(inp, t):8.2%}"
@@ -311,7 +319,7 @@ def main() -> int:
         g_eq_full = axis["H"]
     else:
         g_eq_full = g_equivalent(g_h_full, r, n)
-    g_perp_h = (1 - inp["w_afr"]) * inp["g_mgl_h"] + inp["w_afr"] * g_eq_full
+    g_perp_h = (1 - inp["w_afr"]) * inp["g2_mgl_h"] + inp["w_afr"] * g_eq_full
     v_full = (inp["ni_group_h"] * perpetual_pe(g_perp_h, forward_roe(inp, "h"), r)
               * 1e8 / inp["shares"])
     print(f"  H={v_full:.2f}  → 封顶让 H 低 {1 - anchor(inp, 'h') / v_full:.1%}")

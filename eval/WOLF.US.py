@@ -1,173 +1,157 @@
 #!/usr/bin/env python3
-"""WOLF.US (Wolfspeed) valuation eval — recompute anchors from frameworks/WOLF.US.md.
+"""WOLF.US (Wolfspeed) valuation eval — asset-PB bottom + court-EV recovery option.
 
 frameworks/WOLF.US.md is the source of truth; this script recomputes
-L/M/H / A/B / zone and exits 1 on mismatch.
+bottom L/M/H / A/B / zone / V_opt / 表3 and exits 1 on mismatch.
 
-formula_id: wolf_revrecovery_evs_fd_v1
+formula_id: wolf_asset_pb_fd_court_vopt_v3
 
-Main ruler: revenue-recovery scenario x EV/Sales, less net debt, divided by
-FULLY DILUTED shares. Post-Chapter-11 the three converts are deep in the money,
-so basic share count understates the equity base by ~2.3x — using it is the
-single largest error available on this name (see A1).
+Bottom = PB 0.55/0.80/1.00 × FULLY DILUTED book.  Post-Chapter-11 the three
+converts are deep in the money, so the book that stands behind the diluted
+share count is fresh-start equity + convert principal (the debt that vanishes
+on conversion) + warrant proceeds, over `shares_fd` (A1/A11).  Using basic
+shares is the single largest error available on this name.
 
-Deliberately NO asset floor on L: equity sits behind the $932.3M of
-non-convertible debt and book value is already a fresh-start fair value, so L
-may approach zero (see A8).
+There is no earnings numerator anywhere (consensus EPS negative through
+FY28E), so neither Gordon nor EV/EBIT can generate a multiple, and an EV/Sales
+ruler would hide an unrealised margin recovery inside the multiple (A3,
+retired).  Revenue recovery is therefore the success path and lives in
+V_opt: the ceiling is the court-approved fresh-start EV high, bridged to a
+per-share value with today's net cash (A12); 表3 = base_k + p_k × V_opt with
+P_K an eval constant, never an Input (A2e-7a).
 
 Run:  python3 eval/WOLF.US.py
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "WOLF.US.md"
-FORMULA_ID = "wolf_revrecovery_evs_fd_v1"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.inputs import (  # noqa: E402
+    check_against_stated,
+    check_missing,
+    ladder,
+    outputs_section,
+    parse_inputs,
+    report,
+)
+from eval.lib.zones import cut_points, zone_of  # noqa: E402
+
+FRAMEWORK = REPO_ROOT / "frameworks" / "WOLF.US.md"
+FORMULA_ID = "wolf_asset_pb_fd_court_vopt_v3"
 TOL = 0.05  # outputs rounded to 2 decimals
-EVS_HARD_CAP = 3.9  # court-approved fresh-start anchor; see A3
 MM = 1e6  # inputs are in $M
+TIERS = ("l", "m", "h")
+# 表3 per-tier credit (A13): 拍值, no external anchor. Never an Input, never the base.
+P_K = (0.0, 0.25, 1.0)
+
+REQUIRED = [
+    "price", "shares_fd", "cash", "debt", "conv_principal", "warrant_proceeds", "debt_total",
+    "equity_book", "pb_l", "pb_m", "pb_h",
+    "ev_court_l", "ev_court_m", "ev_court_h", "eq_court_bridge",
+    "rev_l", "rev_m", "rev_h", "rev_fy26",
+    "close_own_min",
+]
 
 
-def parse_inputs(md: str) -> dict[str, float]:
-    """Parse §3 Inputs table: | field | value | ... |"""
-    out: dict[str, float] = {}
-    in_inputs = False
-    for line in md.splitlines():
-        if line.startswith("### Inputs"):
-            in_inputs = True
-            continue
-        if in_inputs and line.startswith("### "):
-            break
-        if not in_inputs or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        name, raw = cells[0], cells[1]
-        if not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
-            continue  # header / separator row
-        raw = raw.replace(",", "")
-        m = re.fullmatch(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", raw)
-        if m:
-            out[name] = float(raw)
-    return out
-
-
-def parse_stated(md: str) -> dict[str, float]:
-    """Pull the stated L/M/H and A/B out of §3 Outputs."""
-    out: dict[str, float] = {}
-    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    m = re.search(
-        r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*",
-        out_sec,
-    )
-    if m:
-        out["L"], out["M"], out["H"] = (float(g) for g in m.groups())
-    m = re.search(r"A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", out_sec)
-    if m:
-        out["A"], out["B"] = (float(g) for g in m.groups())
-    m = re.search(r"zone = \*\*`(\w+)`\*\*", out_sec)
-    if m:
-        out["zone"] = m.group(1)  # type: ignore[assignment]
-    return out
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A, B = (L + M) / 2, (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
+def stated_v_opt(md: str) -> float | None:
+    import re
+    m = re.search(r"V_\{opt\}\D{0,20}\*\*([0-9.]+)\*\*", outputs_section(md))
+    return float(m.group(1)) if m else None
 
 
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
-
     if FORMULA_ID not in md:
         print(f"FAIL: formula_id {FORMULA_ID} not found in framework", file=sys.stderr)
         return 1
 
     i = parse_inputs(md)
-    required = [
-        "price", "shares_fd", "cash", "debt", "warrant_proceeds",
-        "rev_l", "rev_m", "rev_h", "evs_l", "evs_m", "evs_h",
-    ]
-    missing = [k for k in required if k not in i]
-    if missing:
-        print(f"FAIL: missing inputs {missing}", file=sys.stderr)
-        return 1
-
-    for k in ("evs_l", "evs_m", "evs_h"):
-        if i[k] > EVS_HARD_CAP + 1e-9:
-            print(f"FAIL: {k}={i[k]} exceeds court fresh-start anchor {EVS_HARD_CAP}", file=sys.stderr)
-            return 1
+    errors = check_missing(i, REQUIRED)
+    if errors:
+        return report(errors)
 
     # A1 counts converted shares, so A4 must exclude the debt those shares
-    # replace. Deducting full principal alongside shares_fd double-counts it.
-    if "debt_total" in i and i["debt"] >= i["debt_total"] - 1e-9:
-        print(
-            f"FAIL: debt={i['debt']} is the full principal ({i['debt_total']}); "
-            "shares_fd already prices the converts, so debt must be the "
-            "non-convertible balance only (see A1/A4)",
-            file=sys.stderr,
+    # replace and A11 must add it back to book. Both legs have to reconcile.
+    if i["debt"] >= i["debt_total"] - 1e-9:
+        errors.append(
+            f"debt={i['debt']} is the full principal ({i['debt_total']}); shares_fd already "
+            "prices the converts, so debt must be the non-convertible balance only (A1/A4)"
         )
-        return 1
+    if abs(i["debt"] + i["conv_principal"] - i["debt_total"]) > 0.1:
+        errors.append(f"debt({i['debt']}) + conv_principal({i['conv_principal']}) != debt_total({i['debt_total']})")
+    if not (i["pb_l"] < i["pb_m"] < i["pb_h"]):
+        errors.append(f"pb order violated: {i['pb_l']}/{i['pb_m']}/{i['pb_h']}")
+    leaked = [k for k in i if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields in Inputs (A2e-7a): {leaked}")
 
-    # The split must reconcile: a midpoint guess that happens to sit below
-    # debt_total passes the check above but is still wrong (this exact bug
-    # shipped once). Note 11 gives both legs, so they must add up.
-    if {"conv_principal", "debt_total"} <= i.keys():
-        total = i["debt"] + i["conv_principal"]
-        if abs(total - i["debt_total"]) > 0.1:
-            print(
-                f"FAIL: debt({i['debt']}) + conv_principal({i['conv_principal']}) "
-                f"= {total}, does not reconcile to debt_total({i['debt_total']})",
-                file=sys.stderr,
-            )
-            return 1
-
-    net_debt = i["debt"] - i["cash"] - i["warrant_proceeds"]
-    ev = {k: i[f"rev_{k}"] * i[f"evs_{k}"] for k in ("l", "m", "h")}
-    eq = {k: v - net_debt for k, v in ev.items()}
-    val = {k: v * MM / i["shares_fd"] for k, v in eq.items()}
-
-    L, M, H = val["l"], val["m"], val["h"]
-    if not (L < M < H):
-        print(f"FAIL: need L<M<H, got {L:.2f}/{M:.2f}/{H:.2f}", file=sys.stderr)
-        return 1
-
-    A, B = (L + M) / 2, (M + H) / 2
+    # ---- Step 1: bottom card — fully diluted book × PB tiers (A11) ----
+    book_fd = i["equity_book"] + i["conv_principal"] + i["warrant_proceeds"]
+    bps_fd = book_fd * MM / i["shares_fd"]
+    L, M, H = (i[f"pb_{t}"] * bps_fd for t in TIERS)
+    A, B = cut_points(L, M, H)
     zone = zone_of(i["price"], L, M, H)
 
+    # ---- Step 2: option ceiling — court EV high bridged with today's net cash (A12)
+    net_debt = i["debt"] - i["cash"] - i["warrant_proceeds"]
+    court = {t: (i[f"ev_court_{t}"] - net_debt) * MM / i["shares_fd"] for t in TIERS}
+    v_top = court["h"]
+    v_opt = max(0.0, v_top - H)
+    adj = [x + p * v_opt for x, p in zip((L, M, H), P_K)]
+    adj_a, adj_b = cut_points(*adj)
+    adj_zone = zone_of(i["price"], *adj)
+    # The court's own emergence bridge, put on the same FD footing (A12 known weakness).
+    bridge_fd = (i["eq_court_bridge"] + i["conv_principal"] + i["warrant_proceeds"]) * MM / i["shares_fd"]
+
+    # ---- Step 3: cross-checks (never anchors) ----
+    evs = {t: i[f"ev_court_{t}"] / i["rev_fy26"] for t in TIERS}
+    old = {t: (i[f"rev_{t}"] * evs[t] - net_debt) * MM / i["shares_fd"] for t in TIERS}
+    basic = i.get("shares_basic")
+
     print(f"formula_id={FORMULA_ID}")
-    print(f"EV($M)={ev['l']:.1f}/{ev['m']:.1f}/{ev['h']:.1f}  net_debt={net_debt:.1f}")
-    print(f"Eq($M)={eq['l']:.1f}/{eq['m']:.1f}/{eq['h']:.1f}")
-    print(f"evs={i['evs_l']}/{i['evs_m']}/{i['evs_h']}  shares_fd={i['shares_fd']:.0f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"price={i['price']} zone={zone}")
+    print(f"book_fd  {i['equity_book']:.1f} + conv {i['conv_principal']:.1f} + warrants {i['warrant_proceeds']:.1f} = {book_fd:.1f} $M"
+          f"  / shares_fd {i['shares_fd']:.0f} -> BPS_fd {bps_fd:.3f}  PB={i['pb_l']:g}/{i['pb_m']:g}/{i['pb_h']:g}")
+    print(f"base L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}  V_opt/M={v_opt / M:.1%}")
+    print(f"decompose  L/M = num 1.000 x pb {i['pb_l'] / i['pb_m']:.3f} | H/M = num 1.000 x pb {i['pb_h'] / i['pb_m']:.3f}"
+          f"  (asset ruler; flat ladder == base)")
+    print(f"own band: post-emergence min close {i['close_own_min']:g} = FD PB {i['close_own_min'] / bps_fd:.2f}x; "
+          f"price/BPS_fd {i['price'] / bps_fd:.2f}x")
+    print(f"option     net_debt {net_debt:.1f}; court EV {i['ev_court_l']:.0f}/{i['ev_court_m']:.0f}/{i['ev_court_h']:.0f} "
+          f"-> per FD share {court['l']:.2f}/{court['m']:.2f}/{court['h']:.2f}; ceiling = high {v_top:.2f} -> V_opt {v_opt:.2f}")
+    print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  "
+          f"A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}")
+    print(f"     市价隐含 p = {(i['price'] - H) / v_opt:.2f}; P/(H+V) = {i['price'] / adj[2] - 1:+.1%}")
+    print(f"  sens anchor -> court mid / low: V_opt {max(0.0, court['m'] - H):.2f} / {max(0.0, court['l'] - H):.2f}; "
+          f"court bridge equity {i['eq_court_bridge']:.1f} -> FD {bridge_fd:.2f}: V_opt {max(0.0, bridge_fd - H):.2f}")
+    print(f"  cross retired EV/S ruler ({evs['l']:.3f}/{evs['m']:.3f}/{evs['h']:.3f}x on rev {i['rev_l']:.0f}/{i['rev_m']:.0f}/{i['rev_h']:.0f}): "
+          f"{old['l']:.2f}/{old['m']:.2f}/{old['h']:.2f}")
+    if basic:
+        print(f"  cross basic-share error: BPS {i['equity_book'] * MM / basic:.2f}, court high {(i['ev_court_h'] - net_debt) * MM / basic:.2f}")
+    print(f"表2  price {i['price']} -> zone = {zone}   P/H {i['price'] / H:.2f}x")
 
-    stated = parse_stated(md)
-    bad = []
-    for key, got in (("L", L), ("M", M), ("H", H), ("A", A), ("B", B)):
-        if key in stated and abs(stated[key] - got) > TOL:
-            bad.append(f"{key}: stated {stated[key]} vs computed {got:.2f}")
-    if "zone" in stated and stated["zone"] != zone:
-        bad.append(f"zone: stated {stated['zone']} vs computed {zone}")
-
-    if bad:
-        print("MISMATCH:", "; ".join(bad), file=sys.stderr)
-        return 1
-
-    print("OK")
-    return 0
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += ladder("base", L, M, H)
+    if v_opt < 0:
+        errors.append(f"V_opt must be >= 0, got {v_opt:.2f}")
+    said_v = stated_v_opt(md)
+    if said_v is None:
+        errors.append("stated V_opt not found in Outputs")
+    elif abs(said_v - v_opt) > TOL:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    if abs(adj[0] - L) > 1e-9:
+        errors.append(f"p leaked into the base: 表3 L row {adj[0]:.4f} != base L {L:.4f}")
+    if v_opt > 0 and "表3" not in outputs_section(md):
+        errors.append("V_opt > 0 but Outputs has no 表3")
+    if abs(v_top - i["price"]) < 1e-9:
+        errors.append("option ceiling equals the current price: the anchor must be the court EV, not a price input (A12)")
+    return report(errors)
 
 
 if __name__ == "__main__":

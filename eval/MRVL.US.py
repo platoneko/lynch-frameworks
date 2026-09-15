@@ -4,14 +4,27 @@
 formula_id: mrvl_sotp_gordon_two_stage_fy28_v3
 
 Three legs (Custom / Connectivity / Comm) on the FY28 consensus EPS split by
-revenue weight.  Multiples are generated, not borrowed: each leg names a
-perpetual g2 (the growth AVGO's M-tier bands imply at AVGO's own ROE, so the
-two tickers share a growth axis rather than a PE number), and the two AI legs
-run one named transition year (FY29 consensus EPS growth) through
-`two_stage_pe`.  The tier ladder lives in the numerator only: L = FY27
+revenue weight.  Multiples are generated, not borrowed: each leg reads the
+perpetual g2 AVGO names for the same business (AVGO's Gordon legs: XPU /
+networking / non-AI, peer cross-section reverse-solved and capped), so the two
+tickers share a growth axis rather than a PE number, and the two AI legs run
+one named transition year (FY29 consensus EPS growth) through `two_stage_pe`
+on the same valuation date as the Comm leg's `perpetual_pe` (FY28 = t=1,
+valuation-rules「两段式过渡 · 估值时点」2026-09-14); the FY29-basis multiple
+(PE / (1 + g1)) is printed because 表1 reports the post-transition numerator.
+The tier ladder lives in the numerator only: L = FY27
 consensus (FY28 as a digest year), M = FY28 consensus mean, H = FY28 consensus
 high.  Tier ROE = EPS_x * shares / equity, so the L multiple falls out lower
 mechanically, not by policy.
+
+Numerator year (valuation-rules 裁决顺序 ②, A3): FY28 is the furthest year with a
+>=2-house consensus *range* (41 houses); FY29 is visible to three houses but only
+as point estimates (two of them identical), so it is the g1 layer, not the
+numerator.  Guardrail (③): every blended tier multiple must sit inside the
+ticker's own realised next-FY PE band (`pe_own_min/max`, A11); the band-edge
+Δg printed below is the uniform shift of all three legs' g2 that would take the
+M-tier blended multiple to either edge -- evidence of what the market has paid
+for, not an input.
 
 V_opt = one $1B/yr custom-silicon unit beyond consensus (two Google warrant
 tranches), priced with BofA's +EPS-per-$1B sensitivity and the Custom M-tier
@@ -36,7 +49,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
     check_transition_years,
-    implied_g,
     perpetual_pe,
     two_stage_pe,
 )
@@ -69,7 +81,6 @@ REQUIRED = [
     "g2_cu",
     "g2_conn",
     "g2_comm",
-    "roe_avgo",
     "w_custom",
     "w_conn",
     "w_comm",
@@ -79,10 +90,10 @@ REQUIRED = [
     "pe_own_max",
 ]
 
-# AVGO leg -> MRVL leg: the g2 of each MRVL leg is what AVGO's M-tier band
-# implies at AVGO's ROE.  Reading AVGO's Inputs here is what makes "同轴" a
-# checked fact rather than a sentence.
-AVGO_LEG_FOR = {"g2_cu": "pe_xpu_uw_m", "g2_conn": "pe_net_m", "g2_comm": "pe_nonai_m"}
+# AVGO leg -> MRVL leg: each MRVL leg reads the perpetual g2 AVGO names for the
+# same business.  Reading AVGO's Inputs here is what makes "同轴" a checked
+# fact rather than a sentence.
+AVGO_LEG_FOR = {"g2_cu": "g2_xpu", "g2_conn": "g2_net", "g2_comm": "g2_nonai"}
 TIERS = ("L", "M", "H")
 LEGS = ("cu", "conn", "comm")
 
@@ -102,19 +113,16 @@ def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
 
 
 def check_coaxial_with_avgo(inp: dict[str, float]) -> list[str]:
-    """Each g2 must equal the growth AVGO's own M-tier band implies, capped (A2)."""
+    """Each g2 must equal the g2 AVGO's same-business leg names (A2)."""
     avgo = parse_inputs(AVGO_FRAMEWORK.read_text(encoding="utf-8"))
     errs: list[str] = []
-    for g_key, pe_key in AVGO_LEG_FOR.items():
-        if pe_key not in avgo:
-            errs.append(f"AVGO.US.md lacks {pe_key}; cannot verify {g_key}")
+    for g_key, avgo_key in AVGO_LEG_FOR.items():
+        if avgo_key not in avgo:
+            errs.append(f"AVGO.US.md lacks {avgo_key}; cannot verify {g_key}")
             continue
-        g_implied, _ = implied_g(avgo[pe_key], inp["roe_avgo"], inp["r_perp"])
-        expected = min(g_implied, G_CAP)
-        if abs(expected - inp[g_key]) > 5e-4:
+        if abs(avgo[avgo_key] - inp[g_key]) > 5e-5:
             errs.append(
-                f"{g_key}={inp[g_key]:.4f} != min(implied_g(AVGO {pe_key}={avgo[pe_key]:g}, "
-                f"ROE {inp['roe_avgo']:.2f}) = {g_implied:.4f}, cap {G_CAP:g}) — AVGO band moved, re-derive"
+                f"{g_key}={inp[g_key]:.4f} != AVGO {avgo_key}={avgo[avgo_key]:.4f} — AVGO's g2 moved, re-sync"
             )
     return errs
 
@@ -203,6 +211,32 @@ def main() -> int:
                 f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
             )
 
+    # Band-edge Δg (裁决顺序 ③ 带即证据): shift every leg's g2 by the same Δ until the
+    # M-tier blended multiple reaches each edge of the own band.  Reported, never used.
+    def blended_at(tier: str, delta: float) -> float:
+        out = 0.0
+        for leg in LEGS:
+            g2 = inp[f"g2_{leg}"] + delta
+            pe = (
+                two_stage_pe(g1, n, g2, roe[tier], r)
+                if leg in ("cu", "conn")
+                else perpetual_pe(g2, roe[tier], r)
+            )
+            out += weights[leg] * pe
+        return out
+
+    def delta_to(target: float, tier: str) -> float:
+        lo, hi = -0.15, r - max(inp[f"g2_{leg}"] for leg in LEGS) - 1e-4  # stay below the pole
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if blended_at(tier, mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    band_edge_dg = (delta_to(inp["pe_own_min"], "M"), delta_to(inp["pe_own_max"], "M"))
+
     # ---- Step 3: A2e-2c flat ladder + A2e-5 decomposition ----
     flat_errs, flat = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), blended["M"])
     errors += flat_errs
@@ -237,7 +271,22 @@ def main() -> int:
             f"stage-1 payout {p1:+.3f} ({tag})"
         )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    # 表1 basis: AI legs on the post-transition FY29 numerator (x (1 + g1)), Comm flat.
+    eps29 = {t: eps[t] * (weights["cu"] + weights["conn"]) * (1.0 + g1) + eps[t] * weights["comm"] for t in TIERS}
+    print(
+        "FY29-basis: AI legs "
+        + "/".join(f"{pes[t]['cu'] / (1 + g1):.2f}x" for t in TIERS)
+        + " (FY28-basis " + "/".join(f"{pes[t]['cu']:.2f}x" for t in TIERS) + "); blended "
+        + "/".join(f"{anchors[t] / eps29[t]:.2f}x" for t in TIERS)
+        + f"; M / FY29 consensus {inp['eps_fy29_cons']:g} = {M / inp['eps_fy29_cons']:.2f}x"
+    )
     print(f"flat-multiple ladder @ M {blended['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    ai_cap_hit = inp["g2_cu"] + band_edge_dg[1] > G_CAP + 1e-9
+    print(
+        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge Δg @ M ROE (all legs shifted): "
+        f"lower {band_edge_dg[0]:+.4f} / upper {band_edge_dg[1]:+.4f}"
+        f"{' (upper edge needs AI g2 above the 6% cap — unreachable under ①)' if ai_cap_hit else ''}"
+    )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
         f"H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | "

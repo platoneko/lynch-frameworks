@@ -4,25 +4,38 @@
 frameworks/9988.HK.md is the source of truth for inputs; this script is the
 enforcement layer that keeps its number chain honest:
 
-    parse §3 Inputs table -> recompute the four legs, L/M/H, A/B, zone
+    parse §3 Inputs table -> strip run-rate non-operating income from the FY2028E
+                             consensus three points, generate the two operating
+                             multiples with Gordon, recompute the legs, L/M/H,
+                             A/B, zone, the candidate band and V_opt
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
-formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v2
+formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v2
 
-Main ruler: SOTP — e-commerce leg (Alibaba E-commerce Group adjusted EBITA,
-annualized and taxed, x PE 7/11/14) + cloud leg (FY2027E segment revenue
-x PS 4/6/8) - loss leg (non-ALA residual only, capitalized at 3.0/1.5/0
-years) + NAV x (1-d) + net cash. AI Labs burn is NOT capitalized as negative
-equity; upside is V_opt = ALA revenue annualized x ala_ps (A19).
-Both operating legs are unlevered/EV-basis; interest/net cash only in closing.
+gordon_v2 (valuation-rules「构造规则冲突的裁决顺序」②): the numerator is the
+furthest fiscal year >= 2 houses can see — FY2028E (March-2028 year-end,
+FY+1, so no discounting), yfinance 17-house low/mean/high in CNY per share —
+net of the June-2026-quarter run-rate non-operating income that non-GAAP NI
+retains (interest, equity-method, other; A9b) because those assets are counted
+once in the NAV / net-cash closure.  The taxed numerator is split by run-rate
+adjusted-EBITA weight into the e-commerce leg (perpetual_pe, g2_ecom peer
+reverse-solve) and the cloud leg (perpetual_pe, g2_cloud peer cross-section
+capped at G_CAP).  ROE_k = FY28E EPS tier / BPS (company ROE; no leg equity is
+disclosed, A4).  There is no transition stage in the deck — FY2029E cloud
+growth is single-house, so `check_transition_years` does not apply; the
+candidate band reruns the same formula with the cloud leg on
+two_stage_pe(g1_cloud_cand, n_cloud_cand) (A6').  The loss leg of gordon_v1 is
+gone: consensus FY28E EPS already carries every segment's loss path (A7).
+AI Labs upside stays outside the deck as V_opt = ALA revenue x ala_ps (A19).
 
-Ticket-specific sanity checks (mirror of framework §3 Formula step 1 and §2):
-  1. segment identity: AEG + cloud + rest == group adjusted EBITA
-  2. multiple/discount bands are ordered and inside their A4/A5/A7/A9 ranges
-  3. L < M < H, and the stated anchors / cut-points / zone-table boundaries
-     match recomputation within 0.05
-  4. the zone implied by price matches the zone printed in Outputs
+Checks beyond the anchor comparison:
+  1. A9b closure: non-operating pre-tax equals the announcement's bridge value
+  2. r tier, g2 caps, r - g2 >= 2%, numerator ladder
+  3. own realised PE band guardrail (weak band; band-edge g printed as evidence)
+  4. flat-multiple ladder (both multiples and d at M) still L < M < H
+  5. candidate band matches the one Outputs line and is ordered
+  6. no p_* fields in Inputs; V_opt / p tiers as stated
 
 Run after every edit of frameworks/9988.HK.md:  python3 eval/9988.HK.py
 """
@@ -33,24 +46,31 @@ import re
 import sys
 from pathlib import Path
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "9988.HK.md"
-FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from eval.lib.gordon import (  # noqa: E402
+    check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe,
+)
+
+FRAMEWORK = REPO_ROOT / "frameworks" / "9988.HK.md"
+FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v2"
 TOL = 0.05  # Outputs are rounded to 2 decimals
 YI = 1e8  # 亿, for human-readable reporting
+MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
+NONOP_PRETAX_BRIDGE_CNY = 3.378e9  # A9b: adj EBITA 27,329 + 3,378 - 9,992 tax = 20,715 non-GAAP NI
 
-# Mirror of framework §2 bands (update together with the MD).
-PE_ECOM_BAND = (5.0, 16.0)  # A4: sell-side spread is 5x (Nomura) .. 14x (JPM)
-PS_CLOUD_BAND = (2.0, 10.0)  # A5: Barclays 4x FY28 .. Nomura 7x FY28 (~9.5x FY27)
-D_NAV_BAND = (0.10, 0.60)  # A9: Nomura implies ~41%
-LOSS_YEARS_BAND = (0.0, 5.0)  # A7
+D_NAV_BAND = (0.10, 0.60)  # A9
 
 REQUIRED = (
-    "price", "shares", "fx_cny_hkd", "tax_rate",
-    "ebita_aeg_q_cny", "ebita_cloud_q_cny", "ebita_rest_q_cny", "ebita_group_q_cny",
-    "ebita_ala_q_cny", "rev_ala_q_cny", "ala_ps",
-    "pe_ecom_l", "pe_ecom_m", "pe_ecom_h",
-    "rev_cloud_fy27e_cny", "ps_cloud_l", "ps_cloud_m", "ps_cloud_h",
-    "loss_years_l", "loss_years_m", "loss_years_h",
+    "price", "shares", "fx_cny_hkd",
+    "eps28_l_cny", "eps28_m_cny", "eps28_h_cny",
+    "nonop_pretax_q_cny", "eq_method_q_cny", "tax_rate",
+    "ebita_aeg_q_cny", "ebita_cloud_q_cny",
+    "rev_ala_q_cny", "ala_ps",
+    "r_perp", "bps_hkd", "g2_ecom", "g2_cloud", "g1_cloud_cand", "n_cloud_cand",
+    "pe_own_min", "pe_own_max", "eps_ttm_gaap",
     "nav_cny", "d_l", "d_m", "d_h",
     "net_cash_cny", "placement_hkd",
 )
@@ -86,11 +106,7 @@ CELL = r"([−-]?[0-9]+(?:\.[0-9]+)?)(?:（[^）]*）)?"
 
 
 def parse_stated(md: str) -> dict:
-    """Parse anchors, cut-points, 表1 legs, zone-table boundaries and zone id.
-
-    The 交叉校验 table that follows carries narrative figures, so the Outputs
-    slice stops at it rather than at the next `##`.
-    """
+    """Parse anchors, cut-points, 表1 legs, zone-table boundaries, zone id, V_opt, candidate."""
     out = md.split("### Outputs", 1)[1].split("### 交叉校验", 1)[0]
     anchors = re.search(
         r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", out)
@@ -98,7 +114,6 @@ def parse_stated(md: str) -> dict:
     zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
     if not (anchors and cuts and zone):
         sys.exit("FATAL: cannot parse §3 Outputs (anchors / cut-points / zone line)")
-    # 表1: 档 | 电商 | 云 | 亏损腿 | NAV+现金 | 合计
     legs: dict[str, list[float]] = {}
     row_re = re.compile(
         rf"\|\s*([LMH])\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|"
@@ -107,76 +122,83 @@ def parse_stated(md: str) -> dict:
     for line in out.splitlines():
         m = row_re.match(line)
         if m:
-            legs[m.group(1)] = [
-                float(m.group(i).replace("−", "-")) for i in range(2, 7)
-            ]
-    # Only the price-interval column (index 2) carries boundary numbers; the
-    # scenario column holds narrative figures that must not enter the check.
+            legs[m.group(1)] = [float(m.group(i).replace("−", "-")) for i in range(2, 7)]
     table = "\n".join(
         line.strip().strip("|").split("|")[2]
         for line in out.splitlines()
         if line.lstrip().startswith("|") and "`" in line)
-    vopt_m = re.search(
-        r"V_\{?opt\}?\\?\)?\s*=\s*\*\*([\d.]+)\*\*", out)
+    vopt_m = re.search(r"V_\{?opt\}?\\?\)?\s*=\s*\*\*([\d.]+)\*\*", out)
     ptier_m = re.search(
         r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*=\s*\*\*"
         r"\s*([\d.]+)\s*/\s*([\d.]+)\s*/\s*([\d.]+)\s*\*\*", out)
+    cand = re.findall(
+        r"候选带（[^）]+）[^\n]*?L′ = \*\*([\d.]+)\*\*[^\n]*?M′ = \*\*([\d.]+)\*\*[^\n]*?H′ = \*\*([\d.]+)\*\*",
+        out)
     if not vopt_m or not ptier_m:
         sys.exit("FATAL: cannot parse V_opt / p_tiers from Outputs")
+    if len(cand) != 1:
+        sys.exit(f"FATAL: expected exactly one 候选带 line, found {len(cand)}")
     return {
-        "L": float(anchors.group(1)),
-        "M": float(anchors.group(2)),
-        "H": float(anchors.group(3)),
-        "A": float(cuts.group(1)),
-        "B": float(cuts.group(2)),
-        "zone": zone.group(1),
-        "legs": legs,
+        "L": float(anchors.group(1)), "M": float(anchors.group(2)), "H": float(anchors.group(3)),
+        "A": float(cuts.group(1)), "B": float(cuts.group(2)),
+        "zone": zone.group(1), "legs": legs,
         "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
         "V_opt": float(vopt_m.group(1)),
-        "p_L": float(ptier_m.group(1)),
-        "p_M": float(ptier_m.group(2)),
-        "p_H": float(ptier_m.group(3)),
+        "p_L": float(ptier_m.group(1)), "p_M": float(ptier_m.group(2)), "p_H": float(ptier_m.group(3)),
+        "cand": tuple(float(x) for x in cand[0]),
     }
 
 
 # ---------------------------------------------------------------- computation
 
-def compute(v: dict[str, float]) -> dict:
+def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = False) -> dict:
     """Recompute the chain per framework §3 Formula (source of truth: the MD)."""
     fx = v["fx_cny_hkd"]
-    base_ecom = v["ebita_aeg_q_cny"] * 4 * (1 - v["tax_rate"]) * fx
-    base_cloud = v["rev_cloud_fy27e_cny"] * fx
-    # Non-ALA residual only — ALA burn stays out of the bottom card (A19).
-    non_ala = v["ebita_rest_q_cny"] - v["ebita_ala_q_cny"]
-    burn = -non_ala * 4 * fx  # positive: annual cash burn, HKD
-    nav = v["nav_cny"] * fx
-    cash = v["net_cash_cny"] * fx + v["placement_hkd"]
+    r = v["r_perp"]
+    # A9b: run-rate non-operating income retained in non-GAAP NI, taxed except the equity-method share
+    nonop_q = (v["nonop_pretax_q_cny"] - v["eq_method_q_cny"]) * (1 - v["tax_rate"]) + v["eq_method_q_cny"]
+    nonop_ps = nonop_q * 4 / v["shares"]
+    w_ecom = v["ebita_aeg_q_cny"] / (v["ebita_aeg_q_cny"] + v["ebita_cloud_q_cny"])
+    w_cloud = 1.0 - w_ecom
+    nav_ps = v["nav_cny"] * fx / v["shares"]
+    cash_ps = (v["net_cash_cny"] * fx + v["placement_hkd"]) / v["shares"]
     v_opt = v["rev_ala_q_cny"] * 4 * v["ala_ps"] * fx / v["shares"]
+
+    e_full = {k: v[f"eps28_{k}_cny"] * fx for k in SCENARIOS}
+    e_ops = {k: (v[f"eps28_{k}_cny"] - nonop_ps) * fx for k in SCENARIOS}
+    roe = {k: e_full[k] / v["bps_hkd"] for k in SCENARIOS}
+    pe_ecom = {k: perpetual_pe(v["g2_ecom"], roe[k], r) for k in SCENARIOS}
+    if candidate:
+        pe_cloud = {k: two_stage_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], roe[k], r)
+                    for k in SCENARIOS}
+    else:
+        pe_cloud = {k: perpetual_pe(v["g2_cloud"], roe[k], r) for k in SCENARIOS}
 
     legs: dict[str, dict[str, float]] = {}
     anchors: dict[str, float] = {}
     for k in SCENARIOS:
-        parts = {
-            "ecom": base_ecom * v[f"pe_ecom_{k}"],
-            "cloud": base_cloud * v[f"ps_cloud_{k}"],
-            "loss": -burn * v[f"loss_years_{k}"],
-            "nav": nav * (1 - v[f"d_{k}"]),
-            "cash": cash,
+        pe_e = pe_ecom["m"] if flat_at_m else pe_ecom[k]
+        pe_c = pe_cloud["m"] if flat_at_m else pe_cloud[k]
+        d = v["d_m"] if flat_at_m else v[f"d_{k}"]
+        legs[k] = {
+            "ecom": e_ops[k] * w_ecom * pe_e,
+            "cloud": e_ops[k] * w_cloud * pe_c,
+            "nav": nav_ps * (1 - d),
+            "cash": cash_ps,
         }
-        legs[k] = {name: x / v["shares"] for name, x in parts.items()}
-        anchors[k.upper()] = sum(parts.values()) / v["shares"]
+        anchors[k.upper()] = sum(legs[k].values())
 
     L, M, H = anchors["L"], anchors["M"], anchors["H"]
     return {
-        "base_ecom": base_ecom, "base_cloud": base_cloud, "burn": burn,
-        "nav": nav, "cash": cash, "legs": legs, "V_opt": v_opt,
-        "non_ala_q": non_ala,
+        "nonop_ps": nonop_ps, "w_ecom": w_ecom, "w_cloud": w_cloud,
+        "nav_ps": nav_ps, "cash_ps": cash_ps, "legs": legs, "V_opt": v_opt,
+        "e_full": e_full, "e_ops": e_ops, "roe": roe, "pe_ecom": pe_ecom, "pe_cloud": pe_cloud,
+        "blend": {k: w_ecom * pe_ecom[k] + w_cloud * pe_cloud[k] for k in SCENARIOS},
         "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
     }
 
 
 def zone_of(price: float, c: dict) -> str:
-    # AGENTS.md five-tier rule: midpoints of L/M/H slice the band.
     if price < c["L"]:
         return "deep_discount"
     if price < c["A"]:
@@ -188,13 +210,9 @@ def zone_of(price: float, c: dict) -> str:
     return "stretched"
 
 
-def implied(v: dict, c: dict, leg: str) -> float:
-    """Solve the multiple the market pays for one leg, others held at L."""
-    target = v["price"] * v["shares"]
-    others = c["nav"] * (1 - v["d_l"]) + c["cash"] - c["burn"] * v["loss_years_l"]
-    if leg == "cloud":
-        return (target - others - c["base_ecom"] * v["pe_ecom_l"]) / c["base_cloud"]
-    return (target - others - c["base_cloud"] * v["ps_cloud_l"]) / c["base_ecom"]
+def implied_ops_pe(v: dict, c: dict, tier: str) -> float:
+    """Operating-leg multiple the market pays with NAV / cash held at the tier's closure values."""
+    return (v["price"] - c["legs"][tier]["nav"] - c["legs"][tier]["cash"]) / c["e_ops"][tier]
 
 
 # ---------------------------------------------------------------- main
@@ -208,111 +226,155 @@ def main() -> int:
     v, gaps = parse_inputs(md)
     stated = parse_stated(md)
     c = compute(v)
+    cand = compute(v, candidate=True)
+    fc = compute(v, flat_at_m=True)
 
     checks: list[tuple[bool, str]] = []
 
-    # 1. segment identity — the loss leg is defined as the residual, so this
-    #    must close exactly (see §3 Formula step 1 / A7).
-    seg_sum = v["ebita_aeg_q_cny"] + v["ebita_cloud_q_cny"] + v["ebita_rest_q_cny"]
-    checks.append((abs(seg_sum - v["ebita_group_q_cny"]) < 1e6,
-                   f"segment identity AEG+cloud+rest = group "
-                   f"({seg_sum / YI:.2f} vs {v['ebita_group_q_cny'] / YI:.2f} 亿 CNY)"))
-    # ALA is a component of rest (same sign, |ala| <= |rest|)
-    checks.append((v["ebita_ala_q_cny"] < 0 and v["ebita_rest_q_cny"] < 0
-                   and abs(v["ebita_ala_q_cny"]) <= abs(v["ebita_rest_q_cny"]) + 1e6,
-                   f"ALA inside rest (ala={v['ebita_ala_q_cny']/YI:.2f}, "
-                   f"rest={v['ebita_rest_q_cny']/YI:.2f} 亿)"))
-    checks.append((v["rev_ala_q_cny"] > 0 and v["ala_ps"] > 0,
-                   f"ALA V_opt inputs positive (rev={v['rev_ala_q_cny']/YI:.2f}, ps={v['ala_ps']})"))
+    # 1. A9b closure and numerator ladder
+    checks.append((abs(v["nonop_pretax_q_cny"] - NONOP_PRETAX_BRIDGE_CNY) < 1e6,
+                   f"A9b non-operating pre-tax {v['nonop_pretax_q_cny'] / YI:.2f} 亿 = announcement bridge "
+                   f"{NONOP_PRETAX_BRIDGE_CNY / YI:.2f} 亿 CNY/季"))
+    checks.append((0 < v["eq_method_q_cny"] < v["nonop_pretax_q_cny"], "equity-method share inside non-operating"))
+    checks.append((v["eps28_l_cny"] < v["eps28_m_cny"] < v["eps28_h_cny"],
+                   f"numerator ladder FY28E {v['eps28_l_cny']} < {v['eps28_m_cny']} < {v['eps28_h_cny']} CNY"))
+    checks.append((all(c["e_ops"][k] > 0 for k in SCENARIOS), "operating numerators positive after non-op strip"))
+    checks.append((v["ebita_cloud_q_cny"] > 0 and v["ebita_aeg_q_cny"] > 0, "leg weights from positive run-rate EBITA"))
 
-    # 2. bands and ordering
-    for name, band, keys, ascending in (
-        ("pe_ecom", PE_ECOM_BAND, "pe_ecom", True),
-        ("ps_cloud", PS_CLOUD_BAND, "ps_cloud", True),
-        ("loss_years", LOSS_YEARS_BAND, "loss_years", False),
-        ("d_nav", D_NAV_BAND, "d", False),
-    ):
-        vals = [v[f"{keys}_{k}"] for k in SCENARIOS]
-        lo, hi = band
-        checks.append((all(lo <= x <= hi for x in vals),
-                       f"{name} {vals} inside band [{lo}, {hi}]"))
-        ordered = vals[0] < vals[1] < vals[2] if ascending else vals[0] > vals[1] > vals[2]
-        checks.append((ordered, f"{name} ordered {'L<M<H' if ascending else 'L>M>H'}: {vals}"))
+    # 2. growth-口径 discipline (valuation-rules「永续增长口径」)
+    for msg in (check_r(v["r_perp"], "r_perp")
+                + check_g_cap(v["g2_ecom"], "g2_ecom")
+                + check_g_cap(v["g2_cloud"], "g2_cloud")):
+        checks.append((False, msg))
+    for name in ("g2_ecom", "g2_cloud"):
+        checks.append((v["r_perp"] - v[name] >= MIN_R_MINUS_G - 1e-9,
+                       f"r - {name} = {v['r_perp'] - v[name]:.2%} >= {MIN_R_MINUS_G:.0%}"))
+    checks.append((True, f"r={v['r_perp']} g2_ecom={v['g2_ecom']} g2_cloud={v['g2_cloud']} "
+                         f"no transition stage in the deck (FY2029E single house -> candidate only)"))
+    for k in SCENARIOS:
+        checks.append((c["pe_ecom"][k] > 0 and c["pe_cloud"][k] > 0,
+                       f"ROE_{k}={c['roe'][k]:.4f} -> pe_ecom {c['pe_ecom'][k]:.2f} / pe_cloud {c['pe_cloud'][k]:.2f} "
+                       f"(payout {1 - v['g2_ecom'] / c['roe'][k]:.2f} / {1 - v['g2_cloud'] / c['roe'][k]:.2f}) positive"))
+
+    # 3. bands and ordering
+    d_vals = [v[f"d_{k}"] for k in SCENARIOS]
+    lo, hi = D_NAV_BAND
+    checks.append((all(lo <= x <= hi for x in d_vals), f"d_nav {d_vals} inside band [{lo}, {hi}]"))
+    checks.append((d_vals[0] > d_vals[1] > d_vals[2], f"d_nav ordered L>M>H: {d_vals}"))
     checks.append((0 < v["tax_rate"] < 0.5, f"tax_rate {v['tax_rate']} in (0, 0.5)"))
 
-    # 3. anchors
-    checks.append((c["L"] < c["M"] < c["H"],
-                   f"L < M < H ({c['L']:.2f} < {c['M']:.2f} < {c['H']:.2f})"))
+    # 4. anchors, guardrail (裁决顺序 ③)
+    checks.append((c["L"] < c["M"] < c["H"], f"L < M < H ({c['L']:.2f} < {c['M']:.2f} < {c['H']:.2f})"))
     for key in ("L", "M", "H", "A", "B"):
         checks.append((abs(stated[key] - c[key]) <= TOL,
                        f"stated {key}={stated[key]} matches computed {c[key]:.4f}"))
     expected = {round(c[k], 2) for k in ("L", "A", "B", "H")}
     checks.append((stated["table_nums"] == expected,
                    f"zone table boundaries {sorted(stated['table_nums'])} == {sorted(expected)}"))
+    for k in ("L", "M", "H"):
+        own = c[k] / v["eps_ttm_gaap"]
+        checks.append((v["pe_own_min"] - 1e-9 <= own <= v["pe_own_max"] + 1e-9,
+                       f"guardrail {k}: {own:.2f}x GAAP-TTM EPS inside own band [{v['pe_own_min']}, {v['pe_own_max']}]"))
 
-    checks.append((set(stated["legs"]) == {"L", "M", "H"},
-                   f"leg table rows {sorted(stated['legs'])} == ['H', 'L', 'M']"))
+    checks.append((set(stated["legs"]) == {"L", "M", "H"}, f"leg table rows {sorted(stated['legs'])}"))
     for tag in SCENARIOS:
         row = stated["legs"].get(tag.upper())
         if row is None:
             continue
         got = c["legs"][tag]
-        want = [got["ecom"], got["cloud"], got["loss"],
-                got["nav"] + got["cash"], sum(got.values())]
-        names = ("电商", "云", "亏损腿", "NAV+现金", "合计")
-        for name, stated_v, exp in zip(names, row, want):
+        want = [got["ecom"], got["cloud"], got["nav"], got["cash"], sum(got.values())]
+        for name, stated_v, exp in zip(("电商", "云", "NAV", "净现金", "合计"), row, want):
             checks.append((abs(stated_v - exp) <= TOL,
-                           f"leg table {tag.upper()}/{name}: stated {stated_v} "
-                           f"vs computed {exp:.4f}"))
+                           f"leg table {tag.upper()}/{name}: stated {stated_v} vs computed {exp:.4f}"))
 
-    # 4. zone
+    # 5. zone, V_opt, candidate band, flat ladder, p-leak
     z = zone_of(v["price"], c)
-    checks.append((z == stated["zone"],
-                   f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
+    checks.append((z == stated["zone"], f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
     checks.append((abs(stated["V_opt"] - c["V_opt"]) <= TOL,
                    f"stated V_opt={stated['V_opt']} matches computed {c['V_opt']:.4f}"))
-    checks.append((stated["p_L"] == 0 and stated["p_H"] == 1,
-                   f"p_L/p_H endpoints ({stated['p_L']}/{stated['p_H']})"))
-    checks.append((0 <= stated["p_M"] <= 1,
-                   f"p_M in [0,1] ({stated['p_M']})"))
+    checks.append((stated["p_L"] == 0 and stated["p_H"] == 1, f"p_L/p_H endpoints ({stated['p_L']}/{stated['p_H']})"))
+    checks.append((0 <= stated["p_M"] <= 1, f"p_M in [0,1] ({stated['p_M']})"))
+    checks.append((cand["L"] < cand["M"] < cand["H"], "candidate band L′<M′<H′"))
+    for i, k in enumerate(("L", "M", "H")):
+        checks.append((abs(stated["cand"][i] - cand[k]) <= TOL,
+                       f"候选带 {k}′ stated {stated['cand'][i]} vs computed {cand[k]:.4f}"))
+    checks.append((fc["L"] < fc["M"] < fc["H"],
+                   f"flat-multiple ladder (both multiples/d at M) still L<M<H "
+                   f"({fc['L']:.2f} < {fc['M']:.2f} < {fc['H']:.2f})"))
+    leaked = [k for k in v if k == "p" or k.startswith("p_")]
+    checks.append((not leaked, f"no p-class fields in Inputs (A2e-7a) {leaked}"))
 
     print(f"framework : {FRAMEWORK.name}   formula_id={FORMULA_ID}")
-    print(f"segments  : AEG {v['ebita_aeg_q_cny'] / YI:.2f} + cloud "
-          f"{v['ebita_cloud_q_cny'] / YI:.2f} + rest {v['ebita_rest_q_cny'] / YI:.2f} "
-          f"= {v['ebita_group_q_cny'] / YI:.2f} 亿 CNY/季")
-    print(f"  of which ALA {v['ebita_ala_q_cny']/YI:.2f} · non-ALA burn base "
-          f"{c['non_ala_q']/YI:.2f} 亿/季")
-    print(f"leg bases : ecom {c['base_ecom'] / YI:.1f} · cloud {c['base_cloud'] / YI:.1f} · "
-          f"burn/yr {c['burn'] / YI:.1f} · nav {c['nav'] / YI:.1f} · cash {c['cash'] / YI:.1f} 亿 HKD")
+    print(f"numerator : FY2028E consensus (17 houses, CNY) {v['eps28_l_cny']:.2f} / {v['eps28_m_cny']:.2f} / "
+          f"{v['eps28_h_cny']:.2f}  minus run-rate non-op {c['nonop_ps']:.4f} CNY/share  "
+          f"-> ops HKD {c['e_ops']['l']:.3f} / {c['e_ops']['m']:.3f} / {c['e_ops']['h']:.3f}")
+    print(f"weights   : ecom {c['w_ecom']:.4f} · cloud {c['w_cloud']:.4f} (run-rate adj EBITA)   "
+          f"nav/share {c['nav_ps']:.2f} · cash/share {c['cash_ps']:.2f} HKD")
     for k in SCENARIOS:
         legs = c["legs"][k]
-        print(f"  {k.upper()} per share: " + " ".join(f"{n}={x:+.2f}" for n, x in legs.items())
+        print(f"  {k.upper()} roe {c['roe'][k]:.4f} pe_ecom {c['pe_ecom'][k]:.3f} pe_cloud {c['pe_cloud'][k]:.3f} "
+              f"blend {c['blend'][k]:.3f}: " + " ".join(f"{n}={x:+.2f}" for n, x in legs.items())
               + f"  ->  {sum(legs.values()):.2f}")
-    print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f} "
-          f"(A {c['A']:.2f} · B {c['B']:.2f})")
-    print(f"V_opt     : {c['V_opt']:.2f} HKD  (ALA rev×4×PS {v['ala_ps']:.0f})"
-          f"  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
-          f"  V_opt/M={c['V_opt']/c['M']:.1%}")
-    print(f"zone+V    : L {c['L']+stated['p_L']*c['V_opt']:.2f}"
-          f" · M {c['M']+stated['p_M']*c['V_opt']:.2f}"
-          f" · H {c['H']+stated['p_H']*c['V_opt']:.2f}")
+    print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f} (A {c['A']:.2f} · B {c['B']:.2f})")
+    print(f"candidate : cloud two_stage g1={v['g1_cloud_cand']} n={int(v['n_cloud_cand'])} -> "
+          f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}")
+    # A2e-3: a two-stage leg reports its multiple on the post-transition-year
+    # numerator; the FY28E reading carries (1+g1) and is a cross line only
+    post = (1.0 + v["g1_cloud_cand"]) ** int(v["n_cloud_cand"])
+    print("  cloud PE on FY28E numerator: " + " / ".join(f"{cand['pe_cloud'][k]:.3f}" for k in SCENARIOS)
+          + "  | on FY29E (post-transition) numerator: "
+          + " / ".join(f"{cand['pe_cloud'][k] / post:.3f}" for k in SCENARIOS))
+    print(f"flat      : multiples/d at M -> {fc['L']:.2f} / {fc['M']:.2f} / {fc['H']:.2f}"
+          f"  width {(fc['H'] - fc['L']) / (2 * fc['M']):.1%}")
+    print(f"decompose : L/M {c['L'] / c['M']:.3f} = num {c['e_ops']['l'] / c['e_ops']['m']:.3f} x blend-pe "
+          f"{c['blend']['l'] / c['blend']['m']:.3f} (ecom {c['pe_ecom']['l'] / c['pe_ecom']['m']:.3f} / "
+          f"cloud {c['pe_cloud']['l'] / c['pe_cloud']['m']:.3f}) (+NAV d) | H/M {c['H'] / c['M']:.3f} = num "
+          f"{c['e_ops']['h'] / c['e_ops']['m']:.3f} x blend-pe {c['blend']['h'] / c['blend']['m']:.3f} "
+          f"(ecom {c['pe_ecom']['h'] / c['pe_ecom']['m']:.3f} / cloud {c['pe_cloud']['h'] / c['pe_cloud']['m']:.3f})")
+    print(f"guardrail : anchors / GAAP-TTM EPS {v['eps_ttm_gaap']} = "
+          + " / ".join(f"{c[k] / v['eps_ttm_gaap']:.2f}x" for k in ("L", "M", "H"))
+          + f"  band [{v['pe_own_min']}, {v['pe_own_max']}]")
+    # 裁决顺序 ③「带即证据」: g the band edges pay at the M-tier ROE (weak band, reported not enforced)
+    for edge in (v["pe_own_min"], v["pe_own_max"]):
+        pe_edge = (edge * v["eps_ttm_gaap"] - c["legs"]["m"]["nav"] - c["legs"]["m"]["cash"]) / c["e_ops"]["m"]
+        g_edge, ok = implied_g(pe_edge, c["roe"]["m"], v["r_perp"])
+        print(f"  band edge {edge}x -> ops PE {pe_edge:.2f} -> g {g_edge:+.2%}{'' if ok else ' (ill-conditioned)'}")
+    print(f"V_opt     : {c['V_opt']:.2f} HKD (ALA rev×4×PS {v['ala_ps']:.0f})  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
+          f"  V_opt/M={c['V_opt'] / c['M']:.1%}")
+    print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
+          f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")
     print(f"price     : {v['price']} -> zone `{z}`")
-
-    if "eps_fy28e_hkd" in v:
-        e = v["eps_fy28e_hkd"]
-        print("implied FY28E PE: " + " ".join(
-            f"{n} {x / e:.2f}x" for n, x in
-            (("price", v["price"]), ("L", c["L"]), ("M", c["M"]), ("H", c["H"]))))
-
-    print(f"market solves for (others at L): ps_cloud={implied(v, c, 'cloud'):.3f} · "
-          f"pe_ecom={implied(v, c, 'ecom'):.3f}")
-
-    print("sensitivity (ps_cloud_l, others at L):")
-    for ps in (2.5, 3.0, 3.5, v["ps_cloud_l"]):
-        alt = compute(dict(v, ps_cloud_l=ps))
-        print(f"  ps_cloud_l={ps:.1f}: L={alt['L']:.2f}, zone@{v['price']}="
-              f"{zone_of(v['price'], alt)}")
-
+    if "eps27_m_cny" in v:
+        e27 = v["eps27_m_cny"] * v["fx_cny_hkd"]
+        print("implied PE: on FY28E mean " + " ".join(f"{n} {x / c['e_full']['m']:.2f}x" for n, x in
+              (("price", v["price"]), ("L", c["L"]), ("M", c["M"]), ("H", c["H"])))
+              + " | on FY27E mean " + " ".join(f"{n} {x / e27:.2f}x" for n, x in
+              (("price", v["price"]), ("L", c["L"]), ("M", c["M"]), ("H", c["H"]))))
+    for tier in ("m", "l"):
+        pe_mkt = implied_ops_pe(v, c, tier)
+        g_mkt, ok = implied_g(pe_mkt, c["roe"][tier], v["r_perp"])
+        print(f"market solves for (closure at {tier.upper()}): ops PE {pe_mkt:.2f}x -> blended g {g_mkt:+.2%}"
+              f"{'' if ok else ' (ill-conditioned: ROE near r)'}")
+    if "eps_rr_cny" in v:
+        e_rr = (v["eps_rr_cny"] - c["nonop_ps"]) * v["fx_cny_hkd"]
+        print(f"pressure  : run-rate non-GAAP EPS {v['eps_rr_cny']} CNY -> ops {e_rr:.2f} HKD; "
+              f"@L blend {e_rr * c['blend']['l'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f} · "
+              f"@M blend {e_rr * c['blend']['m'] + c['legs']['m']['nav'] + c['legs']['m']['cash']:.1f} · "
+              f"x 1/r {e_rr / v['r_perp'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f}")
+    print("sensitivity:")
+    for g in (v["g2_ecom"] - 0.01, v["g2_ecom"] + 0.01):
+        alt = compute(dict(v, g2_ecom=g))
+        print(f"  g2_ecom={g:.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    alt = compute(dict(v, g2_cloud=v["g2_cloud"] - 0.01))
+    print(f"  g2_cloud={v['g2_cloud'] - 0.01:.2f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    alt = compute(dict(v, ebita_cloud_q_cny=v["ebita_aeg_q_cny"] / 3))  # w_cloud = 25%
+    print(f"  w_cloud=25%: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    alt = compute(dict(v, nonop_pretax_q_cny=0.0, eq_method_q_cny=0.0))
+    print(f"  no non-op strip: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    alt = compute(dict(v, bps_hkd=v["bps_hkd"] - c["nav_ps"] - v["net_cash_cny"] * v["fx_cny_hkd"] / v["shares"]))
+    print(f"  ops BPS (ex NAV, ex net cash): {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    alt = compute(dict(v, eps28_m_cny=v["eps28_m_cny"] + 1.0))
+    print(f"  eps28_m +1 CNY: M {alt['M']:.2f} ({alt['M'] - c['M']:+.2f})")
     if gaps:
         print(f"\ngaps (待补, not consumed): {', '.join(gaps)}")
 

@@ -10,7 +10,7 @@
 
 **与 `_AXIS.cowos-capacity.md` 正交**：CoWoS 是先进封装配额（零和，挂 NVDA/AVGO/TSM）；本轴是光引擎出货。AVGO **可同挂两轴**——XPU/网络腿的片数约束走 CoWoS，AI 网络附着的光学部署走本轴。
 
-本文不是框架，不进标的池（`_` 前缀已被 `eval/lib/frameworks.py` 排除）。
+本文不是框架，不进标的池（落在 `frameworks/axes/`，不由 `list_framework_paths` 扫入）。
 
 ---
 

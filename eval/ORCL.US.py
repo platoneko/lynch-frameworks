@@ -53,6 +53,7 @@ from eval.lib.axes import (  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     R_CONDITIONAL,
     R_OPERATING,
+    check_g_cap,
     check_r,
     payout,
     perpetual_pe,
@@ -109,7 +110,7 @@ REQUIRED = [
     "below_seg_fy26",
     "sw_share_below",
     "g_below",
-    "g_sw",
+    "g2_sw",
     "equity_aug",
     "debt_aug",
     "cash_aug",
@@ -122,7 +123,7 @@ REQUIRED = [
     "rev_fy28_high",
     "sbc_fy28",
     "int_fy28",
-    "g_oci",
+    "g2_oci",
     "capex_rest_fy27",
     "da_rest_fy27",
     "prepay_cum",
@@ -175,10 +176,14 @@ def sanity_checks(inp: dict[str, float]) -> list[str]:
         errs.append(f"r_perp={r}: both legs are operating cash flow, expected {R_OPERATING}")
 
     # OCI is priced at g = 0 so its multiple is 1/r whatever its ROE (A6).
-    if abs(inp["g_oci"]) > 1e-12:
-        errs.append(f"g_oci={inp['g_oci']}: the OCI leg MUST be priced at g=0 (A6); growth beyond FY28E is V_opt")
+    if abs(inp["g2_oci"]) > 1e-12:
+        errs.append(f"g2_oci={inp['g2_oci']}: the OCI leg MUST be priced at g=0 (A6); growth beyond FY28E is V_opt")
 
-    g_sw = inp["g_sw"]
+    # AGENTS.md「永续增长口径」: both Gordon legs' perpetual g at or below the cap.
+    errs += check_g_cap(inp["g2_sw"], "g2_sw")
+    errs += check_g_cap(inp["g2_oci"], "g2_oci")
+
+    g_sw = inp["g2_sw"]
     if r - g_sw <= 0:
         errs.append("perpetuity diverges on the software leg: g_sw >= r_perp")
     elif r - g_sw < MIN_R_MINUS_G:
@@ -256,14 +261,14 @@ def main() -> int:
         roe = nopat / ic
         return nopat, ic, roe, perpetual_pe(g_sw, roe, r)
 
-    nopat_sw, ic_sw, roe_sw, pe_sw_m = software_leg(inp["oci_gm_est"], inp["g_sw"])
+    nopat_sw, ic_sw, roe_sw, pe_sw_m = software_leg(inp["oci_gm_est"], inp["g2_sw"])
     v_sw = nopat_sw * pe_sw_m
     oci_contrib_fy26 = inp["oci_rev_fy26"] * inp["oci_gm_est"] - inp["sm_total_fy26"] * inp["oci_sm_share"]
     sw_margin_pct = (inp["seg_margin_fy26"] - oci_contrib_fy26) / rev_sw_fy26
 
     if ic_sw <= 0:
         errors.append("ic_sw must be positive — software ROE is derived from it")
-    pay_sw = payout(inp["g_sw"], roe_sw)
+    pay_sw = payout(inp["g2_sw"], roe_sw)
     if not (0.0 < pay_sw <= 1.0):
         errors.append(f"software payout {pay_sw:.3f} outside (0, 1]")
 
@@ -299,9 +304,9 @@ def main() -> int:
     roe_oci_net = {t: nopat_oci[t] / ic_oci_net for t in TIERS}
     # ROE only feeds the multiple through payout(g/ROE); at g = 0 the payout is
     # 1 for any positive ROE, so we pass the M-tier reading and assert 1/r.
-    pe_oci_m = perpetual_pe(inp["g_oci"], roe_oci_gross["m"], r)
+    pe_oci_m = perpetual_pe(inp["g2_oci"], roe_oci_gross["m"], r)
     if abs(pe_oci_m - 1.0 / r) > 1e-12:
-        errors.append(f"OCI multiple {pe_oci_m:.6f} != 1/r = {1.0 / r:.6f} — g_oci is not zero (A6)")
+        errors.append(f"OCI multiple {pe_oci_m:.6f} != 1/r = {1.0 / r:.6f} — g2_oci is not zero (A6)")
 
     pe_sw = {t: pe_sw_m for t in TIERS}
     pe_oci = {t: pe_oci_m for t in TIERS}
@@ -366,11 +371,11 @@ def main() -> int:
         f"software leg: rev FY26 {rev_sw_fy26 / BN:.1f}B -> FY28E {rev_sw_fy28 / BN:.1f}B"
         f" | seg margin {sw_margin_pct:.1%} (OCI contrib est {oci_contrib_fy26 / BN:.1f}B removed)"
         f" | EBIT {nopat_sw / keep / BN:.1f}B NOPAT {nopat_sw / BN:.1f}B"
-        f" | IC {ic_sw / BN:.1f}B ROE {roe_sw:.1%} g {inp['g_sw']:.1%} -> PE {pe_sw_m:.2f}x payout {pay_sw:.1%}"
+        f" | IC {ic_sw / BN:.1f}B ROE {roe_sw:.1%} g {inp['g2_sw']:.1%} -> PE {pe_sw_m:.2f}x payout {pay_sw:.1%}"
         f" -> {v_sw / sh:.2f}/sh"
     )
     print(
-        f"OCI leg: g={inp['g_oci']:.0%} -> PE {pe_oci_m:.2f}x (= 1/r, ROE-independent)"
+        f"OCI leg: g={inp['g2_oci']:.0%} -> PE {pe_oci_m:.2f}x (= 1/r, ROE-independent)"
         f" | IC start-FY28 gross {ic_oci_gross / BN:.1f}B / net-of-prepay {ic_oci_net / BN:.1f}B"
     )
     print("  tier  EPS    NOPAT_total  NOPAT_oci  OCI rev FY28E  impl EBIT margin  ROE gross/net   V_oci/sh")
@@ -450,7 +455,7 @@ def main() -> int:
     )
 
     # ---- sensitivities ----
-    pe_cond = perpetual_pe(inp["g_oci"], roe_oci_gross["m"], R_CONDITIONAL)
+    pe_cond = perpetual_pe(inp["g2_oci"], roe_oci_gross["m"], R_CONDITIONAL)
     print(
         f"sensitivity r_oci={R_CONDITIONAL:.0%} (A7 conditional tier, OCI PE {pe_cond:.2f}x):"
         f" L/M/H = {per_share(nopat_oci['l'] * pe_cond):.2f} / {per_share(nopat_oci['m'] * pe_cond):.2f}"
@@ -474,8 +479,8 @@ def main() -> int:
                 cells.append(f"{t.upper()} diverges")
         print(f"sensitivity OCI g={g:.0%} (ROE net-of-prepay): " + " | ".join(cells))
     for dg in G_SW_SENSITIVITY:
-        n_, _, _, pe_ = software_leg(inp["oci_gm_est"], inp["g_sw"] + dg)
-        print(f"sensitivity g_sw={inp['g_sw'] + dg:.1%}: software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_):.2f}")
+        n_, _, _, pe_ = software_leg(inp["oci_gm_est"], inp["g2_sw"] + dg)
+        print(f"sensitivity g_sw={inp['g2_sw'] + dg:.1%}: software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_):.2f}")
     print(
         f"sensitivity net debt ±{NET_DEBT_SENSITIVITY / BN:.0f}B: M = "
         f"{per_share(v_oci['m'], close=closure + NET_DEBT_SENSITIVITY):.2f} / "
@@ -486,7 +491,7 @@ def main() -> int:
         + " / ".join(f"{s:.0f}M -> M {per_share(v_oci['m'], shares=s):.2f}" for s in SHARES_SENSITIVITY)
     )
     for gm in OCI_GM_SENSITIVITY:
-        n_, _, roe_, pe_ = software_leg(gm, inp["g_sw"])
+        n_, _, roe_, pe_ = software_leg(gm, inp["g2_sw"])
         oci_m = nopat_total(eps["m"]) - n_
         print(
             f"sensitivity oci_gm_est={gm:.0%} (software bridge only; residual compensates): software NOPAT"

@@ -41,12 +41,13 @@ Run:  python3 eval/6655.HK.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.axes import check_africa_mount  # noqa: E402
-from lib.gordon import implied_g, payout, perpetual_pe  # noqa: E402
+from lib.axes import AXIS_SOUTHBOUND, check_africa_mount  # noqa: E402
+from lib.gordon import check_g_cap, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -56,13 +57,16 @@ FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "6655.HK.md"
 FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v3"
 
 TIERS = ("l", "m", "h")
+# Perpetual-g inputs carry the `g2_` prefix so scripts/calibration.py reports
+# them in its g2 column (AGENTS.md「永续增长口径」).
+G2_LEGS = ("dom", "ovs")
 
 REQUIRED = [
     "price", "price_a", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
     "ni_group_l", "ni_group_m", "ni_group_h",
     "ebitda_ovs_l", "ebitda_ovs_m", "ebitda_ovs_h", "k_ni_ebitda",
-    "g_dom_l", "g_dom_m", "g_dom_h",
-    "g_ovs_l", "g_ovs_m", "g_ovs_h",
+    "g2_dom_l", "g2_dom_m", "g2_dom_h",
+    "g2_ovs_l", "g2_ovs_m", "g2_ovs_h",
     "pe_own_lo", "pe_own_hi", "pe_own_mid",
     "eps_consensus_low", "pe_a_mid",
 ]
@@ -77,7 +81,7 @@ def legs(inp: dict[str, float], tag: str) -> tuple[float, float]:
 def blended_g(inp: dict[str, float], tag: str) -> float:
     dom, ovs = legs(inp, tag)
     group = inp[f"ni_group_{tag}"]
-    return (dom / group) * inp[f"g_dom_{tag}"] + (ovs / group) * inp[f"g_ovs_{tag}"]
+    return (dom / group) * inp[f"g2_dom_{tag}"] + (ovs / group) * inp[f"g2_ovs_{tag}"]
 
 
 def forward_roe(inp: dict[str, float], tag: str) -> float:
@@ -97,6 +101,27 @@ def anchor(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> flo
     """HKD per share."""
     per_share = value_cny(inp, tag, flat_pe) * 1e8 / inp["shares"]
     return per_share / inp["fx_hkdcny"]
+
+
+def check_southbound_mount(md: str) -> list[str]:
+    """Axis §3 rule 3: a mounted ticker reports the A-share companion band and live H/A.
+
+    The southbound axis locks no numerator and, since AGENTS.md「永续增长口径」
+    took multiples away from historical quantiles, no multiple either (A16: it
+    acts on the implied-g convergence).  What it still locks is the reporting
+    contract its own §4 direction check depends on.
+    """
+    if not AXIS_SOUTHBOUND.exists():
+        return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
+    errors: list[str] = []
+    if "6655.HK" not in AXIS_SOUTHBOUND.read_text(encoding="utf-8"):
+        errors.append("6655.HK is not declared on _AXIS.southbound-repricing.md — "
+                      "a mount has to exist on both sides")
+    if "A 股对照带" not in md:
+        errors.append("framework lacks the A-share companion band (axis §3 rule 3)")
+    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
+        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
+    return errors
 
 
 def main() -> int:
@@ -134,13 +159,19 @@ def main() -> int:
     errors += ladder("ni_ovs", *ovs)
 
     # --- Step 2: the growth ladders -----------------------------------------
-    errors += ladder("g_dom", inp["g_dom_l"], inp["g_dom_m"], inp["g_dom_h"])
-    errors += ladder("g_ovs", inp["g_ovs_l"], inp["g_ovs_m"], inp["g_ovs_h"])
+    errors += ladder("g_dom", inp["g2_dom_l"], inp["g2_dom_m"], inp["g2_dom_h"])
+    errors += ladder("g_ovs", inp["g2_ovs_l"], inp["g2_ovs_m"], inp["g2_ovs_h"])
     g = {t: blended_g(inp, t) for t in TIERS}
     errors += ladder("g blended", *(g[t] for t in TIERS))
     for t in TIERS:
         if r - g[t] <= 0:
             errors.append(f"g_{t}={g[t]:.4f} >= r={r} — perpetuity diverges")
+    # AGENTS.md 永续上限 6%: every named perpetual g, per leg and blended.
+    for leg in G2_LEGS:
+        for t in TIERS:
+            errors += check_g_cap(inp[f"g2_{leg}_{t}"], f"g2_{leg}_{t}")
+    for t in TIERS:
+        errors += check_g_cap(g[t], f"g_blended_{t}")
     if errors:
         return report(errors, "FAIL (ladders/convergence)")
 
@@ -149,8 +180,9 @@ def main() -> int:
     # corridors all sit on the same driver and overlap in Zambia / Tanzania /
     # Mozambique.  None of the three gets to write its own Africa case.
     errors += check_africa_mount(
-        (inp["g_ovs_l"], inp["g_ovs_m"], inp["g_ovs_h"])
+        (inp["g2_ovs_l"], inp["g2_ovs_m"], inp["g2_ovs_h"])
     )
+    errors += check_southbound_mount(md)
     if errors:
         return report(errors, "FAIL (shared axis)")
 
@@ -205,8 +237,8 @@ def main() -> int:
     for i, t in enumerate(TIERS):
         roe = forward_roe(inp, t)
         print(f"{t.upper():<3}{inp[f'ni_group_{t}']:10.2f}{ovs[i]:9.2f}{dom[i]:9.2f}"
-              f"{ovs[i] / inp[f'ni_group_{t}']:10.1%}{inp[f'g_dom_{t}']:8.0%}"
-              f"{inp[f'g_ovs_{t}']:8.0%}{g[t]:9.2%}{roe:8.2%}"
+              f"{ovs[i] / inp[f'ni_group_{t}']:10.1%}{inp[f'g2_dom_{t}']:8.0%}"
+              f"{inp[f'g2_ovs_{t}']:8.0%}{g[t]:9.2%}{roe:8.2%}"
               f"{payout(g[t], roe):8.1%}{pe[t]:8.2f}"
               f"{value_cny(inp, t):10.2f}{anchor(inp, t):10.2f}")
     naive = {t: inp[f"ni_group_{t}"] / (r - g[t]) * 1e8 / inp["shares"] / inp["fx_hkdcny"]

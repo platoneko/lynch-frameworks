@@ -1,12 +1,12 @@
 # _AXIS.phosphate-chain — 磷产业链价格情景轴（国内磷肥定价管理松紧）
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-09 | 挂载票：002895.SZ · 600096.SH
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-14 | 挂载票：002895.SZ · 600096.SH
 > 口径：**磷酸一铵（MAP）55% 粉铵国内市场均价，元/吨**；情景轴 = **国内磷肥定价管理的松紧 regime**（L 管制回归 / M 当期已放松一轮 / H 放松兑现到卖方具名幅度）
 
 共享情景轴（`AGENTS.md`「锚点语义」§共享情景轴）。挂载票的 §3 Inputs **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。
 **MUST NOT** 各票自造磷价下行。
 
-本文不是框架，不进标的池（`_` 前缀已被 `eval/lib/frameworks.py` 排除）。
+本文不是框架，不进标的池（落在 `frameworks/axes/`，不由 `list_framework_paths` 扫入）。
 
 ---
 
@@ -23,6 +23,16 @@
 **L 是实测过的坏，不是想象的坏**：3,330 与 3,536 是 2025 年种植季的**实际成交均价**，那一年云天化归母 51.56 亿、川恒归母 12.60 亿——两家都在赚钱。本轴的 L **不假设行业亏损**，只假设 2026 年这一轮涨价全额回吐。
 
 **H 的来源与 L/M 不同源，MUST 随梯一起读**：L 与 M 是同一条现货均价序列的两个实测点；H 是把**高盛具名的增量预测（+1,000 元/吨）叠加在 M 上**，不是该序列上的一个实测点。这是本轴与铜金梯（两端都取实测/卖方同一预测簇）的口径差异，挂载票 §3 **MUST** 显式声明。选它作 H 的理由：它是本轮唯一一份给出**绝对幅度**的卖方口径，且其机制（边际生产商单位利润从亏损 100–500 元/吨改善至 300 元/吨后行业才恢复供给）可独立验证。
+
+### 永续 g2（Gordon 倍数生成用；AGENTS「永续增长口径」g2 来源优先序第 2 级 = 共享轴）
+
+| 行 | 取值 | 具名来源 | as-of |
+|----|-----:|----------|-------|
+| **永续 g2（2026-09-14）** | **1.5%** | **IFA《Public Summary – Medium-Term Fertilizer Outlook 2025–2029》（2025 年 6 月）**：「Global fertilizer use is expected to continue increasing between FY 2025 and FY 2029, though at a slower pace … with an annual growth rate projected between 1% and 2%, total use is forecast to reach 224 Mt by FY 2029」；三养分中「K₂O use is expected to grow the fastest, with an annual growth rate of 2–3%, compared to **1–2% for both N and P₂O₅**」；同报告：「fertilizer phosphate demand growth is slowing」，被净化磷酸（PPA）需求 +5%/yr 部分抵消。取 **P₂O₅ 区间 1–2% 的中点 1.5%**；区间两端各 ±0.5pp 作敏感性下上限。国内磷肥表观消费在化肥零增长政策下更低（券商口径无长期数值，未取），出口配额与海外需求由各票分子承载 | 2025-06 |
+
+- **挂载票 MUST 引用本行作 M 档永续 g**（`g2_m`，`check_axis_g2_mount` 跨文件强制）。`cyclical` 反向档形（skill A2e-5、Phase 3 §A5/§A7）三档 g 只许 flat-or-reverse：**L 档**按 valuation-rules「谷底档」的适用范围（2026-09-14 同日补）分两种——L 分子是**本轴 L 梯值的 regime**时，L 世界 = 「低位 regime 持续」，配本行 g 作稳态 g、ROE 取 L 档自身（`002895.SZ` 属此类）；L 分子是**该票自身印过的谷底年份**时才走 `recovery_two_stage_pe`，且回归段年数 n MUST 由年报序列印证——`600096.SH` L = FY2023 45.22 亿虽是谷底年，但 FY2024 即回到 53.37 亿（n = 1，回归式退化为 L ≥ M），故**按 regime 持续处理**：`g2_l` = `g2_m` = 本行 1.5%（flat），谷底 × 1/r（24.81）只作 deep_discount 压力坐标（该票 A15）。**H 档 g_H = 0%「峰值后归一」**（FY2022 全球化肥价格峰值之后的正常化，≤ g_M）。本轴不为 L/H 另立数值行：共享的只有 M 档的需求长期增速与档位编号。
+- **`002895.SZ` 的 Gordon 迁移阻断（2026-09-14 Phase 3 v2）**：其 L 档 = MAP 3,330 regime，ROE_L 8.68% < r = 10% → `perpetual_pe` 在任何 g ≤ 6% 下上限 1/r = 10.0×，低于该票自身实测 TTM PE 带下沿 10.45×（2024-01），裁决顺序 ③ 带边反解无解（把 `pass_through` 提到 0.62 也只到 ROE_L 9.9%）；按 `_PHASE3.md` 阻断规则，该票**不落盘**锚点改动，倍数仍为 flat 15.34（其 Formula「口径」已标迁移议题），选项与倾向记在 `_local/reviews/2026-09-13/002895.SZ.md`「Phase 3 v2 — blocked」。
+- **不是价格增速**：本行是养分需求量的长期增速；MAP 价格 regime 已由 §1 三档承载，**MUST NOT** 把磷肥价格趋势或磷矿石上行叠进 g2。g_M 每 ±0.5pp 在 ROE 20.6% / r 10% 下 ≈ M 档倍数 ±0.4 turn（10.9× → 10.6× / 11.3×）——`600096.SH` 价带极窄，这半个点足以换一个 zone，各票敏感性 MUST 报 `g2 ±1pp`。
 
 ### 不进 H 的两个数字
 

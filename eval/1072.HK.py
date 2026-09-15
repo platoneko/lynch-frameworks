@@ -4,7 +4,18 @@
 frameworks/1072.HK.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
-formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v5
+formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6
+
+v6 (2026-09-14, 裁决顺序 walk): (1) L is FY2025, the latest complete year, not
+the FY2024 trough — a trough numerator paired with a steady g2 counts the cycle
+twice (valuation-rules「谷底档」); the trough only sets the deep_discount
+pressure coordinate (`ni_trough_fy2024` x 1/r).  (2) Each incumbent leg carries
+ONE steady g2 shared by all tiers (coal -4% / wings +3% / legacy gas 0%): a
+cyclical's tiers separate on the numerator, and the v5 tiered g produced a
+same-direction 8.0/9.0/10.1 band, which 裁决顺序 ⑤ forbids.  Multiples are now
+~flat (9.08/9.02/8.89, weight mechanics only).  (3) The FY2027 A-share
+consensus (n=3, with range) is a ② question left to the user (A19) — H already
+sits on its mean.
 
 G50 + G200 are V_opt (A2e-7): current profit ≈ 0 and units are unverified, so
 neither enters the base L/M/H. 表3 recovers the pre-split anchors via
@@ -67,7 +78,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.gordon import implied_g, payout, perpetual_pe  # noqa: E402
+from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
+from lib.gordon import check_g_cap, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -75,8 +87,7 @@ from lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORKS = Path(__file__).resolve().parent.parent / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
-AXIS_SOUTHBOUND = FRAMEWORKS / "_AXIS.southbound-repricing.md"
-FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v5"
+FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6"
 
 TIERS = ("l", "m", "h")
 LEGS = ("a", "b", "c")
@@ -87,8 +98,8 @@ LEG_CN = {"a": "周期装备", "b": "两翼", "c": "燃机"}
 HA_TOL = 0.005
 
 REQUIRED = (
-    ["price", "price_a", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
-     "ha_ratio", "net_cash", "tp_street", "leg_c_weight_cap",
+    ["price", "ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "price_a", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
+     "ha_ratio", "net_cash", "tp_street", "leg_c_weight_cap", "ni_trough_fy2024",
      "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
      "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
      "g50_usdkw_lo", "g50_usdkw_hi",
@@ -96,7 +107,7 @@ REQUIRED = (
     + [f"jv_ni_{t}" for t in TIERS]
     + [f"ni_{t}" for t in TIERS]
     + [f"gp_{leg}_{t}" for leg in LEGS for t in TIERS]
-    + [f"g_{leg}_{t}" for leg in LEGS for t in TIERS]
+    + [f"g2_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"g50_{f}_{t}" for f in ("units", "gm", "g", "lag") for t in TIERS]
 )
 
@@ -129,7 +140,7 @@ def weights(inp: dict[str, float], tag: str) -> dict[str, float]:
 
 def blended_g(inp: dict[str, float], tag: str) -> float:
     w = weights(inp, tag)
-    return sum(w[leg] * inp[f"g_{leg}_{tag}"] for leg in LEGS)
+    return sum(w[leg] * inp[f"g2_{leg}_{tag}"] for leg in LEGS)
 
 
 def forward_roe(inp: dict[str, float], tag: str) -> float:
@@ -256,7 +267,7 @@ def variant_band(inp: dict[str, float], mode: str) -> tuple[list[float], list[fl
     anchors, wc = [], []
     for t in TIERS:
         w = variant_weights(inp, t, mode)
-        g = sum(w[leg] * inp[f"g_{leg}_{t}"] for leg in LEGS)
+        g = sum(w[leg] * inp[f"g2_{leg}_{t}"] for leg in LEGS)
         pe = perpetual_pe(g, forward_roe(inp, t), inp["r_perp"])
         anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe))
         wc.append(w["c"])
@@ -315,26 +326,45 @@ def main() -> int:
 
     w = {t: weights(inp, t) for t in TIERS}
 
-    # --- Step 2: growth ladders and convergence ------------------------------
+    # --- Step 2: growth 口径 and convergence ---------------------------------
+    # 裁决顺序 ⑤ (cyclical → flat or reversed) + valuation-rules「分子与 g 同世界」:
+    # every incumbent leg carries ONE steady g2 shared by all three tiers; the
+    # tiers differ in the numerator (FY2025 / TTM / 2026H1x2), not in g.  The
+    # blend still moves a little with each tier's own leg weights — that is
+    # weight mechanics, not a growth ladder, so it is printed, not laddered.
     for leg in LEGS:
-        errors += nondecreasing(f"g_{leg} ({LEG_CN[leg]})",
-                                *(inp[f"g_{leg}_{t}"] for t in TIERS))
+        vals = [inp[f"g2_{leg}_{t}"] for t in TIERS]
+        if max(vals) - min(vals) > 1e-12:
+            errors.append(
+                f"g2_{leg} ({LEG_CN[leg]}) differs across tiers {vals} — a cyclical's "
+                "tiers separate on the numerator; a tiered g re-prices the cycle (裁决顺序 ⑤)"
+            )
     for field in ("units", "gm", "g"):
         errors += nondecreasing(f"g50_{field}", *(inp[f"g50_{field}_{t}"] for t in TIERS))
     g = {t: blended_g(inp, t) for t in TIERS}
-    errors += ladder("g blended", *(g[t] for t in TIERS))
     for t in TIERS:
         if r - g[t] <= 0:
             errors.append(f"g_{t}={g[t]:.4f} >= r={r} — perpetuity diverges")
+    # AGENTS.md 永续上限 6%: every named perpetual g — the three incumbent legs
+    # (`g2_*`, visible to calibration.py), the option leg, and the blend.
+    for leg in LEGS:
+        for t in TIERS:
+            errors += check_g_cap(inp[f"g2_{leg}_{t}"], f"g2_{leg}_{t}")
+    for t in TIERS:
+        errors += check_g_cap(inp[f"g50_g_{t}"], f"g50_g_{t}")
+        errors += check_g_cap(g[t], f"g_blended_{t}")
     if errors:
         return report(errors, "FAIL (ladders/convergence)")
 
     # --- Step 3: normative guards -------------------------------------------
-    # "Modelled success" cannot be a business that shrinks forever.
-    if g["h"] < -1e-12:
+    # A1: L is the latest complete year, a realised steady level — not the
+    # FY2024 trough.  A trough numerator paired with a steady g2 counts the
+    # cycle twice (valuation-rules「谷底档」); the trough only sets the
+    # deep_discount pressure coordinate.
+    if inp["ni_l"] <= inp["ni_trough_fy2024"]:
         errors.append(
-            f"H tier implies g={g['h']:.2%} < 0 — the optimistic tier cannot price "
-            "perpetual decline"
+            f"ni_l {inp['ni_l']} <= FY2024 trough {inp['ni_trough_fy2024']} — a trough numerator "
+            "cannot carry a steady g2 (valuation-rules「谷底档」); L is the latest complete year"
         )
     # A8: generated multiples must stay inside prices this stock has printed.
     pe = {t: multiple(inp, t) for t in TIERS}
@@ -449,6 +479,16 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
+    # 裁决顺序 ②-b (valuation-rules): own realised numerators may stand in for
+    # the FY2027 consensus three points only while the consensus mean sits inside
+    # [ni_m, ni_h] and M is within 20% of it (A19).
+    if not (inp["ni_m"] <= inp["ni_cons_fy27_mean"] <= inp["ni_h"]):
+        errors.append(f"②-b: consensus FY27 mean {inp['ni_cons_fy27_mean']} outside [ni_m {inp['ni_m']}, ni_h {inp['ni_h']}]")
+    cons_dev = inp["ni_m"] / inp["ni_cons_fy27_mean"] - 1.0
+    if abs(cons_dev) > 0.20 and "②-b" not in md:
+        errors.append(f"②-b: M deviates {cons_dev:+.1%} from consensus with no ②-b named-variable row")
+    print(f"②-b: consensus FY27 NI {inp['ni_cons_fy27_lo']}/{inp['ni_cons_fy27_mean']}/{inp['ni_cons_fy27_hi']} vs tiers {inp['ni_l']}/{inp['ni_m']}/{inp['ni_h']}; M dev {cons_dev:+.1%}")
+
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]
     print(f"formula_id={FORMULA_ID}  (r={r:.0%}, 零增长={1 / r:.1f}x)")
@@ -498,10 +538,10 @@ def main() -> int:
     # The single most load-bearing sensitivity: leg C cannot move the anchor.
     stress = 0.20
     w_m = w["m"]
-    g_stress = (w_m["a"] * inp["g_a_m"] + w_m["b"] * inp["g_b_m"] + w_m["c"] * stress)
+    g_stress = (w_m["a"] * inp["g2_a_m"] + w_m["b"] * inp["g2_b_m"] + w_m["c"] * stress)
     pe_stress = perpetual_pe(g_stress, forward_roe(inp, "m"), r)
     m_stress = inp["ni_m"] * pe_stress * 1e8 / inp["shares"] / fx
-    print(f"腿 C 压力测试：g_C {inp['g_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
+    print(f"腿 C 压力测试：g_C {inp['g2_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
           f"({m_stress / M - 1:+.1%})，现价 {inp['price']} 仍 "
           f"{'高于' if inp['price'] > H else '低于'} H={H:.2f}")
 
@@ -524,7 +564,20 @@ def main() -> int:
             )
 
     print(f"三档 PE {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} 落在 H 股 own-year 实测带 "
-          f"[{lo}, {hi}] 内 (p50={inp['pe_own_mid']:g}) ✓")
+          f"[{lo}, {hi}] 内 (p50={inp['pe_own_mid']:g}) ✓  — 形状 (裁决顺序 ⑤): 各腿 g2 三档共用, "
+          f"合成 g {g['l']:+.2%}/{g['m']:+.2%}/{g['h']:+.2%} 只随权重微动, 倍数 ≈ flat")
+    # 被否决口径: the pre-v6 tiered g (A −6/−4/−2, B 0/+3/+5, C 0/0/+2) generates a
+    # same-direction 8.0/9.0/10.1 band on a cyclical — printed so the rejection
+    # stays visible; and the FY2024 trough x 1/r pressure coordinate (A1).
+    tiered = {"a": (-0.06, -0.04, -0.02), "b": (0.0, 0.03, 0.05), "c": (0.0, 0.0, 0.02)}
+    pe_tier = []
+    for i, t in enumerate(TIERS):
+        gt = sum(w[t][leg] * tiered[leg][i] for leg in LEGS)
+        pe_tier.append(perpetual_pe(gt, forward_roe(inp, t), r))
+    print(f"被否决口径 分档 g（A −6/−4/−2, B 0/+3/+5, C 0/0/+2）→ PE {pe_tier[0]:.2f}/{pe_tier[1]:.2f}/{pe_tier[2]:.2f} 同向 "
+          f"→ 带 {to_hkd(inp, inp['ni_l'] * pe_tier[0]):.2f}/{to_hkd(inp, inp['ni_m'] * pe_tier[1]):.2f}/{to_hkd(inp, inp['ni_h'] * pe_tier[2]):.2f}"
+          f"（cyclical 同向倍数，裁决顺序 ⑤ 不采用）")
+    print(f"谷底压力坐标 (A1): FY2024 {inp['ni_trough_fy2024']:.2f} 亿 x 1/r = {to_hkd(inp, inp['ni_trough_fy2024'] / r):.2f} HKD")
     print(f"flat-multiple @PE={pe['m']:.2f}: {flat['l']:.2f}/{flat['m']:.2f}/{flat['h']:.2f}")
     print(f"L={L:.2f} A={A:.2f} M={M:.2f} B={B:.2f} H={H:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")

@@ -28,7 +28,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.gordon import R_OPERATING, check_r  # noqa: E402
+from math import ceil
+
+from lib.gordon import R_OPERATING, check_g_cap, check_r, check_transition_years  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -48,11 +50,13 @@ REQUIRED = [
     "ni_q1_26", "ni_q2_26", "ni_q3e_26", "ni_q4e_26",
     "eps_27_l", "eps_27_m", "eps_27_h", "rev_g_27",
     "lend_mkt_q", "fs_mkt_q", "pl_book", "pl_runoff", "sl_book", "sl_runoff",
-    "orig_q", "lpb_q", "maint_fs", "tax", "r_op", "g", "g_l", "n",
+    "orig_q", "lpb_q", "maint_fs", "tax", "r_op", "g2", "g2_l", "n",
     "nii_shock", "pl_loss_rate", "nco_peak", "mark_rate", "credit_sens_10",
     "rev_27", "piper_rev_g_28", "incr_ni_margin",
 ]
 N_FY28 = 2.5  # coordinate band only: stage one stretched through FY28
+# Stage one may only run as long as a consensus exists: FY26 and FY27 (A5/A6).
+CONSENSUS_YEARS = 2
 
 
 def maint_lend_of(inp: dict[str, float]) -> float:
@@ -123,7 +127,7 @@ def tier_l(inp: dict[str, float], gs26: float) -> dict[str, float]:
     oe_l = oe26 - (inp["nii_shock"] + d_credit) * (1.0 - t)
     mark_credit = inp["credit_sens_10"] * uplift / 0.10
     tce_l = inp["tce"] - inp["mark_rate"] - mark_credit
-    price = oe_l / (r - inp["g_l"]) / inp["shares"]  # g_l = 0 → 1/r
+    price = oe_l / (r - inp["g2_l"]) / inp["shares"]  # g2_l = 0 → 1/r
     return {
         "ni_26": ni_26, "oe26": oe26, "d_credit": d_credit, "oe_l": oe_l,
         "mark_credit": mark_credit, "tce_l": tce_l,
@@ -153,14 +157,18 @@ def main() -> int:
     if errors:
         return report(errors)
 
-    r, g, t = inp["r_op"], inp["g"], inp["tax"]
+    r, g, t = inp["r_op"], inp["g2"], inp["tax"]
     errors += check_r(r, "r_op")
     if abs(r - R_OPERATING) > 1e-9:
         errors.append(f"r={r} expected operating tier {R_OPERATING} for SoFi")
+    # AGENTS.md「永续增长口径」: perpetual g capped at 6%; stage one bounded by consensus years.
+    errors += check_g_cap(g, "g2")
+    errors += check_g_cap(inp["g2_l"], "g2_l")
+    errors += check_transition_years(ceil(inp["n"]), CONSENSUS_YEARS, "n")
     if r - g <= 0:
-        errors.append(f"g={g} must be < r={r}")
-    if inp["g_l"] != 0.0:
-        errors.append("g_l must be 0 — L world is defined as growth stall (A7)")
+        errors.append(f"g2={g} must be < r={r}")
+    if inp["g2_l"] != 0.0:
+        errors.append("g2_l must be 0 — L world is defined as growth stall (A7)")
     if not 0.0 < inp["maint_fs"] < 1.0:
         errors.append(f"maint_fs={inp['maint_fs']} must lie in (0,1)")
     if inp["nco_peak"] <= inp["pl_loss_rate"]:

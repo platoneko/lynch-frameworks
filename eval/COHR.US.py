@@ -4,23 +4,38 @@
 frameworks/COHR.US.md is the source of truth; this script re-parses its §3 Inputs,
 recomputes L/M/H / A/B / zone and exits 1 on mismatch.
 
-formula_id: cohr_sotp_dcc_industrial_pe_fy28_disc_v1
+formula_id: cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt
 
 Main ruler: two-leg SOTP on FY2028 (fiscal year ending 2028-06-30).
 Each leg = segment revenue x segment-profit margin, less a revenue-pro-rata share
-of corporate + SBC, taxed at the normalized non-GAAP rate, per diluted share,
-times a leg PE.  The Datacenter & Communications leg carries the whole multiple
-band (15/22/30); Industrial gets one fixed cyclical multiple across scenarios.
-The sum is discounted from 2027-06-30 (where a forward PE on FY2028 earnings
-sits) back to today, then net debt per share is added.
+of corporate + SBC, taxed at the normalized non-GAAP rate, per diluted share.
+Multiples are GENERATED, not borrowed (AGENTS.md「永续增长口径」): each leg names a
+perpetual g2 and the multiple is `perpetual_pe(g2, ROE_x, r)` with the company
+tier ROE (econ EPS_x x shares / book equity — no leg equity is disclosed, so both
+legs share it).  Datacom g2 is the AI-optical peer cross-section reverse-solved
+and truncated at the repo cap; Industrial g2 = 0 (flat revenue, 无同业锚).  One g2
+per leg is shared across tiers (`fast_grower` primary), so the tier ladder lives
+in the numerator and the multiple only moves with ROE.  The sum is discounted
+from 2027-06-30 (where a forward PE on FY2028 earnings sits) back to today, then
+net debt per share is added.
+
+Option (A12, never in the base): the SiC subsidiary has no computable numerator
+(loss-making, no standalone consensus) but a one-off external mark — the
+2023-12 Denso/MELCO purchase of 25% at $1B.  Its ceiling is Coherent's 75% of
+that mark plus the capitalised loss the base carries inside the Industrial leg;
+表3 = base_k + p_k x V_opt with P_K an eval constant (same 拍值 as WOLF / 2631).
 
 Sanity checks beyond the L<M<H / Outputs reconciliation:
-  - scenario monotonicity on revenue, margins and PE
-  - pe_dcc_h hard cap (sell-side ceiling for the AI-optical group)
-  - m_dcc_h hard cap (segment margin has never exceeded ~25%)
+  - r on a repo tier; g2 <= cap; r - g2 >= 2% (not at the pole)
+  - every tier's generated multiple inside the ticker's own realised band
+    (pe_own_min / pe_own_max — the guardrail that replaced the borrowed PE band)
+  - scenario monotonicity on revenue and margins; m_dcc_h hard cap
+  - numerator ladder + flat-multiple ladder (A2e-2c), decomposition (A2e-5)
   - the M-scenario bottom-up economic EPS must land within +/-20% of the
-    FY2028 street consensus non-GAAP EPS (the A2d cross-constraint, mechanised:
-    it blocks silently inflating the mid scenario)
+    FY2028 street consensus non-GAAP EPS (the A2d cross-constraint, mechanised)
+  - shared-axis rungs (ai-capex, optical-comms) match the axis files
+  - option: stated V_opt and 表3 reconcile; p never leaks into the base;
+    the ceiling anchor is the deal mark, not the price
 
 Run:  python3 eval/COHR.US.py
 """
@@ -35,15 +50,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.axes import check_optical_oe_mount  # noqa: E402
+from eval.lib.axes import check_capex_mount, check_optical_oe_mount  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "COHR.US.md"
-FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_v1"
+FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt"
 TOL = 0.05  # outputs rounded to 2 decimals
 
-PE_DCC_HARD_CAP = 35.0  # Citi's 35x FY2028E on LITE is the sector ceiling; COHR must sit below
 MGN_DCC_HARD_CAP = 0.35  # DC&C segment-profit margin: 19.0/24.1/25.2% FY24-26
 CONSENSUS_BAND = 0.20  # |bottom-up M economic EPS / street FY28 non-GAAP EPS - 1|
+MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
+TIERS = ("L", "M", "H")
+# 表3 per-tier credit on the SiC option (A12): 拍值, never an Input, never the base.
+P_K = (0.0, 0.25, 1.0)
 
 
 def parse_inputs(md: str) -> dict[str, float]:
@@ -102,6 +122,7 @@ def main() -> int:
     required = [
         "price",
         "shares_diluted",
+        "equity",
         "rev_dcc_l",
         "rev_dcc_m",
         "rev_dcc_h",
@@ -114,17 +135,24 @@ def main() -> int:
         "m_ind_h",
         "corp_pct",
         "tax_rate",
-        "pe_dcc_l",
-        "pe_dcc_m",
-        "pe_dcc_h",
-        "pe_ind",
+        "r_perp",
+        "g2_dcc",
+        "g2_ind",
         "r_disc",
         "t_disc",
         "net_debt_ps",
         "eps_cons_fy28",
+        "pe_own_min",
+        "pe_own_max",
         "oe_l",
         "oe_m",
         "oe_h",
+        "capex_l",
+        "capex_m",
+        "capex_h",
+        "sic_stake",
+        "sic_deal_value",
+        "sic_nci_loss",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -134,12 +162,20 @@ def main() -> int:
     # --- Step 0: sanity guards on the inputs themselves -------------------
     guards: list[str] = []
     guards.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
-    if not (inp["pe_dcc_l"] < inp["pe_dcc_m"] < inp["pe_dcc_h"]):
-        guards.append(
-            f"pe_dcc order violated: {inp['pe_dcc_l']}/{inp['pe_dcc_m']}/{inp['pe_dcc_h']}"
-        )
-    if inp["pe_dcc_h"] > PE_DCC_HARD_CAP + 1e-9:
-        guards.append(f"pe_dcc_h={inp['pe_dcc_h']} exceeds hard cap {PE_DCC_HARD_CAP}")
+    guards.extend(check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"])))
+    # Both legs are ordinary operating cash flow (no take-or-pay contract, no
+    # unfunded customer): r must be the operating tier, and it is the same rate
+    # that bridges the 0.82y to the forward-PE date.
+    guards.extend(check_r(inp["r_perp"], "r_perp"))
+    guards.extend(check_r(inp["r_disc"], "r_disc"))
+    for leg in ("dcc", "ind"):
+        g = inp[f"g2_{leg}"]
+        guards.extend(check_g_cap(g, f"g2_{leg}"))
+        gap = inp["r_perp"] - g
+        if gap <= 0:
+            guards.append(f"perpetuity diverges on {leg}: g2 >= r")
+        elif gap < MIN_R_MINUS_G:
+            guards.append(f"r - g2_{leg} = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     if not (inp["m_dcc_l"] < inp["m_dcc_m"] < inp["m_dcc_h"]):
         guards.append("m_dcc order violated")
     if inp["m_dcc_h"] > MGN_DCC_HARD_CAP + 1e-9:
@@ -152,15 +188,18 @@ def main() -> int:
         guards.append(f"tax_rate={inp['tax_rate']} outside (0, 0.35]")
     if inp["net_debt_ps"] > 0:
         guards.append(f"net_debt_ps={inp['net_debt_ps']} must be <= 0 (net debt, not net cash)")
+    if not (0 < inp["pe_own_min"] < inp["pe_own_max"]):
+        guards.append("pe_own_min/max guardrail band malformed")
+    if inp["equity"] <= 0:
+        guards.append("equity must be positive")
+    if not (0 < inp["sic_stake"] < 1):
+        guards.append(f"sic_stake={inp['sic_stake']} must be a minority-partner split in (0, 1)")
     if guards:
         print("FAIL:", "; ".join(guards), file=sys.stderr)
         return 1
 
-    # --- Step 1: per-scenario two-leg SOTP --------------------------------
-    def scenario(
-        rev_dcc: float, m_dcc: float, m_ind: float, pe_dcc: float
-    ) -> tuple[float, float, float, float]:
-        """(DC&C value/sh, Industrial value/sh, economic EPS, undiscounted sum/sh)."""
+    # --- Step 1: per-scenario two-leg SOTP, multiples generated by Gordon ---
+    def scenario(rev_dcc: float, m_dcc: float, m_ind: float) -> dict[str, float]:
         rev_ind = inp["rev_ind"]
         rev_tot = rev_dcc + rev_ind
         corp = inp["corp_pct"] * rev_tot  # corporate + SBC, allocated pro-rata by revenue
@@ -169,25 +208,38 @@ def main() -> int:
         after_tax = 1.0 - inp["tax_rate"]
         eps_dcc = ebit_dcc * after_tax * 1e6 / inp["shares_diluted"]  # inputs in $M
         eps_ind = ebit_ind * after_tax * 1e6 / inp["shares_diluted"]
+        eps = eps_dcc + eps_ind
+        # Tier ROE on book equity (AGENTS.md 永续增长口径); no leg equity is
+        # disclosed, so both legs use the company figure.
+        roe = eps * inp["shares_diluted"] / inp["equity"]
+        pe_dcc = perpetual_pe(inp["g2_dcc"], roe, inp["r_perp"])
+        pe_ind = perpetual_pe(inp["g2_ind"], roe, inp["r_perp"])
         v_dcc = eps_dcc * pe_dcc
-        v_ind = eps_ind * inp["pe_ind"]
-        return v_dcc, v_ind, eps_dcc + eps_ind, v_dcc + v_ind
+        v_ind = eps_ind * pe_ind
+        return {
+            "eps_dcc": eps_dcc,
+            "eps_ind": eps_ind,
+            "eps": eps,
+            "roe": roe,
+            "pe_dcc": pe_dcc,
+            "pe_ind": pe_ind,
+            "v_dcc": v_dcc,
+            "v_ind": v_ind,
+            "sum": v_dcc + v_ind,
+            "blend": (v_dcc + v_ind) / eps,
+        }
 
-    v_dcc_l, v_ind_l, eps_l, sum_l = scenario(
-        inp["rev_dcc_l"], inp["m_dcc_l"], inp["m_ind_l"], inp["pe_dcc_l"]
-    )
-    v_dcc_m, v_ind_m, eps_m, sum_m = scenario(
-        inp["rev_dcc_m"], inp["m_dcc_m"], inp["m_ind_m"], inp["pe_dcc_m"]
-    )
-    v_dcc_h, v_ind_h, eps_h, sum_h = scenario(
-        inp["rev_dcc_h"], inp["m_dcc_h"], inp["m_ind_h"], inp["pe_dcc_h"]
-    )
+    s = {
+        "L": scenario(inp["rev_dcc_l"], inp["m_dcc_l"], inp["m_ind_l"]),
+        "M": scenario(inp["rev_dcc_m"], inp["m_dcc_m"], inp["m_ind_m"]),
+        "H": scenario(inp["rev_dcc_h"], inp["m_dcc_h"], inp["m_ind_h"]),
+    }
 
     # --- Step 2: A2d cross-constraint, mechanised -------------------------
-    dev = eps_m / inp["eps_cons_fy28"] - 1.0
+    dev = s["M"]["eps"] / inp["eps_cons_fy28"] - 1.0
     if abs(dev) > CONSENSUS_BAND:
         print(
-            f"FAIL: M-scenario economic EPS {eps_m:.2f} deviates {dev:+.1%} from"
+            f"FAIL: M-scenario economic EPS {s['M']['eps']:.2f} deviates {dev:+.1%} from"
             f" street FY2028 non-GAAP consensus {inp['eps_cons_fy28']}"
             f" (band +/-{CONSENSUS_BAND:.0%})",
             file=sys.stderr,
@@ -196,9 +248,8 @@ def main() -> int:
 
     # --- Step 3: discount to today, then close with net debt --------------
     disc = (1.0 + inp["r_disc"]) ** (-inp["t_disc"])
-    L = sum_l * disc + inp["net_debt_ps"]
-    M = sum_m * disc + inp["net_debt_ps"]
-    H = sum_h * disc + inp["net_debt_ps"]
+    anchors = {t: s[t]["sum"] * disc + inp["net_debt_ps"] for t in TIERS}
+    L, M, H = (anchors[t] for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
     zone = zone_of(inp["price"], L, M, H)
@@ -207,9 +258,45 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
 
+    # --- Step 3a: SiC option ceiling (A12) — external mark, not a multiple ---
+    # The base carries the subsidiary only as its loss inside the Industrial
+    # margin, capitalised at the g=0 multiple and discounted like the leg; the
+    # success world replaces that drag with the 2023 deal mark on the 75% stake.
+    per_share = 1e6 / inp["shares_diluted"]
+    v_deal = inp["sic_stake"] * inp["sic_deal_value"] * per_share
+    loss_100 = inp["sic_nci_loss"] / (1.0 - inp["sic_stake"])
+    drag_base = loss_100 * per_share * perpetual_pe(inp["g2_ind"], s["M"]["roe"], inp["r_perp"]) * disc
+    v_opt = v_deal + drag_base
+    adj = tuple(x + p * v_opt for x, p in zip((L, M, H), P_K))
+    adj_a, adj_b = (adj[0] + adj[1]) / 2, (adj[1] + adj[2]) / 2
+    adj_zone = zone_of(inp["price"], *adj)
+
+    errors: list[str] = []
+    # Guardrail (AGENTS.md「永续增长口径」): a generated multiple outside the
+    # ticker's own realised band is red — do not force g, do not widen the band.
+    for t in TIERS:
+        for label, pe in (("blended", s[t]["blend"]), ("dcc", s[t]["pe_dcc"])):
+            if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
+                errors.append(
+                    f"{t} {label} PE {pe:.1f}x outside own realised band "
+                    f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
+                )
+
+    # --- Step 3b: A2e-2c flat ladder + A2e-5 decomposition ----------------
+    # Numerator ladder must hold on its own; then re-price every tier at the
+    # M-tier leg multiples (datacom and industrial each held at their M rung).
+    flat_errs, _ = flat_multiple_ladder((s["L"]["eps"], s["M"]["eps"], s["H"]["eps"]), s["M"]["blend"])
+    errors += flat_errs
+    flat = tuple(
+        (s[t]["eps_dcc"] * s["M"]["pe_dcc"] + s[t]["eps_ind"] * s["M"]["pe_ind"]) * disc + inp["net_debt_ps"]
+        for t in TIERS
+    )
+    if not (flat[0] < flat[1] < flat[2]):
+        errors.append(f"flat-multiple ladder broken: {flat}")
+    dec = decompose((L, M, H), (s["L"]["blend"], s["M"]["blend"], s["H"]["blend"]))
+
     # --- Step 4: reconcile against the stated Outputs ---------------------
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    errors: list[str] = []
     triples = re.findall(
         r"L = \*\*[0-9.]+\*\* · M = \*\*[0-9.]+\*\* · H = \*\*[0-9.]+\*\*", out_sec
     )
@@ -218,11 +305,16 @@ def main() -> int:
             f"### Outputs must state the L/M/H triple exactly once, found {len(triples)}"
         )
     vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
-    if vo is None or abs(float(vo.group(1))) > 1e-9:
-        errors.append(
-            f"V_opt must be stated as 0 (SiC is not an option leg), got "
-            f"{vo.group(1) if vo else None}"
-        )
+    if vo is None:
+        errors.append("stated V_opt not found in Outputs")
+    elif abs(float(vo.group(1)) - v_opt) > TOL:
+        errors.append(f"V_opt: stated {vo.group(1)} vs recomputed {v_opt:.4f}")
+    if abs(adj[0] - L) > 1e-9:
+        errors.append(f"p leaked into the base: 表3 L row {adj[0]:.4f} != base L {L:.4f}")
+    if "表3" not in out_sec:
+        errors.append("V_opt > 0 but Outputs has no 表3")
+    if abs(v_deal - inp["price"]) < 1e-9:
+        errors.append("option ceiling equals the current price: the anchor must be the deal mark (A12)")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -236,41 +328,117 @@ def main() -> int:
     }
     recomputed = {"L": L, "M": M, "H": H, "A": A, "B": B}
     for k, v in recomputed.items():
-        s = stated.get(k)
-        if s is None:
+        st = stated.get(k)
+        if st is None:
             errors.append(f"stated {k} not found")
-        elif abs(s - v) > TOL:
-            errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
+        elif abs(st - v) > TOL:
+            errors.append(f"{k}: stated {st} vs recomputed {v:.4f}")
 
     zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
     stated_zone = zm.group(1) if zm else None
     if stated_zone != zone:
         errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
 
+    # --- Report -----------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
     print(
-        f"econ EPS FY28  L/M/H = {eps_l:.2f}/{eps_m:.2f}/{eps_h:.2f}"
+        f"r_perp={inp['r_perp']:g} g2_dcc={inp['g2_dcc']:.4f} g2_ind={inp['g2_ind']:.4f}"
+        f"  equity={inp['equity']:.4g} shares={inp['shares_diluted']:.4g}"
+    )
+    print(
+        f"econ EPS FY28  L/M/H = {s['L']['eps']:.2f}/{s['M']['eps']:.2f}/{s['H']['eps']:.2f}"
         f"   (street non-GAAP {inp['eps_cons_fy28']}, M dev {dev:+.1%})"
     )
+    print(f"tier ROE L/M/H = {s['L']['roe']:.4f}/{s['M']['roe']:.4f}/{s['H']['roe']:.4f} (equity-based, both legs)")
     print(
-        f"表1 数通  L/M/H = {v_dcc_l * disc:.2f}/{v_dcc_m * disc:.2f}/{v_dcc_h * disc:.2f}"
-        f"  pe={inp['pe_dcc_l']:.0f}/{inp['pe_dcc_m']:.0f}/{inp['pe_dcc_h']:.0f}  (disc={disc:.4f})"
+        f"generated PE  dcc L/M/H = {s['L']['pe_dcc']:.2f}/{s['M']['pe_dcc']:.2f}/{s['H']['pe_dcc']:.2f}x"
+        f"  ind = {s['L']['pe_ind']:.2f}/{s['M']['pe_ind']:.2f}/{s['H']['pe_ind']:.2f}x"
+        f"  blended undisc = {s['L']['blend']:.2f}/{s['M']['blend']:.2f}/{s['H']['blend']:.2f}x"
+        f"  guardrail [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
     )
     print(
-        f"表1 工业  L/M/H = {v_ind_l * disc:.2f}/{v_ind_m * disc:.2f}/{v_ind_h * disc:.2f}"
-        f"  pe={inp['pe_ind']:.0f}"
+        f"表1 数通  L/M/H = {s['L']['v_dcc'] * disc:.2f}/{s['M']['v_dcc'] * disc:.2f}/{s['H']['v_dcc'] * disc:.2f}"
+        f"  (disc={disc:.4f})"
     )
-    print(f"表1 闭合项 = {inp['net_debt_ps']}  V_opt=0")
-    print(f"undisc dcc  L/M/H = {v_dcc_l:.2f}/{v_dcc_m:.2f}/{v_dcc_h:.2f}")
-    print(f"undisc ind  L/M/H = {v_ind_l:.2f}/{v_ind_m:.2f}/{v_ind_h:.2f}")
-    print(f"sum undisc     L/M/H = {sum_l:.2f}/{sum_m:.2f}/{sum_h:.2f}  disc={disc:.4f}  net_debt_ps={inp['net_debt_ps']}")
+    print(f"表1 工业  L/M/H = {s['L']['v_ind'] * disc:.2f}/{s['M']['v_ind'] * disc:.2f}/{s['H']['v_ind'] * disc:.2f}")
+    print(f"表1 闭合项 = {inp['net_debt_ps']}")
+    print(f"undisc dcc  L/M/H = {s['L']['v_dcc']:.2f}/{s['M']['v_dcc']:.2f}/{s['H']['v_dcc']:.2f}")
+    print(f"undisc ind  L/M/H = {s['L']['v_ind']:.2f}/{s['M']['v_ind']:.2f}/{s['H']['v_ind']:.2f}")
+    print(
+        f"sum undisc     L/M/H = {s['L']['sum']:.2f}/{s['M']['sum']:.2f}/{s['H']['sum']:.2f}"
+        f"  disc={disc:.4f}  net_debt_ps={inp['net_debt_ps']}"
+    )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(
+        f"flat-multiple ladder (dcc held at M {s['M']['pe_dcc']:.2f}x, ind at M {s['M']['pe_ind']:.2f}x):"
+        f" {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}"
+    )
+    # `decompose` folds the fixed net-debt term into its residual numerator ratio;
+    # the pure EPS ratio is printed alongside so the two can be told apart.
+    print(
+        f"L/M {dec['lm']:.3f} = eps {s['L']['eps'] / s['M']['eps']:.3f} x pe {dec['pe_lm']:.3f} (+net debt; residual num {dec['num_lm']:.3f})"
+        f" | H/M {dec['hm']:.3f} = eps {s['H']['eps'] / s['M']['eps']:.3f} x pe {dec['pe_hm']:.3f} (residual num {dec['num_hm']:.3f})"
+        f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
+    )
+    print(
+        f"option SiC  deal {inp['sic_stake']:.0%} x {inp['sic_deal_value']:.0f}M -> {v_deal:.2f}/sh"
+        f" + base drag (loss {loss_100:.1f}M x {perpetual_pe(inp['g2_ind'], s['M']['roe'], inp['r_perp']):.1f}x x disc) {drag_base:.2f}"
+        f" -> V_opt {v_opt:.2f}"
+    )
+    print(
+        f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}"
+        f"  A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}"
+    )
+    print(
+        f"capex axis implied share (wide, DC&C FY28 incl. pluggables):"
+        f" M {inp['rev_dcc_m'] * 1e6 / inp['capex_m']:.2%}"
+    )
     print(
         f"implied PE on street FY28 EPS: L={L / inp['eps_cons_fy28']:.1f}x"
         f" M={M / inp['eps_cons_fy28']:.1f}x H={H / inp['eps_cons_fy28']:.1f}x"
         f" price={inp['price'] / inp['eps_cons_fy28']:.1f}x"
     )
-    print(f"price={inp['price']} zone={zone}")
+    # Market-implied reference only (never an anchor): the datacom multiple the
+    # price pays on the M numerator, and the perpetual g it would need.
+    impl_pe = ((inp["price"] - inp["net_debt_ps"]) / disc - s["M"]["v_ind"]) / s["M"]["eps_dcc"]
+    g_impl, ok = implied_g(impl_pe, s["M"]["roe"], inp["r_perp"])
+    print(
+        f"price-implied dcc PE on M numerator = {impl_pe:.1f}x -> g {g_impl:.2%}"
+        f" ({'well' if ok else 'ill'}-conditioned; r-g {inp['r_perp'] - g_impl:.2%}) — reference only"
+    )
+    print(f"price={inp['price']} zone={zone}  P/H={inp['price'] / H - 1:+.1%}")
+
+    # Band as evidence (裁决顺序 ③): the datacom g each guardrail edge implies at
+    # the tier ROE. The lower edge sits under the payout cap; the upper edge is
+    # within 2pp of the pole and is a market reading, not a candidate g.
+    edges = []
+    for t in TIERS:
+        g_lo, _ = implied_g(inp["pe_own_min"], s[t]["roe"], inp["r_perp"])
+        g_hi, _ = implied_g(inp["pe_own_max"], s[t]["roe"], inp["r_perp"])
+        edges.append(f"{t} [{g_lo:+.2%}, {g_hi:+.2%}{' pole' if inp['r_perp'] - g_hi < MIN_R_MINUS_G else ''}]")
+    print(
+        "band-edge implied g_dcc @ tier ROE: " + "  ".join(edges)
+        + f"  — g2_dcc {inp['g2_dcc']:.2%} inside every tier: "
+        f"{all(implied_g(inp['pe_own_min'], s[t]['roe'], inp['r_perp'])[0] <= inp['g2_dcc'] <= implied_g(inp['pe_own_max'], s[t]['roe'], inp['r_perp'])[0] for t in TIERS)}"
+    )
+
+    # Sensitivities the doc quotes (Outputs 敏感性): g2_dcc ±1pp and the
+    # untruncated peer median (above-cap values are reference only); g2_ind ±1pp
+    # (无同业锚) and the single-house MKSI reverse-solve.
+    def reprice(g_dcc: float, g_ind: float) -> tuple[float, float, float]:
+        out = []
+        for t in TIERS:
+            roe = s[t]["roe"]
+            v = s[t]["eps_dcc"] * perpetual_pe(g_dcc, roe, inp["r_perp"]) + s[t]["eps_ind"] * perpetual_pe(g_ind, roe, inp["r_perp"])
+            out.append(v * disc + inp["net_debt_ps"])
+        return tuple(out)
+
+    for g in (inp["g2_dcc"] - 0.01, inp["g2_dcc"] + 0.01, 0.0606):
+        tag = " (above cap, reference only)" if g > 0.06 + 1e-9 else ""
+        print(f"  sens g2_dcc={g:.4f}{tag}: " + "/".join(f"{x:.2f}" for x in reprice(g, inp["g2_ind"])))
+    for g in (inp["g2_ind"] - 0.01, inp["g2_ind"] + 0.01, 0.0409):
+        tag = " (MKSI single house, reference)" if abs(g - 0.0409) < 1e-9 else " (no peer anchor)"
+        print(f"  sens g2_ind={g:+.4f}{tag}: " + "/".join(f"{x:.2f}" for x in reprice(inp["g2_dcc"], g)))
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

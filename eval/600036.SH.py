@@ -21,11 +21,13 @@ Run:  python3 eval/600036.SH.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.gordon import R_OPERATING, check_r, justified_pb  # noqa: E402
+from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
+from lib.gordon import G_CAP, R_OPERATING, check_g_cap, check_r, justified_pb  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -37,9 +39,11 @@ YI = 1e8
 ROE_L_TOL = 5e-4
 _ROE_NEAR_R = 0.03
 
+# `g2` / `r_op` (not `g` / `r`) so scripts/calibration.py picks the perpetual g
+# and the r tier up in its cross-ticker table (AGENTS.md「永续增长口径」).
 REQUIRED = [
     "price", "price_h", "shares", "bps", "bps_prev", "fx_hkdcny",
-    "roe_m", "roe_h", "g", "r", "pb_hist_hi",
+    "roe_m", "roe_h", "g2", "r_op", "pb_hist_hi",
     "npl", "cov_now", "cov_l", "tax_rate",
 ]
 
@@ -58,7 +62,7 @@ def roe_l_of(inp: dict[str, float]) -> float:
 
 
 def fair_pb(inp: dict[str, float], roe: float, clip: bool) -> float:
-    pb = justified_pb(inp["g"], roe, inp["r"])
+    pb = justified_pb(inp["g2"], roe, inp["r_op"])
     if clip:
         pb = min(pb, inp["pb_hist_hi"])
     return pb
@@ -66,6 +70,25 @@ def fair_pb(inp: dict[str, float], roe: float, clip: bool) -> float:
 
 def anchor(inp: dict[str, float], roe: float, clip: bool) -> float:
     return inp["bps"] * fair_pb(inp, roe, clip)
+
+
+def check_southbound_mount(md: str) -> list[str]:
+    """Axis §3 rule 3: a mounted ticker reports the H-share companion band and live H/A.
+
+    The southbound axis only supplies the AH-premium context here (A9); what it
+    still locks is the reporting contract its own §4 direction check depends on.
+    """
+    if not AXIS_SOUTHBOUND.exists():
+        return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
+    errors: list[str] = []
+    if "600036.SH" not in AXIS_SOUTHBOUND.read_text(encoding="utf-8"):
+        errors.append("600036.SH is not declared on _AXIS.southbound-repricing.md — "
+                      "a mount has to exist on both sides")
+    if "H 股对照带" not in md:
+        errors.append("framework lacks the H-share companion band (axis §3 rule 3)")
+    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
+        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
+    return errors
 
 
 def main() -> int:
@@ -79,9 +102,11 @@ def main() -> int:
     if errors:
         return report(errors)
 
-    errors += check_r(inp["r"], "r")
-    if abs(inp["r"] - R_OPERATING) > 1e-9:
-        errors.append(f"r={inp['r']} expected operating tier {R_OPERATING} for CMB")
+    errors += check_r(inp["r_op"], "r_op")
+    if abs(inp["r_op"] - R_OPERATING) > 1e-9:
+        errors.append(f"r_op={inp['r_op']} expected operating tier {R_OPERATING} for CMB")
+    errors += check_g_cap(inp["g2"], "g2")  # AGENTS.md 永续上限 6%
+    errors += check_southbound_mount(md)
 
     hit = provision_hit_pp(inp)
     roe_l_raw = roe_l_of(inp)
@@ -93,13 +118,13 @@ def main() -> int:
         )
     roe_m = inp["roe_m"]
     roe_h = inp["roe_h"]
-    g = inp["g"]
+    g = inp["g2"]
 
     errors += ladder("roe", roe_l, roe_m, roe_h)
     if inp["cov_l"] <= inp["cov_now"]:
         errors.append("cov_l must exceed cov_now — L is a provision *rebuild*")
-    if g >= inp["r"]:
-        errors.append(f"g={g} must be < r={inp['r']}")
+    if g >= inp["r_op"]:
+        errors.append(f"g2={g} must be < r={inp['r_op']}")
     for lab, roe in (("L", roe_l), ("M", roe_m), ("H", roe_h)):
         if roe <= g:
             errors.append(f"ROE_{lab}={roe} must exceed g={g}")
@@ -125,10 +150,16 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
+    # A2e-2c flat-multiple ladder in PE space: every tier on PE_M = PB_M / ROE_M,
+    # so the ladder that remains is the ROE (numerator) ladder alone.
+    pe_m = pb_m / roe_m
+    flat = tuple(roe * inp["bps"] * pe_m for roe in (roe_l, roe_m, roe_h))
+    errors += ladder("flat-multiple", *flat)
+
     # Market-implied ROE (reference only)
     pb_mkt = inp["price"] / inp["bps"]
-    roe_mkt = pb_mkt * (inp["r"] - g) + g
-    near_r = abs(roe_m - inp["r"]) <= _ROE_NEAR_R
+    roe_mkt = pb_mkt * (inp["r_op"] - g) + g
+    near_r = abs(roe_m - inp["r_op"]) <= _ROE_NEAR_R
 
     # Seller mapping sanity (non-fatal prints)
     seller_mean = inp.get("seller_tp_mean")
@@ -142,6 +173,11 @@ def main() -> int:
     print(f"{'M':<3}{roe_m:8.2%}{g:6.0%}{pb_m:9.4f}{pb_m:9.4f}{M:9.2f}")
     print(f"{'H':<3}{roe_h:8.2%}{g:6.0%}{pb_h_raw:9.4f}{pb_h:9.4f}{H:9.2f}"
           + ("  (clipped to pb_hist_hi)" if clipped else ""))
+    if clipped:
+        # valuation-rules 裁决顺序 ③: the clip is the same number as solving
+        # (ROE_H - g)/(r - g) = pb_hist_hi for g — report that band-edge g (A6).
+        g_h_edge = (roe_h - inp["pb_hist_hi"] * inp["r_op"]) / (1.0 - inp["pb_hist_hi"])
+        print(f"H 带边反解 g_H={g_h_edge:.2%} (≡ clip; ≤ cap {G_CAP:.0%}: {g_h_edge <= G_CAP})")
     print(
         f"拨备冲击: NPL {inp['npl'] / YI:.1f}亿 × Δcov "
         f"→ 税后 {inp['npl'] * (inp['cov_l'] - inp['cov_now']) * (1 - inp['tax_rate']) / YI:.1f}亿 "
@@ -151,11 +187,13 @@ def main() -> int:
         f"ROE情景比 (ROE-g): L/M={(roe_l - g) / (roe_m - g):.3f} "
         f"H/M={(roe_h - g) / (roe_m - g):.3f}"
     )
+    print(f"flat-multiple @PE_M={pe_m:.2f}x (PB_M/ROE_M): "
+          f"L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"price={inp['price']} zone={zone}  隐含ROE={roe_mkt:.2%} @ g={g:.0%}")
     print(
-        f"A11 |ROE_M-r|={abs(roe_m - inp['r']):.2%} "
+        f"A11 |ROE_M-r|={abs(roe_m - inp['r_op']):.2%} "
         f"well_conditioned_for_implied_g={not near_r}"
     )
     if seller_mean is not None:

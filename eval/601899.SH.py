@@ -4,19 +4,35 @@
 frameworks/601899.SH.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
-formula_id: zijin_fed_li_dual_axis_gp_pe_v4
+formula_id: zijin_fed_li_dual_axis_gp_pe_v4_gordon_v2
 
 Two orthogonal axes:
   * Fed rate path → gold / copper USD ladder (_AXIS.fed-path-gold-copper)
   * Lithium supply regime → battery-grade Li2CO3 CNY (_AXIS.lithium-carbonate)
 
-Gold/copper/silver use current consolidated sales (no discount). Lithium uses
-2028 planned volume (30 万 t LCE) discounted n_disc_li years at r_disc_li.
-Residual block excludes lithium. Cycle PE 12 flat; L floored at pb_floor × bps.
+Base deck: every leg, lithium included, uses current consolidated sales (no
+discount).  The 2028 lithium plan (30 万 t × δ²) is a single-source company
+guide and therefore lives in the candidate band only (AGENTS.md「共识升级候选带」).
 
-M regression (rewritten): gold+copper+silver+non-li residual reproduce the
-1H2026 annualised bridge; lithium is PV(30 万 t × axis-M realization), so
-group M parent is above 1H2026×2 by the lithium volume uplift.
+Multiples are Gordon-generated (valuation-rules「永续增长口径」): per tier
+ROE_x = parent_x / equity, PE_x = perpetual_pe(g2, ROE_x, r_perp) with ONE
+g2 for all tiers (flat, A2e-5 cyclical default).  g2 = the two legs' tier-1
+peer cross-section values (gold+copper producers 2.76%, lithium producers
+2.35%) blended by M-tier gross-profit weight; the residual block carries 0.
+The axis 永续 g2 rows are referenced verbatim (`axis_g2_*`) and superseded by
+tier 1.  The tier-to-tier multiple spread is the ROE term only (mechanical).
+
+L tier (valuation-rules「谷底档」): the axis L world (gold 3,942 / copper 9,431
+/ Li2CO3 103k) is a regime, not the company's realised trough, so it is priced
+as a low steady state.  The recovery form `recovery_two_stage_pe` on the
+company's own measured path (FY2016 18.40 亿 → FY2018 40.94 亿, n = 2) is
+printed as a coordinate: it overshoots M with the measured CAGR and collapses
+into M with the model's L→M magnitude, so it is not the anchor.  The own-year
+PE band is only a guardrail.  L floored at pb_floor × bps.
+
+M regression: gold+copper+silver+non-li residual reproduce the 1H2026
+annualised bridge; lithium is 8.8 万 t × axis-M realization, so group M parent
+differs from 1H2026×2 only by the axis-M vs H1 ASP gap on that volume.
 
 Run:  python3 eval/601899.SH.py
 """
@@ -28,11 +44,17 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.axes import check_au_cu_mount, check_li2co3_mount  # noqa: E402
+from lib.axes import AXIS_AU_CU, AXIS_LI2CO3, check_au_cu_mount, check_li2co3_mount  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.tiers import report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
 PEER = Path(__file__).resolve().parent.parent / "frameworks" / "603993.SH.md"
-FORMULA_ID = "zijin_fed_li_dual_axis_gp_pe_v4"
+FORMULA_ID = "zijin_fed_li_dual_axis_gp_pe_v4_gordon_v2"
+MIN_R_MINUS_G = 0.02
+# A25: the company's own realised trough→recovery path (Longbridge annual parent NI,
+# FY2016 18.40 亿 → FY2018 40.94 亿, the last copper/gold cycle trough).
+RECOVERY_MEASURED = {"FY2016→FY2018": (18.40, 40.94, 2)}
 TOL = 0.05
 YI = 1e8
 OZ_TO_G = 31.1035
@@ -73,10 +95,22 @@ REQUIRED = [
     "vol_ag_g", "price_ag_m", "cost_ag",
     "li2co3_l", "li2co3_m", "li2co3_h", "realization_li",
     "vol_li_t", "cost_li", "r_disc_li", "n_disc_li",
+    "vol_li_plan", "n_disc_li_plan",
     "gp_rest", "rev_other_mine", "levy_rate", "opex_fixed", "inv_income",
     "tax_rate", "nci_share",
-    "pe_mid", "pe_lo", "pe_hi", "pb_floor",
+    "equity", "r_perp", "axis_g2_aucu", "axis_g2_li", "g2_aucu", "g2_li", "g2",
+    "pe_own_min", "pe_own_max", "pb_floor",
 ]
+
+# Axis「永续 g2（YYYY-MM-DD）」row: the shared perpetual g every mount reads.
+_AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%", re.MULTILINE)
+
+
+def axis_g2(path: Path) -> float:
+    m = _AXIS_G2_ROW.search(path.read_text(encoding="utf-8"))
+    if not m:
+        raise ValueError(f"{path.name}: no 永续 g2 row")
+    return float(m.group(1)) / 100.0
 
 
 def parse_inputs(md: str) -> dict[str, float]:
@@ -190,10 +224,24 @@ def main() -> int:
         lo, mid, hi = (inp[k] for k in keys)
         if not (lo < mid < hi):
             errors.append(f"{metal} ladder violated: {lo}/{mid}/{hi}")
-    if not (inp["pe_lo"] < inp["pe_mid"] < inp["pe_hi"]):
-        errors.append(f"pe band violated: {inp['pe_lo']}/{inp['pe_mid']}/{inp['pe_hi']}")
-    if inp["r_disc_li"] <= 0 or inp["n_disc_li"] < 0:
+    if inp["r_disc_li"] <= 0 or inp["n_disc_li"] < 0 or inp["n_disc_li_plan"] < 0:
         errors.append("lithium discount inputs invalid")
+    if inp["n_disc_li"] != 0:
+        errors.append("base deck lithium is current volume and must not be discounted (A12)")
+    # Gordon inputs: r on a tier, every g under the cap, r − g off the pole, and
+    # the axis rows referenced verbatim (they are superseded by tier 1, A21).
+    errors += check_r(inp["r_perp"], "r_perp")
+    for k in ("g2", "g2_aucu", "g2_li", "axis_g2_aucu", "axis_g2_li"):
+        errors += check_g_cap(inp[k], k)
+    if inp["r_perp"] - inp["g2"] < MIN_R_MINUS_G:
+        errors.append(f"r − g2 = {inp['r_perp'] - inp['g2']:.4f} < {MIN_R_MINUS_G} (pole)")
+    for k, path in (("axis_g2_aucu", AXIS_AU_CU), ("axis_g2_li", AXIS_LI2CO3)):
+        want = axis_g2(path)
+        if abs(inp[k] - want) > 1e-9:
+            errors.append(f"{k}={inp[k]} vs {path.name} 永续 g2 {want}")
+    for k in inp:
+        if k.startswith("p_"):
+            errors.append(f"probability-style input {k} in Inputs")
     if abs(inp["cost_li"] - LI_COST_H1) / LI_COST_H1 > 0.01:
         errors.append(f"cost_li {inp['cost_li']:.2f} vs H1-implied {LI_COST_H1:.2f}")
     if errors:
@@ -242,7 +290,7 @@ def main() -> int:
             f"price_li_m derived {S['m']['p_li']:.2f} vs H1 ASP × M/150k {li_m_ref:.2f}"
         )
 
-    # M regression (rewritten): non-li 1H26×2 + lithium PV uplift.
+    # M regression: non-li 1H26×2 + lithium re-priced at axis M on H1 volume.
     li_old = lithium_parent_standalone(LI_ASP_H1, LI_VOL_H1 * 2, inp)
     li_new = lithium_parent_standalone(S["m"]["p_li"], inp["vol_li_t"], inp) * S["m"]["disc"]
     expected_m_parent = H1_2026_X2["parent"] - li_old + li_new
@@ -257,10 +305,37 @@ def main() -> int:
         print("FAIL (M guard):", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # --- Gordon multiples ------------------------------------------------------
+    # One flat g2 = the two legs' tier-1 peer values blended by M-tier
+    # gross-profit weight; the residual block (smelting / trading / zinc / moly)
+    # has no cluster and is frozen across tiers, so it gets 0.
+    sm = S["m"]
+    w_metal = (sm["gp_au"] + sm["gp_cu"] + sm["gp_ag"]) / sm["gp"]
+    w_li = sm["gp_li"] / sm["gp"]
+    g2_blend = w_metal * inp["g2_aucu"] + w_li * inp["g2_li"]
+    if abs(inp["g2"] - g2_blend) > 1e-4:
+        errors.append(f"g2={inp['g2']} vs blended tier-1 g2 {g2_blend:.5f}")
+
+    def gordon(s: dict[str, float], g2: float) -> tuple[float, float]:
+        roe = s["parent"] / inp["equity"]
+        return roe, perpetual_pe(g2, roe, inp["r_perp"])
+
+    g_by_tier = {"l": inp["g2"], "m": inp["g2"], "h": inp["g2"]}
+    PE = {t: gordon(S[t], g_by_tier[t]) for t in ("l", "m", "h")}
+    pe_l, pe_m, pe_h = (PE[t][1] for t in ("l", "m", "h"))
+    # Guardrail (裁决顺序 ③): generated multiples inside the own-year band; a
+    # tier outside is BLOCKED, never fixed by twisting g or r.
+    for tag, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
+        if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
+            errors.append(
+                f"guardrail: PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g"
+            )
+
     floor = inp["pb_floor"] * inp["bps"]
-    L = max(S["l"]["eps"] * inp["pe_mid"], floor)
-    M = S["m"]["eps"] * inp["pe_mid"]
-    H = S["h"]["eps"] * inp["pe_mid"]
+    scenario_L = S["l"]["eps"] * pe_l
+    L = max(scenario_L, floor)
+    M = S["m"]["eps"] * pe_m
+    H = S["h"]["eps"] * pe_h
     A = (L + M) / 2
     B = (M + H) / 2
     zone = zone_of(inp["price"], L, M, H)
@@ -268,6 +343,22 @@ def main() -> int:
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
+
+    # A2e-2c flat-multiple ladder: every tier at PE_M must still order.
+    flat = [max(S["l"]["eps"] * pe_m, floor), S["m"]["eps"] * pe_m, S["h"]["eps"] * pe_m]
+    if not (flat[0] < flat[1] < flat[2]):
+        errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
+
+    # Candidate band (A2e-7h): same formula, only the single-source 2028 plan
+    # volume and its discount swapped in; g tiers and ROE rule untouched.
+    cand_inp = dict(inp, vol_li_t=inp["vol_li_plan"], n_disc_li=inp["n_disc_li_plan"])
+    C = {t: scenario(cand_inp, t) for t in ("l", "m", "h")}
+    cand_pe = {t: perpetual_pe(g_by_tier[t], C[t]["parent"] / inp["equity"], inp["r_perp"]) for t in C}
+    Lc = max(C["l"]["eps"] * cand_pe["l"], floor)
+    Mc = C["m"]["eps"] * cand_pe["m"]
+    Hc = C["h"]["eps"] * cand_pe["h"]
+    if not (Lc < Mc < Hc):
+        errors.append(f"candidate band not ordered: {Lc:.2f}/{Mc:.2f}/{Hc:.2f}")
 
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
     stated = {
@@ -283,6 +374,16 @@ def main() -> int:
             errors.append(f"stated {k} not found")
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
+    for label, want, rx in (
+        ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*"),
+        ("scenario_L", scenario_L, r"`scenario_L` = \*\*([0-9.]+)\*\*"),
+        ("L′", Lc, r"L′ = \*\*([0-9.]+)\*\*"),
+        ("M′", Mc, r"M′ = \*\*([0-9.]+)\*\*"),
+        ("H′", Hc, r"H′ = \*\*([0-9.]+)\*\*"),
+    ):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > TOL:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
     zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
     stated_zone = zm.group(1) if zm else None
@@ -314,19 +415,44 @@ def main() -> int:
         f"+ PV-li {li_new / YI:.1f}"
     )
     print(
-        f"pe_mid={inp['pe_mid']:g}  floor={floor:.2f}  "
-        f"li disc={(1 + inp['r_disc_li']) ** (-inp['n_disc_li']):.4f} "
-        f"({inp['n_disc_li']:g}y @{inp['r_disc_li']:.0%})"
+        f"gordon: r={inp['r_perp']:g} g2={inp['g2']:g} flat "
+        f"(blend {g2_blend:.4f} = metal {w_metal:.3f}×{inp['g2_aucu']:g} [tier 1] + li {w_li:.3f}×{inp['g2_li']:g} [tier 1]; "
+        f"axis rows {inp['axis_g2_aucu']:g} / {inp['axis_g2_li']:g} referenced, superseded) "
+        f"roe={PE['l'][0]:.3f}/{PE['m'][0]:.3f}/{PE['h'][0]:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} "
+        f"inside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] (spread = ROE term only)"
     )
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"price={inp['price']} zone={zone}")
-    print(
-        "PE sensitivity: "
-        + " | ".join(
-            f"pe={pe:g} -> {zone_of(inp['price'], max(S['l']['eps'] * pe, floor), S['m']['eps'] * pe, S['h']['eps'] * pe)}"
-            for pe in (inp["pe_lo"], inp["pe_mid"], inp["pe_hi"])
+    for dg in (-0.01, 0.01):
+        pe_alt = perpetual_pe(inp["g2"] + dg, PE["m"][0], inp["r_perp"])
+        print(f"  g2 {dg:+.0%} -> PE_M {pe_alt:.2f}, M {S['m']['eps'] * pe_alt:.2f}")
+    # A25 谷底档 coordinates: (i) the measured trough→recovery CAGR applied to the L
+    # numerator; (ii) the measured n with the model's own L→M magnitude.  Both are
+    # printed, neither is the anchor (see docstring).
+    for label, (np0, np1, n) in RECOVERY_MEASURED.items():
+        g1_meas = (np1 / np0) ** (1.0 / n) - 1.0
+        pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2"], PE["m"][0], inp["r_perp"])
+        g1_lm = (S["m"]["eps"] / S["l"]["eps"]) ** (1.0 / n) - 1.0
+        pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2"], PE["m"][0], inp["r_perp"])
+        print(
+            f"谷底档坐标（A25）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {S['l']['eps'] * pe_i:.2f} "
+            f"(vs M {S['m']['eps'] * pe_m:.2f}: {'overshoot' if S['l']['eps'] * pe_i > S['m']['eps'] * pe_m else 'below M'}); "
+            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {S['l']['eps'] * pe_ii:.2f} (L/M {S['l']['eps'] * pe_ii / (S['m']['eps'] * pe_m):.3f}, collapsed)"
         )
+    print(f"谷底 x 1/r = {S['l']['eps'] / inp['r_perp']:.2f}  (deep_discount pressure coordinate)")
+    print(f"floor={floor:.2f} scenario_L={scenario_L:.2f} winner={'floor' if floor > scenario_L else 'scenario_L'}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    for line in tier_report((scenario_L, M, H), (pe_l, pe_m, pe_h), (S["l"]["eps"], S["m"]["eps"], S["h"]["eps"])):
+        print(line)
+    print(
+        f"L/M {L / M:.3f} = num {S['l']['eps'] / S['m']['eps']:.3f} x pe {pe_l / pe_m:.3f} | "
+        f"H/M {H / M:.3f} = num {S['h']['eps'] / S['m']['eps']:.3f} x pe {pe_h / pe_m:.3f} | "
+        f"width {(H - L) / (2 * M):.3f}"
     )
+    print(
+        f"candidate (2028 规划量·公司指引, {inp['vol_li_plan']:g} t × δ {(1 + inp['r_disc_li']) ** (-inp['n_disc_li_plan']):.4f}): "
+        f"L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}"
+    )
+    print(f"price={inp['price']} zone={zone}")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

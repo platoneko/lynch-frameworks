@@ -8,9 +8,13 @@ formula_id: qcom_sotp_base4_qtl_evebit_vopt_fy27_v1
 
 Three things here are specific to this ticker:
 
-- QTL exits Gordon. Same ruler as NOK.US's Technology Standards leg: scaled
-  pre-tax EBT/share × EV/EBIT 9/12/16 (L/M/H), current-year, undiscounted.
-  Debt-like cash-flow quality is carried by the multiple band, not by r=7%.
+- QTL exits Gordon. Same ruler AND the same ladder as NOK.US's Technology
+  Standards leg: scaled pre-tax EBT/share × EV/EBIT 10 / 12.4 / 18.9 (L/M/H),
+  current-year, undiscounted.  The three rungs are prints for the
+  licensing-annuity class (BofA "other businesses" 10x / sell-side QTL SOTP
+  cluster midpoint / IDCC realised 18.9x) and are checked rung by rung against
+  frameworks/NOK.US.md -- a rung moved on one side only is a drift.  Debt-like
+  cash-flow quality is carried by the multiple band, not by r=7%.
 - The other three legs stay Gordon flat at r_op=10%. `cyclical` policy asks
   for flat multiples on those legs (A2e-5); the cycle lives in the numerator.
 - Probabilities never touch the base. `P_K` is deliberately absent from the
@@ -29,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.gordon import R_OPERATING, check_r, perpetual_pe  # noqa: E402
+from eval.lib.gordon import R_OPERATING, check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
@@ -41,12 +45,16 @@ from eval.lib.tiers import report as tier_report  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "QCOM.US.md"
+# One annuity ladder for the asset class (A2e-5b): NOK's Technology Standards
+# leg prices on the same three rungs.  Pattern: eval/603799.SH.py SHARED_LADDER.
+PEER = REPO_ROOT / "frameworks" / "NOK.US.md"
 FORMULA_ID = "qcom_sotp_base4_qtl_evebit_vopt_fy27_v1"
 MM = 1e6  # revenue inputs are $M; shares and equity are absolute
 
 LEGS = ("qtl", "hs", "auto", "iot")
 OP_LEGS = ("hs", "auto", "iot")
 TIERS = ("l", "m", "h")
+SHARED_LADDER = {f"ev_ebit_ts_{t}": f"ev_ebit_ts_{t}" for t in TIERS}
 
 # 表3 only. Not an Input by design (A2e-7a). p_H defaults to 1.0 (A2e-7d);
 # p_M is anchored on the vested warrant fraction and the named-customer coverage
@@ -54,12 +62,12 @@ TIERS = ("l", "m", "h")
 P_K = (0.00, 0.35, 1.00)
 
 REQUIRED = (
-    ["price", "shares", "tax_rate", "equity", "v_opt", "r_op"]
+    ["price", "shares", "tax_rate", "equity", "v_opt", "r_op", "pe_own_min", "pe_own_max"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"om_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"unalloc_{t}" for t in TIERS]
-    + [f"g_{leg}" for leg in OP_LEGS]
+    + [f"g2_{leg}" for leg in OP_LEGS]
 )
 
 
@@ -116,7 +124,7 @@ def main() -> int:
     roe_m = eps_by_tier[1] * inp["shares"] / inp["equity"]
 
     # Operating legs: one Gordon PE each, shared by all three tiers (flat, A2e-5).
-    pe_op = {leg: perpetual_pe(inp[f"g_{leg}"], roe_m, inp["r_op"]) for leg in OP_LEGS}
+    pe_op = {leg: perpetual_pe(inp[f"g2_{leg}"], roe_m, inp["r_op"]) for leg in OP_LEGS}
     ev_ebit = [inp[f"ev_ebit_ts_{t}"] for t in TIERS]
 
     leg_vals: list[dict[str, float]] = []
@@ -139,7 +147,7 @@ def main() -> int:
     for leg in LEGS:
         cells = " / ".join(f"{leg_vals[i][leg]:6.2f}" for i in range(3))
         if leg == "qtl":
-            mult = " / ".join(f"{ev_ebit[i]:.0f}×" for i in range(3))
+            mult = " / ".join(f"{ev_ebit[i]:g}×" for i in range(3))
         else:
             mult = f"{pe_op[leg]:.2f}× flat"
         print(f"     {leg:6} {cells:30} {mult:>18}")
@@ -159,13 +167,38 @@ def main() -> int:
     if inp["price"] > H:
         print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
 
-    # Flat@12× control: QTL multiples pinned to M; numerator ladder still holds.
-    flat12 = [
+    # Flat@M control: QTL multiples pinned to the M rung; numerator ladder still holds.
+    flat_m = [
         ebt_by_tier[i]["qtl"] * ev_ebit[1]
         + sum(eps_by_tier_map[i][leg] * pe_op[leg] for leg in OP_LEGS)
         for i in range(3)
     ]
-    print(f"Flat@12×  L={flat12[0]:.2f} M={flat12[1]:.2f} H={flat12[2]:.2f}")
+    print(f"Flat@{ev_ebit[1]:g}×  L={flat_m[0]:.2f} M={flat_m[1]:.2f} H={flat_m[2]:.2f}")
+
+    # Shared annuity ladder (A14): every rung must equal NOK's TS rung.
+    peer = parse_inputs(PEER.read_text(encoding="utf-8"))
+    for ours, theirs in SHARED_LADDER.items():
+        if theirs not in peer:
+            errors += [f"peer NOK.US missing {theirs}"]
+        elif abs(inp[ours] - peer[theirs]) > 1e-9:
+            errors += [f"shared annuity ladder drift: {ours}={inp[ours]:g} vs NOK.{theirs}={peer[theirs]:g}"]
+    print("shared ladder vs NOK.US TS: " + ("drift" if any("shared annuity ladder" in e for e in errors)
+                                             else f"OK ({' / '.join(f'{x:g}' for x in ev_ebit)})"))
+
+    # Guardrail (valuation-rules 裁决顺序 ③): the per-leg Gordon multiples have no
+    # per-leg realised band to sit in, so the test is run on the whole-company
+    # multiple each tier implies (base / tier EPS) against the ticker's own
+    # 5-year trailing PE band.  Outside the band would call for a band-edge g,
+    # not a wider band.
+    own_lo, own_hi = inp["pe_own_min"], inp["pe_own_max"]
+    blended = [base[i] / eps_by_tier[i] for i in range(3)]
+    g_lo, _ = implied_g(own_lo, roe_m, inp["r_op"])
+    g_hi, _ = implied_g(own_hi, roe_m, inp["r_op"])
+    print(f"guardrail (③): blended L/M/H = {blended[0]:.2f}/{blended[1]:.2f}/{blended[2]:.2f}x"
+          f" vs own 5y band [{own_lo:.2f}, {own_hi:.2f}] | band-edge g at ROE_M: {g_lo:+.2%} .. {g_hi:+.2%}")
+    for name, pe in zip("LMH", blended):
+        if not (own_lo - 1e-9 <= pe <= own_hi + 1e-9):
+            errors += [f"guardrail: {name} blended multiple {pe:.2f}x outside own band [{own_lo}, {own_hi}] — reverse-solve g to the band edge, do not widen the band"]
 
     errors += check_against_stated(
         md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.05
@@ -176,6 +209,9 @@ def main() -> int:
     errors += ladder("ev_ebit_ts", *ev_ebit)
     errors += check_no_p_leak(L, adj[0])
     errors += check_r(inp["r_op"], "r_op")
+    # AGENTS.md「永续增长口径」: every Gordon leg's perpetual g stays at or below the cap.
+    for leg in OP_LEGS:
+        errors += check_g_cap(inp[f"g2_{leg}"], f"g2_{leg}")
     if abs(inp["r_op"] - R_OPERATING) > 1e-9:
         errors += [f"r_op={inp['r_op']} != {R_OPERATING} — 换档属仓库级框架纠正"]
     if not P_K[0] <= P_K[1] <= P_K[2]:

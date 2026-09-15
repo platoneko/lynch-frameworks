@@ -62,11 +62,20 @@ def main() -> None:
     print(f"{TICKER} {FORMULA_ID}")
     print(f"L/M/H = {L:.2f} / {M:.2f} / {H:.2f}")
     print(f"A/B = {A:.2f} / {B:.2f}")
-    print(f"L/M={L/M:.2f} H/M={H/M:.2f} width={(H-L)/(2*M):.2f} V_opt/M={V_OPT/M:.2f}")
+    # A2e-2c / A2e-5: the display leg is flat 14x on every tier, so the flat-multiple
+    # ladder is the display-leg ladder itself; the tier spread is all numerator.
+    flat = {x: leg_ps(NI_DISPLAY[x], PE_DISPLAY) for x in ("L", "M", "H")}
+    print(f"flat-multiple ladder (display leg @ {PE_DISPLAY:g}x): {flat['L']:.2f}/{flat['M']:.2f}/{flat['H']:.2f}")
+    print(
+        f"L/M={L/M:.2f} = num {NI_DISPLAY['L']/NI_DISPLAY['M']:.2f} x pe 1.00 | "
+        f"H/M={H/M:.2f} = num {NI_DISPLAY['H']/NI_DISPLAY['M']:.2f} x pe 1.00 (+PV leg at H) | "
+        f"width={(H-L)/(2*M):.2f} V_opt/M={V_OPT/M:.2f}"
+    )
     print(f"price {PRICE} → zone {zone}")
     for x in ("L", "M", "H"):
         adj = a[x] + P_K[x] * V_OPT
         print(f"  zone+V {x}: {a[x]:.2f} + {P_K[x]}*{V_OPT} = {adj:.2f}")
+    print("OK")
 
 
 if __name__ == "__main__":

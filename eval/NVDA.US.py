@@ -4,13 +4,18 @@
 frameworks/NVDA.US.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from the §3 Inputs table and exits 1 on any mismatch.
 
-formula_id: nvda_fy28_scenario_rev_gm_pe_v1
+formula_id: nvda_fy28_scenario_rev_gm_gordon_v2
 
 Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     eps_i = (rev_i * gm_i - opex_fy28) * (1 - tax_rate) / shares_fy28
-    anchor_i = eps_i * pe_i
-All three tiers use ONE flat 20x multiple; they are told apart by the numerator
-alone (A2e-2b/2c). Revenue for all three comes from the same analyst range:
+    ROE_i = eps_i * shares_fy28 / equity
+    anchor_i = eps_i * perpetual_pe(g2, ROE_i, r_perp)
+The multiple is generated, not borrowed: one perpetual g2 shared by all three
+tiers (peer cross-section reverse-solve, capped at G_CAP), tier ROE from one
+equity field.  With ROE far above r the payout is ~1 and the three multiples
+differ by well under a turn, so the tiers are still told apart by the numerator
+alone (A2e-2c; the cyclical secondary's flat policy survives mechanically).
+Revenue for all three comes from the same analyst range:
 L = its low ($416.4B, a digestion year with gross margin reset to 65%),
 M = its mean ($673.5B), H = its high ($778.5B). The company's own +70% guide
 ($699.0B) is a coordinate inside the band, not the H numerator -- it is
@@ -18,17 +23,30 @@ explicitly supply-limited, so it caps capacity rather than demand (A3).
 Numerator basis is the company's own non-GAAP (includes SBC, excludes equity
 investment gains) -- GAAP EPS must NOT be used, see A10.
 
+Numerator year (valuation-rules 裁决顺序 ②, A20): FY2028 is the furthest year
+with a >=2-house consensus (52-house EPS range, 56-house revenue range); FY2029
+is single-house, so there is no transition year and no g1.  Guardrail (③, A19):
+every generated multiple must sit inside the ticker's own realised next-FY PE
+band (`pe_own_min/max`, normal-earnings segment); the band-edge Δg printed
+below is the shift of g2 that would take the M-tier multiple to either edge --
+evidence of what the market has paid for, not an input.
+
+V_opt (A14): the China data-center reopening priced as k=1 × the H20 quarterly
+run-rate the company actually booked in Q1 FY26 ($4.6B, 8-K Ex.99), at the
+M-tier gross margin and Gordon multiple.  Probabilities live only in table 3.
+
 Sanity checks beyond the anchor comparison:
   * scenario ordering  rev_l < rev_m <= rev_h, gm_l < gm_m <= gm_h,
-    pe_l <= pe_m <= pe_h, and the resulting eps_l < eps_m < eps_h
-  * pe hard cap (no anchor may use a multiple above the street's widest)
+    and the resulting eps_l < eps_m < eps_h
+  * r tier / g2 cap / r - g2 >= 2% (valuation-rules.md「永续增长口径」)
+  * guardrail: every generated multiple inside the ticker's own realised band
   * flat-multiple ladder (A2e-2c): the tiers must still order correctly with the
     multiple held flat, i.e. the numerator alone separates them
   * two-sided consensus bridge (A17): recomputing FY2027 with the same formula
     must land within 15% of the FY2027 consensus EPS, and the M-scenario EPS
     within 15% of the FY2028 consensus EPS -- this is what stops a dirty
     numerator from silently drifting into the anchors
-  * L < M < H
+  * L < M < H; stated V_opt and p_L/p_M/p_H present and consistent
 
 Run:  python3 eval/NVDA.US.py
 """
@@ -44,12 +62,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_cowos_mount  # noqa: E402
+from eval.lib.gordon import (  # noqa: E402
+    G_CAP,
+    R_OPERATING,
+    check_g_cap,
+    check_r,
+    implied_g,
+    perpetual_pe,
+)
 from eval.lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NVDA.US.md"
-FORMULA_ID = "nvda_fy28_scenario_rev_gm_pe_v1"
+FORMULA_ID = "nvda_fy28_scenario_rev_gm_gordon_v2"
 TOL = 0.05  # outputs are stated to 2 decimals
-PE_HARD_CAP = 30.0  # widest multiple anyone on the street applies (GS, normalized)
+MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A17: max allowed deviation from consensus EPS
 B = 1e9
 
@@ -64,9 +90,11 @@ REQUIRED = [
     "gm_l",
     "gm_m",
     "gm_h",
-    "pe_l",
-    "pe_m",
-    "pe_h",
+    "equity",
+    "r_perp",
+    "g2",
+    "pe_own_min",
+    "pe_own_max",
     "rev_fy27",
     "gm_fy27",
     "opex_fy27",
@@ -79,6 +107,8 @@ REQUIRED = [
     "cowos_quota_h",
     "dc_share_rev",
     "hyper_share_dc",
+    "china_dc_rev_unit",
+    "v_opt_units",
 ]
 
 _ANCHORS = re.compile(
@@ -87,6 +117,11 @@ _ANCHORS = re.compile(
     re.MULTILINE,
 )
 _ZONE = re.compile(r"zone = \*\*`([a-z_]+)`\*\*")
+_V_OPT = re.compile(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*")
+_P_TIERS = re.compile(
+    r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
+    r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)"
+)
 
 
 def parse_inputs(md: str) -> dict[str, float]:
@@ -153,10 +188,16 @@ def main() -> int:
         )
     if not (inp["gm_l"] < inp["gm_m"] <= inp["gm_h"]):
         errors.append(f"gm order: {inp['gm_l']}/{inp['gm_m']}/{inp['gm_h']}")
-    if not (inp["pe_l"] <= inp["pe_m"] <= inp["pe_h"]):
-        errors.append(f"pe order: {inp['pe_l']}/{inp['pe_m']}/{inp['pe_h']}")
-    if inp["pe_h"] > PE_HARD_CAP + 1e-9:
-        errors.append(f"pe_h={inp['pe_h']} exceeds hard cap {PE_HARD_CAP}")
+    # Perpetual-growth 口径: one operating r, one capped g2, not at the pole.
+    r, g2 = inp["r_perp"], inp["g2"]
+    errors += check_r(r, "r_perp")
+    if abs(r - R_OPERATING) > 1e-9:
+        errors.append(f"r_perp={r}: whole-company operating leg, expected {R_OPERATING}")
+    errors += check_g_cap(g2, "g2")
+    if r - g2 <= 0:
+        errors.append("perpetuity diverges: g2 >= r")
+    elif r - g2 < MIN_R_MINUS_G:
+        errors.append(f"r - g2 = {r - g2:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
 
     # --- Step 2: the FY2028 bridge, run three times ---
     tax, shares, opex = inp["tax_rate"], inp["shares_fy28"], inp["opex_fy28"]
@@ -166,9 +207,34 @@ def main() -> int:
     if not (eps_l < eps_m < eps_h):
         errors.append(f"eps order: {eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}")
 
-    L = eps_l * inp["pe_l"]
-    M = eps_m * inp["pe_m"]
-    H = eps_h * inp["pe_h"]
+    # --- Step 2b: multiples generated from g2 and tier ROE (AGENTS.md 永续增长口径) ---
+    roe_l, roe_m, roe_h = (e * shares / inp["equity"] for e in (eps_l, eps_m, eps_h))
+    pe_l, pe_m, pe_h = (perpetual_pe(g2, roe, r) for roe in (roe_l, roe_m, roe_h))
+    # Guardrail (裁决顺序 ③, A19): inside the ticker's own realised next-FY PE band.
+    for label, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
+        if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
+            errors.append(
+                f"{label} generated PE {pe:.2f}x outside own realised band "
+                f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
+            )
+
+    # Band-edge g (③ 带即证据): the g2 that would put the M-tier multiple on each
+    # edge of the own band.  Reported, never used.
+    def g_at(target: float) -> float:
+        lo, hi = -0.30, r - 1e-4
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if perpetual_pe(mid, roe_m, r) < target:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    band_edge_g = (g_at(inp["pe_own_min"]), g_at(inp["pe_own_max"]))
+
+    L = eps_l * pe_l
+    M = eps_m * pe_m
+    H = eps_h * pe_h
     A = (L + M) / 2
     Bcut = (M + H) / 2
     zone = zone_of(inp["price"], L, M, H)
@@ -209,10 +275,11 @@ def main() -> int:
     # multiple flat collapses a tier into its neighbour, the multiple was doing
     # the separating -- and a higher multiple on higher earnings is the cycle-
     # peak error this framework exists to avoid.
-    ladder_errors, _ = flat_multiple_ladder(
-        (eps_l, eps_m, eps_h), inp["pe_m"]
-    )
+    ladder_errors, _ = flat_multiple_ladder((eps_l, eps_m, eps_h), pe_m)
     errors.extend(ladder_errors)
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
 
     # --- Step 3c: shared-axis guard vs _AXIS.cowos-capacity.md --------------
     # The quotas do not enter the anchors; they are what the anchors *mean*.
@@ -227,6 +294,7 @@ def main() -> int:
     # --- Step 4: diagnostics that must never feed back into the anchors ---
     weight_m = (inp["price"] - L) / (M - L)
     implied_peak_pe = L / eps_m
+    g_mkt, g_mkt_ok = implied_g(inp["price"] / eps_m, roe_m, r)
 
     # On-axis revenue scales with the quota; ACIE is the residual. Printing the
     # implied ACIE move keeps L's weakest input (A4 ②) visible on every run.
@@ -241,6 +309,11 @@ def main() -> int:
         on_axis = on_axis_m * quota / inp["cowos_quota_m"]
         split[label] = (on_axis, rev - non_dc - on_axis)
     acie_m = split["M"][1]
+
+    # --- Step 4b: option ceiling (A14) -- probabilities only in table 3 ---
+    v_opt = (
+        inp["v_opt_units"] * inp["china_dc_rev_unit"] * inp["gm_m"] * (1.0 - tax) / shares * pe_m
+    )
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -257,6 +330,15 @@ def main() -> int:
                 errors.append(f"{k}: stated {stated[k]} vs recomputed {v:.4f}")
     if zm and zm.group(1) != zone:
         errors.append(f"zone: stated {zm.group(1)} vs recomputed {zone}")
+    vm = _V_OPT.search(out_sec)
+    if vm is None or abs(float(vm.group(1)) - v_opt) > TOL:
+        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {v_opt:.4f}")
+    pm = _P_TIERS.search(out_sec)
+    p_tiers = tuple(float(x) for x in pm.groups()) if pm else None
+    if p_tiers is None:
+        errors.append("p_L/p_M/p_H not stated in ### Outputs")
+    elif p_tiers[0] != 0.0:
+        errors.append(f"table 3 L row must equal the base L (p_L=0), got p_L={p_tiers[0]}")
 
     print(f"formula_id={FORMULA_ID}")
     print(
@@ -264,22 +346,36 @@ def main() -> int:
         f"  gm={inp['gm_l']:.3f}/{inp['gm_m']:.3f}/{inp['gm_h']:.3f}"
         f"  opex={opex / B:.1f}  tax={tax:.0%}  shares={shares / B:.2f}B"
     )
-    print(f"eps={eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}  pe={inp['pe_l']}/{inp['pe_m']}/{inp['pe_h']}")
+    print(f"eps={eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}  ROE={roe_l:.3f}/{roe_m:.3f}/{roe_h:.3f}"
+          f"  pe(g2={g2:g}, r={r:g})={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f}  band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]")
     print(
         f"bridge: FY27 eps {eps_fy27:.3f} vs cons {inp['eps_fy27_cons']} ({dev27:+.1%})"
         f" | FY28-M {eps_m:.3f} vs cons {inp['eps_fy28_cons']} ({dev28:+.1%})"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
+    cap_hit = band_edge_g[1] > G_CAP + 1e-9
+    print(
+        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge g @ M ROE: "
+        f"lower {band_edge_g[0]:+.4f} (Δ {band_edge_g[0] - g2:+.4f}) / upper {band_edge_g[1]:+.4f} "
+        f"(Δ {band_edge_g[1] - g2:+.4f}){' — above the 6% cap, unreachable under ①' if cap_hit else ''}"
+    )
+    print(
+        f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x China DC unit ${inp['china_dc_rev_unit'] / B:.1f}B/yr "
+        f"x gm_m {inp['gm_m']:.3f} x (1-tax) / shares x PE_M {pe_m:.2f})  V_opt/M {v_opt / M:.3f}"
+    )
+    if p_tiers:
+        opt = tuple(a + p * v_opt for a, p in zip((L, M, H), p_tiers))
+        a2, b2 = (opt[0] + opt[1]) / 2, (opt[1] + opt[2]) / 2
+        print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}  "
+              f"zone+V={zone_of(inp['price'], *opt)}")
     print(f"price={inp['price']} zone={zone}")
     print(
         f"implied weight on FY28 consensus = {weight_m:.1%}"
         f" | L implied peak PE = {implied_peak_pe:.2f}x"
+        f" | market-implied g (P / eps_M = {inp['price'] / eps_m:.1f}x) = {g_mkt:.4f}"
+        f" ({'well' if g_mkt_ok else 'ill'}-conditioned, reference only)"
     )
-    for line in tier_report(
-        (L, M, H),
-        (inp["pe_l"], inp["pe_m"], inp["pe_h"]),
-        (eps_l, eps_m, eps_h),
-    ):
+    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (eps_l, eps_m, eps_h)):
         print(line)
     print("axis _AXIS.cowos-capacity (α/β/γ -> L/M/H), $B on-axis / ACIE:")
     for label in ("L", "M", "H"):

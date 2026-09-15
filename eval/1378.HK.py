@@ -4,12 +4,23 @@
 frameworks/1378.HK.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
-formula_id: hongqiao_al_spread_gm_bridge_flat_pe_v2
+formula_id: hongqiao_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
 aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
 by 562.2万吨 x the axis's spread steps (−4,629 / +1,028 元/吨) through the
-marginal conversion rate.
+marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
+g rows (0% / 0% / 0% → flat 10×) at the tier's own forward ROE (NP_x / 中报归母权益).
+The L numerator is the axis's L rung — GS 2027E supply-glut level that may
+persist, not a trough that mean-reverts, and not this company's own trough year
+(2023H1 本公司擁有人應佔溢利 24.57亿 was far lower) — so g_L = 0 with g_M/g_H;
+IAI/CRU 3.3% is sensitivity / stretched only.  A v4 that ran the 谷底档 recovery
+stage on the axis rung let L converge on M and was rolled back (valuation-rules
+「谷底档」适用范围); the later g_L 3.3%「谷底回归中枢」overlay (L 20.05 / PE_L 10.75×)
+is also retired.  The printed 2023H1 trough x 1/r is only the deep_discount
+pressure coordinate.  The H-share cluster median that used to be typed in as
+`pe` is only a cross coordinate.  Anchors are HKD: CNY earnings ÷ fx_hkd_cny
+(1/1.1668).
 
 What is specific to this ticker is the shape of its integration.  Hongqiao's
 alumina is *sold outward*, so a high-alumina year pays the upstream leg while
@@ -31,9 +42,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.al_bridge import (  # noqa: E402
-    REQUIRED, anchors, bridge, check_regression, flat_ladder, pb_floor,
+    REQUIRED, anchors, bridge, check_gordon, check_regression, flat_ladder,
+    multiples, pb_floor,
 )
 from lib.axes import check_al_mount  # noqa: E402
+from lib.gordon import implied_g  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_inputs, report,
 )
@@ -41,11 +54,12 @@ from lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1378.HK.md"
 PEER_CAPTIVE = Path(__file__).resolve().parent.parent / "frameworks" / "002532.SZ.md"
-FORMULA_ID = "hongqiao_al_spread_gm_bridge_flat_pe_v2"
+FORMULA_ID = "hongqiao_al_spread_gm_bridge_gordon_v5"
 
 GP_M_FILING = 551.3  # 亿 CNY, 2026H1 x2 at the stated 31.5% margin
 NP_M_FILING = 344.2  # 亿 CNY, 2026H1 归母 172.1 x2
-PE_MEASURED_TOP = 9.79  # own 5-year PE high — H must not price above it
+SHARES_INTERIM = 98.194  # 亿股, issued at 2026-06-30 (interim note 16) — A14
+NP_TROUGH_2023H1 = 49.13  # 亿 CNY, 2023H1 本公司擁有人應佔溢利 2,456,623 千元 x2 — pressure coordinate only (A16)
 
 
 def main() -> int:
@@ -62,8 +76,14 @@ def main() -> int:
     errors += ladder("smelting spread", inp["spread_l"], inp["spread_m"], inp["spread_h"])
     errors += check_al_mount((inp["spread_l"], inp["spread_m"], inp["spread_h"]))
     errors += check_regression(inp, GP_M_FILING, NP_M_FILING)
+    errors += check_gordon(inp)
+    # A14: the per-share denominator is the interim's issued count, not a
+    # number backed out of a mis-stated EPS (the old 107.9亿 was).
+    if abs(inp["shares"] - SHARES_INTERIM) > 0.05:
+        errors.append(f"shares {inp['shares']} != interim issued {SHARES_INTERIM}亿 (A14)")
 
     (L, M, H), eps = anchors(inp, fx=inp["fx_hkd_cny"])
+    pes, roes = multiples(inp)
     errors += flat_ladder(eps)
 
     # Same L world for both mounts (alumina frozen), so the ordering is set by
@@ -81,11 +101,11 @@ def main() -> int:
                 "one (§1 属性 A)"
             )
 
-    # H is a price scenario, not a re-rating: the multiple it implies must stay
-    # inside the multiple this stock has actually printed.
+    # H is a price scenario, not a re-rating: the multiple it implies on M-tier
+    # EPS must stay inside the multiple this stock has actually printed.
     pe_at_h = H / (eps[1] / inp["fx_hkd_cny"])
-    if pe_at_h > PE_MEASURED_TOP:
-        errors.append(f"H implies {pe_at_h:.2f}x on M EPS, above own 5y high {PE_MEASURED_TOP}")
+    if pe_at_h > inp["pe_own_max"]:
+        errors.append(f"H implies {pe_at_h:.2f}x on M EPS, above own realised high {inp['pe_own_max']}")
 
     floor, floor_errors = pb_floor(inp, L)
     errors += floor_errors
@@ -97,12 +117,29 @@ def main() -> int:
     )
 
     br = bridge(inp)
+    fx = inp["fx_hkd_cny"]
+    flat = [e * pes[1] / fx for e in eps]
     print(f"1378.HK  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}  "
           f"price={inp['price']:.2f} -> {zone}")
     print(f"  EPS(CNY) {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
-          f"L/M={L/M:.2f} H/M={H/M:.2f}  分子比L={eps[0]/eps[1]:.2f}")
-    print(f"  L 对应 PB {L/inp['bps']:.2f} (floor {floor:.2f} = 5y low PB x bps) "
+          f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
+          f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
+    print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
+          f"L numerator {br['np'][0]:.1f}亿 = axis L rung (regime), printed 2023H1 trough {NP_TROUGH_2023H1:.1f}亿 far below (A16)")
+    print(f"  L/M={L/M:.3f} = 分子比 {eps[0]/eps[1]:.3f} x 倍数比 {pes[0]/pes[1]:.3f} | "
+          f"H/M={H/M:.3f} = 分子比 {eps[2]/eps[1]:.3f} x 倍数比 {pes[2]/pes[1]:.3f} | "
+          f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
+    print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"  L 对应 PB {L/inp['bps']:.2f} (floor {floor:.2f} = 5y low PB x 报表 bps) "
           f"→ scenario_L 胜出")
+    eps_m_hkd = eps[1] / fx
+    g_px, ok_px = implied_g(inp["price"] / eps_m_hkd, roes[1], inp["r_perp"])
+    print(f"  deep_discount 压力坐标: L = 低位 regime x 1/r = {eps[0] / inp['r_perp'] / fx:.2f} (flat@10x, =底牌L); "
+          f"印过的 2023H1 x 1/r = {NP_TROUGH_2023H1 / inp['shares'] / inp['r_perp'] / fx:.2f}; "
+          f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1] / fx:.2f} @PE_M (conservative 带内坐标)")
+    print(f"  交叉尺 (A17): 现价 PB {inp['price']/inp['bps']:.2f} vs 锚点 PB "
+          f"{L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}; 现价 {inp['price']/eps_m_hkd:.2f}x EPS_M → "
+          f"市价隐含永续 g {g_px:+.2%} ({'well-conditioned' if ok_px else 'ill-conditioned'})")
     return report(errors)
 
 

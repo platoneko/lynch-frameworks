@@ -22,13 +22,13 @@ g2_cld = 6.0% (6.5% capped) are identical in L, M and H, so the multiple ratio a
 is exactly 1.000 and every point of tier spread is a consensus-EPS point
 (A2e-2a / A2e-2c). The one derived exception is the L tier's cloud multiple:
 A18 retreats that segment's OI margin to a realised 20.7%, which shrinks the
-same capital's ROE to 9.3% and therefore its multiple to 8.60x — the SAME
+same capital's ROE to 9.3% and therefore its multiple to 8.87x — the SAME
 g2_cld, a different ROE. `assert_flat_multiples` fails loudly if any future
 edit reintroduces a per-tier growth rate and turns the band back into a
 multiple band.
 
 Consequence worth stating: the cloud leg still trades at a LOWER multiple than
-the services leg (lambda 0.864). At its own growth an ROE-16% leg is worth less
+the services leg (lambda 0.796). At its own growth an ROE-16% leg is worth less
 than an ROE-47% leg, because the same growth costs it roughly three times the
 retained capital. The retired lambda = 1.2727 asserted the opposite and could
 only be true if cloud grew ~2.2pp faster forever — an assumption that was
@@ -55,7 +55,7 @@ from eval.lib.axes import (  # noqa: E402
     capex_constituent_share,
     check_capex_constituent,
 )
-from eval.lib.gordon import R_OPERATING, check_r, payout, perpetual_pe  # noqa: E402
+from eval.lib.gordon import R_OPERATING, check_g_cap, check_r, payout, perpetual_pe  # noqa: E402
 from eval.lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GOOG.US.md"
@@ -164,10 +164,10 @@ REQUIRED = [
 
 # V_opt is a parallel dimension, never part of L/M/H.  It only splits the region
 # above H into "the market is paying for a named option" and "beyond every
-# option we can name".  Above this share of M the option has grown too large to
-# be left as a ceiling — it has to be modelled as a leg, or the Lynch class is
-# wrong (pending the AGENTS.md option-tier clause).
-MAX_V_OPT_SHARE = 0.30
+# option we can name".  Its share of M is a disclosure, never a failure
+# (skill A2e-7e): past this share the ticker is 期权主导型 and §0 must say so,
+# but the eval only reports it.
+OPTION_DOMINANT_SHARE = 1.00
 
 
 def sanity_checks(inp: dict[str, float]) -> list[str]:
@@ -182,9 +182,11 @@ def sanity_checks(inp: dict[str, float]) -> list[str]:
     if abs(r - R_OPERATING) > 1e-9:
         errs.append(f"r_perp={r}: Services/Cloud are operating cash flow, expected {R_OPERATING}")
 
-    # Growth: one rate per leg, shared by every tier. Both must clear the pole.
+    # Growth: one rate per leg, shared by every tier. Both must sit under the
+    # repo's perpetual cap (AGENTS.md「永续增长口径」) and clear the pole.
     for leg in ("svc", "cld"):
         g = inp[f"g2_{leg}"]
+        errs += check_g_cap(g, f"g2_{leg}")
         if r - g <= 0:
             errs.append(f"perpetuity diverges on the {leg} leg: g2 >= r_perp")
         elif r - g < MIN_R_MINUS_G:
@@ -594,10 +596,10 @@ def main() -> int:
     v_opt = inp["v_opt"]
     if v_opt < 0:
         errors.append(f"v_opt must be >= 0, got {v_opt}")
-    if v_opt > MAX_V_OPT_SHARE * M:
-        errors.append(
-            f"v_opt {v_opt:.2f} exceeds {MAX_V_OPT_SHARE:.0%} of M ({M:.2f}) — an"
-            f" option this large must be modelled as a leg, not left as a ceiling"
+    if v_opt > OPTION_DOMINANT_SHARE * M:
+        print(
+            f"NOTE: V_opt/M = {v_opt / M:.0%} > {OPTION_DOMINANT_SHARE:.0%} — 期权主导型，"
+            f"§0 MUST 标明并指向升级门槛（A2e-7e）；占比本身不是错误"
         )
     # Reported as a delta on H, not as an absolute per-share number: every other
     # comparability read in this repo is a ratio (L/M, H/M, (H-L)/2M), and an
@@ -610,7 +612,7 @@ def main() -> int:
     # in parentheses rather than taking the headline.
     print(
         f"V_opt = +{v_opt:.2f}/sh on H {H:.2f} -> {H + v_opt:.2f}"
-        f"  ({v_opt / H:+.1%} on H, {v_opt / M:.1%} of M, cap {MAX_V_OPT_SHARE:.0%})"
+        f"  ({v_opt / H:+.1%} on H, {v_opt / M:.1%} of M; 期权主导型阈值 {OPTION_DOMINANT_SHARE:.0%})"
         f"  — reported ALONGSIDE the band; zone edges untouched, `stretched` stays P > {H:.2f}"
     )
     print(
