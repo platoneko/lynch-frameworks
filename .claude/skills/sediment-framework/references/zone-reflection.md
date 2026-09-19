@@ -34,19 +34,23 @@
 **纠正使差距扩大 MUST 说明**：写明来自哪个改动、幅度、来源层级；`无同业锚` 的 \(g_2\) 在两端 zone 票上附 ±1pp 敏感性。披露 ≠ 拟合——**MUST NOT** 因此抬 \(H\)。
 
 **现价不是输入**。每轮仍过 `construction.md`。合法杠杆仅四：Gordon 生成倍数；有共识年份的具名过渡（\(g_1,n\)）；有已实现单位的 \(V_{opt}\)；候选带。  
-**MUST NOT**：现价倒推、分子滚下一年、TP 反解倍数、\(n\) 超出共识年、拧 \(g\) 使 \(r-g<2\%\)、用缺口反推「需要几个单位 / 多大 \(g_1\)」。
+**MUST NOT**：现价倒推、分子滚下一年、TP 反解倍数、\(n\) 超出共识年、拧 \(g\) 使 \(r-g<2\%\)、用缺口反推「需要几个单位 / 多大 \(g_1\)」、**为贴现价把票换到更低 r 的篮子**。
+
+**峰形区票的 `stretched`**：\(ROE<r-3\)pp 时 Gordon 倍数上限 \(1/r\)，市价在其上是「不可达」——按 `valuation-rules.md`「峰形区处理」第 4 条顺序：① 归篮错（市场按成长票定价）② 终值 ROE 输入错 ③ 都排除 → 差额只能来自 \(V_{opt}\) / 候选带或接受溢价。**MUST NOT** 用正 \(g\) 推倍数（峰形区 \(g\) 越大倍数越低）。
 
 ---
 
 ## 高估侧（本仓远高于现价 → 双算 / 过激）
 
 1. **结构性双计清单**（命中则回对话）：
-   - 同腿 \(r=7\%\) Gordon + 年金溢价 EV/EBIT（`construction.md` §5b）
+   - 同腿低 r 篮子 Gordon + 年金溢价 EV/EBIT（`construction.md` §5b）
    - 腿内折价资产又进 \(V_{opt}\)（§7c-4）
    - SOTP 加总后再叠整公司尺
    - 净现金/非核心既在 EV 桥扣过又在某腿加回
-2. **增长口径**：重跑 `valuation-rules.md`「永续增长口径」三条 + H 不含多一年复利；确认 `check_g_cap` / `check_transition_years` 已跑
-3. **多尺交叉**：至少一把不同质尺（Gordon PE → EV/EBIT/PB/FCF；银行 PB-ROE → DDM；准年金 EV/EBIT → Gordon+\(r=7\%\) 只对照）
+   - 周期票 point 口径分子回落 / 回归 + 又在 r 上叠 \(\Delta r_f\)（`valuation-rules.md`「利率轴」：\(\Delta r_f\) 不进锚点）
+2. **增长口径**：重跑 `valuation-rules.md`「永续增长口径」三条 + H 不含多一年复利；确认 `check_g_cap`（\(G_{cap}(r)\)）/ `check_transition_years` 已跑
+2b. **归篮与隐含 r**：`deep_discount` 先问「归篮是否过高」——按「隐含 r 对账」第 3 条顺序 ① 归篮 ② 分子 / 中枢 ③ g 排查并写进 Assumptions；三者都排除才允许停在 `deep_discount`。**MUST NOT** 为贴现价换篮子
+3. **多尺交叉**：至少一把不同质尺（Gordon PE → EV/EBIT/PB/FCF；银行 PB-ROE → DDM；准年金 EV/EBIT → Gordon 篮 1 / 篮 3 有限期只对照；周期票 regime ↔ point 对照 zone）
 4. **完成判据**：双计勾完 + 增长确认 + 交叉已报。支撑深折价则维持，并把可能的雷具名进 Assumptions；暴露问题则改口径再归 zone。**MUST NOT** 压 \(L\) 贴现价——藏雷票停在 `deep_discount` 合法
 
 ---
