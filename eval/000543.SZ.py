@@ -6,9 +6,11 @@ L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
 formula_id: wanneng_coal_axis_midcycle_pe_v5
 
-Main ruler: whole-company PE on a MID-CYCLE EPS, flat 1/r = 10x on every tier
-(retention credited at r; the Gordon multiple at ROE_M ~ r and the DDM are
-printed as crosses only).  The numerators come from the coal axis
+Main ruler: whole-company PE on a MID-CYCLE EPS, flat 1/r on every tier with r
+the basket r the framework names (篮 4 龙头制造 10%, `parse_baskets` +
+`check_r`) and g2 = 0 (retention-bucket reading: ROE_M ~ r so growth capex has
+~zero NPV; the Gordon multiple at ROE_M ~ r and the DDM are printed as crosses
+only).  The numerators come from the coal axis
 (`_AXIS.coal-price.md`, generator side: L = axis H 965 / M 830 / H = axis L
 703) through the income-statement bridge the v5 draft validated:
 
@@ -39,8 +41,9 @@ year is a squeeze (2026H1 0.36).  Hence
 Guards (any failure exits 1): axis mount (rungs, base series, uf tiers vs axis
 §4a), bridge reproduces FY2023/24/25 within +-20%, associate fit re-solved,
 tariff-lag fit reproduces tariff_m, capacity uplift and squeeze re-derived,
-E_H and the five-reading mid-cycle re-derived, pe_m == 1/r, policy g on the
-retention branch below the cap (`capped_payout_pe` must equal `perpetual_pe`),
+E_H and the five-reading mid-cycle re-derived, r == its basket's value and
+pe_m == 1/r, g2 and the policy g at or below g_cap(r) (`capped_payout_pe` must
+equal `perpetual_pe` on the retention branch),
 floor logic, ladder, zone stable across the E_M evidence interval and the axis
 M window, and the 纠正对账门 table (valuation-rules 2026-09-15).
 
@@ -57,10 +60,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_COAL, check_coal_mount, load_coal_series  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    G_CAP, capped_payout_pe, check_branch, check_g_cap, check_r, payout_gap, perpetual_pe,
+    BASKET_R, capped_payout_pe, check_branch, check_g_cap, check_r, g_cap, payout_gap, perpetual_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
@@ -79,7 +82,7 @@ EPS_TOL = 0.005              # stated tier EPS vs re-derived (2-dp inputs)
 M_V3_TTM, M_V4_FROZEN = 8.50, 3.78
 
 REQUIRED = [
-    "price", "shares", "bps", "equity", "r_perp", "pe_m",
+    "price", "shares", "bps", "equity", "r_perp", "g2", "pe_m",
     "eps_l", "eps_m", "eps_h", "eps_m_lo", "eps_m_hi",
     "eps_h1_26", "eps_h2_26_bridge", "eps_ttm", "eps_fy26e",
     "eps_fy25", "eps_fy24", "eps_fy23", "eps_fy22",
@@ -201,6 +204,12 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    if errors:
+        return report(errors, "FAIL (basket)")
     r = inp["r_perp"]
     shares_yi = inp["shares"] / YI
     eps = {t: inp[f"eps_{t}"] for t in TIERS}
@@ -318,14 +327,16 @@ def main() -> int:
     roe_m = eps["m"] * inp["shares"] / (inp["equity"] * YI)
     payout_fy25 = inp["dps_fy25"] * inp["shares"] / (inp["ni_fy25"] * YI)
     g_policy = (1.0 - payout_fy25) * roe_m
-    errors += check_r(r, "r_perp")
-    if abs(inp["pe_m"] - 1.0 / r) > 1e-9:
-        errors.append(f"pe_m {inp['pe_m']} != 1/r {1 / r:.2f} — the main ruler is flat E/r")
+    errors += check_g_cap(inp["g2"], r, "g2")
+    if abs(inp["g2"]) > 1e-9:
+        errors.append(f"g2 {inp['g2']} != 0 — the main ruler is flat 1/r (growth capex NPV ~ 0, A17)")
+    if abs(inp["pe_m"] - 1.0 / (r - inp["g2"])) > 1e-9:
+        errors.append(f"pe_m {inp['pe_m']} != 1/(r − g2) {1 / (r - inp['g2']):.2f} — the main ruler is flat E/r")
     if abs(payout_fy25 - inp["payout_fy25"]) > 0.005:
         errors.append(f"payout_fy25 {inp['payout_fy25']} vs DPS x shares / NI = {payout_fy25:.4f}")
     if abs(g_policy - inp["g2_policy"]) > 0.0005:
         errors.append(f"g2_policy {inp['g2_policy']} vs (1 − {payout_fy25:.3f}) × ROE_M {roe_m:.4f} = {g_policy:.4f}")
-    errors += check_g_cap(inp["g2_policy"], "g2_policy")
+    errors += check_g_cap(inp["g2_policy"], r, "g2_policy")
     errors += check_branch(inp["g2_policy"], roe_m, r, payout_fy25, "g2_policy")
     pe_gordon = perpetual_pe(inp["g2_policy"], roe_m, r)
     if abs(capped_payout_pe(g_policy, roe_m, r, payout_fy25) - perpetual_pe(g_policy, roe_m, r)) > 1e-9:
@@ -334,10 +345,10 @@ def main() -> int:
     ddm_m = d_m * (1.0 + inp["g2_policy"]) / (r - inp["g2_policy"])
     modelled, gap = payout_gap(inp["g2_policy"], roe_m, payout_fy25)
     regime = "病态区" if abs(roe_m - r) < 0.03 else ("峰形区" if roe_m < r else "单调区")
-    print(f"倍数：主尺 flat {inp['pe_m']:g}× = 1/r（留存按 r 记账）；ROE_M = {eps['m']} × {shares_yi:.2f} ÷ {inp['equity']} = {roe_m:.2%}（|ROE − r| = {abs(roe_m - r):.2%} → {regime}）")
-    print(f"  交叉 Gordon：派息率 {payout_fy25:.1%}（DPS {inp['dps_fy25']} × 股本 ÷ 归母 {inp['ni_fy25']} 亿）→ 政策 g = {g_policy:.2%} < cap {G_CAP:.0%}（capped_payout_pe ≡ perpetual_pe ✓）→ {pe_gordon:.2f}× → M {eps['m'] * pe_gordon:.2f}；"
+    print(f"倍数：主尺 flat {inp['pe_m']:g}× = 1/r，r = {r:.1%} 篮 {baskets['r_perp']} {BASKET_R[baskets['r_perp']][0]}，g2 = {inp['g2']:g}（增长 capex NPV ≈ 0，留存不加不减）；ROE_M = {eps['m']} × {shares_yi:.2f} ÷ {inp['equity']} = {roe_m:.2%}（|ROE − r| = {abs(roe_m - r):.2%} → {regime}）")
+    print(f"  交叉 Gordon：派息率 {payout_fy25:.1%}（DPS {inp['dps_fy25']} × 股本 ÷ 归母 {inp['ni_fy25']} 亿）→ 政策 g = {g_policy:.2%} < cap {g_cap(r):.0%}（capped_payout_pe ≡ perpetual_pe ✓）→ {pe_gordon:.2f}× → M {eps['m'] * pe_gordon:.2f}；"
           f"check_branch ✓ 模型派息率 {modelled:.1%} vs 实付 {payout_fy25:.1%}（差 {gap:+.1%}）")
-    print(f"  交叉 DDM：D_M = {payout_fy25:.3f} × {eps['m']} = {d_m:.3f} × (1+g) ÷ (r−g) = {ddm_m:.2f}；病态区 g∈[0,6%] 的 Gordon 只从 {perpetual_pe(0.0, roe_m, r):.2f}× 走到 {perpetual_pe(G_CAP, roe_m, r):.2f}×——两把交叉尺都贴 10×，倍数由 r 钉死，结论建立在中枢分子上")
+    print(f"  交叉 DDM：D_M = {payout_fy25:.3f} × {eps['m']} = {d_m:.3f} × (1+g) ÷ (r−g) = {ddm_m:.2f}；病态区 g∈[0,6%] 的 Gordon 只从 {perpetual_pe(0.0, roe_m, r):.2f}× 走到 {perpetual_pe(g_cap(r), roe_m, r):.2f}×——两把交叉尺都贴 10×，倍数由 r 钉死，结论建立在中枢分子上")
     if errors:
         return report(errors, "FAIL (multiple)")
 
@@ -388,6 +399,14 @@ def main() -> int:
     print(f"  敏感性 容量电价停在 {inp['cap_tariff_2025']:g}（政策已锁 165，仅对照）: E {sq100:.4f}/{em100:.4f}/{eh100:.4f} → {'/'.join(f'{x:.2f}' for x in b100)} zone={zone_of(inp['price'], *b100)}")
     m_ttm = inp["eps_ttm"] * inp["pe_m"]
     print(f"  敏感性 TTM {inp['eps_ttm']} 作分子（v3 口径, flat 10×）: M {m_ttm:.2f} zone={zone_of(inp['price'], L, m_ttm, H)}（TTM ÷ 中枢 {inp['eps_ttm'] / eps['m']:.2f}，且 FY2026 滚动到 ~{squeeze:.2f}）")
+    # Basket-r disclosures (printed, not asserted): implied r at the price, g2 ±1pp,
+    # r ±50bp and the alternative baskets the framework rejected (A17).
+    print(f"  隐含 r(P)：g2 = 0 → E_M/P = {eps['m']} / {inp['price']} = {eps['m'] / inp['price']:.1%}（篮 {baskets['r_perp']} {r:.1%} {eps['m'] / inp['price'] - r:+.1%}）")
+    for tag, rr, gg in (("g2 +1pp", r, 0.01), ("g2 −1pp", r, -0.01), ("r −50bp", r - 0.005, 0.0), ("r +50bp", r + 0.005, 0.0),
+                        ("篮 2 7.5%", 0.075, 0.0), ("篮 6 13%", 0.13, 0.0)):
+        pe_x = 1.0 / (rr - gg)
+        b = (max(eps["l"] * pe_x, floor), eps["m"] * pe_x, eps["h"] * pe_x)
+        print(f"  敏感区 {tag}: PE {pe_x:.2f}× → {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
     flat_errs, flat = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), inp["pe_m"])
     errors += flat_errs
     print(f"flat-multiple @{inp['pe_m']:g}×: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}（L 地板前 {scenario_l:.2f}）— 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")

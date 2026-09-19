@@ -14,7 +14,10 @@ trade / processing are *not* scenario-modelled (no segment GM — there is no
 measured "coal@M" to freeze).  Whatever those legs contributed to
 consolidated NP_M stays inside NP_L/NP_H by omission (A6).  Each tier's
 multiple is Gordon on the axis g rows (all 0%: L rung 4,250 is a GS 2027E
-supply-glut *level* that may persist; IAI 3.3% is sensitivity only).  The L
+supply-glut *level* that may persist; IAI 3.3% is sensitivity only) at the
+tier's own forward ROE, with r the basket the framework names for the single
+leg (篮 6 周期商品, 13% → flat 1/r = 7.69×; valuation-rules「§r 篮子」,
+gordon.BASKET_R).  The PB floor is disclosed, never max()'d into L.  The L
 numerator (54.3亿) coincides with 2023H1 printed but is the axis regime —
 g_L=0, not the 谷底档 recovery stage.  Open item: L may be optimistic vs a
 world where coal also troughs (A6/A14).
@@ -45,7 +48,7 @@ from lib.al_bridge import (  # noqa: E402
 from lib.axes import check_al_mount  # noqa: E402
 from lib.gordon import implied_g  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -55,7 +58,7 @@ FORMULA_ID = "shenhuo_al_spread_gm_bridge_gordon_v5"
 GP_M_FILING = 179.3  # 亿 CNY, 2026H1 x2 at 36.17%
 NP_M_FILING = 95.6   # 亿 CNY, 2026H1 归母 47.81 x2
 SHARES_STATIC = 22.49  # 亿股, LB static total_shares 2,249,004,399 (A14)
-CONSENSUS_TP = 32.05  # 一致目标价; lands on the axis's 7,000 mid-path coordinate (A8)
+CONSENSUS_TP = 32.05  # 一致目标价 = 7.5x M EPS ≈ M anchor at 1/r (A8)
 NP_TROUGH_2023H1 = 54.78  # 亿 CNY, 2023H1 归母 27.39 x2 — deep_discount pressure coordinate only (A15)
 
 
@@ -66,6 +69,7 @@ def main() -> int:
         return 1
 
     inp = parse_inputs(md)
+    baskets = parse_baskets(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
@@ -73,7 +77,10 @@ def main() -> int:
     errors += ladder("smelting spread", inp["spread_l"], inp["spread_m"], inp["spread_h"])
     errors += check_al_mount((inp["spread_l"], inp["spread_m"], inp["spread_h"]))
     errors += check_regression(inp, GP_M_FILING, NP_M_FILING)
-    errors += check_gordon(inp)
+    # A16: r must be the basket the Inputs row names, not just any basket value.
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (AGENTS.md 篮子声明)")
+    errors += check_gordon(inp, baskets.get("r_perp"))
     if abs(inp["shares"] - SHARES_STATIC) > 0.05:
         errors.append(f"shares {inp['shares']} != LB static total_shares {SHARES_STATIC}亿 (A14)")
     if errors:
@@ -94,6 +101,7 @@ def main() -> int:
             "corner; if it is not, A4's reference story must be re-opened"
         )
 
+    # Floor is disclosed only (A10): scenario L must clear it, never max() with it.
     floor, floor_errors = pb_floor(inp, L)
     errors += floor_errors
 
@@ -103,12 +111,14 @@ def main() -> int:
         md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone
     )
 
+    r = inp["r_perp"]
     flat = [e * pes[1] for e in eps]
-    trough_perp = eps[0] / inp["r_perp"]
-    g_px, ok_px = implied_g(inp["price"] / eps[1], roes[1], inp["r_perp"])
+    trough_perp = eps[0] / r
+    g_px, ok_px = implied_g(inp["price"] / eps[1], roes[1], r)
     print(f"000933.SZ  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}  "
           f"price={inp['price']:.2f} -> {zone}")
-    print(f"  EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
+    print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
+          f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
           f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
           f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
     print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
@@ -130,12 +140,14 @@ def main() -> int:
     print(f"  A14 示意: 若扣A4③残差 {coal_delta_np:.1f}亿(非煤分部利润) → L≈{l_coal:.2f} "
           f"@PE_M (未升格; 无分部毛利)")
     print(f"  deep_discount 压力坐标: 轴 L 谷底永续 x 1/r = {trough_perp:.2f}; 印过的 2023H1 谷底 x 1/r = "
-          f"{NP_TROUGH_2023H1 / inp['shares'] / inp['r_perp']:.2f}; 2025H1 参照 归母 {inp['np_ref']:.1f}亿 → "
-          f"{inp['np_ref']/inp['shares']*pes[1]:.2f} @PE_M; floor {floor:.2f} → scenario_L 胜出 (L 对应 PB {L/inp['bps']:.2f})")
+          f"{NP_TROUGH_2023H1 / inp['shares'] / r:.2f}; 2025H1 参照 归母 {inp['np_ref']:.1f}亿 → "
+          f"{inp['np_ref']/inp['shares']*pes[1]:.2f} @PE_M")
+    print(f"  地板（只披露）floor={floor:.2f} (5y low PB x 报表 bps) < L {L:.2f} (L 对应 PB {L/inp['bps']:.2f}); not max()'d")
+    print(f"  隐含 r(P) (g=0) = {eps[1] / inp['price']:.1%} vs 篮子 {r:.1%}")
     print(f"  A2f 高估侧交叉尺: 现价 PB {inp['price']/inp['bps']:.2f} vs 锚点 PB "
           f"{L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}; 现价 {inp['price']/eps[1]:.2f}x EPS_M → "
           f"市价隐含永续 g {g_px:+.2%} ({'well-conditioned' if ok_px else 'ill-conditioned'}) (A14)")
-    print(f"  M/TP={M/CONSENSUS_TP:.2f} — TP 落在轴 7,000 路径中点坐标上 (A8)")
+    print(f"  M/TP={M/CONSENSUS_TP:.2f} — TP = 7.5x M EPS ≈ 1/r; 轴 7,000 路径中点坐标 ≈ 现价 (A8)")
     return report(errors)
 
 

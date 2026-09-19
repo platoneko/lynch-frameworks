@@ -19,7 +19,10 @@ Main ruler: an asymmetric three-leg SOTP.
 
 How the core multiple is generated (A14):
   * ROE_x = np_x / equity (no leg equity is disclosed; company ROE stands in).
-  * M / H: perpetual_pe(g2_x, ROE_x, r=10%).  The tier-1 g2 source — the
+  * r is the basket rate the framework names on the r_perp row (篮 4 龙头制造
+    10%, A15); the script reads the basket tag and refuses a value that is not
+    that basket's.  g2 is capped at g_cap(r) = min(6%, r - 4%).
+  * M / H: perpetual_pe(g2_x, ROE_x, r).  The tier-1 g2 source — the
     truck/engine peer cross-section reverse-solved on the same ruler, median
     +0.37% — generates 10.10 / 10.18x, BELOW the lowest monthly TTM PE this
     ticker printed in five years (10.26, 2024-09).  裁决顺序 ③ therefore
@@ -47,11 +50,13 @@ V_opt is three named options, none of which enters the base:
     capacity extrapolation), on the core M multiple.  The 13.4k units already
     in the leg are NOT re-rated (A2e-7c-4/5).
   * SOFC at the 2027 200 MW capacity ceiling x Bloom's realised NI/MW x the
-    steady-state multiple BE.US's own framework gives its M-tier earnings
-    (perpetual_pe on BE's g2 / roe_m / r_perp, re-derived cross-file from BE's
-    Inputs), discounted one year.  BE's own M multiple is two_stage_pe and
-    carries Bloom's FY28 +60% transition year; a capacity CEILING does not grow
-    a further 60%, so only the stage-2 Gordon is borrowed.
+    steady-state Gordon on BE.US's own g2 / roe_m (re-derived cross-file from
+    BE's Inputs) at THIS ticker's basket r — the option is Weichai's own 200 MW
+    plant, so it carries Weichai's 篮 4 rate, not BE's 篮 7 15% — discounted one
+    year.  BE's own M multiple is two_stage_pe and carries Bloom's FY28 +60%
+    transition year; a capacity CEILING does not grow a further 60%, so only
+    the stage-2 Gordon is borrowed.  The 篮 7 reading (9.40x) is printed as a
+    disclosure line only.
   * M-series aftermarket at k=1 x own realised M-series revenue x Cummins'
     realised aftermarket share (26%), on the core M multiple.
 
@@ -76,10 +81,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    G_CAP, check_g_cap, check_r, implied_g, perpetual_pe, recovery_two_stage_pe,
+    check_g_cap, check_r, g_cap, implied_g, perpetual_pe, recovery_two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -154,21 +159,23 @@ def sofc_v_opt(inp: dict[str, float]) -> float:
     return v_t / (1.0 + inp["r_disc"]) ** inp["sofc_lag"]
 
 
-def bloom_crosscheck(inp: dict[str, float]) -> list[str]:
+def bloom_crosscheck(inp: dict[str, float], r: float) -> tuple[list[str], dict[str, float]]:
     """SOFC unit economics and multiple both come from BE.US's framework (A12).
 
     BE's Inputs carry no multiple (its tiers are Gordon-generated), so the
-    borrowed multiple is re-derived from BE's own g2 / roe_m / r_perp with the
-    repo's perpetual_pe — BE's stage-2 steady state, stated to 2 dp in
-    `pe_sofc`.  Reading BE's Outputs anchor instead would import BE's FY28
-    transition year and go stale whenever BE republishes.
+    borrowed multiple is re-derived from BE's own g2 / roe_m with the repo's
+    perpetual_pe at this ticker's basket r — BE's stage-2 steady state on
+    Weichai's own plant, stated to 2 dp in `pe_sofc`.  Reading BE's Outputs
+    anchor instead would import BE's FY28 transition year and BE's 篮 7 rate,
+    and go stale whenever BE republishes.  Returns BE's inputs too, so the
+    caller can print the 篮 7 reading as a disclosure.
     """
     if not BE_FRAMEWORK.exists():
-        return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no peer trajectory"]
+        return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no peer trajectory"], {}
     be = parse_inputs(BE_FRAMEWORK.read_text(encoding="utf-8"))
     missing = [k for k in ("eps_fy26_m", "shares", "g2", "roe_m", "r_perp") if k not in be]
     if missing:
-        return [f"BE.US missing {missing} — cannot cross-check the SOFC option"]
+        return [f"BE.US missing {missing} — cannot cross-check the SOFC option"], {}
     errors: list[str] = []
     peer = be["eps_fy26_m"] * be["shares"]
     if abs(peer - inp["bloom_ni_fy26"]) > BLOOM_NI_TOL * inp["bloom_ni_fy26"]:
@@ -176,13 +183,13 @@ def bloom_crosscheck(inp: dict[str, float]) -> list[str]:
             f"bloom_ni_fy26 {inp['bloom_ni_fy26']:.3e} vs BE.US "
             f"eps_fy26_m×shares {peer:.3e} (>{BLOOM_NI_TOL:.0%})"
         )
-    be_pe_m = round(perpetual_pe(be["g2"], be["roe_m"], be["r_perp"]), 2)
+    be_pe_m = round(perpetual_pe(be["g2"], be["roe_m"], r), 2)
     if abs(be_pe_m - inp["pe_sofc"]) > 1e-9:
         errors.append(
-            f"pe_sofc {inp['pe_sofc']} != BE.US steady-state M Gordon {be_pe_m} "
-            f"(perpetual_pe(g2 {be['g2']:.2%}, roe_m {be['roe_m']:.2%}, r {be['r_perp']:.0%})) — re-read the source framework (A12)"
+            f"pe_sofc {inp['pe_sofc']} != BE.US steady-state M Gordon at this ticker's r {be_pe_m} "
+            f"(perpetual_pe(g2 {be['g2']:.2%}, roe_m {be['roe_m']:.2%}, r {r:.0%})) — re-read the source framework (A12)"
         )
-    return errors
+    return errors, be
 
 
 def check_southbound_mount(md: str) -> list[str]:
@@ -217,6 +224,7 @@ def main() -> int:
         return report(errors)
     errors += check_southbound_mount(md)
     r = inp["r_perp"]
+    baskets = parse_baskets(md)
 
     # --- Step 1: numerator ladders ------------------------------------------
     errors += ladder("numerator (np)", inp["np_l"], inp["np_m"], inp["np_h"])
@@ -227,9 +235,15 @@ def main() -> int:
 
     # --- Step 2: tier ROE, then the generated core multiple (A14) -----------
     roe = {t: inp[f"np_{t}"] / inp["equity"] for t in TIERS}
-    errors += check_r(r, "r_perp")
+    # The core leg is one operating basket (篮 4 龙头制造, A15): the framework
+    # names it on the r_perp row and r must be that basket's value.  r_disc
+    # only bridges the SOFC option one year and rides the same basket.
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (A15)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    errors += check_r(inp["r_disc"], "r_disc", baskets.get("r_disc"))
     for t in ("m", "h"):
-        errors += check_g_cap(inp[f"g2_{t}"], f"g2_{t}")
+        errors += check_g_cap(inp[f"g2_{t}"], r, f"g2_{t}")
         if r - inp[f"g2_{t}"] < MIN_R_MINUS_G:
             errors.append(f"g2_{t} {inp[f'g2_{t}']:+.4f}: r-g < {MIN_R_MINUS_G} (裁决顺序 ①)")
     if errors:
@@ -334,7 +348,8 @@ def main() -> int:
             f"{inp['bloom_cap_mw']:.0f} MW plant — the ceiling is no longer a "
             "fraction of a realised trajectory"
         )
-    errors += bloom_crosscheck(inp)
+    be_errors, be = bloom_crosscheck(inp, r)
+    errors += be_errors
     missing_ref = [k for k in NOT_FORMULA if k not in inp]
     if missing_ref:
         errors.append(f"reference rows missing from Inputs: {missing_ref}")
@@ -352,12 +367,13 @@ def main() -> int:
               f"{roe[t]:8.1%}{pe_core[t]:8.2f}{s['mv'] / YI:11.0f}{s['anchor']:8.2f}")
     print(f"表1 per-share: " + " | ".join(
         f"{t.upper()} core {S[t]['core_ps']:.2f} + KION {S[t]['kion_ps']:.2f} + MS {S[t]['ms_ps']:.2f}" for t in TIERS))
-    print(f"倍数生成 (A14): r={r:.0%}; 同业反解 g2_core_peer={inp['g2_core_peer']:+.2%} -> PE_M/H "
+    cap = g_cap(r)
+    print(f"倍数生成 (A14): r={r:.0%} (篮 {baskets['r_perp']}); 同业反解 g2_core_peer={inp['g2_core_peer']:+.2%} -> PE_M/H "
           f"{pe_peer['m']:.2f}/{pe_peer['h']:.2f} < 护栏下沿 {inp['pe_own_min']} -> 裁决顺序 ③ 带边反解 "
-          f"g2 M {g_edge['m']:+.2%} / H {g_edge['h']:+.2%} (自身实测带反解, cap {G_CAP:.0%}) -> "
+          f"g2 M {g_edge['m']:+.2%} / H {g_edge['h']:+.2%} (自身实测带反解, cap {cap:.0%}) -> "
           f"PE_M/H {pe_core['m']:.2f}/{pe_core['h']:.2f}; 护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓")
-    g_hi = {t: min(implied_g(inp["pe_own_max"], roe[t], r)[0], G_CAP) for t in ("m", "h")}
-    print(f"带即证据: 带边 g 区间 M [{g_edge['m']:+.2%}, {g_hi['m']:+.2%}] | H [{g_edge['h']:+.2%}, {g_hi['h']:+.2%}] (上沿反解截 6%)")
+    g_hi = {t: min(implied_g(inp["pe_own_max"], roe[t], r)[0], cap) for t in ("m", "h")}
+    print(f"带即证据: 带边 g 区间 M [{g_edge['m']:+.2%}, {g_hi['m']:+.2%}] | H [{g_edge['h']:+.2%}, {g_hi['h']:+.2%}] (上沿反解截 cap)")
     print(f"谷底档 L (valuation-rules「谷底档」): ROE_L {roe['l']:.1%} < r; g1 = ({inp['np_m'] / YI:.2f}/{inp['np_l'] / YI:.1f})^(1/{n_rec:g}) - 1 = {g1:+.2%}, "
           f"n = {n_rec:g}, 段二 ROE_M {roe['m']:.1%} + g2 {inp['g2_m']:+.2%} -> recovery_two_stage_pe = {pe_core['l']:.2f}x "
           f"(谷底 x 1/r = {inp['np_l'] / inp['shares'] * 10:.2f}/股 压力坐标)")
@@ -392,7 +408,7 @@ def main() -> int:
           f"倍数比 L/M={(L / M) / num_l:.2f} H/M={(H / M) / num_h:.2f}")
     g_px, g_px_ok = implied_g(inp["price"] / (inp["np_m"] / inp["shares"]), roe["m"], r)
     print(f"price={inp['price']} zone={zone} | 现价 = {inp['price'] / (inp['np_m'] / inp['shares']):.2f}x TTM, "
-          f"隐含永续 g {g_px:+.2%} (conditioned={g_px_ok}{', > cap' if g_px > G_CAP else ''})")
+          f"隐含永续 g {g_px:+.2%} (conditioned={g_px_ok}{', > cap' if g_px > cap else ''})")
 
     # 校验步骤 11: cross-rulers, printed and never anchored.
     own = {t: legs(inp, t, inp[f"pe_ownyear_{t}"], inp["pe_ownyear_m"])["anchor"] for t in TIERS}
@@ -416,6 +432,19 @@ def main() -> int:
     print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f} "
           f"| price_h={inp['price_h']} zone_h={zone_of(inp['price_h'], L / fx, M / fx, H / fx)}")
     print(f"H/A = {inp['price_h'] * fx / inp['price']:.3f}")
+
+    # Disclosure lines (never anchors): implied r at the price on the M-tier
+    # single-stage Gordon, the PB floor (disclosed, not max()'d into L), and
+    # the SOFC option re-read at BE.US's own 篮 7 rate.
+    r_implied = inp["g2_m"] + (r - inp["g2_m"]) * M / inp["price"]
+    print(f"隐含 r(P) = g2_m + (r - g2_m) x M/P = {r_implied:.1%} (篮 {baskets['r_perp']} r {r:.0%})")
+    print(f"地板 (只披露, 不 max): PB 1.0 x BPS = {inp['bps']:.2f} vs L {L:.2f}")
+    if be:
+        pe_sofc_be = perpetual_pe(be["g2"], be["roe_m"], be["r_perp"])
+        v_sofc_be = v_sofc * pe_sofc_be / inp["pe_sofc"]
+        v_opt_be = v_ms + v_sofc_be + v_aft
+        print(f"对照 BE.US 篮 r {be['r_perp']:.0%}: pe_sofc {pe_sofc_be:.2f}x -> SOFC {v_sofc_be:.2f}, V_opt {v_opt_be:.2f}, "
+              f"H+V {H + v_opt_be:.2f}, 市价隐含 p {(inp['price'] - H) / v_opt_be:.2f} (只披露, 表3 按 pe_sofc {inp['pe_sofc']:g}x)")
 
     return report(errors)
 
