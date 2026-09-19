@@ -4,10 +4,10 @@
 frameworks/0883.HK.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
-formula_id: cnooc_hk_brent_axis_ddm_v1
+formula_id: cnooc_hk_brent_axis_gordon_retention_v2
 
-Main ruler: dividend discount (valuation-rules「DDM 主尺例外」, this ticker is
-the worked example).  The numerator is still the shared Brent axis
+Main ruler: Gordon retention branch at the basket r (valuation-rules「§r 篮子」,
+whole company in 篮 6 周期商品, 13%).  The numerator is the shared Brent axis
 (_AXIS.brent-oil.md, 68 / 75 / 85) pushed through the company's OWN measured
 per-barrel earnings elasticity,
 
@@ -21,23 +21,22 @@ and the axis M rung IS the mid-cycle numerator (2027 house median = the
 to show TTM EPS / EPS_M <= 1.15 and a production-normalised full-cycle EPS
 mean within 20% of EPS_M (valuation-rules「周期票的中枢分子」).
 
-Why not Gordon: every tier ROE (14.4 / 16.3 / 19.0%) sits 3pp+ above r, the
-monotonic regime, where the retention-branch multiple is >= 10x for any
-g in [0, 6%] -- and the realised 5y monthly TTM band tops out at 9.89x.  Rule
-③ says BLOCKED, not "twist r".  With a written payout floor (45% for
-2025-2027, annual report), the DDM exception applies:
+Multiple (A18, 留存三桶): maintenance capex ~ D&A so E_owner ~ NI; the capex
+above D&A funds named production growth (+5-8%/yr) -> g2 = 4.5% with a growth
+retention ratio b_g = 25%; the rest of retention piles up as cash and earns no
+credit (disclosed per share, never added).  Hence
 
-    P_x = 0.45 x EPS_x / (r - g_d),   r = 10%,   one g_d for all tiers
+    PE = (1 - b_g) / (r - g2) = 0.75 / (13% - 4.5%) = 8.82x, flat across tiers
 
-g_d comes from the same-ruler, same-day peer reverse-solve
-g_d = r - payout / fPE(FY2027E), monotonic-regime peers only, samples above
-G_CAP or on the wrong branch dropped (never clipped into the median).  The
-DDM-implied PE 0.45/(r - g_d) MUST fall inside the realised band -- that is
-this ruler's guardrail -- and the zone must not move across the g_d evidence
-interval.  The retention-branch Gordon band, the 10x zero-growth band and the
-FCF-yield ruler are printed as cross-checks, together with the rule's
-mandatory disclosure: market-implied marginal ROE (g_d / retention) against
-book ROE_M.
+which must sit inside the realised 5y monthly TTM PE band [2.90, 9.89] -- the
+guardrail.  Why Gordon and not the DDM exception this ticker used to be the
+worked example of: at the basket r, 1/r = 7.69x <= band top 9.89x, so the
+retention branch IS reachable and precondition (a) of「DDM 主尺例外」fails
+(A6).  The DDM band (45% x EPS / (r - g_d)), the 1/r zero-growth band, the
+fallback basket 7 band and the FCF-yield ruler are printed as cross-checks;
+the price is only used to read the implied r (A10) -- never to fit anchors.
+The g2 +/-1pp sensitivity is printed, and a zone flip there is a disclosure
+(⚠敏感区), not a failure.
 
 Run:  python3 eval/0883.HK.py
 """
@@ -52,29 +51,29 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_BRENT  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    G_CAP, check_branch, check_g_cap, check_r, implied_g_retaining, payout_gap,
-    perpetual_pe, recovery_two_stage_pe,
+    basket_r, check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, justified_pb,
+    recovery_two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FRAMEWORK = REPO / "frameworks" / "0883.HK.md"
-FORMULA_ID = "cnooc_hk_brent_axis_ddm_v1"
+FORMULA_ID = "cnooc_hk_brent_axis_gordon_retention_v2"
 TICKER = "0883.HK"
 
 TIERS = ("l", "m", "h")
 MN = 1e6                    # Inputs money fields are RMB million
 G_TOL = 5e-5
-PE_EDGE_TOL = 0.01          # evidence-interval ends may sit exactly on the band edge
 MIN_R_MINUS_G = 0.02
 CONS_DEV_MAX = 0.20         # ②-b: M within 20% of the consensus mean
 MID_CYCLE_MAX = 1.15        # 中枢: current / mid-cycle above this makes the current print an upper-side coordinate
 CYCLE_MEAN_DEV_MAX = 0.20   # 中枢: axis-bridged M vs own full-cycle (production-normalised) EPS mean
 MONOTONIC_GAP = 0.03        # ROE - r >= this is the monotonic regime (gordon._ROE_NEAR_R)
+FALLBACK_BASKET = 7         # A17: the alternative basket, printed as a cross band
 CYCLE_YEARS = ("2020", "2021", "2022", "2023", "2024")
 PAYOUT_FLOOR_QUOTE = "不低于 45%"
 
@@ -85,7 +84,8 @@ REQUIRED = [
     "prod_2026_mid", "liq_share", "sales_ratio",
     "brent_2025", "brent_l", "brent_m", "brent_h",
     "payout_policy", "dps_fy25_cny", "dps_fy25_hkd", "dps_fy19_hkd", "dps_fy25_final_hkd", "dps_h1_26_hkd",
-    "r_perp", "g2_d", "g_evid_min", "g_evid_max", "gd_peer_cvx", "gd_peer_tte", "gd_peer_1088",
+    "r_perp", "g2", "b_growth", "capex_fy25", "da_fy25", "cash_fy25",
+    "g2_d", "g_evid_min", "g_evid_max", "gd_peer_cvx", "gd_peer_tte", "gd_peer_1088",
     "pe_own_min", "pe_own_max", "pe_own_med",
     "eps_cons_fy26_mean", "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi", "tp_cons_h",
     "fcf_fy25",
@@ -94,7 +94,7 @@ REQUIRED = [
 # Reference rows: present in Inputs, never in an anchor path (校验步骤 13).
 NOT_FORMULA = (
     "pe_own_med", "eps_cons_fy26_mean", "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi",
-    "tp_cons_h", "fcf_fy25", "dps_fy25_final_hkd", "dps_h1_26_hkd",
+    "tp_cons_h", "fcf_fy25", "dps_fy25_final_hkd", "dps_h1_26_hkd", "capex_fy25", "da_fy25", "cash_fy25",
     *[f"eps_fy{y}" for y in CYCLE_YEARS], *[f"prod_fy{y}" for y in CYCLE_YEARS], "prod_fy25",
 )
 
@@ -175,14 +175,13 @@ def check_brent_mount(stated: tuple[float, float, float], ni: dict[str, float], 
     return errors
 
 
-def ddm_pe(payout_policy: float, g: float, r: float) -> float:
-    """PE-equivalent of the dividend ruler: payout / (r - g)."""
-    return payout_policy / (r - g)
+def retention_pe(b_growth: float, g: float, r: float) -> float:
+    """Gordon multiple crediting only the growth retention (A18): (1 - b_g) / (r - g)."""
+    return (1.0 - b_growth) / (r - g)
 
 
-def band_at(g: float, d1: dict[str, float], r: float, fx: float) -> tuple[float, float, float]:
-    """L/M/H in HKD for one shared dividend growth g (flat multiple, cyclical)."""
-    return tuple(d1[t] / (r - g) / fx for t in TIERS)  # type: ignore[return-value]
+def fmt_band(band: tuple[float, ...]) -> str:
+    return "/".join(f"{x:.2f}" for x in band)
 
 
 def main() -> int:
@@ -199,6 +198,8 @@ def main() -> int:
     if leaked_p:
         errors.append(f"probability fields in Inputs {leaked_p} (A2e-7a)")
     r, fx, pay = inp["r_perp"], inp["fx_hkdcny"], inp["payout_policy"]
+    g2, b_g = inp["g2"], inp["b_growth"]
+    baskets = parse_baskets(md)
 
     # --- Step 1: numerators through the measured per-barrel elasticity, axis mount --
     brent = {"l": inp["brent_l"], "m": inp["brent_m"], "h": inp["brent_h"]}
@@ -232,68 +233,66 @@ def main() -> int:
         errors.append(f"中枢: axis-bridged EPS_M {eps['m']:.4f} deviates {cycle_dev:+.1%} from the production-normalised "
                       f"full-cycle mean {cycle_mean_norm:.4f} (> {CYCLE_MEAN_DEV_MAX:.0%}) — back to the conversation (A4)")
 
-    # --- Step 3: the three DDM preconditions (A6) ---------------------------------
-    gordon_min = {t: min(perpetual_pe(g / 1000.0, roe[t], r) for g in range(0, int(G_CAP * 1000) + 1)) for t in TIERS}
-    for t in TIERS:
-        if gordon_min[t] <= inp["pe_own_max"] + 1e-9:
-            errors.append(f"DDM precondition (a) fails: retention-branch Gordon reaches {gordon_min[t]:.3f}x <= band top "
-                          f"{inp['pe_own_max']} at ROE_{t} {roe[t]:.2%} — Gordon is not BLOCKED, DDM exception does not apply")
-        if roe[t] - r < MONOTONIC_GAP - 1e-12:
-            errors.append(f"DDM precondition (c) fails: ROE_{t} {roe[t]:.2%} - r = {(roe[t] - r) * 100:.2f}pp < 3pp — not the monotonic regime")
+    # --- Step 3: ruler-form gate (A6) — Gordon reachable at the basket r ------------
+    # The DDM exception applies only while the retention branch cannot reach the
+    # realised band; at 1/r <= band top it can, so DDM stays a cross-check.
+    if 1.0 / r > inp["pe_own_max"] + 1e-9:
+        errors.append(f"ruler form: 1/r = {1.0 / r:.2f}x > band top {inp['pe_own_max']} — retention-branch Gordon is BLOCKED "
+                      f"again, DDM exception (a) holds; back to the conversation (A6)")
     if PAYOUT_FLOOR_QUOTE not in md:
-        errors.append(f"DDM precondition (b): framework does not quote the written payout floor ({PAYOUT_FLOOR_QUOTE!r})")
+        errors.append(f"framework does not quote the written payout floor ({PAYOUT_FLOOR_QUOTE!r}) — A7 needs it")
     if not (0.0 < pay <= 1.0):
         errors.append(f"payout_policy {pay} outside (0, 1]")
     payout_fy25 = inp["dps_fy25_cny"] * inp["shares"] / (inp["ni_fy25"] * MN)
     if abs(payout_fy25 - pay) > 0.02:
-        errors.append(f"FY2025 paid payout {payout_fy25:.1%} is more than 2pp from the policy floor {pay:.0%} — re-anchor D1 (A7)")
+        errors.append(f"FY2025 paid payout {payout_fy25:.1%} is more than 2pp from the policy floor {pay:.0%} — re-anchor (A7)")
     if errors:
-        return report(errors, "FAIL (中枢 / DDM preconditions)")
+        return report(errors, "FAIL (中枢 / ruler form)")
 
-    # --- Step 4: g_d — cap, peer median, evidence interval, gate, branch ----------
+    # --- Step 4: growth 口径 — basket r, g cap, sustainability, branch --------------
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(g2, r, "g2")
+    if r - g2 < MIN_R_MINUS_G:
+        errors.append(f"g2 {g2:+.4f}: r-g < {MIN_R_MINUS_G} (裁决顺序 ①)")
+    g_sustain = (1.0 - payout_fy25) * roe["m"]
+    if g2 > g_sustain + 1e-9:
+        errors.append(f"g2 {g2:.2%} exceeds the sustainable ceiling (1−payout)×ROE_M = {g_sustain:.2%} — growth would eat the dividend (A7)")
+    errors += check_branch(g2, roe["m"], r, payout_fy25, "g2")
+    if not (0.0 < b_g < 1.0):
+        errors.append(f"b_growth {b_g} outside (0, 1)")
+    if not (inp["g_evid_min"] - 1e-9 <= g2 <= inp["g_evid_max"] + 1e-9):
+        errors.append(f"g2 {g2} outside evidence interval [{inp['g_evid_min']}, {inp['g_evid_max']}] (A9)")
+    dps_cagr = (inp["dps_fy25_hkd"] / inp["dps_fy19_hkd"]) ** (1.0 / 6.0) - 1.0
+    if dps_cagr <= 0.0 and g2 > 0.0:
+        errors.append(f"same-world gate: own cross-cycle DPS CAGR {dps_cagr:+.2%} is not positive, a positive g2 is not usable (A11)")
+    # DDM cross-check inputs stay internally consistent (A8) even though they never touch the anchors.
     g_d = inp["g2_d"]
     peers = {"cvx": inp["gd_peer_cvx"], "tte": inp["gd_peer_tte"], "1088": inp["gd_peer_1088"]}
-    errors += check_r(r, "r_perp")
-    errors += check_g_cap(g_d, "g2_d")
-    if r - g_d < MIN_R_MINUS_G:
-        errors.append(f"g2_d {g_d:+.4f}: r-g < {MIN_R_MINUS_G} (裁决顺序 ①)")
     for name, g in peers.items():
-        if not (0.0 < g <= G_CAP + 1e-9):
-            errors.append(f"gd_peer_{name} {g:+.4%} is not a usable same-regime sample (must be in (0, {G_CAP:.0%}]) — drop it, never clip (A8)")
+        if not (0.0 < g <= g_cap(r) + 1e-9):
+            errors.append(f"gd_peer_{name} {g:+.4%} is not a usable same-regime sample (must be in (0, {g_cap(r):.0%}]) — drop it, never clip (A8)")
     peer_median = statistics.median(peers.values())
     if abs(g_d - peer_median) > G_TOL:
         errors.append(f"g2_d {g_d} vs peer DDM reverse-solve median {peer_median:.5f} (A8)")
-    if not (inp["g_evid_min"] - 1e-9 <= g_d <= inp["g_evid_max"] + 1e-9):
-        errors.append(f"g2_d {g_d} outside evidence interval [{inp['g_evid_min']}, {inp['g_evid_max']}] (A9)")
-    dps_cagr = (inp["dps_fy25_hkd"] / inp["dps_fy19_hkd"]) ** (1.0 / 6.0) - 1.0
-    if dps_cagr <= 0.0 and g_d > 0.0:
-        errors.append(f"same-world gate: own cross-cycle DPS CAGR {dps_cagr:+.2%} is not positive, a positive g_d is not usable (A11)")
-    errors += check_branch(g_d, roe["m"], r, payout_fy25, "g2_d")
 
-    # Guardrail of this ruler: the DDM-implied PE must sit inside the realised band.
-    pe_eq = ddm_pe(pay, g_d, r)
-    if not (inp["pe_own_min"] - 1e-9 <= pe_eq <= inp["pe_own_max"] + 1e-9):
-        errors.append(f"guardrail: DDM-implied PE {pe_eq:.3f} outside realised band [{inp['pe_own_min']}, {inp['pe_own_max']}] — STOP (A9)")
-    for g in (inp["g_evid_min"], inp["g_evid_max"]):
-        pe_g = ddm_pe(pay, g, r)
-        if not (inp["pe_own_min"] - PE_EDGE_TOL <= pe_g <= inp["pe_own_max"] + PE_EDGE_TOL):
-            errors.append(f"evidence end g_d {g:+.2%} implies PE {pe_g:.3f} outside the band — the interval is wider than the guardrail allows (A9)")
+    # Guardrail of this ruler: the generated PE must sit inside the realised band.
+    pe = retention_pe(b_g, g2, r)
+    if not (inp["pe_own_min"] - 1e-9 <= pe <= inp["pe_own_max"] + 1e-9):
+        errors.append(f"guardrail: generated PE {pe:.3f} outside realised band [{inp['pe_own_min']}, {inp['pe_own_max']}] — STOP (A9)")
     if errors:
         return report(errors, "FAIL (growth 口径)")
 
-    # --- Step 5: anchors, zone, stability, ②-b, flat ladder ----------------------
-    d1 = {t: pay * eps[t] for t in TIERS}                      # CNY
-    m_d = 1.0 / (r - g_d)
-    L, M, H = band_at(g_d, d1, r, fx)
+    # --- Step 5: anchors, zone, ②-b, flat ladder ----------------------------------
+    def band_at(pe_x: float) -> tuple[float, float, float]:
+        return tuple(eps[t] * pe_x / fx for t in TIERS)  # type: ignore[return-value]
+
+    L, M, H = band_at(pe)
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
-
-    evid = {g: band_at(g, d1, r, fx) for g in (inp["g_evid_min"], inp["g_evid_max"])}
-    for g, b in evid.items():
-        if zone_of(inp["price"], *b) != zone:
-            errors.append(f"zone flips to {zone_of(inp['price'], *b)} at g_d={g:+.2%} inside the evidence interval — BLOCKED (A9)")
 
     cons_mean = inp["eps_cons_fy27_mean"]
     cons_dev = eps["m"] / cons_mean - 1.0
@@ -306,12 +305,11 @@ def main() -> int:
     nib_cons = cons_mean * inp["shares"] / MN / liq_2027
     brent_cons = (inp["real_fy25"] + (nib_cons - nib_fy25) / k) / rho
 
-    pe_flat = {t: pe_eq for t in TIERS}
-    flat_errs, flat_cny = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), pe_eq)
+    flat_errs, flat_cny = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), pe)
     errors += flat_errs
     flat = tuple(v / fx for v in flat_cny)
 
-    if abs(inp["pe_own_med"] - pe_eq) < 1e-9:
+    if abs(inp["pe_own_med"] - pe) < 1e-9:
         errors.append("pe_own_med leaked into the multiple path — it is a comparison field")
     leaked = [key for key in NOT_FORMULA if key not in inp]
     if leaked:
@@ -319,78 +317,70 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
-    # --- Gordon cross (retention branch, sign only — monotonic regime) ------------
-    g_ret_raw = (1.0 - payout_fy25) * roe["m"]
-    g_ret = min(g_ret_raw, G_CAP)
-    errors += check_branch(g_ret, roe["m"], r, payout_fy25, "gordon cross g2")
-    modelled, gap = payout_gap(g_ret, roe["m"], payout_fy25)
-    gordon = tuple(eps[t] * perpetual_pe(g_ret, roe[t], r) / fx for t in TIERS)
-    zg = tuple(eps[t] * 10.0 / fx for t in TIERS)
-    g_edge, ok_edge = implied_g_retaining(inp["pe_own_max"], roe["m"], r)
+    # --- Cross bands and disclosures (never asserted against the price) -----------
+    ddm = tuple(pay * eps[t] / (r - g_d) / fx for t in TIERS)
+    zero_g = band_at(1.0 / r)
+    fallback = band_at(retention_pe(b_g, g2, basket_r(FALLBACK_BASKET)))
+    own_med = band_at(inp["pe_own_med"])
+    cash_ps_hkd = inp["cash_fy25"] * MN / inp["shares"] / fx
+    pe_px = inp["price"] * fx / eps["m"]
+    implied_r = (1.0 - b_g) / pe_px + g2
+    eps_px = inp["price"] * fx / pe
+    brent_px = (inp["real_fy25"] + (eps_px * inp["shares"] / MN / liq_2027 - nib_fy25) / k) / rho
+    g_edge, well = implied_g_retaining(inp["pe_own_max"], roe["m"], r)
 
-    # --- report ----------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(f"axis _AXIS.brent-oil OK: Brent {brent['l']:g}/{brent['m']:g}/{brent['h']:g}; base {inp['brent_2025']} (rho {rho:.4f}); "
-          f"axis §3 transmission rows for {TICKER} match")
-    print(f"k = (NI/bbl H1 {nib_h1:.2f} − FY25 {nib_fy25:.2f}) / (realised {inp['real_h1_26']} − {inp['real_fy25']}) = {k:.4f} RMB/bbl per US$1; "
-          f"liq_2027 = {inp['prod_2026_mid']:.0f} × {inp['liq_share']} × {inp['sales_ratio']} = {liq_2027:.1f} mmbbl; ΔEPS/$1 = {liq_2027 * k * rho * MN / inp['shares']:.4f} CNY")
-    print(f"{'档':<3}{'Brent':>7}{'实现价':>8}{'NI/bbl':>8}{'NI(mn)':>10}{'EPS':>9}{'ROE':>8}{'D1 CNY':>8}{'D1 HKD':>8}{'m_d':>7}{'PE_eq':>7}{'HKD':>8}")
-    for t, a in zip(TIERS, (L, M, H)):
-        print(f"{t.upper():<3}{brent[t]:7.0f}{real[t]:8.2f}{ni[t] / liq_2027:8.1f}{ni[t]:10,.0f}{eps[t]:9.4f}{roe[t]:8.2%}"
-              f"{d1[t]:8.4f}{d1[t] / fx:8.4f}{m_d:7.2f}{pe_eq:7.2f}{a:8.2f}")
-    print(f"中枢 (A4): TTM EPS {eps_ttm:.4f} ÷ EPS_M {eps['m']:.4f} = {mid_ratio:.3f} (≤ {MID_CYCLE_MAX} ✓, M stays); "
-          f"2026H1 annualised ÷ 中枢 = {h1_ann_ratio:.3f} ({'optimistic-side coordinate' if h1_ann_ratio > MID_CYCLE_MAX else 'inside'}); "
-          f"FY26E ÷ 中枢 = {inp['eps_cons_fy26_mean'] / eps['m']:.3f}; full-cycle EPS mean raw {cycle_mean_raw:.4f} (M/raw {eps['m'] / cycle_mean_raw:.3f}), "
-          f"production-normalised {cycle_mean_norm:.4f} (M dev {cycle_dev:+.1%} ✓)")
-    print(f"DDM preconditions (A6): (a) retention Gordon min over g∈[0,6%] = {gordon_min['l']:.2f}/{gordon_min['m']:.2f}/{gordon_min['h']:.2f}x > band top {inp['pe_own_max']} ✓ "
-          f"(band-edge reverse-solve g {g_edge:+.2%}, conditioned={ok_edge}); (b) payout floor {pay:.0%} quoted ✓ (FY2025 paid {payout_fy25:.2%}); "
-          f"(c) ROE−r = {(roe['l'] - r) * 100:.2f}/{(roe['m'] - r) * 100:.2f}/{(roe['h'] - r) * 100:.2f}pp ≥ 3 ✓ (单调区)")
-    print(f"g_d (A8): peer DDM reverse-solve CVX {peers['cvx']:+.3%} / TTE {peers['tte']:+.3%} / 1088.HK {peers['1088']:+.3%} → median {peer_median:+.3%} = g2_d {g_d:+.2%} (cap {G_CAP:.0%}); "
-          f"own DPS CAGR FY19→25 {dps_cagr:+.2%} (gate: positive ✓; > cap → not usable on this ruler); "
-          f"band edges: top {r - pay / inp['pe_own_max']:+.2%} / med {r - pay / inp['pe_own_med']:+.2%} / bottom {r - pay / inp['pe_own_min']:+.2%}")
-    print(f"guardrail (A9): DDM-implied PE {pay:.2f}/({r:.0%}−{g_d:.2%}) = {pe_eq:.2f}x ∈ [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓; "
-          f"evidence [{inp['g_evid_min']:+.2%}, {inp['g_evid_max']:+.2%}] → PE {ddm_pe(pay, inp['g_evid_min'], r):.2f}–{ddm_pe(pay, inp['g_evid_max'], r):.2f}x")
-    print(f"check_branch ✓ (sign only, 单调区): g2_d {g_d:+.2%} on payout {payout_fy25:.1%}; gordon cross g raw (1−payout)×ROE_M = {g_ret_raw:+.2%} → cap {g_ret:.0%}; "
-          f"payout_gap: modelled {modelled:.1%} vs paid {payout_fy25:.1%} = {gap:+.1%} (book ≠ marginal ROE, disclosure)")
-    d = decompose((L, M, H), (pe_flat["l"], pe_flat["m"], pe_flat["h"]))
+    print(f"弹性: NI/bbl FY25 {nib_fy25:.2f} → 2026H1 {nib_h1:.2f} RMB; k {k:.3f} RMB/bbl per US$1; ρ {rho:.4f}; liq_2027 {liq_2027:.1f} mmbbl")
+    print(f"分子: Brent {brent['l']}/{brent['m']}/{brent['h']} → realised {real['l']:.2f}/{real['m']:.2f}/{real['h']:.2f} → "
+          f"NI {ni['l']:,.0f}/{ni['m']:,.0f}/{ni['h']:,.0f} mn → EPS {eps['l']:.4f}/{eps['m']:.4f}/{eps['h']:.4f} CNY; "
+          f"ROE {roe['l']:.2%}/{roe['m']:.2%}/{roe['h']:.2%} (ROE−r {(roe['l'] - r) * 100:+.2f}/{(roe['m'] - r) * 100:+.2f}/{(roe['h'] - r) * 100:+.2f}pp; "
+          f"monotonic ≥ {MONOTONIC_GAP * 100:.0f}pp: {'/'.join('Y' if roe[t] - r >= MONOTONIC_GAP - 1e-12 else 'near-r' for t in TIERS)})")
+    print(f"中枢 (A4): TTM EPS {eps_ttm:.4f} / EPS_M = {mid_ratio:.3f} (≤ {MID_CYCLE_MAX} ✓); 2026H1 annualised / EPS_M = {h1_ann_ratio:.3f}; "
+          f"cycle mean raw {cycle_mean_raw:.4f} / production-normalised {cycle_mean_norm:.4f} → M dev {cycle_dev:+.1%} (≤ {CYCLE_MEAN_DEV_MAX:.0%} ✓)")
+    print(f"ruler form (A6): 1/r = {1.0 / r:.2f}x ≤ band top {inp['pe_own_max']} → retention-branch Gordon reachable, DDM exception (a) fails; "
+          f"band-top implied g (ROE_M) {g_edge:+.2%} well_conditioned={well}")
+    print(f"篮子: r_perp {r:.0%} = 篮 {baskets.get('r_perp')} (check_r ✓); g2 {g2:.2%} ≤ cap {g_cap(r):.2%} ✓; r−g2 {r - g2:.2%}; "
+          f"sustainable (1−payout {payout_fy25:.1%})×ROE_M = {g_sustain:.2%} ≥ g2 ✓; check_branch ✓; DPS CAGR FY19→25 {dps_cagr:+.2%} (gate ✓)")
+    print(f"倍数: PE = (1−{b_g:.0%})/({r:.0%}−{g2:.1%}) = {pe:.3f}x ∈ [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓ (guardrail A9)")
+    d = decompose((L, M, H), (pe, pe, pe))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | 分子比 L={d['num_lm']:.3f} H={d['num_hm']:.3f} | 倍数比 L={d['pe_lm']:.3f} H={d['pe_hm']:.3f} (dividend ruler flat)")
-    print(f"flat-multiple @PE_eq={pe_eq:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.1%}")
+    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | 分子比 L={d['num_lm']:.3f} H={d['num_hm']:.3f} | 倍数比 L={d['pe_lm']:.3f} H={d['pe_hm']:.3f} (flat)")
+    print(f"flat-multiple @PE={pe:.2f}: {fmt_band(flat)} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.1%}")
     print(f"②-b: 共识 FY27 {inp['eps_cons_fy27_lo']}/{cons_mean}/{inp['eps_cons_fy27_hi']} vs EPS {eps['l']:.4f}/{eps['m']:.4f}/{eps['h']:.4f}; "
           f"均值 {'in [M,H]' if eps['m'] <= cons_mean <= eps['h'] else ('below M' if cons_mean < eps['m'] else 'above H')}, M dev {cons_dev:+.1%}, 均值 ↔ Brent {brent_cons:.1f}")
-    pe_px = inp["price"] * fx / eps["m"]
-    gd_px = r - pay / pe_px
-    d0_ttm = inp["dps_fy25_final_hkd"] + inp["dps_h1_26_hkd"]
-    gd_yield = r - d0_ttm / inp["price"]
-    r_full = 1.0 / pe_px
-    r_ret6 = (1.0 - G_CAP / roe["m"]) / pe_px + G_CAP
-    print(f"price(H)={inp['price']} zone={zone} | 现价 = {pe_px:.2f}x M 档 EPS: DDM-implied g_d {gd_px:+.2%} (yield form, D0 TTM {d0_ttm:.2f} HKD: {gd_yield:+.2%}); "
-          f"Gordon 单调区不可达 → full-payout r {r_full:.1%} / retention g 6% r {r_ret6:.1%} (A10)")
-    print(f"市场隐含边际 ROE (A10 disclosure): g_d {g_d:.2%} ÷ retention {1 - pay:.0%} = {g_d / (1 - pay):.2%}; at market g_d {gd_px:.2%} → {gd_px / (1 - pay):.2%}; "
-          f"book ROE_M {roe['m']:.2%} → gap {(roe['m'] - g_d / (1 - pay)) * 100:.1f} / {(roe['m'] - gd_px / (1 - pay)) * 100:.1f}pp")
-    for g, b in evid.items():
-        print(f"证据区间 g_d={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    for g in (g_d - 0.01, g_d + 0.01, 0.0):
-        b = band_at(g, d1, r, fx)
-        pe_g = ddm_pe(pay, g, r)
-        print(f"敏感性 g_d {g:+.2%}: PE_eq {pe_g:.2f}x {'in band' if inp['pe_own_min'] <= pe_g <= inp['pe_own_max'] else 'OUT of band'} → {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    for p2 in (0.40, 0.50):
-        b = tuple(p2 * eps[t] / (r - g_d) / fx for t in TIERS)
-        print(f"敏感性 payout {p2:.0%}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    print(f"每 US$1 Brent ≈ M {liq_2027 * k * rho * MN / inp['shares'] * pay * m_d / fx:+.2f} HKD; 2026H1 annualised NI {2 * inp['ni_h1_26']:,.0f} ↔ 本尺 Brent {(inp['real_fy25'] + (2 * inp['ni_h1_26'] / liq_2027 - nib_fy25) / k) / rho:.1f}")
-    print(f"对照带 (自身实测带外·不作锚): 留存 Gordon g {g_ret:.0%} PE {'/'.join(f'{perpetual_pe(g_ret, roe[t], r):.2f}' for t in TIERS)} → {'/'.join(f'{x:.2f}' for x in gordon)} (zone {zone_of(inp['price'], *gordon)}); "
-          f"零增长 10x {'/'.join(f'{x:.2f}' for x in zg)} (zone {zone_of(inp['price'], *zg)}); own 中位 {inp['pe_own_med']}x flat → {'/'.join(f'{eps[t] * inp['pe_own_med'] / fx:.2f}' for t in TIERS)}")
+    print(f"price(H)={inp['price']} zone={zone} | 现价 = {pe_px:.2f}x M 档 EPS → 隐含 r(P) {implied_r:.1%} (A10; "
+          f"共识 FY27 {inp['price'] * fx / cons_mean:.2f}x → {(1.0 - b_g) / (inp['price'] * fx / cons_mean) + g2:.1%}, TTM {inp['price'] * fx / eps_ttm:.2f}x → {(1.0 - b_g) / (inp['price'] * fx / eps_ttm) + g2:.1%}); "
+          f"市价反推 EPS {eps_px:.2f} ↔ Brent {brent_px:.1f}")
+    for g in (g2 - 0.01, g2 + 0.01):
+        pe_g = retention_pe(b_g, g, r)
+        b = band_at(pe_g)
+        in_band = inp["pe_own_min"] <= pe_g <= inp["pe_own_max"]
+        flag = " ⚠敏感区" if zone_of(inp["price"], *b) != zone else ""
+        print(f"敏感性 g2 {g:+.2%}: PE {pe_g:.2f}x {'in band' if in_band else 'OUT of band (不可用)'} → {fmt_band(b)} zone={zone_of(inp['price'], *b)}{flag}")
+    for b2 in (0.20, 0.30):
+        b = band_at(retention_pe(b2, g2, r))
+        print(f"敏感性 b_growth {b2:.0%}: {fmt_band(b)} zone={zone_of(inp['price'], *b)}")
+    for r2 in (r - 0.005, r + 0.005):
+        b = band_at(retention_pe(b_g, g2, r2))
+        print(f"敏感性 r {r2:.1%}: {fmt_band(b)} zone={zone_of(inp['price'], *b)}")
+    print(f"敏感性 篮 {FALLBACK_BASKET} r {basket_r(FALLBACK_BASKET):.0%}: {fmt_band(fallback)} zone={zone_of(inp['price'], *fallback)}; "
+          f"g=0 全派息 1/r {1.0 / r:.2f}x: {fmt_band(zero_g)} zone={zone_of(inp['price'], *zero_g)}")
+    print(f"每 US$1 Brent ≈ {liq_2027 * k * rho * MN / inp['shares'] * pe / fx:+.2f} HKD; 2026H1 annualised NI {2 * inp['ni_h1_26']:,.0f} ↔ 本尺 Brent {(inp['real_fy25'] + (2 * inp['ni_h1_26'] / liq_2027 - nib_fy25) / k) / rho:.1f}")
+    print(f"对照带 (不入盘): DDM 45%×EPS/({r:.0%}−{g_d:.2%}) = {pay / (r - g_d):.2f}x → {fmt_band(ddm)} (zone {zone_of(inp['price'], *ddm)}); "
+          f"own 中位 {inp['pe_own_med']}x flat → {fmt_band(own_med)} (zone {zone_of(inp['price'], *own_med)}); "
+          f"现金 {inp['cash_fy25']:,.0f} mn = {inp['cash_fy25'] * MN / inp['shares']:.2f} CNY = {cash_ps_hkd:.2f} HKD/股 ({cash_ps_hkd / inp['price']:.0%} of price, 只披露不加); "
+          f"capex {inp['capex_fy25']:,.0f} vs D&A {inp['da_fy25']:,.0f} → growth capex {inp['capex_fy25'] - inp['da_fy25']:,.0f} = {(inp['capex_fy25'] - inp['da_fy25']) / inp['ni_fy25']:.0%} of NI (b_growth {b_g:.0%})")
     bps = inp["equity"] * MN / inp["shares"]
     print(f"交叉尺: FCF 收益率 {inp['fcf_fy25'] * MN / (inp['price'] * fx * inp['shares']):.2%}, P/FCF 10x = {inp['fcf_fy25'] * MN / inp['shares'] * 10 / fx:.2f} HKD; "
-          f"BPS {bps:.2f} CNY = {bps / fx:.2f} HKD, PB at price {inp['price'] * fx / bps:.2f}, at L/M/H {L * fx / bps:.2f}/{M * fx / bps:.2f}/{H * fx / bps:.2f}; "
-          f"TP 均值 {inp['tp_cons_h']} = {inp['tp_cons_h'] * fx / eps['m']:.2f}x M EPS ↔ g_d {r - pay / (inp['tp_cons_h'] * fx / eps['m']):+.2%}; H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}")
+          f"BPS {bps:.2f} CNY = {bps / fx:.2f} HKD (地板只披露), PB at price {inp['price'] * fx / bps:.2f}, at L/M/H {L * fx / bps:.2f}/{M * fx / bps:.2f}/{H * fx / bps:.2f}, "
+          f"Gordon PB (ROE−g)/(r−g) {'/'.join(f'{justified_pb(g2, roe[t], r):.2f}' for t in TIERS)}; "
+          f"TP 均值 {inp['tp_cons_h']} = {inp['tp_cons_h'] * fx / eps['m']:.2f}x M EPS (zone {zone_of(inp['tp_cons_h'], L, M, H)}); H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}")
     g1 = (inp["eps_fy2022"] / inp["eps_fy2020"]) ** 0.5 - 1.0
-    pe_rec = recovery_two_stage_pe(g1, 2, g_ret, roe["m"], r)
+    pe_rec = recovery_two_stage_pe(g1, 2, g2, roe["m"], r)
     print(f"谷底坐标 (A3): 回归段 2020->2022 g1 {g1:.1%} n=2 -> {pe_rec:.1f}x on FY2020 EPS {inp['eps_fy2020']} = {inp['eps_fy2020'] * pe_rec / fx:.2f} HKD (坐标, 不作锚); "
           f"谷底 x 1/r = {inp['eps_fy2020'] / r / fx:.2f} HKD (deep_discount 压力坐标)")
     la, ma, ha = L * fx, M * fx, H * fx
     print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} | price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} "
-          f"(A 股 = {inp['price_a'] / eps['m']:.2f}x M EPS ↔ g_d {r - pay / (inp['price_a'] / eps['m']):+.2%}) | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+          f"(A 股 = {inp['price_a'] / eps['m']:.2f}x M EPS ↔ 隐含 r {(1.0 - b_g) / (inp['price_a'] / eps['m']) + g2:.1%}) | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
 
     return report(errors)
 

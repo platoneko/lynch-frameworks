@@ -16,7 +16,9 @@ two_stage_pe, everything else unchanged.  FY2027 is FY+1, so no discounting
 self excluded) is shared by all three tiers; each tier's ROE is its own FY27
 EPS over BPS, so the multiple only drifts with the numerator.  The four
 business legs share that multiple and are split by revenue weight for display
-only (A1b).  The realised 5-year monthly PE band [pe_own_min, pe_own_max]
+only (A1b).  r is the basket rate: the Inputs `r_perp` row names 篮 4 龙头制造
+(A14) and `check_r` requires r to equal that basket's value; g2 is capped at
+`g_cap(r)` = min(6%, r - 4%).  The realised 5-year monthly PE band [pe_own_min, pe_own_max]
 (IFRS-basis series, denominator `eps_ttm_ifrs`) is a guardrail, never an input.
 
 Run:  python3 eval/0700.HK.py
@@ -33,7 +35,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
-from eval.lib.inputs import check_missing, ladder, parse_inputs, report  # noqa: E402
+from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "0700.HK.md"
@@ -84,21 +86,27 @@ def scenario(inp: dict[str, float], tag: str, pe_override: float | None = None,
 
 
 def stated_leg_table(md: str) -> dict[str, list[float]]:
-    """Rows of 表1: 档 | 国内 | 国际 | 广告 | FBS | 经营合计 | NAV | 净现金 | 合计."""
+    """Rows of 表1: 档 | 经营腿倍数 | 国内 | 国际 | 广告 | FBS | 经营合计 | NAV | 净现金 | 合计.
+
+    Returns the shared multiple (`PE=x`) followed by the eight HKD/share cells.
+    """
     out: dict[str, list[float]] = {}
     for line in md.splitlines():
         if not re.match(r"\|\s*[LMH]\s*\|", line):
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 9:
+        if len(cells) < 10:
             continue
-        nums: list[float] = []
-        for c in cells[1:9]:
+        pe = re.search(r"PE=([0-9]+(?:\.[0-9]+)?)", cells[1])
+        if not pe:
+            continue
+        nums: list[float] = [float(pe.group(1))]
+        for c in cells[2:10]:
             m = re.search(r"([0-9]+(?:\.[0-9]+)?)", c.replace("**", ""))
             if not m:
                 break
             nums.append(float(m.group(1)))
-        if len(nums) == 8:
+        if len(nums) == 9:
             out[cells[0]] = nums
     return out
 
@@ -115,8 +123,13 @@ def main() -> int:
         return report(errors)
 
     # --- input discipline ---------------------------------------------------
-    errors += check_r(inp["r_perp"], "r_perp")
-    errors += check_g_cap(inp["g2"], "g2")
+    # The operating leg is ordinary platform cash flow: the framework names its
+    # basket on the r_perp row (A14) and r must be that basket's value.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (A14)")
+    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     if inp["r_perp"] - inp["g2"] < MIN_R_MINUS_G:
         errors.append(f"r_perp - g2 = {inp['r_perp'] - inp['g2']:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     errors += ladder("eps27", inp["eps27_l_cny"], inp["eps27_m_cny"], inp["eps27_h_cny"])
@@ -186,8 +199,10 @@ def main() -> int:
         if row is None:
             errors.append(f"leg table row {tag} not found")
             continue
+        if abs(row[0] - s["pe"]) > 0.01:
+            errors.append(f"leg table {tag}/PE: stated {row[0]} vs recomputed {s['pe']:.3f}")
         want = [s["dom"], s["intl"], s["ads"], s["fbs"], s["ops"], s["nav"], s["cash"], s["anchor"]]
-        for name, got, exp in zip(names, row, want):
+        for name, got, exp in zip(names, row[1:], want):
             if abs(got - exp) > LEG_TOL:
                 errors.append(f"leg table {tag}/{name}: stated {got} vs recomputed {exp:.2f}")
 
@@ -203,7 +218,7 @@ def main() -> int:
 
     # --- report -------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print(f"g2={inp['g2']:.4f} (peer reverse-solve, self excluded) r={inp['r_perp']}  cap ok; "
+    print(f"g2={inp['g2']:.4f} (peer reverse-solve, self excluded) r={inp['r_perp']} (篮 {baskets['r_perp']})  cap ok; "
           f"numerator FY2027E (furthest >=2-house year; FY2028 single house -> no g1)")
     for t in TIERS:
         s = S[t]

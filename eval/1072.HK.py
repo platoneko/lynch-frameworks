@@ -29,7 +29,8 @@ GROWTH RATE per leg and read the multiple off Gordon.
   NI_C = E + R * gpw_C,  NI_A = R * gpw_A,  NI_B = R * gpw_B
   w_i = NI_i / NI               leg profit weight
   g   = sum(w_i * g_i)          blended perpetual growth
-  PE  = (1 - g/ROE) / (r - g),  r = 10%  ->  a no-growth business is worth 10x
+  PE  = (1 - g/ROE) / (r - g),  r = basket r (all three legs 篮 4 龙头制造,
+                                10%, A20)  ->  a no-growth business is worth 10x
 
 Assign what has a known home, then spread the rest.  The one piece of profit
 with a documented leg is 三菱重工东方燃气轮机（广州）— 49%, equity-accounted, so
@@ -55,7 +56,7 @@ the M tier (A15): L and H are scenario tiers whose leg mix swings for reasons
 that are not about how big the leg structurally is — FY2024 pairs DEC's own
 trough with the associate's peak and prints 10.53% for that reason alone.
 
-Second, ROE(TTM) = 10.05% sits on top of r = 10%.  In that regime growth is
+Second, ROE(TTM) = 10.05% sits on top of the basket r = 10%.  In that regime growth is
 value-neutral, the multiple is pinned near 1/r whatever g does, and inverting a
 price for g returns a number rather than a reading — `implied_g` flags all three
 market quotes as ill-conditioned.  The framework therefore rests on the
@@ -79,9 +80,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
-from lib.gordon import check_g_cap, implied_g, payout, perpetual_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -313,6 +314,21 @@ def main() -> int:
     r = inp["r_perp"]
     lo, hi = inp["pe_own_lo"], inp["pe_own_hi"]
 
+    # --- Step 0: r is a basket value (valuation-rules「§r 篮子」) -------------
+    # The three incumbent legs share one r, so the blended-g Gordon is legal
+    # (A20); the framework names the basket on the r_perp row and r must be
+    # that basket's value.  r_disc is the option leg's discount rate and has to
+    # equal r_perp (A17) — it carries no basket tag of its own.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp row names no 篮 N in its source cell (A20)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    errors += check_r(inp["r_disc"], "r_disc")
+    if abs(inp["r_disc"] - r) > 1e-9:
+        errors.append(f"r_disc={inp['r_disc']} must equal r_perp={r} (A17)")
+    if errors:
+        return report(errors, "FAIL (basket r)")
+
     # --- Step 1: numerators and leg weights ---------------------------------
     errors += ladder("ni", *(inp[f"ni_{t}"] for t in TIERS))
     if inp["equity"] <= 0:
@@ -345,14 +361,15 @@ def main() -> int:
     for t in TIERS:
         if r - g[t] <= 0:
             errors.append(f"g_{t}={g[t]:.4f} >= r={r} — perpetuity diverges")
-    # AGENTS.md 永续上限 6%: every named perpetual g — the three incumbent legs
-    # (`g2_*`, visible to calibration.py), the option leg, and the blend.
+    # 永续上限 g_cap(r) = min(6%, r − 4%): every named perpetual g — the three
+    # incumbent legs (`g2_*`, visible to calibration.py), the option leg, and
+    # the blend.
     for leg in LEGS:
         for t in TIERS:
-            errors += check_g_cap(inp[f"g2_{leg}_{t}"], f"g2_{leg}_{t}")
+            errors += check_g_cap(inp[f"g2_{leg}_{t}"], r, f"g2_{leg}_{t}")
     for t in TIERS:
-        errors += check_g_cap(inp[f"g50_g_{t}"], f"g50_g_{t}")
-        errors += check_g_cap(g[t], f"g_blended_{t}")
+        errors += check_g_cap(inp[f"g50_g_{t}"], r, f"g50_g_{t}")
+        errors += check_g_cap(g[t], r, f"g_blended_{t}")
     if errors:
         return report(errors, "FAIL (ladders/convergence)")
 
@@ -491,7 +508,7 @@ def main() -> int:
 
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]
-    print(f"formula_id={FORMULA_ID}  (r={r:.0%}, 零增长={1 / r:.1f}x)")
+    print(f"formula_id={FORMULA_ID}  (r={r:.0%} 篮 {baskets['r_perp']}, 零增长={1 / r:.1f}x)")
     print(f"{'档':<3}{'归母(亿)':>10}{'w_A':>8}{'w_B':>8}{'w_C':>8}"
           f"{'g':>9}{'ROE':>8}{'派息':>8}{'PE':>8}{'锚点HKD':>10}{'A股CNY':>9}")
     for t in TIERS:
@@ -544,6 +561,20 @@ def main() -> int:
     print(f"腿 C 压力测试：g_C {inp['g2_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
           f"({m_stress / M - 1:+.1%})，现价 {inp['price']} 仍 "
           f"{'高于' if inp['price'] > H else '低于'} H={H:.2f}")
+
+    # Disclosure rows (Outputs): the three-leg g2 ±1pp band and the single-stage
+    # implied r(P).  Printed only — the anchors above are the ruler.
+    for delta in (-0.01, 0.01):
+        band = []
+        for t in TIERS:
+            g_d = sum(w[t][leg] * (inp[f"g2_{leg}_{t}"] + delta) for leg in LEGS)
+            band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r)))
+        z_adj = zone_of(inp["price"], band[0], band[1] + p_m * v_opt, band[2] + v_opt)
+        print(f"敏感区 三腿 g₂ {delta:+.0%}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}"
+              f"  底牌 zone={zone_of(inp['price'], *band)}  H+V={band[2] + v_opt:.2f} 修正带 zone={z_adj}")
+    r_implied = g["m"] + (r - g["m"]) * M / inp["price"]
+    r_implied_a = g["m"] + (r - g["m"]) * (M * fx) / inp["price_a"]
+    print(f"隐含 r(P) 单段近似: H 股 {r_implied:.1%} / A 股 {r_implied_a:.1%} vs 篮 {baskets['r_perp']} {r:.0%}（只披露）")
 
     # A14 — the open construction question, priced rather than argued.  All
     # three treatments have to land in the same zone, or the choice stops being
