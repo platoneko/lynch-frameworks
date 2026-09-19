@@ -16,8 +16,9 @@ Main ruler (SOTP, modelled in EUR, reported in USD per ADR):
     bridged to group EBIT and reduced to the NI residual with the other legs
     pinned at FY26E.  Multiple by two-stage Gordon: g1 = 2028E multi-house point
     mean / FY27 mean - 1 for one year, then g2 (peer-cluster reverse-solve,
-    capped), r on the operating tier, ROE on a proxy equity (invested capital x
-    NI revenue share).  `two_stage_pe` prices FY2027 as NEXT-period earnings
+    capped at g_cap(r)), r from the leg's basket (篮 4 龙头制造, named in the
+    Inputs source cell and enforced by `check_r`), ROE on a proxy equity
+    (invested capital x NI revenue share).  `two_stage_pe` prices FY2027 as NEXT-period earnings
     (t=1, valuation date = end-FY2026), so FY2027 = current FY + 1 carries no
     extra discount (n_disc_ni = 0; A14).  表1 reports this leg on the
     post-transition FY2028 numerator (skill A2e-3), the FY27-basis multiple is
@@ -26,8 +27,9 @@ Main ruler (SOTP, modelled in EUR, reported in USD per ADR):
     current-year basis, NOT discounted, the annuity-class EV/EBIT ladder
     10 / 12.4 / 18.9 (BofA "other businesses" 10x / sell-side QTL SOTP cluster
     midpoint / IDCC realised 18.9x) SHARED with QCOM.US's QTL leg and checked
-    rung by rung against frameworks/QCOM.US.md.  Debt-like quality is carried
-    by the ladder, not by r=7% (A2e-5b, no double count).
+    rung by rung against frameworks/QCOM.US.md.  The leg sits in 篮 3 按量专利许可
+    but its 8.5% never enters a formula: debt-like quality is carried by the
+    ladder, not by a Gordon r (A2e-5b, no double count), so there is no r_ts row.
   * MI-core (Radio Networks + Core Software) — three-point numerator (FY2025
     actual / FY26E identity residual / FY26 guidance-top residual) x one flat
     EV/EBIT (无同业锚 · flat).  No leg equity and no same-world g2 source, so
@@ -58,17 +60,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.axes import check_optical_oe_mount  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
+    BASKET_R,
     check_g_cap,
     check_r,
     check_transition_years,
+    g_cap,
     implied_g,
     payout,
     perpetual_pe,
     two_stage_pe,
 )
-from eval.lib.inputs import check_missing, ladder, parse_inputs  # noqa: E402
+from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "NOK.US.md"
@@ -85,8 +87,8 @@ EBIT_TOL = 5e6  # segment identity slack, EUR (inputs are quoted to 0.005bn)
 # (A7b); FY2029 has none.  Stage 1 may not run longer than this.
 CONSENSUS_YEARS_BEYOND_FY27 = 1
 # Same-world evidence range for g2 (A7d): every well-conditioned optical-cluster
-# reverse-solve sits above the cap, so the legal range collapses onto G_CAP.
-G2_EVIDENCE_RANGE = (G_CAP, G_CAP)
+# reverse-solve sits above the cap, so the legal range collapses onto g_cap(r)
+# (resolved in main once r_perp is known).
 G2_SENSITIVITY_PP = 0.01
 
 CLOSING_COMPONENTS = ("net_cash_eur", "pension_net_eur", "restructuring_eur")
@@ -111,7 +113,9 @@ REQUIRED = [
 
 # ---------------------------------------------------------------- stated Outputs
 
-CELL = r"([\d.]+)(?:（[^）]*）)?"
+# A 表1 cell is `value（annotation）`; the annotation names the generating
+# parameters and may itself carry one nested （…） (e.g. `（年金阶梯，篮 3 无 r）`).
+CELL = r"([\d.]+)(?:（(?:[^（）]|（[^（）]*）)*）)?"
 ZONE_IDS = ("deep_discount", "conservative", "neutral", "optimistic", "stretched")
 
 
@@ -293,12 +297,18 @@ def main() -> None:
     checks.append((v["ts_margin"] > 0 and v["ebit_mi_core_m"] > 0 and v["ebit_corp_fy26"] < 0,
                    "ts_margin > 0, MI-core residual > 0, corporate unallocated is a cost"))
 
-    # 3. perpetual-growth 口径 (校验 3)
-    r_errs = check_r(v["r_perp"], "r_perp")
-    checks.append((not r_errs and abs(v["r_perp"] - R_OPERATING) < 1e-9,
-                   f"r_perp {v['r_perp']:.0%} is the operating tier (换档属仓库级框架纠正)"))
-    g_errs = check_g_cap(v["g2_ni"], "g2_ni")
-    checks.append((not g_errs, g_errs[0] if g_errs else f"g2_ni {v['g2_ni']:.2%} <= cap {G_CAP:.0%}"))
+    # 3. perpetual-growth 口径 (校验 3): the NI leg's r must be the basket the
+    # Inputs source cell names (A18); the TS leg's 篮 3 has no r row by design.
+    baskets = parse_baskets(text)
+    r_errs = ([] if "r_perp" in baskets
+              else ["r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"])
+    r_errs += check_r(v["r_perp"], "r_perp", baskets.get("r_perp"))
+    basket = baskets.get("r_perp")
+    checks.append((not r_errs, r_errs[0] if r_errs else
+                   f"r_perp {v['r_perp']:.1%} == 篮 {basket} {BASKET_R[basket][0]}"))
+    g2_cap = g_cap(v["r_perp"])
+    g_errs = check_g_cap(v["g2_ni"], v["r_perp"], "g2_ni")
+    checks.append((not g_errs, g_errs[0] if g_errs else f"g2_ni {v['g2_ni']:.2%} <= g_cap(r) {g2_cap:.1%}"))
     checks.append((v["r_perp"] - v["g2_ni"] >= 0.02 - 1e-9,
                    f"r - g2 = {v['r_perp'] - v['g2_ni']:.2%} >= 2%"))
     n_errs = check_transition_years(int(v["n_g1"]), CONSENSUS_YEARS_BEYOND_FY27, "n_g1")
@@ -355,7 +365,7 @@ def main() -> None:
     checks.append((flat["L"] < flat["M"] < flat["H"],
                    f"flat-@M ladder (NI PE_M {c['tiers']['m']['pe']:.2f}x, TS {v['ev_ebit_ts_m']:g}x, RAN flat): "
                    f"{fmt3(flat)} still L < M < H"))
-    for g2_edge in G2_EVIDENCE_RANGE:
+    for g2_edge in (g2_cap, g2_cap):
         ce = compute(v, b, g2=g2_edge)
         ze = zone_of(price, ce["L"], ce["M"], ce["H"])
         checks.append((ze == z, f"g2 evidence edge {g2_edge:.2%}: zone `{ze}` == base `{z}`"))
@@ -376,7 +386,7 @@ def main() -> None:
     print(f"NI Gordon : equity_ni {b['equity_ni'] / bn:.3f}bn = IC {v['ic_group_eur'] / bn:.2f} x "
           f"{v['ni_rev_share']:.1%} | g1 {b['g1']:+.2%} (n={int(v['n_g1'])}, 2028E 4-house mean "
           f"{sum(v[f] for f in EPS28_POINTS) / len(EPS28_POINTS):.4f} EUR) | g2 {v['g2_ni']:.1%} | "
-          f"r {v['r_perp']:.0%} | df {c['disc']:.4f} ({v['n_disc_ni']:g}y)")
+          f"r {v['r_perp']:.0%} (篮 {basket}) | df {c['disc']:.4f} ({v['n_disc_ni']:g}y)")
     for k in TIERS:
         t = c["tiers"][k]
         print(f"  {k.upper()}: ROE {t['roe']:6.2%}  PE {t['pe']:5.2f}x  EV/EBIT-eq {t['evx']:5.2f}x  "
@@ -410,6 +420,11 @@ def main() -> None:
     print(f"flat-@M   : {fmt3(flat)}   (A2e-2c)")
     print(f"guardrail : L-implied group EV/EBIT {l_implied:.2f}x vs trough {trough:.2f}x (③) | "
           f"M {c['tiers']['m']['group_ev_ebit']:.2f}x  H {c['tiers']['h']['group_ev_ebit']:.2f}x")
+    # Implied r(P), disclosure only (A18): single-stage Gordon approximation on
+    # the NI leg alone -- the TS / RAN legs carry no r, so nothing else shifts.
+    r_implied = v["g2_ni"] + (v["r_perp"] - v["g2_ni"]) * c["M"] / price
+    print(f"implied r : NI leg single-stage approx g2 + (r - g2) * M / P = {r_implied:.2%} "
+          f"(篮 {basket} r {v['r_perp']:.1%}, delta {r_implied - v['r_perp']:+.2%}; disclosure only)")
     g_street, ok_street = implied_g(30.0 / (1.0 - v["tax_rate"]), c["tiers"]["m"]["roe"], v["r_perp"])
     print(f"cross     : street Optical+IP 30x EV/EBIT = {30.0 / (1.0 - v['tax_rate']):.1f}x PE -> implied g "
           f"{g_street:+.2%} (well_conditioned={ok_street}) | perpetual-only PE_M (no g1) "

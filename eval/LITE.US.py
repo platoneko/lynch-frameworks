@@ -24,6 +24,10 @@ Never a zone input.
 Guardrail: every tier's multiple (and H') must sit inside the ticker's own
 realised current-FY forward-PE band [pe_own_min, pe_own_max].
 
+r is set by the leg's basket (valuation-rules.md「§r 篮子」): the framework
+names `篮 N` on the r_perp row (A20) and r must equal that basket's value
+(gordon.BASKET_R); g2 must sit under g_cap(r).
+
 Run:  python3 eval/LITE.US.py
 """
 
@@ -46,12 +50,13 @@ from eval.lib.axes import (  # noqa: E402
 )
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    R_OPERATING,
     check_g_cap,
     check_r,
+    g_cap,
     implied_g,
     perpetual_pe,
 )
+from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "LITE.US.md"
@@ -109,8 +114,8 @@ def first_float(pattern: str, text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def check_inputs(inp: dict[str, float]) -> list[str]:
-    """Ticker-specific sanity gates — see §3 校验 and A1/A2/A3/A5/A19."""
+def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
+    """Ticker-specific sanity gates — see §3 校验 and A1/A2/A3/A5/A19/A20."""
     errors: list[str] = []
     if not (0.0 <= inp["sbc_haircut"] < SBC_HAIRCUT_MAX):
         errors.append(f"sbc_haircut={inp['sbc_haircut']} outside [0, {SBC_HAIRCUT_MAX})")
@@ -122,11 +127,11 @@ def check_inputs(inp: dict[str, float]) -> list[str]:
         errors.append("FY28 consensus mean below FY27: FY28 is not the growth year the axis assumes")
     if inp["eps_fy28_guide"] <= inp["eps_fy28_h"]:
         errors.append("eps_fy28_guide inside the consensus range — it is not a missing input, drop the candidate band (A19)")
-    # r on the operating tier (A15); g2 under the cap and away from the pole.
-    errors += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errors.append(f"r_perp={inp['r_perp']}: operating leg, expected {R_OPERATING}")
-    errors += check_g_cap(inp["g2"], "g2")
+    # r from the named basket (A15/A20); g2 under g_cap(r) and away from the pole.
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (A20)")
+    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errors.append("perpetuity diverges: g2 >= r")
@@ -178,7 +183,8 @@ def main() -> int:
         print(f"FAIL: missing inputs {missing}", file=sys.stderr)
         return 1
 
-    errors = check_inputs(inp)
+    baskets = parse_baskets(md)
+    errors = check_inputs(inp, baskets)
     errors.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
     errors.extend(check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"])))
     opt_rev = {
@@ -293,7 +299,7 @@ def main() -> int:
         f" sbc_haircut={inp['sbc_haircut']:.0%} k_l={inp['k_l']} (on FY27 {inp['eps_fy27']})"
         f" -> EPS L/M/H = {eps['L']:.4f}/{eps['M']:.4f}/{eps['H']:.4f}"
     )
-    print(f"g2={g2:.4f} (flat, no transition) r={r:g}")
+    print(f"g2={g2:.4f} (flat, no transition) r={r:g} (篮 {baskets['r_perp']}, cap {g_cap(r):.3f})")
     print(f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} (EPS x shares / equity)")
     for t in TIERS:
         print(f"{t}: eps {eps[t]:.4f} x {pe[t]:.2f}x = {eps[t] * pe[t]:.2f}  [perpetual_pe, payout {1 - g2 / roe[t]:.3f}]")
@@ -341,7 +347,7 @@ def main() -> int:
     # Sensitivities the doc quotes (Outputs 敏感性)
     for g in (g2 - 0.01, g2 + 0.01, 0.0664):
         vals = [eps[t] * perpetual_pe(g, roe[t], r) for t in TIERS]
-        tag = " (above cap, reference only)" if g > 0.06 + 1e-9 else ""
+        tag = " (above cap, reference only)" if g > g_cap(r) + 1e-9 else ""
         print(f"  sens g2={g:.4f}{tag}: {vals[0]:.2f}/{vals[1]:.2f}/{vals[2]:.2f}")
     for f in (0.9, 1.1):
         e = eps["M"] * f

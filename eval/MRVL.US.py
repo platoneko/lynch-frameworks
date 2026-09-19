@@ -30,6 +30,11 @@ V_opt = one $1B/yr custom-silicon unit beyond consensus (two Google warrant
 tranches), priced with BofA's +EPS-per-$1B sensitivity and the Custom M-tier
 multiple.  Probabilities never enter the base deck.
 
+r is the basket rate the framework names on the `r_perp` Inputs row (all three
+legs 篮 4 龙头制造, 10%); `check_r` pins the value to the named basket and
+`check_g_cap` caps each leg's g2 at g_cap(r) = min(6%, r - 4%).  Disclosure
+only: the single-stage implied r(P) and the g2 -1pp band (no zone flip expected).
+
 Run:  python3 eval/MRVL.US.py
 """
 
@@ -44,11 +49,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
     check_g_cap,
     check_r,
     check_transition_years,
+    g_cap,
     perpetual_pe,
     two_stage_pe,
 )
@@ -56,6 +60,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -127,17 +132,17 @@ def check_coaxial_with_avgo(inp: dict[str, float]) -> list[str]:
     return errs
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
 
-    # All three legs are ordinary operating cash flow; hyperscaler programs are
-    # not the conditional 13% tier (no unclosed financing behind the revenue).
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
+    # All three legs are ordinary operating cash flow on one basket (A16): the
+    # Inputs row must name the basket and r must equal that basket's rate.
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
 
     for leg in LEGS:
-        errs += check_g_cap(inp[f"g2_{leg}"], f"g2_{leg}")
+        errs += check_g_cap(inp[f"g2_{leg}"], inp["r_perp"], f"g2_{leg}")
         gap = inp["r_perp"] - inp[f"g2_{leg}"]
         if gap <= 0:
             errs.append(f"perpetuity diverges on {leg}: g2 >= r")
@@ -172,7 +177,8 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp) + check_coaxial_with_avgo(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets) + check_coaxial_with_avgo(inp)
 
     r = inp["r_perp"]
     n = int(inp["n_stage"])
@@ -281,7 +287,7 @@ def main() -> int:
         + f"; M / FY29 consensus {inp['eps_fy29_cons']:g} = {M / inp['eps_fy29_cons']:.2f}x"
     )
     print(f"flat-multiple ladder @ M {blended['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    ai_cap_hit = inp["g2_cu"] + band_edge_dg[1] > G_CAP + 1e-9
+    ai_cap_hit = inp["g2_cu"] + band_edge_dg[1] > g_cap(r) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge Δg @ M ROE (all legs shifted): "
         f"lower {band_edge_dg[0]:+.4f} / upper {band_edge_dg[1]:+.4f}"
@@ -302,6 +308,19 @@ def main() -> int:
               f"zone+V={zone_of(inp['price'], *opt)}")
     print(f"price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H - 1:+.1%}  "
           f"implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
+
+    # ---- Disclosure only (valuation-rules「g₂ 的杠杆 MUST 显式」/ 隐含 r(P)) ----
+    # Single-stage Gordon approximation on the M anchor; the two-stage ruler makes
+    # it an approximation, which the framework says.
+    implied_r = inp["g2_cu"] + (r - inp["g2_cu"]) * M / inp["price"]
+    print(f"implied r(P) ≈ g2 + (r - g2)·M/P = {implied_r:.4f}  (篮 {baskets.get('r_perp')} r={r:g}, δ={implied_r - r:+.4f})")
+    down = {t: eps[t] * blended_at(t, -0.01) for t in TIERS}
+    zone_down = zone_of(inp["price"], down["L"], down["M"], down["H"])
+    print(
+        f"g2 -1pp (all legs): {down['L']:.2f}/{down['M']:.2f}/{down['H']:.2f} zone={zone_down}"
+        + ("  ⚠敏感区 zone flips" if zone_down != zone else "  (no flip)")
+        + "; +1pp exceeds g_cap, skipped"
+    )
     return report(errors)
 
 

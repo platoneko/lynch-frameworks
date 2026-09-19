@@ -11,7 +11,7 @@ Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     ROE_i = eps_i * shares_fy28 / equity
     anchor_i = eps_i * perpetual_pe(g2, ROE_i, r_perp)
 The multiple is generated, not borrowed: one perpetual g2 shared by all three
-tiers (peer cross-section reverse-solve, capped at G_CAP), tier ROE from one
+tiers (peer cross-section reverse-solve, capped at g_cap(r)), tier ROE from one
 equity field.  With ROE far above r the payout is ~1 and the three multiples
 differ by well under a turn, so the tiers are still told apart by the numerator
 alone (A2e-2c; the cyclical secondary's flat policy survives mechanically).
@@ -38,7 +38,8 @@ M-tier gross margin and Gordon multiple.  Probabilities live only in table 3.
 Sanity checks beyond the anchor comparison:
   * scenario ordering  rev_l < rev_m <= rev_h, gm_l < gm_m <= gm_h,
     and the resulting eps_l < eps_m < eps_h
-  * r tier / g2 cap / r - g2 >= 2% (valuation-rules.md「永续增长口径」)
+  * r basket: the Inputs source cell of r_perp names 篮 N and r equals that
+    basket's value (valuation-rules.md「§r 篮子」) / g2 <= g_cap(r) / r - g2 >= 2%
   * guardrail: every generated multiple inside the ticker's own realised band
   * flat-multiple ladder (A2e-2c): the tiers must still order correctly with the
     multiple held flat, i.e. the numerator alone separates them
@@ -64,13 +65,13 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import check_cowos_mount  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
     check_g_cap,
     check_r,
+    g_cap,
     implied_g,
     perpetual_pe,
 )
+from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NVDA.US.md"
@@ -190,13 +191,15 @@ def main() -> int:
         )
     if not (inp["gm_l"] < inp["gm_m"] <= inp["gm_h"]):
         errors.append(f"gm order: {inp['gm_l']}/{inp['gm_m']}/{inp['gm_h']}")
-    # Perpetual-growth 口径: one operating r, one capped g2, not at the pole.
+    # Perpetual-growth 口径: one basket r for the whole-company leg (A23), one
+    # g2 capped at that r, not at the pole.
     r, g2 = inp["r_perp"], inp["g2"]
-    errors += check_r(r, "r_perp")
-    if abs(r - R_OPERATING) > 1e-9:
-        errors.append(f"r_perp={r}: whole-company operating leg, expected {R_OPERATING}")
-    errors += check_g_cap(g2, "g2")
-    errors += check_g_cap(inp["g2_cand"], "g2_cand")
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(g2, r, "g2")
+    errors += check_g_cap(inp["g2_cand"], r, "g2_cand")
     if r - g2 <= 0:
         errors.append("perpetuity diverges: g2 >= r")
     elif r - g2 < MIN_R_MINUS_G:
@@ -352,17 +355,17 @@ def main() -> int:
         f"  opex={opex / B:.1f}  tax={tax:.0%}  shares={shares / B:.2f}B"
     )
     print(f"eps={eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}  ROE={roe_l:.3f}/{roe_m:.3f}/{roe_h:.3f}"
-          f"  pe(g2={g2:g}, r={r:g})={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f}  band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]")
+          f"  pe(g2={g2:g}, r={r:g} 篮 {baskets.get('r_perp')})={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f}  band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]")
     print(
         f"bridge: FY27 eps {eps_fy27:.3f} vs cons {inp['eps_fy27_cons']} ({dev27:+.1%})"
         f" | FY28-M {eps_m:.3f} vs cons {inp['eps_fy28_cons']} ({dev28:+.1%})"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
-    cap_hit = band_edge_g[1] > G_CAP + 1e-9
+    cap_hit = band_edge_g[1] > g_cap(r) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge g @ M ROE: "
         f"lower {band_edge_g[0]:+.4f} (Δ {band_edge_g[0] - g2:+.4f}) / upper {band_edge_g[1]:+.4f} "
-        f"(Δ {band_edge_g[1] - g2:+.4f}){' — above the 6% cap, unreachable under ①' if cap_hit else ''}"
+        f"(Δ {band_edge_g[1] - g2:+.4f}){f' — above the {g_cap(r):.0%} cap, unreachable under ①' if cap_hit else ''}"
     )
     print(
         f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x China DC unit ${inp['china_dc_rev_unit'] / B:.1f}B/yr "

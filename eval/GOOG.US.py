@@ -12,13 +12,16 @@ one scalar per tier — priced at a SINGLE, FLAT set of perpetuity multiples.
 Every multiple is GENERATED from a named growth rate rather than lifted off a
 historical PE percentile (AGENTS.md「永续增长口径」), and each leg carries its
 own invested capital, so its ROE — and therefore the retention its growth
-costs — is derived, not chosen:
+costs — is derived, not chosen.  r comes from the basket each leg is assigned
+to (valuation-rules「§r 篮子」): both Gordon legs sit in 篮 4 龙头制造
+(`r_perp`, A24); the Inputs source cell names the basket and `check_r` demands
+the value match it.  g2 is capped at g_cap(r) = min(6%, r - 4%).
 
     Services + Alphabet-level   ROE 47.2%   (equity 247.8B, residual)
     Google Cloud                ROE 16.0%   (equity 160.0B, from HSBC 2027E ROIC)
 
 The tier ladder lives ENTIRELY in the numerator: g2_svc = 5.5% (median of the
-META / RDDT / TTD market-implied cross-section, GOOG excluded; _local/ab/ad_cluster.py) and
+META / RDDT / TTD market-implied cross-section, GOOG excluded; A21) and
 g2_cld = 6.0% (6.5% capped) are identical in L, M and H, so the multiple ratio across tiers
 is exactly 1.000 and every point of tier spread is a consensus-EPS point
 (A2e-2a / A2e-2c). The one derived exception is the L tier's cloud multiple:
@@ -39,6 +42,10 @@ Why GAAP EPS is not used: H1 2026 other income carries $135.9B of unrealized
 equity-securities gains (SpaceX and a private company), so trailing EPS - and
 every screen PE built on it - is meaningless for this name.
 
+Disclosures (printed, never errors): the band with g2_svc shifted -1pp / -0.5pp
+and the zone it lands in (敏感区, valuation-rules「g₂ 的杠杆 MUST 显式」), and the
+single-stage implied r(P) against the basket r.
+
 Run:  python3 eval/GOOG.US.py
 """
 
@@ -56,7 +63,8 @@ from eval.lib.axes import (  # noqa: E402
     capex_constituent_share,
     check_capex_constituent,
 )
-from eval.lib.gordon import R_OPERATING, check_g_cap, check_r, payout, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, payout, perpetual_pe  # noqa: E402
+from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GOOG.US.md"
@@ -171,23 +179,22 @@ REQUIRED = [
 OPTION_DOMINANT_SHARE = 1.00
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     """Ticker-specific guards on the inputs: growth band, numerator ladder, identity."""
     errs: list[str] = []
 
-    # r is a tier, not a dial: both legs here are ordinary operating cash flow,
-    # so they sit in the default tier. Moving either to `contracted` needs a
-    # signed-contract citation in Assumptions (AGENTS.md「永续增长口径」).
+    # r is a basket, not a dial: the r row must name its basket in the Inputs
+    # source cell and carry that basket's value (A24, valuation-rules「§r 篮子」).
     r = inp["r_perp"]
-    errs += check_r(r, "r_perp")
-    if abs(r - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={r}: Services/Cloud are operating cash flow, expected {R_OPERATING}")
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errs += check_r(r, "r_perp", baskets.get("r_perp"))
 
     # Growth: one rate per leg, shared by every tier. Both must sit under the
-    # repo's perpetual cap (AGENTS.md「永续增长口径」) and clear the pole.
+    # cap set by the legs' basket r (valuation-rules「永续增长口径」) and clear the pole.
     for leg in ("svc", "cld"):
         g = inp[f"g2_{leg}"]
-        errs += check_g_cap(g, f"g2_{leg}")
+        errs += check_g_cap(g, r, f"g2_{leg}")
         if r - g <= 0:
             errs.append(f"perpetuity diverges on the {leg} leg: g2 >= r_perp")
         elif r - g < MIN_R_MINUS_G:
@@ -290,7 +297,8 @@ def main() -> int:
         print(f"FAIL: missing inputs {missing}", file=sys.stderr)
         return 1
 
-    errors = sanity_checks(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets)
 
     # Step 1 — trailing base: H1 x2 segment OI, after normalized tax. This is
     # the base the forward scalars ride on, and the denominator of the A6
@@ -590,6 +598,26 @@ def main() -> int:
         f"capex axis (constituent, A19): 2026 guide"
         f" ${inp['capex_guide_low'] / 1e9:.0f}-{inp['capex_guide_high'] / 1e9:.0f}B"
         f" = {_lo:.1%}-{_hi:.1%} of the axis 2026 base"
+    )
+    # 敏感区 (valuation-rules「g₂ 的杠杆 MUST 显式」): the band with g2_svc shifted
+    # down, disclosed not asserted -- a zone flip is a warning line for the digest.
+    # +1pp would breach g_cap(r) and is not a legal state, so only the downside.
+    for delta in (-0.01, -0.005):
+        m_svc = perpetual_pe(inp["g2_svc"] + delta, roe_services, r)
+        sL = anchor(inp["k_eps_l"], pe_cld["l"], inp["d_port_l"], inp["d_ob_l"], cloud_retreat, m_svc)
+        sM = anchor(inp["k_eps_m"], pe_cld["m"], inp["d_port_m"], inp["d_ob_m"], 1.0, m_svc)
+        sH = anchor(inp["k_eps_h"], pe_cld["h"], inp["d_port_h"], inp["d_ob_h"], 1.0, m_svc)
+        sz = zone_of(inp["price"], sL, sM, sH)
+        print(
+            f"敏感区 g2_svc {delta:+.1%} -> svc {m_svc:.2f}x -> L={sL:.2f} M={sM:.2f} H={sH:.2f}"
+            f" zone={sz}" + ("  ⚠敏感区 (zone flips, disclosure only)" if sz != zone else "")
+        )
+    # Implied r(P), single-stage approximation g + (r - g) * M / P on the services
+    # leg's g (the structural read is the market-implied g_svc in §3 交叉校验).
+    implied_r = inp["g2_svc"] + (r - inp["g2_svc"]) * M / inp["price"]
+    print(
+        f"implied r(P) ≈ {implied_r:.1%} (single-stage approx) vs basket r {r:.1%}"
+        f" ({implied_r - r:+.1%}, disclosure only)"
     )
     # V_opt: parallel to the band, never inside it.  Reported so the region
     # above H stops being unbounded — it splits into "paying for a named

@@ -18,9 +18,14 @@ CPU leg (A2e-1 / AGENTS.md 永续增长口径):
               The tier ladder therefore lives in the numerator; no tier borrows a PE.
   multiples   perpetual_pe(g2_cpu, ROE_x, r_perp) with ROE_x = NI_x / company
               equity (no leg equity is disclosed, so company ROE is used and
-              said so).  One g2 shared across tiers (turnaround class), reverse-
-              solved from the well-conditioned semis cluster (A15); the multiple
-              only moves with ROE, mechanically.  No two-stage transition: the
+              said so).  r_perp comes from the basket the CPU leg is assigned to
+              (valuation-rules「§r 篮子」, A19): 篮 4 龙头制造; the Inputs source
+              cell names the basket and `check_r` demands the value match it.
+              The Foundry leg sits in 篮 7 but has no r row -- it is a PB option,
+              never in L/M/H (its 15% is not applied to foundry_discount; A19).
+              One g2 shared across tiers (turnaround class), reverse-solved from
+              the well-conditioned semis cluster (A15) and capped at g_cap(r);
+              the multiple only moves with ROE, mechanically.  No two-stage transition: the
               FY27 product leg has no consensus year (A17 ②), so
               check_transition_years is not applicable here.
   candidate   the only FY27 product-leg number is single-house (HSBC core 4.25),
@@ -50,7 +55,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    R_OPERATING,
     check_g_cap,
     check_r,
     implied_g,
@@ -60,6 +64,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -109,6 +114,7 @@ def main() -> int:
             return 1
 
     inp = parse_inputs(md)
+    baskets = parse_baskets(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
@@ -117,10 +123,11 @@ def main() -> int:
     sh, eq, keep = inp["shares_diluted"], inp["equity"], 1.0 - inp["tax_rate"]
 
     # ---- Guards on the growth 口径 (AGENTS.md 永续增长口径) ----
-    errors += check_r(r, "r_perp")
-    if abs(r - R_OPERATING) > 1e-9:
-        errors.append(f"r_perp={r}: the CPU leg is ordinary operating cash flow, expected {R_OPERATING}")
-    errors += check_g_cap(g2, "g2_cpu")
+    # The r row must name its basket and carry that basket's value (A19).
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(g2, r, "g2_cpu")
     if r - g2 < MIN_R_MINUS_G:
         errors.append(f"r - g2_cpu = {r - g2:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     # A2e-2a/2c: three realised points on one 口径, strictly increasing.
@@ -183,7 +190,7 @@ def main() -> int:
 
     # ---- Report ----
     print(f"formula_id: {FORMULA_IDS[0]} + {FORMULA_IDS[1]}")
-    print(f"g2_cpu={g2:.4f} r={r:g} equity={eq / 1e9:.1f}B shares={sh / 1e9:.2f}B (company ROE, no leg equity disclosed)")
+    print(f"g2_cpu={g2:.4f} r={r:g} (篮 {baskets.get('r_perp')}) equity={eq / 1e9:.1f}B shares={sh / 1e9:.2f}B (company ROE, no leg equity disclosed)")
     for t in TIERS:
         print(
             f"{t}: OI {oi[t]:,.0f}M -> eps {eps[t]:.4f} ROE {roe[t]:.3f} payout {1 - g2 / roe[t]:.3f}"
