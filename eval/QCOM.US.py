@@ -15,8 +15,13 @@ Three things here are specific to this ticker:
   cluster midpoint / IDCC realised 18.9x) and are checked rung by rung against
   frameworks/NOK.US.md -- a rung moved on one side only is a drift.  Debt-like
   cash-flow quality is carried by the multiple band, not by r=7%.
-- The other three legs stay Gordon flat at r_op=10%. `cyclical` policy asks
-  for flat multiples on those legs (A2e-5); the cycle lives in the numerator.
+- The other three legs stay Gordon flat at r_op = the basket r named in the
+  Inputs source cell (篮 4 龙头制造 10%, A15; enforced by `check_r`).  QTL sits
+  in 篮 3 按量专利许可 but its 8.5% never enters a formula -- the ladder carries
+  the annuity quality, so there is no r_qtl row.  `cyclical` policy asks for
+  flat multiples on the operating legs (A2e-5); the cycle lives in the numerator.
+- Implied r(P) and the g2 +/-1pp lever are printed as disclosure only (A15);
+  neither touches the base.
 - Probabilities never touch the base. `P_K` is deliberately absent from the
   Inputs table and enters only 表3; `check_no_p_leak` proves it by rebuilding
   the p=0 row and requiring it to equal the base L exactly.
@@ -33,11 +38,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.gordon import R_OPERATING, check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.gordon import BASKET_R, check_g_cap, check_r, g_cap, implied_g, perpetual_pe  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -111,6 +117,7 @@ def check_no_p_leak(base_l: float, row_l: float) -> list[str]:
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     inp = parse_inputs(md)
+    baskets = parse_baskets(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
@@ -175,6 +182,39 @@ def main() -> int:
     ]
     print(f"Flat@{ev_ebit[1]:g}×  L={flat_m[0]:.2f} M={flat_m[1]:.2f} H={flat_m[2]:.2f}")
 
+    # Disclosure only (A15): the g2 lever and the implied r(P).  Neither reaches the base.
+    def anchors_at(r: float, g2_shift: dict[str, float]) -> list[float]:
+        pe = {leg: perpetual_pe(inp[f"g2_{leg}"] + g2_shift.get(leg, 0.0), roe_m, r) for leg in OP_LEGS}
+        return [
+            ebt_by_tier[i]["qtl"] * ev_ebit[i]
+            + sum(eps_by_tier_map[i][leg] * pe[leg] for leg in OP_LEGS)
+            for i in range(3)
+        ]
+
+    cap = g_cap(inp["r_op"])
+    basket = baskets.get("r_op")
+    basket_name = BASKET_R[basket][0] if basket in BASKET_R else "unnamed"  # missing tag is reported below
+    print(f"r_op {inp['r_op']:.1%} = 篮 {basket} {basket_name} | g_cap(r) {cap:.1%}")
+    for label, shift in (
+        ("all -1pp", {leg: -0.01 for leg in OP_LEGS}),
+        ("hs/iot +1pp", {leg: +0.01 for leg in OP_LEGS if inp[f"g2_{leg}"] + 0.01 <= cap + 1e-9}),
+    ):
+        lmh = anchors_at(inp["r_op"], shift)
+        print(f"g2 lever {label:12} L={lmh[0]:.2f} M={lmh[1]:.2f} H={lmh[2]:.2f}"
+              f" -> zone {zone_of(inp['price'], *lmh)}")
+    # One δ on the operating legs' basket r so the M-tier leg sum meets the price;
+    # the QTL leg prices on EV/EBIT and does not shift.  M falls as r rises.
+    lo, hi = -0.03, 0.30
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if anchors_at(inp["r_op"] + mid, {})[1] > inp["price"]:
+            lo = mid
+        else:
+            hi = mid
+    r_delta = (lo + hi) / 2
+    print(f"implied r(P): δ = {r_delta:+.2%} -> operating legs {inp['r_op'] + r_delta:.1%}"
+          f" (篮 {basket} {inp['r_op']:.1%}; QTL leg no r) — disclosure only")
+
     # Shared annuity ladder (A14): every rung must equal NOK's TS rung.
     peer = parse_inputs(PEER.read_text(encoding="utf-8"))
     for ours, theirs in SHARED_LADDER.items():
@@ -208,12 +248,13 @@ def main() -> int:
     errors += ladder("eps", *eps_by_tier)
     errors += ladder("ev_ebit_ts", *ev_ebit)
     errors += check_no_p_leak(L, adj[0])
-    errors += check_r(inp["r_op"], "r_op")
-    # AGENTS.md「永续增长口径」: every Gordon leg's perpetual g stays at or below the cap.
+    # valuation-rules「§r 篮子」: r_op must be the basket the Inputs source cell names (A15).
+    if "r_op" not in baskets:
+        errors += ["r_op: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"]
+    errors += check_r(inp["r_op"], "r_op", baskets.get("r_op"))
+    # valuation-rules「永续增长口径」: every Gordon leg's perpetual g stays at or below g_cap(r).
     for leg in OP_LEGS:
-        errors += check_g_cap(inp[f"g2_{leg}"], f"g2_{leg}")
-    if abs(inp["r_op"] - R_OPERATING) > 1e-9:
-        errors += [f"r_op={inp['r_op']} != {R_OPERATING} — 换档属仓库级框架纠正"]
+        errors += check_g_cap(inp[f"g2_{leg}"], inp["r_op"], f"g2_{leg}")
     if not P_K[0] <= P_K[1] <= P_K[2]:
         errors += [f"p_k must be non-decreasing, got {P_K}"]
     if v_opt < 0:

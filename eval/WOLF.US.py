@@ -20,6 +20,12 @@ V_opt: the ceiling is the court-approved fresh-start EV high, bridged to a
 per-share value with today's net cash (A12); 表3 = base_k + p_k × V_opt with
 P_K an eval constant, never an Input (A2e-7a).
 
+Basket r (valuation-rules.md「§r 篮子」): the whole company sits in 篮 7
+(15%, A14) but r never enters a formula here -- the bottom card is an asset PB
+ruler and there is no g2.  `r_perp` is disclosure only; the script checks the
+basket tag and value agree and prints the 篮 7 steady-state floor
+(1/r × E, zero for E < 0) without max()-ing it into L.
+
 Run:  python3 eval/WOLF.US.py
 """
 
@@ -32,11 +38,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from eval.lib.gordon import check_r  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
     outputs_section,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -52,7 +60,7 @@ P_K = (0.0, 0.25, 1.0)
 
 REQUIRED = [
     "price", "shares_fd", "cash", "debt", "conv_principal", "warrant_proceeds", "debt_total",
-    "equity_book", "pb_l", "pb_m", "pb_h",
+    "equity_book", "pb_l", "pb_m", "pb_h", "r_perp",
     "ev_court_l", "ev_court_m", "ev_court_h", "eq_court_bridge",
     "rev_l", "rev_m", "rev_h", "rev_fy26",
     "close_own_min",
@@ -90,6 +98,11 @@ def main() -> int:
     leaked = [k for k in i if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields in Inputs (A2e-7a): {leaked}")
+    # A14: r is disclosure only, but the basket tag and the value must agree.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp source cell names no 篮 N (A14)")
+    errors += check_r(i["r_perp"], "r_perp", baskets.get("r_perp"))
 
     # ---- Step 1: bottom card — fully diluted book × PB tiers (A11) ----
     book_fd = i["equity_book"] + i["conv_principal"] + i["warrant_proceeds"]
@@ -135,6 +148,8 @@ def main() -> int:
     if basic:
         print(f"  cross basic-share error: BPS {i['equity_book'] * MM / basic:.2f}, court high {(i['ev_court_h'] - net_debt) * MM / basic:.2f}")
     print(f"表2  price {i['price']} -> zone = {zone}   P/H {i['price'] / H:.2f}x")
+    # 篮 7 floor is 1/r × E; consensus EPS is negative, so it is 0 -- printed, never max()-ed into L.
+    print(f"  r_perp {i['r_perp']:g} (篮 {baskets.get('r_perp')}), disclosure only; 篮 7 floor 1/r x E = 0.00 (E < 0), L stays {L:.2f}")
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
     errors += ladder("base", L, M, H)

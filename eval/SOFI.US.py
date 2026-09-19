@@ -7,6 +7,8 @@ L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 formula_id: sofi_gordon_tbv_oe_v1
 
 Main ruler: Gordon PB-ROE on tangible book, with *owner earnings* as the numerator.
+  r comes from the leg's basket (A24: whole company → 篮 6 周期商品 / 小盘, 13%),
+  read from the Inputs row and checked against gordon.BASKET_R via the 篮 N tag.
   SoFi expenses all customer acquisition, so GAAP NI is an investment-phase P&L.
   OE = NI + growth-acquisition-spend × (1 - t); the growth share of acquisition
   spend is derived from the fair-value model's runoff inputs (CPR + default +
@@ -30,9 +32,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from math import ceil
 
-from lib.gordon import R_OPERATING, check_g_cap, check_r, check_transition_years  # noqa: E402
+from lib.gordon import check_g_cap, check_r, check_transition_years, g_cap  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -135,8 +137,14 @@ def tier_l(inp: dict[str, float], gs26: float) -> dict[str, float]:
     }
 
 
-def implied_g(inp: dict[str, float], gs27: float, lo: float = 0.0, hi: float = 0.095) -> float:
-    """Perpetual g at which the M numerator reproduces the market price (reference only)."""
+def implied_g(inp: dict[str, float], gs27: float, lo: float = 0.0, hi: float | None = None) -> float:
+    """Perpetual g at which the M numerator reproduces the market price (reference only).
+
+    The search stops just short of the pole at g = r, so a price the multiple
+    cannot reach reads as g* ≈ r (pathological), not as a clipped constant.
+    """
+    if hi is None:
+        hi = inp["r_op"] - 0.0005
     for _ in range(80):
         mid = 0.5 * (lo + hi)
         if tier_mh(inp, inp["eps_27_m"], gs27, mid)["price"] < inp["price"]:
@@ -158,12 +166,14 @@ def main() -> int:
         return report(errors)
 
     r, g, t = inp["r_op"], inp["g2"], inp["tax"]
-    errors += check_r(r, "r_op")
-    if abs(r - R_OPERATING) > 1e-9:
-        errors.append(f"r={r} expected operating tier {R_OPERATING} for SoFi")
-    # AGENTS.md「永续增长口径」: perpetual g capped at 6%; stage one bounded by consensus years.
-    errors += check_g_cap(g, "g2")
-    errors += check_g_cap(inp["g2_l"], "g2_l")
+    # valuation-rules.md「§r 篮子」: r is the named basket's value (A24), never a per-ticker dial.
+    baskets = parse_baskets(md)
+    if "r_op" not in baskets:
+        errors.append("r_op: Inputs source cell names no 篮 N (A24 归篮)")
+    errors += check_r(r, "r_op", baskets.get("r_op"))
+    # valuation-rules.md「永续增长口径」: perpetual g capped by g_cap(r); stage one bounded by consensus years.
+    errors += check_g_cap(g, r, "g2")
+    errors += check_g_cap(inp["g2_l"], r, "g2_l")
     errors += check_transition_years(ceil(inp["n"]), CONSENSUS_YEARS, "n")
     if r - g <= 0:
         errors.append(f"g2={g} must be < r={r}")
@@ -220,6 +230,7 @@ def main() -> int:
     x_excess = inp["cet1_cap"] - inp["cet1_tgt"] * inp["cet1_cap"] / inp["cet1_ratio"]
 
     print(f"formula_id={FORMULA_ID}")
+    print(f"r_op={r:g} 篮 {baskets.get('r_op')}  g2={g:g} (cap {g_cap(r):.2f})")
     print(f"maint_lend={maint_lend:.3f}  GS26={gs26:.1f}  GS27={gs27:.1f}  X={x_excess:.0f}")
     print(f"{'档':<3}{'分子':>10}{'倍数':>8}{'ROTCE':>8}{'PB':>7}{'锚点':>8}")
     print(f"{'L':<3}{tl['oe_l']:10.1f}{1 / r:8.2f}{tl['rotce_l']:8.1%}{tl['pb_l']:7.2f}{L:8.2f}   (OE26 {tl['oe26']:.1f} − 冲击, g=0, 不折现)")
@@ -234,12 +245,19 @@ def main() -> int:
     print(f"flat(mult_M 全档): L={L_flat:.2f} M={M:.2f} H={H_flat:.2f}")
     print(f"price={inp['price']} zone={zone}  P/H={inp['price'] / H:.3f}  P/TBV={inp['price'] * inp['shares'] / inp['tce']:.2f}")
     print(f"市价隐含 g*={g_star:.2%} (M 分子)；g={g:.0%} 下需 E_term {e_needed:.0f} = M 的 {e_needed / tm['e_term']:.2f}×")
-    # Guardrail reads M/H only: L is *built* to sit at the tested trough, so touching it is expected.
+    # Disclosure only (A24 / Outputs): implied r(P) is the single-stage Gordon r = g + E/P on the
+    # M-tier consensus EPS; the band-low check is ③ 护栏 read on M/H only (L is *built* to sit at
+    # the tested trough).  The 2022-12 band low printed in a loss year (1b 失真), so a reading
+    # below it is disclosed, not a downgrade trigger and not an error.
+    implied_r = g + inp["eps_27_m"] / inp["price"]
+    print(f"隐含 r(P)={implied_r:.1%} (g2 + eps_27_m / price) vs 篮 {baskets.get('r_op')} r {r:.0%}：δ {implied_r - r:+.1%}（只披露）")
     mh_ok = all(PB_BAND[0] <= pb for pb in (tm["pb_t"], th["pb_t"]))
     print(
-        f"护栏 P/TBV 带 {PB_BAND}: PB_M {tm['pb_t']:.2f} / PB_H {th['pb_t']:.2f} → "
-        f"{'within' if mh_ok else 'BELOW band low — 回对话'}；PB_L {tl['pb_l']:.2f} vs 实测底 {PB_BAND[0]}（贴底属构造）"
+        f"③ 护栏 P/TBV 带 {PB_BAND}: PB_M {tm['pb_t']:.2f} / PB_H {th['pb_t']:.2f} → "
+        f"{'within' if mh_ok else '形式出带（带下沿 2022-12 亏损年印出，1b 判失真 → ③ 不可判定，只披露）'}；"
+        f"PB_L {tl['pb_l']:.2f} vs 实测底 {PB_BAND[0]}（贴底属构造）"
     )
+    print(f"地板（只披露）: 无独立清算地板；L 世界一次性标记 −{inp['mark_rate'] + tl['mark_credit']:.0f} → TBV_L {tl['tce_l']:.0f}，TBVPS_L {tl['tce_l'] / inp['shares']:.2f}（不进 g=0 的价格）")
     for lab, key in (("均值", "seller_tp_mean"), ("下沿", "seller_tp_lo"), ("上沿", "seller_tp_hi")):
         if key in inp:
             print(f"卖方 TP {lab} {inp[key]:.2f} → zone={zone_of(inp[key], L, M, H)}（映射，不进公式）")

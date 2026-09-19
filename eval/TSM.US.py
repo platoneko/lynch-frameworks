@@ -25,6 +25,12 @@ Guardrail: the own realised forward-PE band is measured on COMPANY EPS, so it
 bounds each tier's blended PE (tier price ÷ tier EPS), not the platform leg on
 its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
 
+r: every leg (advanced / mature wafer, B1 / B2) discounts at the basket it is
+assigned to (valuation-rules「§r 篮子」) -- both legs sit in 篮 4 龙头制造, one
+`r_perp` row whose source cell names the basket; `check_r` demands the row's
+value equal that basket's, and `check_g_cap(g, r)` caps every perpetual g at
+min(6%, r - 4%) (A25).  Implied r(P) is printed as a disclosure only.
+
 COUPE: V_opt = H-tier OE×$450×share×npm×platform PE; p_k = V_k/V_H.
 
 Run:  python3 eval/TSM.US.py
@@ -46,7 +52,6 @@ from eval.lib.axes import (  # noqa: E402
     check_optical_oe_mount,
 )
 from eval.lib.gordon import (  # noqa: E402
-    R_OPERATING,
     check_branch,
     check_g_cap,
     check_r,
@@ -60,6 +65,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -124,13 +130,15 @@ REQUIRED = [
 TIERS = ("l", "m", "h")
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
+    # r is a basket, not a dial: the r row must name its basket in the Inputs
+    # source cell and carry that basket's value (A25, valuation-rules「§r 篮子」).
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
     for key in ("g2", "g_mat_wafer", "g_b2"):
-        errs += check_g_cap(inp[key], key)
+        errs += check_g_cap(inp[key], inp["r_perp"], key)
         gap = inp["r_perp"] - inp[key]
         if gap <= 0:
             errs.append(f"perpetuity diverges: {key} >= r")
@@ -178,7 +186,8 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets)
 
     r = inp["r_perp"]
     g2, g_mat, g_b2 = inp["g2"], inp["g_mat_wafer"], inp["g_b2"]
@@ -328,7 +337,7 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}")
     print(
         f"g1(company)={g1:.4f} g1_adv(platform)={g1_adv:.4f} n={n} g2={g2:g} "
-        f"g_mat_wafer={g_mat:g} g_b2={g_b2:g} r={r:g}"
+        f"g_mat_wafer={g_mat:g} g_b2={g_b2:g} r={r:g} (篮 {baskets.get('r_perp')}, all legs)"
     )
     print(
         f"mature pin: asof={inp['mat_of_wafer_asof']:.0%} of wafer × 2Q26 run-rate {4 * inp['rev_2q26_twd'] / 1e9:.0f}B "
@@ -376,7 +385,8 @@ def main() -> int:
         )
 
     def fmt(b: tuple[float, float, float]) -> str:
-        return f"{b[0]:.1f}/{b[1]:.1f}/{b[2]:.1f} zone={zone_of(inp['price'], *b)}"
+        a_x, b_x = cut_points(*b)
+        return f"{b[0]:.1f}/{b[1]:.1f}/{b[2]:.1f} (A {a_x:.1f} / B {b_x:.1f}) zone={zone_of(inp['price'], *b)}"
 
     print(f"cross-check no transition (aw/B1): {fmt(band_with(transition=False))}")
     print(f"cross-check no pin (as-of {inp['mat_of_wafer_asof']:.0%} held into 2027E): {fmt(band_with(mat_share=inp['mat_of_wafer_asof']))}")
@@ -401,7 +411,14 @@ def main() -> int:
             inp["pe_own_min"] <= blended_pe(t, g2_d) <= inp["pe_own_max"] + 1e-6 for t in TIERS
         )
         lever.append(f"{g2_d:.2%}: {fmt(band_with(g2_x=g2_d))}{'' if legal else ' (illegal)'}")
-    print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever) + f" | base zone={zone}")
+    zone_down = zone_of(inp["price"], *band_with(g2_x=g2 - 0.01))
+    flip_note = f"⚠敏感区 (-1pp -> {zone_down}, disclosure only)" if zone_down != zone else "(no flip: not a 敏感区)"
+    print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever) + f" | base zone={zone}  {flip_note}")
+    # Implied r(P): single-stage approximation r ≈ g2 + (r - g2)·M/P, a direction
+    # reading against the basket r (SOTP carries the transition and mature legs,
+    # so the structural reverse-solve below is the finer number).  Disclosure only.
+    r_impl = g2 + (r - g2) * M / inp["price"]
+    print(f"implied r(P) ≈ {r_impl:.1%} (single-stage approx) vs basket r {r:.1%} ({r_impl - r:+.1%}, disclosure only)")
     g_mkt, ok = implied_g(inp["price"] / eps["m"], roe["m"], r)
     lo, hi = -0.05, r - 1e-4
     for _ in range(200):

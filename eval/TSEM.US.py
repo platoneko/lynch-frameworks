@@ -14,12 +14,14 @@ L numerator is the digestion year — FY2027 held at the FY2026 consensus mean
 high.
 
 Multiples are generated, not borrowed: tier ROE on *operating* equity (book
-less net cash, A6), r = 10% (operating tier), M/H carry the FY2028 consensus
+less net cash, A6), r = basket 4 龙头制造 10% (A15; the Inputs row names the
+basket and `check_r` holds the value to it), M/H carry the FY2028 consensus
 year as a one-year transition (`two_stage_pe`, g1 = 2028E / 2027E on the same
 consensus line, n = 1; A4) and L does not.  g2 = the semiconductor / optical
-cross-section reverse-solved median truncated to the repo cap (A5).  All three
+cross-section reverse-solved median truncated to g_cap(r) (A5).  All three
 generated multiples must sit inside the own realised forward-PE band [9.2,
-39.9] (③); the tangible floor is printed but never wins.
+39.9] (③); the tangible floor is disclosed only — L is the scenario value,
+never max(scenario, floor).
 
 g2 leverage (A5): at g2 - 1pp the price crosses H, so the zone flips
 neutral -> stretched.  valuation-rules calls that BLOCKED; the framework was
@@ -48,11 +50,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
     check_g_cap,
     check_r,
     check_transition_years,
+    g_cap,
     implied_g,
     perpetual_pe,
     two_stage_pe,
@@ -61,6 +62,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -131,14 +133,16 @@ def solve_g(target_pe: float, fn, lo: float = -0.05, hi: float = 0.0999) -> floa
     return (lo + hi) / 2
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating leg, expected {R_OPERATING}")
-    errs += check_g_cap(inp["g2"], "g2")
-    if abs(inp["g2"] - min(inp["g_peer_median"], G_CAP)) > 5e-5:
-        errs.append(f"g2={inp['g2']:.4f} != min(source {inp['g_peer_median']:.4f}, cap {G_CAP}) — A5")
+    # A15: the Inputs row must name the basket; the value is then held to it.
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (A15)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
+    cap = g_cap(inp["r_perp"])
+    if abs(inp["g2"] - min(inp["g_peer_median"], cap)) > 5e-5:
+        errs.append(f"g2={inp['g2']:.4f} != min(source {inp['g_peer_median']:.4f}, cap {cap:.3f}) — A5")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
@@ -167,7 +171,7 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    errors = sanity_checks(inp, parse_baskets(md))
 
     r, g2, n = inp["r_perp"], inp["g2"], int(inp["n_stage"])
     g1 = inp["eps_2028_gaap_m"] / inp["eps_2027_gaap_m"] - 1.0
@@ -190,10 +194,9 @@ def main() -> int:
     ex_cash = {t: ops[t] * pes[t] for t in TIERS}
     scen = {t: ex_cash[t] + cash_ps for t in TIERS}
 
-    # ---- Step 3: floor (never wins here), anchors, cut points ----
+    # ---- Step 3: anchors, cut points; the PB floor is disclosed, never max()-ed into L ----
     floor = inp["pb_floor"] * inp["bvps"]
-    L = max(scen["L"], floor)
-    M, H = scen["M"], scen["H"]
+    L, M, H = scen["L"], scen["M"], scen["H"]
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
         return report(errors)
@@ -211,7 +214,7 @@ def main() -> int:
     # ---- g2 leverage: both ends printed; the flip is a documented user decision (A5) ----
     def deck_at(g: float) -> tuple[float, float, float]:
         return (
-            max(ops["L"] * perpetual_pe(g, roe["L"], r) + cash_ps, floor),
+            ops["L"] * perpetual_pe(g, roe["L"], r) + cash_ps,
             ops["M"] * two_stage_pe(g1, n, g, roe["M"], r) + cash_ps,
             ops["H"] * two_stage_pe(g1, n, g, roe["H"], r) + cash_ps,
         )
@@ -249,21 +252,24 @@ def main() -> int:
     mkt_g2 = solve_g((inp["price"] - cash_ps) / ops["M"], lambda g: two_stage_pe(g1, n, g, roe["M"], r))
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"r={r:g} g1(2028)={g1:.4f} n={n} g2={g2:.4f} (source {inp['g_peer_median']:.4f} truncated to cap {G_CAP:g})")
+    print(f"r={r:g} (篮 4 龙头制造, A15) g1(2028)={g1:.4f} n={n} g2={g2:.4f} (source {inp['g_peer_median']:.4f} truncated to cap {g_cap(r):.3f})")
     print(f"operating equity {equity_op / 1e9:.3f}B = book {inp['equity'] / 1e9:.3f}B - net cash {inp['net_cash'] / 1e9:.3f}B; GAAP-adjusted gap stripped {inp['gaap_gap_ps']:.4f}/sh; interest stripped {nii_ps:.4f}/sh; cash added back {cash_ps:.4f}/sh")
     for t in TIERS:
         extra = f"  stage-1 payout {p1[t]:+.2f} (cash/external-funded growth)" if t in p1 else ""
         print(f"{t}: street {street[t]:.4f} -> op {ops[t]:.4f}  ROE_op {roe[t]:.4f}  PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} + cash = {scen[t]:.4f}{extra}")
-    print(f"floor = PB {inp['pb_floor']:g} x BVPS {inp['bvps']:g} = {floor:.2f} (scenario wins: {scen['L']:.2f})")
+    print(f"floor (disclosed only, not max()-ed) = PB {inp['pb_floor']:g} x BVPS {inp['bvps']:g} = {floor:.2f}; L = scenario {scen['L']:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f} P/B={inp['price'] / B:.3f}")
     print(f"band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]: L {pes['L']:.2f}x | M {pes['M']:.2f}x | H {pes['H']:.2f}x (all inside)")
     print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} zone {lo_zone}; +1pp exceeds cap {G_CAP:g} (unusable)")
+    print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} zone {lo_zone}; +1pp exceeds cap {g_cap(r):.3f} (unusable)")
     if lo_zone != zone:
         print(f"WARN (A5): g2 -1pp flips zone {zone} -> {lo_zone}; all g2 evidence sits above the cap, settled at {g2:.2%} by user decision 2026-09-14 — price sits against H")
     print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f} zone {zone_of(inp['price'], *tot)}")
     print(f"market-implied perpetual g (no transition) {mkt_g:.4f} well_conditioned={mkt_ok}; with 2028 transition g2 {mkt_g2 if mkt_g2 is None else round(mkt_g2, 4)}")
+    # Disclosure only (A15): single-stage Gordon approximation of the r the market pays for the M deck.
+    implied_r = g2 + (r - g2) * M / inp["price"]
+    print(f"implied r(P) ~ {implied_r:.4f} (single-stage approx g2 + (r - g2) * M / P; basket 4 r {r:g}, gap {implied_r - r:+.4f})")
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
     print(f"V_opt={v_opt:.2f} (Track 2 = 1 x own SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f} zone+V={zone_of(inp['price'], *opt)}; at g2-1pp H+V={lo_h + v_opt:.2f}")
