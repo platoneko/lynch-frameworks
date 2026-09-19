@@ -16,23 +16,26 @@ x realisation x FX x (1 - DRC royalty)); the gold leg rides the shared gold
 ladder; the cobalt leg is a quota-driven gross-profit level given per scenario;
 the other-mining / IXM-trading / elimination / opex blocks are held flat across
 all three scenarios.  Gross profit -> pretax -> x(1-tax)x(1-minority) -> net
-profit to parent -> x a Gordon-generated PE.
+profit to parent.
 
-Multiples are generated, not sampled (valuation-rules「永续增长口径」): per tier
-ROE_x = NP_x / equity, PE_x = perpetual_pe(g2, ROE_x, r_perp) with ONE flat
-g2 (A2e-5 cyclical default).  g2 = the gold+copper producer cross-section
-value (tier 1, 2.76%) × the M-tier gross-profit weight of the copper + gold
-legs; the cobalt / other-mining / IXM / elimination blocks have no cluster and
-carry 0.  The axis 永续 g2 row is referenced verbatim (`axis_g2_aucu`) and
-superseded by tier 1.  The tier-to-tier multiple spread is the ROE term only.
+Multiples are generated per leg, not sampled (valuation-rules「永续增长口径」
+「§r 篮子」, A24 / A26): net profit is split across four legs by each tier's
+gross-profit share (copper + gold / cobalt quota / Mo-W-Nb-P incl. eliminations
+/ IXM trading), and every leg carries its own basket r and its own flat g —
+copper + gold on 篮 4 (10%) with the §13 commodity-leg g2 (inflation 2.5%),
+cobalt and Mo-W-Nb-P on 篮 6 (13%) at g 0, IXM on 篮 5 (11%) at g 0.  All legs
+share the company tier ROE (ROE_x = NP_x / equity), so the tier-to-tier spread
+of the copper + gold multiple is the ROE term only.  The axis 永续 g2 row is
+referenced verbatim (`axis_g2_aucu`) and superseded by the §13 tier default.
 
 L tier (valuation-rules「谷底档」): the axis L world (copper 9,431 = 2025H1
 platform, gold 3,942) is a regime, not the company's realised trough, so it is
 priced as a low steady state.  `recovery_two_stage_pe` on the company's own
 measured path (FY2019 18.57 亿 → FY2021 51.06 亿, n = 2) is printed as a
-coordinate — it overshoots M with the measured CAGR and collapses into M with
-the model's L→M magnitude — and is not the anchor.  The ticker's own 5-year
-PE band is only a guardrail: a generated multiple outside it fails the run.
+coordinate on the copper + gold ruler — it overshoots M with the measured CAGR
+and collapses into M with the model's L→M magnitude — and is not the anchor.
+The ticker's own 5-year PE band is only a guardrail: a copper + gold leg
+multiple or a blended equivalent PE (anchor / EPS) outside it fails the run.
 
 Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
 
@@ -51,8 +54,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
-from lib.gordon import check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
+from lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "603993.SH.md"
 PEER = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
@@ -63,6 +68,14 @@ MIN_R_MINUS_G = 0.02
 RECOVERY_MEASURED = {"FY2019→FY2021": (18.57, 51.06, 2)}
 TOL = 0.05  # anchors are stated to 2 decimals
 YI = 1e8  # 亿
+
+# Legs (A24): label -> (r row, g row).  Order is the Outputs 表1 order.
+LEGS = {
+    "铜金": ("r_perp", "g2_aucu"),
+    "钴": ("r_co", "g2_co"),
+    "钼钨铌磷": ("r_other", "g2_other"),
+    "IXM": ("r_ixm", "g2_ixm"),
+}
 
 # Peer field aliases (dual check after the axis mount).
 SHARED_LADDER = {
@@ -109,8 +122,13 @@ REQUIRED = [
     "mi_rate",
     "equity",
     "r_perp",
+    "r_co",
+    "r_other",
+    "r_ixm",
     "g2_aucu",
-    "g2",
+    "g2_co",
+    "g2_other",
+    "g2_ixm",
     "axis_g2_aucu",
     "pe_own_min",
     "pe_own_max",
@@ -127,52 +145,6 @@ def axis_g2(path=AXIS_AU_CU) -> float:
     return float(m.group(1)) / 100.0
 
 
-def parse_inputs(md: str) -> dict[str, float]:
-    """Parse §3 Inputs table: | field | value | meaning | as-of |."""
-    out: dict[str, float] = {}
-    in_inputs = False
-    for line in md.splitlines():
-        if line.startswith("### Inputs"):
-            in_inputs = True
-            continue
-        if in_inputs and line.startswith("### "):
-            break
-        if not in_inputs or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        key, raw = cells[0], cells[1]
-        if key in ("字段名",) or raw in ("取值",) or set(key) <= set("- :"):
-            continue
-        if raw in ("待补", "", "—"):
-            continue
-        try:
-            out[key] = float(raw.replace(",", ""))
-        except ValueError:
-            continue
-    return out
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A = (L + M) / 2
-    B = (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
-
-
-def first_float(pattern: str, text: str) -> float | None:
-    m = re.search(pattern, text)
-    return float(m.group(1)) if m else None
-
-
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -180,12 +152,21 @@ def main() -> int:
         return 1
 
     inp = parse_inputs(md)
-    missing = [k for k in REQUIRED if k not in inp]
-    if missing:
-        print(f"FAIL: missing inputs {missing}", file=sys.stderr)
-        return 1
+    errors = check_missing(inp, REQUIRED)
+    if errors:
+        return report(errors)
 
-    errors: list[str] = []
+    r = {leg: inp[rrow] for leg, (rrow, _) in LEGS.items()}
+    g = {leg: inp[grow] for leg, (_, grow) in LEGS.items()}
+
+    # --- Step 1: baskets — each leg's r must be the basket its row names -------
+    baskets = parse_baskets(md)
+    for leg, (rrow, _) in LEGS.items():
+        if rrow not in baskets:
+            errors.append(f"{rrow}: Inputs source cell names no 篮 N (AGENTS.md「篮子声明」)")
+        errors += check_r(r[leg], rrow, baskets.get(rrow))
+    if errors:
+        return report(errors, "FAIL (baskets)")
 
     # --- sanity guards (see §3 校验步骤) -------------------------------------
     if not (inp["p_cu_l"] < inp["p_cu_m"] < inp["p_cu_h"]):
@@ -202,13 +183,16 @@ def main() -> int:
         errors.append(
             f"cobalt leg order violated: {inp['gp_co_l']}/{inp['gp_co_m']}/{inp['gp_co_h']}"
         )
-    # Gordon inputs: r on a tier, every g under the cap, r − g off the pole, and
-    # the axis row referenced verbatim (superseded by tier 1, A22).
-    errors += check_r(inp["r_perp"], "r_perp")
-    for k in ("g2", "g2_aucu", "axis_g2_aucu"):
-        errors += check_g_cap(inp[k], k)
-    if inp["r_perp"] - inp["g2"] < MIN_R_MINUS_G:
-        errors.append(f"r − g2 = {inp['r_perp'] - inp['g2']:.4f} < {MIN_R_MINUS_G} (pole)")
+    # Gordon inputs: every leg's g under its own basket's cap; commodity / fee legs
+    # never below 0; the copper + gold leg off the pole; the axis row referenced
+    # verbatim (superseded by the §13 tier default, A22).
+    for leg, (_, grow) in LEGS.items():
+        errors += check_g_cap(g[leg], r[leg], grow)
+        if g[leg] < 0:
+            errors.append(f"{grow}={g[leg]} < 0 — commodity / fee-type leg g floors at 0 (valuation-rules §13)")
+    errors += check_g_cap(inp["axis_g2_aucu"], r["铜金"], "axis_g2_aucu")
+    if r["铜金"] - g["铜金"] < MIN_R_MINUS_G:
+        errors.append(f"r_perp − g2_aucu = {r['铜金'] - g['铜金']:.4f} < {MIN_R_MINUS_G} (pole)")
     g2_axis = axis_g2()
     if abs(inp["axis_g2_aucu"] - g2_axis) > 1e-9:
         errors.append(f"axis_g2_aucu={inp['axis_g2_aucu']} vs axis 永续 g2 {g2_axis}")
@@ -222,8 +206,7 @@ def main() -> int:
     if abs(inp["p_cu_m"] - inp["p_cu_base"]) > 1e-6:
         errors.append("p_cu_m must equal p_cu_base (M is the audited baseline)")
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+        return report(errors)
 
     # --- shared-ladder guard vs axis (+ peer dual check) ---------------------
     errors += check_au_cu_mount(
@@ -239,8 +222,7 @@ def main() -> int:
                 f"shared ladder drift: {ours}={inp[ours]} vs 601899.{theirs}={peer[theirs]}"
             )
     if errors:
-        print("FAIL (shared ladder):", "; ".join(errors), file=sys.stderr)
-        return 1
+        return report(errors, "FAIL (shared ladder)")
 
     # --- the ruler -----------------------------------------------------------
     def copper_leg(price_usd_t: float) -> float:
@@ -259,46 +241,66 @@ def main() -> int:
         price_oz = inp["price_au_m_oz"] * lme_au_usd_oz / inp["lme_au_m"]
         return price_oz, inp["vol_au_oz"] * (price_oz - inp["cost_au_oz"]) / YI
 
-    def scenario(price_usd_t: float, lme_au: float, gp_co: float, g2: float):
+    def scenario(price_usd_t: float, lme_au: float, gp_co: float, r=r, g=g, np_override=None) -> dict:
+        """One tier: the gross-profit bridge, then the four-leg Gordon sum (A24)."""
         gp_cu = copper_leg(price_usd_t)
         price_au_oz, gp_au = gold_leg(lme_au)
-        gp = gp_cu + gp_au + gp_co + inp["gp_other"] + inp["gp_ixm"] + inp["gp_misc"]
+        legs = {
+            "铜金": gp_cu + gp_au,
+            "钴": gp_co,
+            "钼钨铌磷": inp["gp_other"] + inp["gp_misc"],
+            "IXM": inp["gp_ixm"],
+        }
+        gp = sum(legs.values())
         pretax = gp - inp["opex"]
         np_parent = pretax * (1.0 - inp["tax_rate"]) * (1.0 - inp["mi_rate"])
+        if np_override is not None:
+            np_parent = np_override(pretax)
         eps = np_parent * YI / inp["shares"]
         roe = np_parent / inp["equity"]
-        pe = perpetual_pe(g2, roe, inp["r_perp"])
-        return gp_cu, gp_au, price_au_oz, gp, pretax, np_parent, eps, eps * pe, roe, pe
+        pes = {leg: perpetual_pe(g[leg], roe, r[leg]) for leg in legs}
+        weights = {leg: v / gp for leg, v in legs.items()}
+        per_leg = {leg: eps * weights[leg] * pes[leg] for leg in legs}
+        return {
+            "gp_cu": gp_cu, "gp_au": gp_au, "price_au_oz": price_au_oz, "gp": gp,
+            "pretax": pretax, "np": np_parent, "eps": eps, "roe": roe,
+            "pes": pes, "weights": weights, "per_leg": per_leg,
+            "anchor": sum(per_leg.values()),
+        }
 
-    sc_l = scenario(inp["p_cu_l"], inp["lme_au_l"], inp["gp_co_l"], inp["g2"])
-    sc_m = scenario(inp["p_cu_m"], inp["lme_au_m"], inp["gp_co_m"], inp["g2"])
-    sc_h = scenario(inp["p_cu_h"], inp["lme_au_h"], inp["gp_co_h"], inp["g2"])
-    pe_l, pe_m, pe_h = sc_l[9], sc_m[9], sc_h[9]
+    sc = {
+        "L": scenario(inp["p_cu_l"], inp["lme_au_l"], inp["gp_co_l"]),
+        "M": scenario(inp["p_cu_m"], inp["lme_au_m"], inp["gp_co_m"]),
+        "H": scenario(inp["p_cu_h"], inp["lme_au_h"], inp["gp_co_h"]),
+    }
+    sc_l, sc_m, sc_h = sc["L"], sc["M"], sc["H"]
+    # The copper + gold leg is the only leg whose multiple moves with ROE (g > 0);
+    # its tier ladder and the blended equivalent PE are what the guardrail reads.
+    pe_l, pe_m, pe_h = (sc[t]["pes"]["铜金"] for t in ("L", "M", "H"))
+    eq_pe = {t: sc[t]["anchor"] / sc[t]["eps"] for t in ("L", "M", "H")}
 
-    # One flat g2 = tier-1 cluster value × the M-tier gross-profit weight of the
-    # copper + gold legs (the legs that ride the axis); every other block has no
-    # cluster and is frozen across tiers, so it carries 0.
-    w_axis = (sc_m[0] + sc_m[1]) / sc_m[3]
-    g2_blend = w_axis * inp["g2_aucu"]
-    if abs(inp["g2"] - g2_blend) > 1e-4:
-        errors.append(f"g2={inp['g2']} vs blended tier-1 g2 {g2_blend:.5f} (w_axis {w_axis:.4f})")
-
-    # Guardrail (裁决顺序 ③): every generated multiple inside the ticker's own
-    # realised band.  A failure is BLOCKED, never fixed by twisting g or r.
+    # Guardrail (裁决顺序 ③): copper + gold leg multiples and the blended
+    # equivalent PE inside the ticker's own realised band.  A failure is BLOCKED,
+    # never fixed by twisting g or r (A25).
     for tag, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
         if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
             errors.append(
-                f"guardrail: PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g"
+                f"guardrail: 铜金 PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g"
+            )
+    for tag, pe in eq_pe.items():
+        if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
+            errors.append(
+                f"guardrail: blended PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED"
             )
 
     # Baseline closure: M must reproduce the filed net profit to parent.
-    if abs(sc_m[5] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
+    if abs(sc_m["np"] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
         errors.append(
-            f"baseline closure broken: M net profit {sc_m[5]:.4f}亿 vs filed "
+            f"baseline closure broken: M net profit {sc_m['np']:.4f}亿 vs filed "
             f"{BASE_NP_PARENT_YI}亿 (2026H1 x 2)"
         )
 
-    L, M, H = sc_l[7], sc_m[7], sc_h[7]
+    L, M, H = sc_l["anchor"], sc_m["anchor"], sc_h["anchor"]
     A = (L + M) / 2
     B = (M + H) / 2
     zone = zone_of(inp["price"], L, M, H)
@@ -306,9 +308,9 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
 
-    # A2e-2c flat-multiple ladder: with every tier at pe_m the order must survive,
-    # i.e. the ladder has to live in the numerator, not in the counter-cyclical band.
-    flat = [sc[6] * pe_m for sc in (sc_l, sc_m, sc_h)]
+    # A2e-2c flat-multiple ladder: with every tier at the copper + gold PE_M the
+    # order must survive, i.e. the ladder has to live in the numerator.
+    flat = [sc[t]["eps"] * pe_m for t in ("L", "M", "H")]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
     # No probability field may sit in Inputs (A2e-7a); the copper alias p_cu_* is the axis's, not a p_k.
@@ -316,91 +318,87 @@ def main() -> int:
         if k.startswith("p_") and not k.startswith("p_cu_"):
             errors.append(f"probability-style input {k} in Inputs")
 
-    # --- compare against the stated Outputs ----------------------------------
-    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    stated = {
-        "L": first_float(r"L = \*\*([0-9.]+)\*\*", out_sec),
-        "M": first_float(r"M = \*\*([0-9.]+)\*\*", out_sec),
-        "H": first_float(r"H = \*\*([0-9.]+)\*\*", out_sec),
-        "A": first_float(r"A = \*\*([0-9.]+)\*\*", out_sec),
-        "B": first_float(r"B = \*\*([0-9.]+)\*\*", out_sec),
-    }
-    for k, v in {"L": L, "M": M, "H": H, "A": A, "B": B}.items():
-        s = stated.get(k)
-        if s is None:
-            errors.append(f"stated {k} not found in Outputs")
-        elif abs(s - v) > TOL:
-            errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
-
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
+    print("baskets: " + " · ".join(
+        f"{leg} {rrow} 篮 {baskets[rrow]} {basket_r(baskets[rrow]):.0%} g {g[leg]:.1%}"
+        for leg, (rrow, _) in LEGS.items()
+    ))
     print("shared ladder OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH): cu " + "/".join(
         f"{inp[k]:g}" for k in ("p_cu_l", "p_cu_m", "p_cu_h")
     ) + " $/t, au " + "/".join(
         f"{inp[k]:g}" for k in ("lme_au_l", "lme_au_m", "lme_au_h")
     ) + " $/oz")
-    for tag, sc, p, au in (
-        ("L", sc_l, inp["p_cu_l"], inp["lme_au_l"]),
-        ("M", sc_m, inp["p_cu_m"], inp["lme_au_m"]),
-        ("H", sc_h, inp["p_cu_h"], inp["lme_au_h"]),
-    ):
+    for tag, p, au in (("L", inp["p_cu_l"], inp["lme_au_l"]), ("M", inp["p_cu_m"], inp["lme_au_m"]), ("H", inp["p_cu_h"], inp["lme_au_h"])):
+        s = sc[tag]
         print(
-            f"{tag}: cu={p:>9.2f}$/t au={au:>7.0f}$/oz  gp_cu={sc[0]:7.2f}  gp_au={sc[1]:6.2f}  "
-            f"gp={sc[3]:7.2f}  pretax={sc[4]:7.2f}  np={sc[5]:7.2f}亿  eps={sc[6]:.4f}  "
-            f"roe={sc[8]:.4f}  pe={sc[9]:.4f}  anchor={sc[7]:.4f}"
+            f"{tag}: cu={p:>9.2f}$/t au={au:>7.0f}$/oz  gp_cu={s['gp_cu']:7.2f}  gp_au={s['gp_au']:6.2f}  "
+            f"gp={s['gp']:7.2f}  pretax={s['pretax']:7.2f}  np={s['np']:7.2f}亿  eps={s['eps']:.4f}  "
+            f"roe={s['roe']:.4f}  anchor={s['anchor']:.4f}"
         )
+        print("    legs: " + "  ".join(
+            f"{leg} w={s['weights'][leg]:.3f} pe={s['pes'][leg]:.2f} ->{s['per_leg'][leg]:.2f}" for leg in LEGS
+        ) + f"  | blended pe={eq_pe[tag]:.2f}")
     per_kusd = (
         inp["vol_cu"] * 1000.0 * inp["realization_cu"] * inp["fx_usd_cny"] * (1.0 - inp["royalty_cu"]) / YI
     )
+    d_anchor = scenario(inp["p_cu_m"] + 1000.0, inp["lme_au_m"], inp["gp_co_m"])["anchor"] - M
     print(
         f"sensitivity: +$1000/t copper -> pretax {per_kusd:.2f}亿, "
-        f"eps {per_kusd * (1 - inp['tax_rate']) * (1 - inp['mi_rate']) * YI / inp['shares']:.4f}"
+        f"eps {per_kusd * (1 - inp['tax_rate']) * (1 - inp['mi_rate']) * YI / inp['shares']:.4f}, M anchor {d_anchor:+.2f}"
     )
     print(
-        f"gordon: r={inp['r_perp']:g} g2={inp['g2']:g} flat (= tier-1 {inp['g2_aucu']:g} × axis-leg weight {w_axis:.4f}; "
-        f"axis row {g2_axis:g} referenced, superseded) "
-        f"roe={sc_l[8]:.3f}/{sc_m[8]:.3f}/{sc_h[8]:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} inside own band "
+        f"gordon 铜金: r={r['铜金']:g} g2={g['铜金']:g} flat (§13 tier; axis row {g2_axis:g} referenced, superseded) "
+        f"roe={sc_l['roe']:.3f}/{sc_m['roe']:.3f}/{sc_h['roe']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f}; "
+        f"blended pe={eq_pe['L']:.2f}/{eq_pe['M']:.2f}/{eq_pe['H']:.2f} inside own band "
         f"[{inp['pe_own_min']}, {inp['pe_own_max']}] (spread = ROE term only)"
     )
     for dg in (-0.01, 0.01):
-        pe_alt = perpetual_pe(inp["g2"] + dg, sc_m[8], inp["r_perp"])
-        print(f"  g2 {dg:+.0%} -> PE_M {pe_alt:.2f}, M {sc_m[6] * pe_alt:.2f}")
-    # A23 谷底档 coordinates: (i) the measured trough→recovery CAGR on the L numerator;
-    # (ii) the measured n with the model's own L→M magnitude.  Printed, not anchors.
+        g_alt = {**g, "铜金": g["铜金"] + dg}
+        alt = [scenario(inp[f"p_cu_{t}"], inp[f"lme_au_{t}"], inp[f"gp_co_{t}"], g=g_alt)["anchor"] for t in ("l", "m", "h")]
+        print(f"  g2_aucu {dg:+.0%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
+    # A26 basket alternatives (disclosure): 铜金 on 篮 5 (country add-on) / 篮 6.
+    for label, rb in (("铜金 篮 5 11%", 0.11), ("铜金 篮 6 13%", 0.13)):
+        r_alt = {**r, "铜金": rb}
+        alt = [scenario(inp[f"p_cu_{t}"], inp[f"lme_au_{t}"], inp[f"gp_co_{t}"], r=r_alt)["anchor"] for t in ("l", "m", "h")]
+        print(f"  {label} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
+    # Implied r (δ): parallel shift of all four basket r's that prices the M tier at P.
+    lo, hi = -0.08, 0.15
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        m_alt = scenario(inp["p_cu_m"], inp["lme_au_m"], inp["gp_co_m"], r={k: v + mid for k, v in r.items()})["anchor"]
+        lo, hi = (mid, hi) if m_alt > inp["price"] else (lo, mid)
+    delta = (lo + hi) / 2
+    print("implied r(P) δ=" + f"{delta:+.2%}: " + " / ".join(f"{leg} {r[leg] + delta:.1%}" for leg in LEGS))
+    # A23 谷底档 coordinates on the copper + gold ruler: (i) the measured
+    # trough→recovery CAGR on the L numerator; (ii) the measured n with the
+    # model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
         g1_meas = (np1 / np0) ** (1.0 / n) - 1.0
-        pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2"], sc_m[8], inp["r_perp"])
-        g1_lm = (sc_m[6] / sc_l[6]) ** (1.0 / n) - 1.0
-        pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2"], sc_m[8], inp["r_perp"])
+        pe_i = recovery_two_stage_pe(g1_meas, n, g["铜金"], sc_m["roe"], r["铜金"])
+        g1_lm = (sc_m["eps"] / sc_l["eps"]) ** (1.0 / n) - 1.0
+        pe_ii = recovery_two_stage_pe(g1_lm, n, g["铜金"], sc_m["roe"], r["铜金"])
         print(
-            f"谷底档坐标（A23）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {sc_l[6] * pe_i:.2f} "
-            f"(vs M {sc_m[7]:.2f}: {'overshoot' if sc_l[6] * pe_i > sc_m[7] else 'below M'}); "
-            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {sc_l[6] * pe_ii:.2f} (L/M {sc_l[6] * pe_ii / sc_m[7]:.3f}, collapsed)"
+            f"谷底档坐标（A23）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {sc_l['eps'] * pe_i:.2f} "
+            f"(vs M {M:.2f}: {'overshoot' if sc_l['eps'] * pe_i > M else 'below M'}); "
+            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {sc_l['eps'] * pe_ii:.2f} (L/M {sc_l['eps'] * pe_ii / M:.3f}, collapsed)"
         )
-    print(f"谷底 x 1/r = {sc_l[6] / inp['r_perp']:.2f}  (deep_discount pressure coordinate)")
+    print(f"谷底 x 1/r = {sc_l['eps'] / r['铜金']:.2f}  (deep_discount pressure coordinate)")
     print(f"co_gp={inp['gp_co_l']}/{inp['gp_co_m']}/{inp['gp_co_h']}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (sc_l[6], sc_m[6], sc_h[6])):
+    print(f"flat-multiple ladder @ 铜金 PE_M {pe_m:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (sc_l["eps"], sc_m["eps"], sc_h["eps"])):
         print(line)
     print(
-        f"L/M {L / M:.3f} = num {sc_l[6] / sc_m[6]:.3f} x pe {pe_l / pe_m:.3f} | "
-        f"H/M {H / M:.3f} = num {sc_h[6] / sc_m[6]:.3f} x pe {pe_h / pe_m:.3f} | "
+        f"L/M {L / M:.3f} = num {sc_l['eps'] / sc_m['eps']:.3f} x pe {(L / M) / (sc_l['eps'] / sc_m['eps']):.3f} | "
+        f"H/M {H / M:.3f} = num {sc_h['eps'] / sc_m['eps']:.3f} x pe {(H / M) / (sc_h['eps'] / sc_m['eps']):.3f} | "
         f"width {(H - L) / (2 * M):.3f}"
     )
     print(f"price={inp['price']} zone={zone}")
 
-    if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
-
-    print("OK")
-    return 0
+    return report(errors)
 
 
 if __name__ == "__main__":

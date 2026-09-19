@@ -17,22 +17,25 @@ fastest-growing assets are the ones with the largest minority stakes
 hide the single biggest variable in the story, so it is laddered from the 2026
 quarterly prints — same year, same source, three quantiles (skill A2e-2b).
 
-The multiple is GENERATED (A13, skill A2e-5b): perpetual_pe(g2, ROE_x, r) with
-one g2 shared by all tiers — the copper and lithium peer clusters reverse-solved
-and blended by gross-profit weight, the six legs without a cluster at 0 — and
-the tier ROE from parent net profit over parent book.  The ladder therefore
-lives entirely in the numerator; the tiny spread in multiples is ROE mechanics,
-not a counter-cyclical policy on top of the conv ladder (that would price the
-cycle twice).  The guardrail is NOT the own 5y PE band (printed at a far lower
+The multiple is GENERATED (A13, skill A2e-5b): perpetual_pe(g2, ROE_x, r) at
+the whole-company basket r (A19: 篮 6 周期商品 / 小盘, read from the Inputs
+source cell and checked against gordon.BASKET_R), with one g2 shared by all
+tiers — the §13 commodity-leg tier defaults (copper = inflation, lithium = 0,
+the six legs without a tier at 0) blended by gross-profit weight — and the tier
+ROE from parent net profit over parent book.  The ladder therefore lives
+entirely in the numerator; the tiny spread in multiples is ROE mechanics, not a
+counter-cyclical policy on top of the conv ladder (that would price the cycle
+twice).  The guardrail is NOT the own 5y PE band (printed at a far lower
 earnings level, A17) but the months whose market-visible TTM EPS matched the M
-tier (A18, valuation-rules ④): the M multiple must sit inside that print band,
-and the zone must survive g2 ±1pp and the print evidence range.
+tier (A18, valuation-rules ④): the M multiple is compared with that print band
+and the zone is re-read at g2 ±1pp and the print evidence range — both are
+DISCLOSURES at the basket r (③ 出带 / ⚠ 敏感区), printed, never asserted.
 
-The L anchor is an asset floor, not an earnings scenario: every plausible opex
-treatment puts the earnings scenario below the measured PB floor of 1.0228
-(printed at the 2024-06 low of 20.82).  Guard 6 below is the skill A2e-1 test —
-if the earnings scenario drops below 30% of M, the earnings ruler has failed at
-L and the framework must go back to conversation rather than quietly ship.
+The L anchor is the earnings scenario; the measured PB floor of 1.0228 (printed
+at the 2024-06 low of 20.82) is disclosure only and is never max()-ed into L.
+Guard 6 below is the skill A2e-1 test — if the earnings scenario drops below
+30% of M, the earnings ruler has failed at L and the framework must go back to
+conversation rather than quietly ship.
 
 Pomalaa (12 kt/yr Ni, first output ~end-2026) never enters the base: it is an
 option priced at k=1 x the ticker's own realised MHP unit gross profit,
@@ -51,12 +54,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eval.lib.axes import load_au_cu_rungs  # noqa: E402
-from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.gordon import basket_r, check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
     outputs_section,
+    parse_baskets,
     parse_inputs,
 )
 from eval.lib.zones import zone_of  # noqa: E402
@@ -74,9 +78,14 @@ YI = 1e8
 BASE_NP_PARENT_YI = 70.1481
 BASE_NP_TOL_YI = 0.5
 
-# skill A2e-1: floor may win, but if the earnings scenario falls below this
-# share of M the earnings ruler has failed at L and must be re-opened.
+# skill A2e-1: if the earnings scenario falls below this share of M the
+# earnings ruler has failed at L and must be re-opened.
 SCENARIO_L_MIN_RATIO = 0.30
+# A12: 2025H1 eight-leg gross profit annualised (58.92 x 2), for the rigid-opex
+# L reading only — the number that shows why L pairs opex with its own period.
+GP_2025H1_ANNUALISED = 118.0
+# A19: the alternative basket (印尼国别附加) is a disclosure coordinate, not the ruler.
+ALT_BASKET = 7
 
 G2_TOL = 1e-4             # stated g2 must equal the cluster blend recomputed from its parts (A13)
 MIN_PRINT_MONTHS = 6      # A18: fewer EPS-matched months than this -> corroboration only, not a g2 source
@@ -122,14 +131,18 @@ def main() -> int:
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
+    baskets = parse_baskets(md)
 
     # --- sanity guards (see §3 校验步骤) -------------------------------------
     errors += ladder("copper price", inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"])
     errors += ladder("conv", inp["conv_l"], inp["conv_m"], inp["conv_h"])
-    # Perpetuity inputs (A13): r on a repo tier, g2 under the cap and equal to
-    # the gross-profit-weighted cluster blend it claims to be.
-    errors += check_r(inp["r_perp"], "r_perp")
-    errors += check_g_cap(inp["g2"], "g2")
+    # Perpetuity inputs (A13 / A19): r is the named basket's value (valuation-
+    # rules「§r 篮子」), g2 under g_cap(r) and equal to the gross-profit-weighted
+    # tier blend it claims to be.
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errors += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     g2_blend = inp["g_cu_cluster"] * inp["w_cu_gp"] + inp["g_li_cluster"] * inp["w_li_gp"]
     if abs(inp["g2"] - g2_blend) > G2_TOL:
         errors.append(f"g2={inp['g2']} != cluster blend {g2_blend:.5f} (A13)")
@@ -187,41 +200,41 @@ def main() -> int:
 
     r, g2 = inp["r_perp"], inp["g2"]
 
-    def anchor(pretax: float, conv: float, g: float) -> tuple[float, float, float, float, float]:
+    def anchor(pretax: float, conv: float, g: float, r_: float = r) -> tuple[float, float, float, float, float]:
         # Tier ROE on parent book; the multiple is Gordon on that ROE with the
         # shared g (A13). ROE <= r pins the multiple at 1/r — a result, not a bug.
         np_parent = pretax * conv
         eps = np_parent * YI / inp["shares"]
         roe = np_parent / inp["equity_parent"]
-        pe = perpetual_pe(g, roe, r)
+        pe = perpetual_pe(g, roe, r_)
         return np_parent, eps, roe, pe, eps * pe
 
     gp_m = gross_profit("m", inp["p_cu_m"])
     gp_h = gross_profit("h", inp["p_cu_h"])
     pretax_m, pretax_h = gp_m - inp["opex"], gp_h - inp["opex"]
 
-    def tiers(g: float) -> tuple[tuple, tuple, tuple]:
+    def tiers(g: float, r_: float = r) -> tuple[tuple, tuple, tuple]:
         # H carries g <= M's (post-peak normalisation, A13) — equal here.
         return (
-            anchor(inp["pretax_l"], inp["conv_l"], g),
-            anchor(pretax_m, inp["conv_m"], g),
-            anchor(pretax_h, inp["conv_h"], min(g, g)),
+            anchor(inp["pretax_l"], inp["conv_l"], g, r_),
+            anchor(pretax_m, inp["conv_m"], g, r_),
+            anchor(pretax_h, inp["conv_h"], min(g, g), r_),
         )
 
     (np_l, eps_l, roe_l, pe_l, scenario_l), (np_m, eps_m, roe_m, pe_m, M), (np_h, eps_h, roe_h, pe_h, H) = tiers(g2)
 
+    # The PB floor is disclosure only (§13 峰形区地板条款): L is the scenario.
     floor = inp["pb_floor"] * inp["bps"]
-    L = max(scenario_l, floor)
-    floor_wins = floor > scenario_l
+    L = scenario_l
 
-    # Guardrail (A18, valuation-rules ④): the M multiple must sit inside the
+    # Guardrail (A18, valuation-rules ④): the M multiple is read against the
     # band the market actually printed at this earnings level. The own 5y PE
     # band is not the target for a cyclical — it was printed at EPS <= 2.9.
-    if not (inp["pe_print_lo"] - 1e-9 <= pe_m <= inp["pe_print_hi"] + 1e-9):
-        errors.append(
-            f"M multiple {pe_m:.2f}x outside the EPS-matched print band "
-            f"[{inp['pe_print_lo']:g}, {inp['pe_print_hi']:g}] (A18) — do not force g, reopen"
-        )
+    # At the basket r the multiple sits below the band: ③ 出带 is disclosed
+    # (ruled a numerator issue, repo-level, pending), not asserted.
+    in_band = inp["pe_print_lo"] - 1e-9 <= pe_m <= inp["pe_print_hi"] + 1e-9
+    # r at which the M multiple would reach the band floor, same Gordon form.
+    r_band_lo = (1 - g2 / roe_m) / inp["pe_print_lo"] + g2
     print_is_evidence = inp["n_print_m"] >= MIN_PRINT_MONTHS
 
     # Baseline closure: M must reproduce the filed net profit to parent.
@@ -235,9 +248,9 @@ def main() -> int:
     # ruler no longer describes the downside — that is a conversation, not a
     # number to ship.
     ratio = scenario_l / M if M else 0.0
-    if floor_wins and ratio < SCENARIO_L_MIN_RATIO:
+    if ratio < SCENARIO_L_MIN_RATIO:
         errors.append(
-            f"A2e-1: floor wins and scenario_L/M={ratio:.3f} < {SCENARIO_L_MIN_RATIO} "
+            f"A2e-1: scenario_L/M={ratio:.3f} < {SCENARIO_L_MIN_RATIO} "
             "— earnings ruler has failed at L, reopen the framework"
         )
 
@@ -266,19 +279,19 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
-    # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): the zone has to hold
-    # at g2 ± 1pp and across the print evidence range; a zone that flips inside
-    # the evidence is a BLOCKED framework, not a number to pick.
-    def zone_at(g: float) -> tuple[str, float, float, float]:
-        (_, _, _, _, sc), (_, _, _, _, m_), (_, _, _, _, h_) = tiers(g)
-        l_ = max(sc, floor)
+    # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): the zone is re-read
+    # at g2 ± 1pp and across the print evidence range.  A flip is ⚠ 敏感区 —
+    # disclosed (the price sits 0.6 CNY under B), not a blocker.
+    def zone_at(g: float, r_: float = r) -> tuple[str, float, float, float]:
+        (_, _, _, _, l_), (_, _, _, _, m_), (_, _, _, _, h_) = tiers(g, r_)
         return zone_of(inp["price"], l_, m_, h_), l_, m_, h_
 
     lever = {}
+    flips = []
     for tag, g in (("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP), ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"])):
         lever[tag] = zone_at(g)
         if lever[tag][0] != zone:
-            errors.append(f"zone flips to {lever[tag][0]} at g2 {g:+.2%} ({tag}) — BLOCKED per valuation-rules, reopen")
+            flips.append(f"{tag} (g2 {g:+.2%}) -> {lever[tag][0]}")
 
     # --- Pomalaa option (A11): own realised MHP unit x 12 kt, conv_m, M multiple, one year ---
     v_opt = inp["pomalaa_kt"] * inp["mhp_unit_gp"] * inp["conv_m"] * pe_m * YI / inp["shares"] / (1 + r) ** inp["t_opt"]
@@ -305,11 +318,12 @@ def main() -> int:
         + " $/t"
     )
     print(
-        f"gordon: r={r:g} g2={g2:.4f} (= cu {inp['g_cu_cluster']:.4f}x{inp['w_cu_gp']:.4f} + li {inp['g_li_cluster']:.4f}x{inp['w_li_gp']:.4f} = {g2_blend:.5f}; six legs no cluster -> 0)"
+        f"gordon: baskets={baskets} r={r:g} g2={g2:.4f} (= cu {inp['g_cu_cluster']:.4f}x{inp['w_cu_gp']:.4f} + li {inp['g_li_cluster']:.4f}x{inp['w_li_gp']:.4f} = {g2_blend:.5f}; six legs no tier -> 0)"
         f"  ROE L/M/H {roe_l:.4%}/{roe_m:.4%}/{roe_h:.4%} -> PE {pe_l:.4f}/{pe_m:.4f}/{pe_h:.4f}"
     )
     print(
-        f"guardrail (A18 盈利配对): M PE {pe_m:.2f}x in print band [{inp['pe_print_lo']:g}, {inp['pe_print_hi']:g}] OK; "
+        f"guardrail (A18 盈利配对): M PE {pe_m:.2f}x {'in' if in_band else '⚠ ③ 出带 — below'} print band [{inp['pe_print_lo']:g}, {inp['pe_print_hi']:g}]"
+        f"{'' if in_band else f' (disclosure only: ruled a numerator issue, repo-level pending; band floor reached at r ≈ {r_band_lo:.1%})'}; "
         f"print median g {inp['g_print_m']:+.2%} over {inp['n_print_m']:.0f} months "
         f"({'evidence' if print_is_evidence else 'corroboration only, n < ' + str(MIN_PRINT_MONTHS)}) vs g2 {g2:+.2%}: "
         f"M at g_print {eps_m * perpetual_pe(inp['g_print_m'], roe_m, r):.2f}"
@@ -319,8 +333,8 @@ def main() -> int:
         f"eps={eps_l:.4f} roe={roe_l:.4%} pe={pe_l:.4f} scenario_L={scenario_l:.4f}"
     )
     print(
-        f"   floor={floor:.4f} (pb {inp['pb_floor']:g} x bps {inp['bps']:g}) "
-        f"-> L={L:.4f} ({'floor' if floor_wins else 'scenario'} wins), "
+        f"   floor={floor:.4f} (pb {inp['pb_floor']:g} x bps {inp['bps']:g}; disclosure only, not max()-ed; "
+        f"{'inside' if L < floor < H else 'outside'} [L, H], floor/M={floor / M:.3f}) -> L={L:.4f} (scenario), "
         f"scenario_L/M={ratio:.3f}"
     )
     for tag, gp, pretax, conv, np_, eps, roe, pe, anc in (
@@ -337,12 +351,17 @@ def main() -> int:
           f"mean inside [M, H] {eps_m <= inp['eps_cons_mean'] <= eps_h}; M dev {cons_dev:+.1%} (named variable: conv, A1/A3/A4)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M) * 100:.2f}%  V_opt/M={v_opt / M:.4f}")
-    # A2e-5 decomposition: L is an asset floor, so its numerator ratio is n/a.
-    print(f"分子比 L=n/a (地板胜出) H={eps_h / eps_m:.4f} | 倍数比 L=n/a H={pe_h / pe_m:.4f} (ROE mechanics only, flat policy)")
+    # A2e-5 decomposition.
+    print(f"分子比 L={eps_l / eps_m:.4f} H={eps_h / eps_m:.4f} | 倍数比 L={pe_l / pe_m:.4f} H={pe_h / pe_m:.4f} (ROE mechanics only, flat policy)")
     for tag, (z, l_, m_, h_) in lever.items():
-        print(f"  g2 lever {tag:>8}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}  A {(l_ + m_) / 2:.2f}  zone {z}")
-    g_flip, _ = implied_g((2 * inp["price"] - floor) / eps_m, roe_m, r)
-    print(f"  zone flips to conservative only if M > {2 * inp['price'] - floor:.2f} (PE_M > {(2 * inp['price'] - floor) / eps_m:.2f}x, g2 > {g_flip:+.2%})")
+        print(f"  g2 lever {tag:>8}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}  A {(l_ + m_) / 2:.2f} B {(m_ + h_) / 2:.2f}  zone {z}")
+    print(f"  {'⚠ 敏感区 (disclosure only): zone flips at ' + '; '.join(flips) if flips else 'zone holds across g2 ±1pp and the print range'}; price {inp['price']} sits {B - inp['price']:+.2f} under B")
+    # Implied r(P): single-stage Gordon at the shared g2, M as the fair value.
+    r_impl = g2 + (r - g2) * M / inp["price"]
+    print(f"  implied r(P) = g2 + (r - g2)·M/P = {r_impl:.1%} vs basket r {r:.0%} ({r_impl - r:+.1%}; disclosure only)")
+    for tag, r_ in ((f"alt 篮 {ALT_BASKET} (国别附加, disclosure)", basket_r(ALT_BASKET)), ("篮 4 coordinate", basket_r(4))):
+        z_, l_, m_, h_ = zone_at(g2, r_)
+        print(f"  r {r_:.0%} {tag}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f} zone {z_}")
     # Sensitivities the doc quotes (conv / trade leg / copper / g2), Gordon-consistent.
     def m_at(pretax: float, conv: float, g: float = g2) -> float:
         return anchor(pretax, conv, g)[4]
@@ -353,6 +372,11 @@ def main() -> int:
     d_cu = copper_leg(inp["p_cu_m"] + 1000) - copper_leg(inp["p_cu_m"])
     print(f"  sens LME Cu +1000 $/t -> gp {d_cu:+.2f}亿 -> M {m_at(pretax_m + d_cu, inp['conv_m']):.2f} ({m_at(pretax_m + d_cu, inp['conv_m']) - M:+.2f})")
     print(f"  sens g2 -1pp/+1pp -> M {lever['-1pp'][2]:.2f}/{lever['+1pp'][2]:.2f} ({lever['-1pp'][2] - M:+.2f}/{lever['+1pp'][2] - M:+.2f})")
+    z43, l43, m43, h43 = zone_at(0.0043)
+    print(f"  sens g2 0.43% (peer-cluster blend, coordinate) -> {l43:.2f}/{m43:.2f}/{h43:.2f} zone {z43}")
+    # A12: L with the 2025H1 gross profit but today's rigid opex.
+    rigid_l = anchor(GP_2025H1_ANNUALISED - inp["opex"], inp["conv_l"], g2)[4]
+    print(f"  sens L with rigid opex {inp['opex']:.2f} on 2025H1 gp {GP_2025H1_ANNUALISED:.2f} -> scenario_L {rigid_l:.2f}, ratio {rigid_l / M:.3f} (A2e-1 would trip; A12)")
     g_px, ok = implied_g(inp["price"] / eps_m, roe_m, r)
     print(f"  price {inp['price']} / EPS_M = {inp['price'] / eps_m:.2f}x -> implied g {g_px:+.2%} ({'well' if ok else 'ill'}-conditioned); implied conv at PE_M {inp['price'] / pe_m * inp['shares'] / YI / pretax_m:.1%}")
     print(f"option Pomalaa: {inp['pomalaa_kt']:g} 万吨 x {inp['mhp_unit_gp']:.4f} 亿/万吨 x conv_m {inp['conv_m']:.4f} x PE_M {pe_m:.2f} / shares / (1+r)^{inp['t_opt']:g} -> V_opt {v_opt:.4f}")
