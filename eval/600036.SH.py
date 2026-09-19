@@ -8,10 +8,12 @@ formula_id: cmb_gordon_pb_roe_v2
 
 Main ruler: Gordon PB-ROE.
   anchor_x = BPS × min( (ROE_x - g) / (r - g), pb_hist_hi )
-  * r = 10% (operating), g = 3% shared across tiers (new-regime realized EPS/NI growth)
+  * r = basket r (篮 5 大行 / 优质股份行, 11%; gordon.BASKET_R), g = 3% shared
+    across tiers (new-regime realized EPS/NI growth)
   * ROE_M = reported TTM weighted ROE; ROE_L = ROE_M minus provision-rebuild hit;
     ROE_H = ROE_M + 0.5pp (NIM flat)
   * Historical own-year PB is a guardrail only — H is clipped to the measured top
+    (not binding at the basket r); the PB=1.0 book floor is disclosed, never max()-ed
 
 The provision identity is recomputed from NPL × Δcoverage so ROE_L cannot
 quietly become an unsourced number.
@@ -27,9 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
-from lib.gordon import G_CAP, R_OPERATING, check_g_cap, check_r, justified_pb  # noqa: E402
+from lib.gordon import check_g_cap, check_r, g_cap, justified_pb  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -102,10 +104,12 @@ def main() -> int:
     if errors:
         return report(errors)
 
-    errors += check_r(inp["r_op"], "r_op")
-    if abs(inp["r_op"] - R_OPERATING) > 1e-9:
-        errors.append(f"r_op={inp['r_op']} expected operating tier {R_OPERATING} for CMB")
-    errors += check_g_cap(inp["g2"], "g2")  # AGENTS.md 永续上限 6%
+    # The r leg must name its basket and carry that basket's value (A5 / A13).
+    baskets = parse_baskets(md)
+    if "r_op" not in baskets:
+        errors.append("r_op: no 篮 N in Inputs source cell")
+    errors += check_r(inp["r_op"], "r_op", baskets.get("r_op"))
+    errors += check_g_cap(inp["g2"], inp["r_op"], "g2")  # cap = min(6%, r - 4%)
     errors += check_southbound_mount(md)
 
     hit = provision_hit_pp(inp)
@@ -177,7 +181,11 @@ def main() -> int:
         # valuation-rules 裁决顺序 ③: the clip is the same number as solving
         # (ROE_H - g)/(r - g) = pb_hist_hi for g — report that band-edge g (A6).
         g_h_edge = (roe_h - inp["pb_hist_hi"] * inp["r_op"]) / (1.0 - inp["pb_hist_hi"])
-        print(f"H 带边反解 g_H={g_h_edge:.2%} (≡ clip; ≤ cap {G_CAP:.0%}: {g_h_edge <= G_CAP})")
+        cap = g_cap(inp["r_op"])
+        print(f"H 带边反解 g_H={g_h_edge:.2%} (≡ clip; ≤ cap {cap:.1%}: {g_h_edge <= cap})")
+    # Book floor (PB = 1.0): disclosure only, never max()-ed into L — at the basket r
+    # ROE_L < r, so L is a discount to book by construction.
+    print(f"地板 PB=1.0 → {inp['bps']:.2f} (disclosure only, not max()-ed; L={L:.2f})")
     print(
         f"拨备冲击: NPL {inp['npl'] / YI:.1f}亿 × Δcov "
         f"→ 税后 {inp['npl'] * (inp['cov_l'] - inp['cov_now']) * (1 - inp['tax_rate']) / YI:.1f}亿 "
@@ -192,6 +200,8 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"price={inp['price']} zone={zone}  隐含ROE={roe_mkt:.2%} @ g={g:.0%}")
+    r_implied = g + (roe_m - g) * inp["bps"] / inp["price"]
+    print(f"隐含 r(P)={r_implied:.2%} vs 篮 {baskets.get('r_op')} r={inp['r_op']:.0%}")
     print(
         f"A11 |ROE_M-r|={abs(roe_m - inp['r_op']):.2%} "
         f"well_conditioned_for_implied_g={not near_r}"

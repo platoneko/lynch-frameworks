@@ -19,8 +19,9 @@ Gross profit -> annualise -> less opex (the gross-to-operating gap, held flat)
 profit to parent -> / shares -> x that tier's Gordon multiple.
 
 The multiple is GENERATED, not picked from history (valuation-rules「永续增长
-口径」): PE_x = min(1, 1 - g_x/ROE_x) / (r - g_x), r = 10%, ROE_x = tier net
-profit / one `equity` field.  The tier-1 g2 source — the A-share chemicals
+口径」): PE_x = min(1, 1 - g_x/ROE_x) / (r - g_x), r = the basket r of the single
+operating leg (篮 4 龙头制造 10%, read from Inputs and checked against the `篮 N`
+tag via parse_baskets / check_r), ROE_x = tier net profit / one `equity` field.  The tier-1 g2 source — the A-share chemicals
 cross-section reverse-solved on the same ruler, median -0.41% — generates
 9.61 / 9.61 / 8.76x, all BELOW the lowest monthly PE this ticker has printed in
 five years (10.45, 2022-05).  Under the 2026-09-14 裁决顺序 that is no longer a
@@ -79,10 +80,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.gordon import (  # noqa: E402
-    G_CAP, check_g_cap, check_r, implied_g, perpetual_pe,
+    check_g_cap, check_r, g_cap, implied_g, perpetual_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, parse_inputs, report,
+    check_against_stated, check_missing, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
@@ -143,6 +144,9 @@ def main() -> int:
     if errors:
         return report(errors)
     r = inp["r_perp"]
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
 
     # --- Step 1: weld the bridge to the filing ------------------------------
     gp_h1_m = inp["rev_h1"] * inp["gm_rate_h1"]
@@ -218,9 +222,9 @@ def main() -> int:
     # --- Step 3: tier ROE from one equity field, then the Gordon multiple ----
     roe = {t: np_parent[t] / inp["equity"] for t in TIERS}
     g2 = {t: inp[f"g2_{t.lower()}"] for t in TIERS}
-    errors += check_r(r, "r_perp")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
     for t in TIERS:
-        errors += check_g_cap(g2[t], f"g2_{t.lower()}")
+        errors += check_g_cap(g2[t], r, f"g2_{t.lower()}")
         if r - g2[t] < MIN_R_MINUS_G:
             errors.append(f"g2_{t.lower()} {g2[t]:+.4f}: r-g {r - g2[t]:.4f} < {MIN_R_MINUS_G} (裁决顺序 ①)")
     if errors:
@@ -321,7 +325,7 @@ def main() -> int:
     # Evidence range for g2_m: the H print median below, the largest g that
     # still keeps M < H above (past it the ladder collapses, A15).
     lo_g, hi_g = inp["g_print_h"], 0.0
-    lo, hi = inp["g_print_h"], G_CAP
+    lo, hi = inp["g_print_h"], g_cap(r)
     for _ in range(60):
         mid = (lo + hi) / 2
         if eps["M"] * perpetual_pe(mid, roe["M"], r) < H:
@@ -349,6 +353,7 @@ def main() -> int:
         - inp["rev_nm"] * inp["gm_m_nm"]
     ) / inp["rev_pu"]
     print(f"formula_id={FORMULA_ID}")
+    print(f"r_perp={r:.1%} 篮 {baskets['r_perp']} (single operating leg); g cap={g_cap(r):.1%}")
     print(
         f"segment residual gp_other={gp_other:.4f}亿 ({gp_other / gp_h1_m:.2%} of GP), "
         f"opex={opex:.4f}亿/half"
@@ -414,6 +419,9 @@ def main() -> int:
         f"谷底压力坐标 (deep_discount 行): FY2020 EPS {inp['eps_trough_fy2020']} x 1/r = "
         f"{inp['eps_trough_fy2020'] / r:.1f}"
     )
+    # 地板 (disclosure only, never max()'d into L): PB = 1.0 on the same equity field.
+    bps = inp["equity"] * YI / inp["shares"]
+    print(f"地板 (只披露, 不进 L): PB 1.0 = BPS {bps:.2f} CNY; L {L:.2f} / 地板 = {L / bps:.3f}")
     per_pct = {
         leg: inp[f"rev_{leg}"] * 0.01 * 2.0 * inp["conv"] * YI / inp["shares"] * pe["M"]
         for leg in ("pu", "pc", "nm")

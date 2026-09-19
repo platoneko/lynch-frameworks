@@ -7,24 +7,25 @@ L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 formula_id: ytn_realized_earnings_regime_gordon_v4
 
 Main ruler: three *already-printed or already-consensus* annual net profits,
-each with a Gordon multiple generated from a named growth state and the tier's
-own forward ROE (NP_x / 中报归母权益):
+each at the same flat multiple 1/(r - g2):
 
     L = FY2023 actual 45.22亿  (pricing management tightened, exports shrank)
-        -> that regime persisting: perpetual g2 = axis row, at ROE_L.  FY2023
-           is this company's own trough year, so the 谷底档 recovery form
-           would apply — but the filings show the recovery took ONE year
-           (FY2024 53.37 already above M), and recovery_two_stage_pe with
-           n=1 degenerates to L >= M; a v3 that used n=3 (a calendar span,
-           not a measured recovery) was rolled back.  A15 records the
-           alternatives; this is the judgement most in need of review.
-    M = FY2026E consensus       (EPS 2.875 x shares) -> perpetual g2 = axis row
+        -> that regime persisting.  FY2023 is this company's own trough year,
+           so the 谷底档 recovery form would apply — but the filings show the
+           recovery took ONE year (FY2024 53.37 already above M), and
+           recovery_two_stage_pe with n=1 degenerates to L >= M; a version
+           that used n=3 (a calendar span, not a measured recovery) was
+           rolled back.  A15 records the alternatives.
+    M = FY2026E consensus       (EPS 2.875 x shares)
     H = FY2022 actual 60.21亿  (management loosened, exports opened, global peak)
-        -> post-peak normalisation, g = 0
 
-Tier multiples therefore differ only by the ROE term and the H normalisation
-(10.77 / 10.91 / 10.0): the g ladder 1.5% / 1.5% / 0% is flat-or-reverse, the
-A2e-5 cyclical policy, and the multiples are not asserted to be reverse.
+r is the leg's basket value (A20: basket 5, reached from the initial basket 6
+by the ③-out-of-band step-down rule — 13% gives 8.70x, below the company's own
+1y daily PE floor 8.83x); g2 is the shared axis row (IFA, 1.5%) on all three
+tiers.  The multiple is 1/(r - g) rather than the retention form because
+growth here is not funded by retention (A18: capex 2023-25 < D&A, retained
+cash goes to debt paydown) — ROE is disclosed, not used.  The retention-form
+band is printed as a cross-check.
 
 Why not a price scenario: this company's measured elasticity to the MAP ladder
 is 0.049 — MAP rose 33.6% between 2025 and 2026 while net profit rose 1.6%.
@@ -51,9 +52,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import (  # noqa: E402
     AXIS_PHOS, PHOS_INERT_BETA_CEILING, check_axis_g2_mount, check_phosphate_mount,
 )
-from lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
+from lib.gordon import BASKET_R, check_g_cap, check_r, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -66,8 +67,8 @@ NP_PEAK_FY2022_YI = 60.21  # highest annual net profit the company has printed
 
 REQUIRED = [
     "price", "shares", "np_l", "eps_m_consensus", "np_h",
-    "equity", "r_perp", "g2_l", "g2_m", "g2_h",
-    "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map",
+    "equity", "r_perp", "g2_l", "g2_m", "g2_h", "eps_fy27_single",
+    "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map", "bps",
 ]
 
 
@@ -81,6 +82,9 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell must name the basket (篮 N)")
 
     errors += ladder("MAP", inp["map_l"], inp["map_m"], inp["map_h"])
     errors += check_phosphate_mount(
@@ -96,14 +100,15 @@ def main() -> int:
             "transmits, the main ruler must be rebuilt, not re-fitted"
         )
     errors += check_axis_g2_mount(AXIS_PHOS, inp["g2_m"])
-    errors += check_r(inp["r_perp"], "r_perp")
+    r = inp["r_perp"]
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
     for k in ("g2_l", "g2_m", "g2_h"):
-        errors += check_g_cap(inp[k], k)
+        errors += check_g_cap(inp[k], r, k)
     # A2e-5 cyclical: the g ladder is flat-or-reverse; L shares the axis row.
     if abs(inp["g2_l"] - inp["g2_m"]) > 1e-9:
         errors.append(f"g2_l {inp['g2_l']} must equal g2_m {inp['g2_m']} (axis 永续 g2, flat; A15)")
     if inp["g2_h"] > inp["g2_m"]:
-        errors.append(f"g2_h {inp['g2_h']} > g2_m {inp['g2_m']} — H is post-peak normalisation (≤ g_M)")
+        errors.append(f"g2_h {inp['g2_h']} > g2_m {inp['g2_m']} — H may not grow faster than M (cyclical, flat-or-reverse)")
     if abs(inp["np_h"] - NP_PEAK_FY2022_YI) > 0.01:
         errors.append(
             f"np_h={inp['np_h']:g}亿 must be the FY2022 realised peak "
@@ -114,14 +119,15 @@ def main() -> int:
 
     # --- the ruler -------------------------------------------------------------
     np_m = inp["eps_m_consensus"] * inp["shares"] / YI
-    r = inp["r_perp"]
     roe = {"L": inp["np_l"] / inp["equity"], "M": np_m / inp["equity"], "H": inp["np_h"] / inp["equity"]}
-    pe = {t: perpetual_pe(inp[f"g2_{t.lower()}"], roe[t], r) for t in ("L", "M", "H")}
+    # A18: growth is not retention-funded, so the multiple is 1/(r - g) on every
+    # tier; the retention form is only a cross-check below.
+    pe = {t: 1.0 / (r - inp[f"g2_{t.lower()}"]) for t in ("L", "M", "H")}
     for tag, val in pe.items():
         if not (inp["pe_own_min"] <= val <= inp["pe_own_max"]):
             errors.append(
-                f"{tag} generated PE {val:.2f} outside own realised band "
-                f"[{inp['pe_own_min']}, {inp['pe_own_max']}] — stop, do not force g (Phase 3 §A6)"
+                f"{tag} multiple {val:.2f} outside own realised band "
+                f"[{inp['pe_own_min']}, {inp['pe_own_max']}] — ③ 出带: step the basket down, do not force g or r"
             )
     tiers = (("L", inp["np_l"], pe["L"]), ("M", np_m, pe["M"]), ("H", inp["np_h"], pe["H"]))
     computed = {}
@@ -135,13 +141,15 @@ def main() -> int:
     L, M, H = computed["L"], computed["M"], computed["H"]
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
-    flat = [row[2] * pe["M"] for row in rows]
-    if not (flat[0] < flat[1] < flat[2]):
-        errors.append(f"flat-multiple ladder collapsed: {flat}")
 
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+
+    # Candidate band (A17): single-house FY2027 EPS swapped into M only; disclosed, not judged.
+    m_cand = inp["eps_fy27_single"] * pe["M"]
+    if not (L < m_cand < H):
+        errors.append(f"candidate band collapsed: L {L:.2f} < M' {m_cand:.2f} < H {H:.2f} fails (A17)")
 
     # --- report ----------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -150,22 +158,30 @@ def main() -> int:
         f"{inp['map_l']:g}/{inp['map_m']:g}/{inp['map_h']:g} 元/吨 "
         f"(beta={inp['beta_map']:g} < {PHOS_INERT_BETA_CEILING:g}: numerator does not ride it)"
     )
+    b = baskets["r_perp"]
+    print(f"basket: r_perp 篮 {b} {BASKET_R[b][0]} r={r:g}; g ladder L {inp['g2_l']:g} / M {inp['g2_m']:g} / H {inp['g2_h']:g} (flat); "
+          f"PE = 1/(r-g) = {pe['M']:.3f}x  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
     labels = {
         "L": "FY2023 actual  (regime)   ",
         "M": "FY2026E consensus         ",
         "H": "FY2022 actual  (loosened) ",
     }
     for tag, npp, eps, mult, anchor in rows:
-        print(f"{tag}: {labels[tag]}  np={npp:6.2f}亿  eps={eps:.4f}  ROE={roe[tag]:.2%}  pe={mult:.3f}  anchor={anchor:.4f}")
-    print(f"Gordon: r={r:g}  g ladder L {inp['g2_l']:g} / M {inp['g2_m']:g} / H {inp['g2_h']:g} (flat-or-reverse); "
-          f"PE spread = ROE term + H normalisation only  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
-    g_px, ok_px = implied_g(inp["price"] / (np_m * YI / inp["shares"]), roe["M"], r)
+        print(f"{tag}: {labels[tag]}  np={npp:6.2f}亿  eps={eps:.4f}  ROE={roe[tag]:.2%} (disclosed)  pe={mult:.3f}  anchor={anchor:.4f}  PB={anchor / inp['bps']:.3f}")
+    ret = {t: perpetual_pe(inp[f"g2_{t.lower()}"], roe[t], r) for t in ("L", "M", "H")}
+    print("retention-form cross-check (1-g/ROE)/(r-g): "
+          + " / ".join(f"{ret[t]:.2f}x" for t in "LMH") + " -> "
+          + " / ".join(f"{rows[i][2] * ret[t]:.2f}" for i, t in enumerate("LMH")))
+    eps_m = np_m * YI / inp["shares"]
+    px_pe = inp["price"] / eps_m
     print(f"deep_discount 压力坐标: 谷底 x 1/r = {inp['np_l'] * YI / inp['shares'] / r:.2f}; "
-          f"交叉尺 (A16): 现价 {inp['price'] / (np_m * YI / inp['shares']):.2f}x EPS_M → 市价隐含永续 g {g_px:+.2%} "
-          f"({'well-conditioned' if ok_px else 'ill-conditioned'})")
+          f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}; "
+          f"现价 {px_pe:.2f}x EPS_M → 隐含 r(P) = E/P + g = {eps_m / inp['price'] + inp['g2_m']:.2%} "
+          f"(δ {eps_m / inp['price'] + inp['g2_m'] - r:+.2%} vs 篮 {b}); flat-form implied g {r - 1.0 / px_pe:+.2%}")
+    print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}): L'={L:.2f} M'={m_cand:.2f} H'={H:.2f} "
+          f"zone {zone_of(inp['price'], L, m_cand, H)} (disclosed, not judged)")
     per_yi = YI / inp["shares"] * pe["M"]
     print(f"sensitivity: +1亿 net profit -> M anchor {per_yi:+.2f} CNY")
-    print(f"flat-multiple ladder @PE_M {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
         f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} "
