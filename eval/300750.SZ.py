@@ -10,7 +10,12 @@ Main ruler: one numerator (group EPS) and a Gordon multiple from a named
 perpetual g, one stage, no transition:
 
   PE_x   = perpetual_pe(g2_x, ROE_x, r) = min(1, 1 - g2_x/ROE_x) / (r - g2_x)
-  anchor = eps_x * PE_x,   r = 10%  ->  a no-growth business is worth 10x
+  anchor = eps_x * PE_x
+
+r is the basket the framework names for the single leg (篮 4 龙头制造, 10% ->
+a no-growth business is worth 10x; valuation-rules「§r 篮子」, gordon.BASKET_R),
+read from the Inputs row and checked against the 篮 N tag (A20).  The PB floor
+and net cash per share are disclosed, never max()'d into L.
 
 Numerator year (裁决顺序 ②): the furthest consensus year that still has >= 2
 houses WITH a range is FY2027E (yfinance 13 houses, low / mean / high), so all
@@ -42,10 +47,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.gordon import (  # noqa: E402
-    G_CAP, check_g_cap, check_r, implied_g, payout, perpetual_pe, two_stage_pe,
+    check_g_cap, check_r, g_cap, implied_g, payout, perpetual_pe, two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
@@ -98,7 +103,7 @@ def same_ruler(inp: dict[str, float], eps: float, g2: float) -> float:
 def band_edge_g(inp: dict[str, float], roe: float, pe_edge: float) -> float:
     """Perpetual g that lands the Gordon multiple on a band edge (③)."""
     r = inp["r_perp"]
-    lo, hi = -0.10, G_CAP
+    lo, hi = -0.10, g_cap(r)
     for _ in range(200):
         mid = (lo + hi) / 2
         if perpetual_pe(mid, roe, r) < pe_edge:
@@ -115,6 +120,7 @@ def main() -> int:
         return 1
 
     inp = parse_inputs(md)
+    baskets = parse_baskets(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
@@ -137,12 +143,15 @@ def main() -> int:
     roe = {t: forward_roe(inp, inp[f"eps_{t}"]) for t in TIERS}
 
     # --- Step 3-4: convergence and the retention cost of growth (A8) --------
-    errors += check_r(r, "r_perp")
+    # A20: r must be the basket the Inputs row names, not just any basket value.
+    if "r_perp" not in baskets:
+        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules「§r 篮子」)")
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
     for t in TIERS:
         g2 = inp[f"g2_{t}"]
         if roe[t] <= 0:
             errors.append(f"ROE_{t}={roe[t]:.4f} must be positive")
-        errors += check_g_cap(g2, f"g2_{t}")
+        errors += check_g_cap(g2, r, f"g2_{t}")
         if r - g2 < MIN_SPREAD - 1e-12:
             errors.append(f"r - g2_{t} = {r - g2:.2%} < {MIN_SPREAD:.0%} — perpetuity ill-conditioned")
         pay = payout(g2, roe[t])
@@ -192,7 +201,8 @@ def main() -> int:
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
     # --- report --------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}  (r={r:.0%}, 零增长={1 / r:.1f}x, 单段永续，无过渡段)")
+    print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, "
+          f"零增长={1 / r:.1f}x, 单段永续，无过渡段)")
     print(f"{'档':<3}{'EPS FY27E':>10}{'归母(亿)':>11}{'前瞻ROE':>10}{'g2':>7}"
           f"{'派息率':>9}{'PE':>8}{'锚点CNY':>10}")
     for t in TIERS:
@@ -216,7 +226,7 @@ def main() -> int:
           f"[{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}]；"
           f"PE_H ≤ 2023 年起上沿 {inp['pe_own_hi_recent']:g} ✓")
     print(f"  M 档带边反解 g（③）：[{g_lo:+.2%}, {g_hi:+.2%}"
-          f"{'（截于上限）' if g_hi >= G_CAP - 1e-6 else ''}] 含 g2_m {inp['g2_m']:.0%} → ③ 不触发")
+          f"{'（截于上限）' if g_hi >= g_cap(r) - 1e-6 else ''}] 含 g2_m {inp['g2_m']:.0%} → ③ 不触发")
 
     # Step 7: the numerator-year magnitude (A19) and the pressure coordinates.
     fy26 = tuple(same_ruler(inp, inp[k], inp[f"g2_{t}"]) for k, t in
@@ -245,6 +255,14 @@ def main() -> int:
         alt = [same_ruler(inp, inp[f"eps_{t}"], inp[f"g2_{t}"] + dg) for t in TIERS]
         print(f"敏感性 g2 三档 {dg:+.0%}：{alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f}")
 
+    # Disclosure lines (A20): implied r at the market price on the M-tier
+    # world, and the floor references that are never max()'d into L.
+    pe_px = inp["price"] / inp["eps_m"]
+    print(f"隐含 r(P) = g2_m + payout_m / PE(P) = {inp['g2_m']:.0%} + "
+          f"{payout(inp['g2_m'], roe['m']):.3f} / {pe_px:.2f} = "
+          f"{inp['g2_m'] + payout(inp['g2_m'], roe['m']) / pe_px:.1%} vs 篮 {baskets['r_perp']} {r:.0%}")
+    print(f"地板（只披露）：PB=1.0 → BPS {inp['bps']:.2f} < L {L:.2f}（比值 {inp['bps'] / L:.3f}）；"
+          f"净现金 {inp['net_cash']:.2f} 亿 = {inp['net_cash'] * 1e8 / inp['shares']:.1f} 元/股（财务性桶，A9 不另加）；not max()'d")
     print(f"price={inp['price']} zone={zone}")
     for label, px in (
         ("A 股现价", inp["price"]),
@@ -255,7 +273,7 @@ def main() -> int:
         ("一致 TP", inp["tp_consensus"]),
     ):
         gi, ok = implied_g(px / inp["eps_m"], roe["m"], r)
-        flag = "" if gi <= G_CAP else "  （越 6% 上限）"
+        flag = "" if gi <= g_cap(r) else f"  （越 {g_cap(r):.0%} 上限）"
         print(f"  {label:<12} {px:7.2f}  隐含 FY2027E PE={px / inp['eps_m']:6.2f}"
               f"  隐含永续 g={gi:+.1%} well_conditioned={ok}{flag}")
     ha = inp["price_h"] * inp["fx_hkdcny"] / inp["price"]

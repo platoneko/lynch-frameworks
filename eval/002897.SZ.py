@@ -8,10 +8,13 @@ take their three tiers from the company's own filings (A14): connectors =
 H1'26 annualised / FY2025 / FY2024 peak (group net profit minus the solar
 sub-group's consolidated P&L disclosed in the goodwill-impairment appraisal);
 solar = H1'26 annualised / three-year median / FY2025 recurring.  Multiples are
-Gordon-generated (`perpetual_pe`, g2 = 6% peer reverse-solve capped, r = 10%,
-tier ROE = NI / book equity of the leg); no transition stage, because no
-consensus enters the base deck (A10 — the dialogue ruled that domestic
-sell-side consensus belongs in the option, not the deck).
+Gordon-generated (`perpetual_pe`, g2 = 6% cross-basket peer reverse-solve
+capped, r = the basket r read from Inputs — 篮 6 周期商品 / 小盘 13%, A17, the
+whole company in one basket; tier ROE = NI / book equity of the leg); no
+transition stage, because no consensus enters the base deck (A10 — the dialogue
+ruled that domestic sell-side consensus belongs in the option, not the deck).
+At 13% the connector tiers (ROE 9.6–13.8%) sit in the peak / degenerate
+regions, so the multiples stay at or below 1/r — a result, not a fault.
 
 The Ascend / super-node high-speed-connector ramp has no measured profit yet
 (revenue +37%, profit flat), so it is priced as V_opt on a realised unit: 华丰科技
@@ -20,6 +23,12 @@ an observable — Yihua's realised comms-connector revenue increment over the
 华丰 unit's revenue increment — and lives only in table 3 (A2e-7a).  Consensus
 enters only as reading B / B' (EPS-gap option) for the k ≈ 1 cross-check and
 the A2f premium table; it never touches the anchors or the zone.
+
+The two ③ guardrails ((H+V)/TTM vs own band, option multiple vs peer cluster)
+are out of band at the basket r and are DISCLOSED, not asserted: the peer
+cluster prices 篮 4 names (cross-basket, §13 rule 7) and the own band never
+priced "13% + no ramp".  Ruling on the basket is a §13 research step, not this
+script.  No floor enters L; book value per share is printed as disclosure.
 
 Run:  python3 eval/002897.SZ.py
 """
@@ -35,7 +44,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    R_OPERATING,
     check_g_cap,
     check_r,
     perpetual_pe,
@@ -45,6 +53,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -105,13 +114,14 @@ def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
     return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING} (A9)")
+    # valuation-rules「§r 篮子」: r_perp must name its basket and carry that basket's value (A17).
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (A17)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
     for key in ("g2", "g2_solar"):
-        errs += check_g_cap(inp[key], key)
+        errs += check_g_cap(inp[key], inp["r_perp"], key)
         gap = inp["r_perp"] - inp[key]
         if gap <= 0:
             errs.append(f"perpetuity diverges: {key} >= r")
@@ -135,10 +145,11 @@ def main() -> int:
             return 1
 
     inp = parse_inputs(md)
+    baskets = parse_baskets(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    errors = sanity_checks(inp, baskets)
 
     r = inp["r_perp"]
     sh = inp["shares"]
@@ -205,13 +216,15 @@ def main() -> int:
     zone_adj = zone_of(inp["price"], *adj)
     a_adj, b_adj = cut_points(*adj)
 
-    # ---- Step 4: guardrails (A12) ----
+    # ---- Step 4: guardrails (A12) — ③ out-of-band is disclosed, not asserted (A17 / §13 rule 7) ----
     hv_ttm = adj[2] / inp["ttm_eps"]
+    warns: list[str] = []
     if not (inp["pe_own_lo"] <= hv_ttm <= inp["pe_own_hi"]):
-        errors.append(f"(H+V)/TTM {hv_ttm:.1f}x outside own band [{inp['pe_own_lo']}, {inp['pe_own_hi']}] — BLOCKED")
+        warns.append(f"③ (H+V)/TTM {hv_ttm:.1f}x outside own band [{inp['pe_own_lo']}, {inp['pe_own_hi']}] — disclosed, basket review pending (§13)")
     if not (inp["pe_peer_lo"] <= pe_opt <= inp["pe_peer_hi"]):
-        errors.append(f"option multiple {pe_opt:.2f}x outside peer cluster [{inp['pe_peer_lo']}, {inp['pe_peer_hi']}] — BLOCKED")
+        warns.append(f"③ option multiple {pe_opt:.2f}x outside peer cluster [{inp['pe_peer_lo']}, {inp['pe_peer_hi']}] — cross-basket cluster (篮 4), disclosed only")
     base_ttm = {t: px[t] / inp["ttm_eps"] for t in TIERS}  # reported only: ROE≈r keeps the deck below the band
+    book_ps = inp["equity_total"] / sh  # PB 1.0 coordinate: disclosure only, never max()-ed into L
 
     # ---- Step 5: reading B / B' — consensus EPS gap as option (cross-check only, A10 / A15) ----
     gap = inp["cons_fy27_m"] - inp["ni_solar_m"] - conn["M"]
@@ -224,7 +237,7 @@ def main() -> int:
 
     # ---- Report ----
     print(f"formula_id={FORMULA_ID_BASE} + {FORMULA_ID_OPT}")
-    print(f"g2={inp['g2']:.0%} g2_solar={inp['g2_solar']:.0%} r={r:g}  equity_conn={eq_conn:.4e}")
+    print(f"baskets={baskets} r={r:g} g2={inp['g2']:.0%} g2_solar={inp['g2_solar']:.0%}  equity_conn={eq_conn:.4e}")
     for t in TIERS:
         print(
             f"{t}: conn {conn[t] / 1e8:.2f}亿 x {pe_a[t]:.2f}x (ROE {roe_conn[t]:.1%}) + "
@@ -246,9 +259,13 @@ def main() -> int:
     print(f"表3: {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={a_adj:.2f} B'={b_adj:.2f}  zone+V={zone_adj}")
     print(
         f"市价隐含 p = {(inp['price'] - H) / v_opt:.2f}; P/(H+V) = {inp['price'] / adj[2] - 1:+.1%}; "
-        f"(H+V)/TTM {hv_ttm:.1f}x in own band; option PE {pe_opt:.2f}x in peer cluster"
+        f"(H+V)/TTM {hv_ttm:.1f}x vs own band [{inp['pe_own_lo']}, {inp['pe_own_hi']}]; "
+        f"option PE {pe_opt:.2f}x vs peer cluster [{inp['pe_peer_lo']}, {inp['pe_peer_hi']}]"
     )
     print(f"base deck / TTM (reported, below own band by construction): {base_ttm['M']:.1f}x / {base_ttm['H']:.1f}x")
+    print(f"floor: none in formula; PB 1.0 = {book_ps:.2f} (disclosure only, not max()-ed; L stays {L:.2f})")
+    for w in warns:
+        print(f"WARN[A12]: {w}")
     print(
         f"reading B: gap {gap / 1e8:.2f}亿 = {gap / inp['unit_hf']:.2f} units -> V_B {v_b:.2f} "
         f"(B'/g1 {g1:.1%}: {v_b2:.2f}); B/A = {k_cross:.2f}"

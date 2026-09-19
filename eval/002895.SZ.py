@@ -24,6 +24,11 @@ printed.  The guard here cannot validate a judgement call, so it does the next
 best thing: it asserts the H scenario stays under the FY2022 peak margin of
 44.44%, which is where an over-optimistic pass-through would first show up.
 
+The basket r (篮 6, 13%) does not enter the flat-PE deck (A14).  It is a
+disclosure-only `r_perp` row: the script checks the basket tag and value agree
+(`check_r`), prints the 篮 6 contrast band at 1/r, the implied r(P) and the
+PB=1 floor (disclosed, never max()-ed into L).
+
 Run:  python3 eval/002895.SZ.py
 """
 
@@ -34,8 +39,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import check_phosphate_mount  # noqa: E402
+from lib.gordon import check_r, g_cap  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -52,6 +58,7 @@ REQUIRED = [
     "price", "shares", "rev_h1", "gm_rate_h1", "op_h1", "eps_h1",
     "h1_share_fy", "map_l", "map_m", "map_h",
     "expo", "pass_through", "conv", "pe_l", "pe_m", "pe_h",
+    "bps", "r_perp",
 ]
 
 
@@ -81,6 +88,12 @@ def main() -> int:
         errors.append(
             f"PE band must be flat (A6): {inp['pe_l']}/{inp['pe_m']}/{inp['pe_h']}"
         )
+    # A14: r is disclosure only (flat PE deck), but the basket tag and the value must agree.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: no 篮 N in the Inputs source cell (valuation-rules.md「§r 篮子」)")
+    r = inp["r_perp"]
+    errors += check_r(r, "r_perp", baskets.get("r_perp"))
     if errors:
         return report(errors)
 
@@ -152,6 +165,19 @@ def main() -> int:
         f"| 分子比 L={sc_l[5] / sc_m[5]:.4f} H={sc_h[5] / sc_m[5]:.4f}"
     )
     print(f"price={inp['price']} zone={zone}")
+    # A14: 篮 6 contrast band at 1/r, ROE per tier vs r, implied r(P); floor disclosed only.
+    peak_pe = 1 / r
+    eps_l, eps_m, eps_h = sc_l[5], sc_m[5], sc_h[5]
+    roe_m = eps_m / inp["bps"]
+    print(
+        f"r_perp {r:g} (篮 {baskets.get('r_perp')}), disclosure only; g_cap={g_cap(r):.2f} (no g2 row); "
+        f"1/r={peak_pe:.2f}x contrast band "
+        f"{eps_l * peak_pe:.2f}/{eps_m * peak_pe:.2f}/{eps_h * peak_pe:.2f} "
+        f"ROE {eps_l / inp['bps']:.1%}/{roe_m:.1%}/{eps_h / inp['bps']:.1%} -> "
+        f"implied r(P) @g=0 = {eps_m / inp['price']:.1%}, "
+        f"@g=3% = {0.03 + (1 - 0.03 / roe_m) * eps_m / inp['price']:.1%}"
+    )
+    print(f"floor(PB=1.0)={inp['bps']:.2f} (disclosure only, L stays {L:.2f})")
     return report(errors)
 
 
