@@ -26,7 +26,8 @@ that mark plus the capitalised loss the base carries inside the Industrial leg;
 表3 = base_k + p_k x V_opt with P_K an eval constant (same 拍值 as WOLF / 2631).
 
 Sanity checks beyond the L<M<H / Outputs reconciliation:
-  - r on a repo tier; g2 <= cap; r - g2 >= 2% (not at the pole)
+  - every r row names a basket (`篮 N`) and equals that basket's value
+    (gordon.BASKET_R); g2 <= g_cap(r); r - g2 >= 2% (not at the pole)
   - every tier's generated multiple inside the ticker's own realised band
     (pe_own_min / pe_own_max — the guardrail that replaced the borrowed PE band)
   - scenario monotonicity on revenue and margins; m_dcc_h hard cap
@@ -51,7 +52,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_capex_mount, check_optical_oe_mount  # noqa: E402
-from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, g_cap, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "COHR.US.md"
@@ -164,13 +166,19 @@ def main() -> int:
     guards.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
     guards.extend(check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"])))
     # Both legs are ordinary operating cash flow (no take-or-pay contract, no
-    # unfunded customer): r must be the operating tier, and it is the same rate
-    # that bridges the 0.82y to the forward-PE date.
-    guards.extend(check_r(inp["r_perp"], "r_perp"))
+    # unfunded customer): the framework names the basket on the r_perp row
+    # (A20) and r must be that basket's value; r_disc bridges the 0.82y to the
+    # forward-PE date at the same rate.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        guards.append("r_perp: Inputs source cell names no 篮 N (A20)")
+    guards.extend(check_r(inp["r_perp"], "r_perp", baskets.get("r_perp")))
     guards.extend(check_r(inp["r_disc"], "r_disc"))
+    if abs(inp["r_disc"] - inp["r_perp"]) > 1e-9:
+        guards.append(f"r_disc={inp['r_disc']} must equal r_perp={inp['r_perp']} (A17)")
     for leg in ("dcc", "ind"):
         g = inp[f"g2_{leg}"]
-        guards.extend(check_g_cap(g, f"g2_{leg}"))
+        guards.extend(check_g_cap(g, inp["r_perp"], f"g2_{leg}"))
         gap = inp["r_perp"] - g
         if gap <= 0:
             guards.append(f"perpetuity diverges on {leg}: g2 >= r")
@@ -342,7 +350,7 @@ def main() -> int:
     # --- Report -----------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
     print(
-        f"r_perp={inp['r_perp']:g} g2_dcc={inp['g2_dcc']:.4f} g2_ind={inp['g2_ind']:.4f}"
+        f"r_perp={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2_dcc={inp['g2_dcc']:.4f} g2_ind={inp['g2_ind']:.4f}"
         f"  equity={inp['equity']:.4g} shares={inp['shares_diluted']:.4g}"
     )
     print(
@@ -434,7 +442,7 @@ def main() -> int:
         return tuple(out)
 
     for g in (inp["g2_dcc"] - 0.01, inp["g2_dcc"] + 0.01, 0.0606):
-        tag = " (above cap, reference only)" if g > 0.06 + 1e-9 else ""
+        tag = " (above cap, reference only)" if g > g_cap(inp["r_perp"]) + 1e-9 else ""
         print(f"  sens g2_dcc={g:.4f}{tag}: " + "/".join(f"{x:.2f}" for x in reprice(g, inp["g2_ind"])))
     for g in (inp["g2_ind"] - 0.01, inp["g2_ind"] + 0.01, 0.0409):
         tag = " (MKSI single house, reference)" if abs(g - 0.0409) < 1e-9 else " (no peer anchor)"

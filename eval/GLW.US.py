@@ -20,7 +20,7 @@ leg is `perpetual_pe(g2_leg, ROE_k, r_perp)` with tier ROE = eps_fy28_k × share
 / equity (no leg equity exists, so the company ROE stands in for every leg).
 The perpetual g is flat across tiers — `cyclical` primary, A2e-5 — so the only
 tier-to-tier movement in a multiple is the ROE term: OC g2 6.0% (peer
-cross-section median 6.35% truncated at G_CAP) gives 20.8/21.2/21.9x, GI g2 0
+cross-section median 6.35% truncated at g_cap(r)) gives 20.8/21.2/21.9x, GI g2 0
 gives 10x, Automotive g2 +1.23% (auto-supplier retention-branch median, n=2:
 GNTX / BWA; APTV / LEA sit below 1/r on ROE >> r and are unreachable at r=10%,
 so BLOCKED and excluded — valuation-rules「反解分支」单调区) gives 11.0/11.1/11.1x.
@@ -30,6 +30,12 @@ sign test; `payout_gap` is printed as a disclosure only. Solar / LS stay on P/S
 (loss-making). The v4 flat 22/11/10 band is retired; the own realised core-PE
 series (A16, 19.7–91.1x on the trailing-quarter annualised core EPS) is now the
 guardrail, not a source.
+
+r is not a per-ticker dial: every `r*` Inputs row names its basket (`篮 N`) and
+the value must equal gordon.BASKET_R for that basket. Here OC / GI / AU and the
+option-leg r_disc all sit in basket 4 龙头制造 (10%, A30); `check_r(r, where,
+basket)` enforces the match and `check_g_cap(g, r, where)` caps every g2 at
+g_cap(r) = min(6%, r - 4%).
 
 Constraint: generated OC PE < 30 and H / eps_fy28_l < 30 (the user's FY28<30
 rule read against the strictest denominator). Prepaid locked profit enters in
@@ -42,7 +48,7 @@ deck. Never a zone input. There is no transition stage anywhere (FY29 has no
 consensus), so `check_transition_years` does not apply.
 
 Sensitivities printed for the A2f record: g2_oc ±1pp (the +1pp side crosses
-G_CAP and is reference only) and the untruncated peer median 6.35%; g2_gi ±1pp
+g_cap(r) and is reference only) and the untruncated peer median 6.35%; g2_gi ±1pp
 because GI's g2 = 0 has no peer anchor; g2_au ±1pp; and the OC perpetual g that
 would put each tier on the guardrail edges (band-as-evidence, 裁决顺序 ③).
 
@@ -68,19 +74,24 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.axes import check_capex_mount  # noqa: E402
-from lib.frameworks import load_framework  # noqa: E402
-from lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
+# eval/lib/frameworks.py imports `eval.lib.inputs`, so the repo root (not
+# eval/) must be importable.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from eval.lib.axes import check_capex_mount  # noqa: E402
+from eval.lib.frameworks import load_framework  # noqa: E402
+from eval.lib.gordon import (  # noqa: E402
     annuity_factor,
+    basket_r,
     check_branch,
     check_g_cap,
     check_r,
+    g_cap,
     payout_gap,
     perpetual_pe,
 )
+from eval.lib.inputs import parse_baskets  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GLW.US.md"
 FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v6"
@@ -89,8 +100,11 @@ PE_OC_HARD_CAP = 30.0  # strict: generated OC PE and H/eps_fy28_l must be < this
 MM = 1e6
 TIERS = ("l", "m", "h")
 # A25: the untruncated AI-interconnect peer median behind g2_oc; printed as a
-# reference sensitivity only, never used as an anchor (it sits above G_CAP).
+# reference sensitivity only, never used as an anchor (it sits above g_cap).
 G2_OC_PEER_RAW = 0.0635
+# A23a upgrade path: if the Verizon deal ever discloses its rate, r_disc moves
+# to the fixed-contract annuity basket. Printed as a sensitivity only.
+CONTRACT_ANNUITY_BASKET = 1
 
 # Tier realisation of the two Verizon LTA option segments (A23a / A23b). Lives
 # here rather than in §3 Inputs because A2e-7a forbids p-class fields from
@@ -224,13 +238,16 @@ def main() -> int:
         guards.append(f"pp_margin out of range: {inp['pp_margin']}")
     if not (inp["eps_fy28_l"] < inp["eps_fy28_h"]):
         guards.append("eps_fy28_l must be < eps_fy28_h")
-    # Gordon 口径: r is a repo tier (operating legs -> 10%), every perpetual g is
-    # at or below the cap, and the perpetuity converges.
-    guards += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        guards.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
+    # Gordon 口径: every r row names its basket and carries that basket's value
+    # (valuation-rules「§r 篮子」), every perpetual g is at or below g_cap(r), and
+    # the perpetuity converges.
+    baskets = parse_baskets(md)
+    for where in ("r_perp", "r_disc"):
+        if where not in baskets:
+            guards.append(f"{where}: Inputs source cell names no 篮 N (valuation-rules「§r 篮子」)")
+        guards += check_r(inp[where], where, baskets.get(where))
     for leg in ("oc", "gi", "au"):
-        guards += check_g_cap(inp[f"g2_{leg}"], f"g2_{leg}")
+        guards += check_g_cap(inp[f"g2_{leg}"], inp["r_perp"], f"g2_{leg}")
         if inp["r_perp"] - inp[f"g2_{leg}"] < 0.02:
             guards.append(f"r - g2_{leg} < 2% — at the pole (AGENTS.md)")
     # A5: g2_au is the retention-branch peer median and the leg's own direction
@@ -418,7 +435,6 @@ def main() -> int:
     # able to reach L/M/H, the cut points, the zone verdict, or the four
     # cross-ticker ratios (A2e-7a).
     r_disc, n_yrs = inp["r_disc"], inp["contract_years"]
-    errors += check_r(r_disc, "r_disc")
     lta_rate = inp["lta_anchor"] / inp["lta_years"]
     ann_n = annuity_factor(0.0, r_disc, n_yrs)
     v_signed = lta_rate * inp["pp_margin"] * ann_n / sh
@@ -474,7 +490,8 @@ def main() -> int:
     )
     print(
         f"tier ROE L/M/H = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f} (eps x shares / equity {inp['equity']:,.0f}M)  "
-        f"r={r:g}  g2 oc/gi/au = {inp['g2_oc']:.4f}/{inp['g2_gi']:.4f}/{inp['g2_au']:.4f}"
+        f"r={r:g} (篮 {baskets['r_perp']}; r_disc 篮 {baskets['r_disc']})  g_cap={g_cap(r):.3f}  "
+        f"g2 oc/gi/au = {inp['g2_oc']:.4f}/{inp['g2_gi']:.4f}/{inp['g2_au']:.4f}"
     )
     print(
         "generated PE  OC L/M/H = "
@@ -579,6 +596,13 @@ def main() -> int:
             f"market-implied multiple = (price - H)/V_opt = "
             f"{(inp['price'] - H) / v_opt:.2f} Verizon-sized six-year deals"
         )
+    # Implied r(P), disclosure only (A30): single-stage Gordon approximation on
+    # the OC leg's g2 and the M anchor; a multi-leg SOTP makes it approximate.
+    implied_r = inp["g2_oc"] + (r - inp["g2_oc"]) * M / inp["price"]
+    print(
+        f"implied r(P) ≈ g2_oc + (r - g2_oc) x M/P = {implied_r:.2%} "
+        f"vs 篮 {baskets['r_perp']} {r:.1%} ({implied_r - r:+.1%}) — disclosure only"
+    )
 
     # Sensitivities the A2f record quotes. g2_oc: ±1pp and the untruncated peer
     # median (both above-cap values are reference only). g2_gi: ±1pp because
@@ -586,7 +610,7 @@ def main() -> int:
     for g in (inp["g2_oc"] - 0.01, inp["g2_oc"] + 0.01, G2_OC_PEER_RAW):
         pe_g = {k: perpetual_pe(g, roe[k], r) for k in TIERS}
         s = {k: anchor(k, pe_g[k])[1] for k in TIERS}
-        tag = " (above cap, reference only)" if g > G_CAP + 1e-9 else ""
+        tag = " (above cap, reference only)" if g > g_cap(r) + 1e-9 else ""
         print(
             f"sensitivity g2_oc={g:.4f}{tag}: OC PE {pe_g['l']:.2f}/{pe_g['m']:.2f}/{pe_g['h']:.2f}x -> "
             f"L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}  H+V_opt {s['h'] + v_opt:.2f}"
@@ -598,6 +622,17 @@ def main() -> int:
                 f"sensitivity g2_{leg}={g:+.4f}{' (no peer anchor)' if leg == 'gi' else ''}: "
                 f"L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}"
             )
+
+    # A23a upgrade path: r_disc in the fixed-contract annuity basket. The
+    # annuity form is what keeps this small; a perpetuity would swing ~43%.
+    r_c = basket_r(CONTRACT_ANNUITY_BASKET)
+    vs_c = lta_rate * inp["pp_margin"] * annuity_factor(0.0, r_c, n_yrs) / sh
+    vo_c = vs_c * (1 + 1 / (1.0 + r_c) ** n_yrs)
+    print(
+        f"sensitivity r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: signed {vs_c:.2f} "
+        f"({vs_c / v_signed - 1:+.1%}), V_opt {vo_c:.2f} ({vo_c / v_opt - 1:+.1%}), "
+        f"table3 H {H + vo_c:.2f}, market-implied multiple {(inp['price'] - H) / vo_c:.2f}"
+    )
 
     # ATM full-execution pro-forma (A24): new shares at the illustration price,
     # net proceeds reduce net debt. Accretive iff the issue price exceeds the anchor.

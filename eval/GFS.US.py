@@ -13,17 +13,21 @@ digestion year — FY2027 held at the FY2026 consensus mean — because for a
 M/H are the consensus mean / high.
 
 Multiples are generated, not borrowed: tier ROE on *operating* equity (book
-less net cash, A6), r = 10% (operating tier), M/H carry the FY2028 consensus
-year as a one-year transition (`two_stage_pe`, g1 = 2028E / 2027E on the same
-GAAP consensus line, n = 1; A4) and L does not.  g2 = the foundry cluster's
-reverse-solved median (tier-1 source, A5) — NOT reverse-solved to the own
-band: on 2026-09-14 the user ruled the own realised forward-PE band [15.6,
-46.2] down from a hard guardrail (裁决顺序 ③) to a disclosure for this ticker,
-because no g <= 6% can lift a ~12% operating-ROE business into a band the
-market printed while pricing something Gordon-on-average-ROE cannot express
-(A7).  For the same reason the realised PB low is printed as a coordinate,
-not used as a floor (A8).  This eval prints the band comparison and the g2
-+-1pp zones and warns on a flip; it does not fail on either.
+less net cash, A6), r = the basket rate — the whole company is one leg in
+basket 4 龙头制造 (10%, A19; the Inputs row names the basket and `check_r`
+holds the value to it), M/H carry the FY2028 consensus year as a one-year
+transition (`two_stage_pe`, g1 = 2028E / 2027E on the same GAAP consensus
+line, n = 1; A4) and L does not.  g2 = the foundry cluster's reverse-solved
+median (tier-1 source, A5), capped at g_cap(r) — NOT reverse-solved to the own
+band.  The own realised forward-PE band [15.6, 46.2] is the 裁决顺序 ③
+guardrail (A7): M sits below its floor, but the band was judged *distorted* at
+step 1b (its floor is the IPO month over FY22 *realised* EPS, and 2022 priced
+multi-year growth that never came), so ③ is indeterminate — the ruler stays in
+basket 4 (already the floor), no band-edge r is solved, the zone is read as is
+(A18).  This eval therefore WARNs on the band breach instead of failing.  The
+realised PB low is printed as a floor coordinate, never max()'d in (A8).  The
+g2 +-1pp zones are printed and a flip warns; the price-implied r is printed as
+a disclosure.
 
 V_opt = 1 x a Tower-sized silicon-photonics leg (peer realised unit, A10) at
 the H-tier perpetual multiple.  Candidate band swaps the consensus 2028 g1 for
@@ -47,11 +51,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
     check_g_cap,
     check_r,
     check_transition_years,
+    g_cap,
     implied_g,
     perpetual_pe,
     two_stage_pe,
@@ -60,6 +63,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -130,15 +134,29 @@ def stated_candidate(md: str) -> tuple[float, float, float] | None:
     return tuple(float(ms[0].group(i)) for i in (1, 2, 3))  # type: ignore[return-value]
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def _implied_r(price: float, eps_m: float, roe_m: float, g1: float, n: int, g2: float, cash_ps: float) -> float:
+    """r at which the M-tier two-stage deck equals the price (disclosure only, A18)."""
+    lo, hi = g2 + 1e-4, 0.50
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if eps_m * two_stage_pe(g1, n, g2, roe_m, mid) + cash_ps > price:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating leg, expected {R_OPERATING}")
-    errs += check_g_cap(inp["g2"], "g2")
+    # A19: the leg names its basket in the Inputs row; the value must be that basket's.
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (A19)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     # A5: g2 is the peer cluster median (tier-1 source) truncated to the cap — no band reverse-solve.
-    if abs(inp["g2"] - min(inp["g_peer_median"], G_CAP)) > 5e-5:
-        errs.append(f"g2={inp['g2']:.4f} != min(peer median {inp['g_peer_median']:.4f}, cap {G_CAP}) — A5")
+    cap = g_cap(inp["r_perp"])
+    if abs(inp["g2"] - min(inp["g_peer_median"], cap)) > 5e-5:
+        errs.append(f"g2={inp['g2']:.4f} != min(peer median {inp['g_peer_median']:.4f}, cap {cap:.3f}) — A5")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
@@ -171,7 +189,7 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    errors = sanity_checks(inp, parse_baskets(md))
 
     r, g2, n = inp["r_perp"], inp["g2"], int(inp["n_stage"])
     g1 = inp["eps_2028_gaap_m"] / inp["eps_2027_gaap_m"] - 1.0
@@ -209,13 +227,14 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
-    # ---- Disclosure only (A7/A8): own band on the band's own basis (anchor / street FY27 mean), realised PB low ----
+    # ---- ③ guardrail (A7) on the band's own basis (anchor / street FY27 mean); breach WARNs, not fails (A18) ----
     band_basis = {t: anchors[t] / inp["eps_2027_m"] for t in TIERS}
+    # ---- Floor disclosure (A8): realised PB low is a coordinate, never max()'d into L ----
     pb_low_coord = inp["pb_own_min"] * inp["bvps"]
 
     # ---- g2 leverage: both ends printed; a flip is disclosed, not failed (A5, price sits on H) ----
     lo = deck(g2 - 0.01, g1)[1]
-    hi = deck(g2 + 0.01, g1)[1] if g2 + 0.01 <= G_CAP + 1e-9 else None
+    hi = deck(g2 + 0.01, g1)[1] if g2 + 0.01 <= g_cap(r) + 1e-9 else None
     lo_zone = zone_of(inp["price"], lo["L"], lo["M"], lo["H"])
     hi_zone = zone_of(inp["price"], hi["L"], hi["M"], hi["H"]) if hi else None
 
@@ -263,11 +282,12 @@ def main() -> int:
     roe_nosbc = {t: nosbc[t] * inp["shares"] / equity_op for t in TIERS}
     nosbc_deck = (nosbc["L"] * perpetual_pe(g2, roe_nosbc["L"], r) + cash_ps, nosbc["M"] * two_stage_pe(g1, n, g2, roe_nosbc["M"], r) + cash_ps, nosbc["H"] * two_stage_pe(g1, n, g2, roe_nosbc["H"], r) + cash_ps)
     mkt_g, mkt_ok = implied_g((inp["price"] - cash_ps) / ops["M"], roe["M"], r)
+    implied_r = _implied_r(inp["price"], ops["M"], roe["M"], g1, n, g2, cash_ps)
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"r={r:g} g1(2028)={g1:.4f} n={n} g2={g2:.4f} (foundry cluster median {inp['g_peer_median']:.4f}, tier-1 source; own band NOT used to solve g2)")
+    print(f"r={r:g} (篮 4 龙头制造, A19) g1(2028)={g1:.4f} n={n} g2={g2:.4f} (foundry cluster median {inp['g_peer_median']:.4f}, tier-1 source, cap {g_cap(r):.3f}; own band NOT used to solve g2)")
     print(f"operating equity {equity_op / 1e9:.3f}B = book {inp['equity'] / 1e9:.3f}B - net cash {inp['net_cash'] / 1e9:.3f}B; SBC stripped {sbc_ps:.4f}/sh; interest stripped {nii_ps:.4f}/sh; cash added back {cash_ps:.4f}/sh")
     for t in TIERS:
         extra = f"  stage-1 payout {p1[t]:+.2f} (cash/external-funded growth)" if t in p1 else ""
@@ -275,9 +295,13 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f}")
     print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"DISCLOSURE own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on anchor/street-FY27 basis: L {band_basis['L']:.1f}x M {band_basis['M']:.1f}x H {band_basis['H']:.1f}x "
-          f"({sum(1 for t in TIERS if band_basis[t] < inp['pe_own_min'])} of 3 below the floor; guardrail ruled down to disclosure 2026-09-14, A7)")
-    print(f"DISCLOSURE realised PB low {inp['pb_own_min']:g}x x BVPS {inp['bvps']:g} = {pb_low_coord:.2f} {'ABOVE M' if pb_low_coord > M else 'below M'} — coordinate only, not a floor (A8)")
+    print(f"③ guardrail own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on anchor/street-FY27 basis: L {band_basis['L']:.1f}x M {band_basis['M']:.2f}x H {band_basis['H']:.1f}x "
+          f"({sum(1 for t in TIERS if band_basis[t] < inp['pe_own_min'])} of 3 below the floor; A7)")
+    if band_basis["M"] < inp["pe_own_min"]:
+        print(f"WARN (A18): PE_M {band_basis['M']:.2f}x < pe_own_min {inp['pe_own_min']:g} — ③ breach, but the band was judged distorted at step 1b "
+              f"(IPO-month perfect-foresight floor; 2022 priced growth that never came) → ③ indeterminate: ruler stays in 篮 4 (already the floor), no band-edge r, zone read as is")
+    print(f"FLOOR (disclosure only, not max()'d): realised PB low {inp['pb_own_min']:g}x x BVPS {inp['bvps']:g} = {pb_low_coord:.2f} {'ABOVE M' if pb_low_coord > M else 'below M'} (A8)")
+    print(f"DISCLOSURE price-implied r (two-stage, M numerator) = {implied_r:.4f} vs 篮 4 {r:g} ({implied_r - r:+.4f})")
     print(f"g2 leverage: -1pp ({g2 - 0.01:.4f}) -> {lo['L']:.2f}/{lo['M']:.2f}/{lo['H']:.2f} zone {lo_zone}; "
           + (f"+1pp ({g2 + 0.01:.4f}) -> {hi['L']:.2f}/{hi['M']:.2f}/{hi['H']:.2f} zone {hi_zone}" if hi else "+1pp exceeds cap"))
     if lo_zone != zone or (hi_zone is not None and hi_zone != zone):

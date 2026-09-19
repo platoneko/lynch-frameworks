@@ -10,17 +10,18 @@ share of FY28 consensus NI before it becomes an economic EPS; the haircut is
 derived from the GAAP-vs-normalized consensus gap net of acquisition
 amortisation (A9).  Multiples are generated, not borrowed:
 `perpetual_pe(g2, ROE_x, r)` with g2 = the test-equipment peer cluster's
-reverse-solved median truncated to the repo cap (A5), r = 10% — the default
-operating tier, the same tier every other operating leg in the pool sits on
-(A12) — and tier ROE on *operating* equity: book equity less net cash, with
+reverse-solved median truncated to g_cap(r) (A5), r = 13% — the whole company
+is one leg in basket 6 周期商品 / 小盘 (small-cap equipment maker whose earnings
+are the derivative of a few customers' capacity plans, A17; basket 7 is the
+named alternative, its single-customer threshold unmet, A12) — and tier ROE on *operating* equity: book equity less net cash, with
 the after-tax interest the consensus EPS earns on that cash stripped from the
 numerator and the net cash added back per share as a closing item (A15, the
 1810.HK A15 treatment).  FY29 has no >=2-house consensus anywhere, so there is
 no g1 and no discount (FY28 = current FY + 1).
 
-L = max(scenario, tangible-book PB floor); the scenario wins at r = 10% and
-the A2e-1 ratio scenario_L / M is printed and guarded (>= 0.3) in case the
-floor ever takes over again.  Guardrail (③): the own realised band divides
+L is the scenario value; the tangible-book PB floor is only disclosed, never
+max()'d in (A10).  The A2e-1 ratio scenario_L / M is printed and guarded
+(>= 0.3) should the scenario ever drop below the floor.  Guardrail (③): the own realised band divides
 close by the *current-FY* consensus, so anchors are compared to it on that
 same basis (anchor / FY27 consensus) — only the lower edge binds, the upper
 edge is meaningless (2025-26 consensus EPS ~ 0).
@@ -45,10 +46,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.axes import check_capex_mount  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_OPERATING,
     check_g_cap,
     check_r,
+    g_cap,
     implied_g,
     perpetual_pe,
 )
@@ -56,6 +56,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -66,7 +67,7 @@ FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v5"
 TOL = 0.05
 MILLION = 1e6  # money inputs are in $M, share counts are absolute
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
-FLOOR_RATIO_MIN = 0.3  # A2e-1: floor wins AND scenario_L / M below this -> back to dialogue
+FLOOR_RATIO_MIN = 0.3  # A2e-1: scenario below the floor AND scenario_L / M below this -> back to dialogue
 HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the derived value
 P_TIERS = (0.0, 0.25, 1.0)  # A14 — table 3 only, never an input
 
@@ -135,18 +136,19 @@ def derived_haircut(inp: dict[str, float]) -> tuple[float, float]:
     return sbc_after_tax / ni_norm, sbc_after_tax / (1.0 - inp["tax"])
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
 
-    # A12: the FY28 consensus numerator is ordinary operating cash flow -> default tier, like every peer leg.
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating leg (A12), expected {R_OPERATING}")
+    # A17: one leg, r is the basket's value; the basket is named in the Inputs source cell.
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N (A17)")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
 
-    # A5: g2 is the peer median truncated to the cap — the truncation is a fact to check.
-    errs += check_g_cap(inp["g2"], "g2")
-    if abs(inp["g2"] - min(inp["g_peer_median"], G_CAP)) > 5e-5:
-        errs.append(f"g2={inp['g2']:.4f} != min(peer median {inp['g_peer_median']:.4f}, cap {G_CAP}) — A5")
+    # A5: g2 is the peer median truncated to g_cap(r) — the truncation is a fact to check.
+    cap = g_cap(inp["r_perp"])
+    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
+    if abs(inp["g2"] - min(inp["g_peer_median"], cap)) > 5e-5:
+        errs.append(f"g2={inp['g2']:.4f} != min(peer median {inp['g_peer_median']:.4f}, cap {cap:.3f}) — A5")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
@@ -192,11 +194,13 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets)
     # Demand-side mount on the AI-capex axis (share is immaterial, rungs still must match).
     errors += check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"]))
 
     r, g2 = inp["r_perp"], inp["g2"]
+    cap = g_cap(r)
     street = {"L": inp["eps_fy28_l"], "M": inp["eps_fy28_m"], "H": inp["eps_fy28_h"]}
 
     # ---- Step 1-2: economic EPS, then core EPS with the cash interest stripped (A9, A15) ----
@@ -212,18 +216,17 @@ def main() -> int:
     ex_cash = {t: core[t] * pes[t] for t in TIERS}
     scen = {t: ex_cash[t] + cash_ps for t in TIERS}
 
-    # ---- Step 5: floor, anchors, cut points ----
+    # ---- Step 5: anchors, cut points; the floor is disclosed only (A10) ----
     tbvps = inp["tangible_book"] * MILLION / inp["shares_basic"]
     floor = inp["pb_floor"] * tbvps
-    floor_wins = scen["L"] < floor
-    L = max(scen["L"], floor)
-    M, H = scen["M"], scen["H"]
+    below_floor = scen["L"] < floor
+    L, M, H = scen["L"], scen["M"], scen["H"]
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
         return report(errors)
     floor_ratio = scen["L"] / M
-    if floor_wins and floor_ratio < FLOOR_RATIO_MIN:
-        errors.append(f"A2e-1: floor wins and scenario_L/M = {floor_ratio:.2f} < {FLOOR_RATIO_MIN} — earnings ruler failed at L, back to dialogue")
+    if below_floor and floor_ratio < FLOOR_RATIO_MIN:
+        errors.append(f"A2e-1: scenario L below floor and scenario_L/M = {floor_ratio:.2f} < {FLOOR_RATIO_MIN} — earnings ruler failed at L, back to dialogue")
 
     # ---- Guardrail (裁决顺序 ③), on the band's own basis ----
     # The band is close / current-FY (FY27) consensus, so the anchor is divided by
@@ -240,13 +243,12 @@ def main() -> int:
         return implied_g(pe_needed, roe["M"], r)
 
     edges = {k: band_edge_g(inp[f"pe_own_{k}"]) for k in ("min", "p5", "p50")}
-    pe_m_cap = perpetual_pe(G_CAP, roe["M"], r)
+    pe_m_cap = perpetual_pe(cap, roe["M"], r)
 
     # ---- A2e-2c flat ladder + A2e-5 decomposition (both on the ex-cash earnings term) ----
     if not (core["L"] < core["M"] < core["H"]):
         errors.append(f"numerator ladder broken: core EPS {core['L']:.3f}/{core['M']:.3f}/{core['H']:.3f} (A2e-2c)")
     flat = [core[t] * pes["M"] + cash_ps for t in TIERS]
-    flat[0] = max(flat[0], floor)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
     num_lm, num_hm = core["L"] / core["M"], core["H"] / core["M"]
@@ -255,8 +257,7 @@ def main() -> int:
     # ---- g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」): zone must survive -1pp; +1pp breaks ① ----
     def deck_at(g: float) -> tuple[float, float, float, bool]:
         s = {t: core[t] * perpetual_pe(g, roe[t], r) + cash_ps for t in TIERS}
-        l_ = max(s["L"], floor)
-        return l_, s["M"], s["H"], l_ < s["M"] < s["H"]
+        return s["L"], s["M"], s["H"], s["L"] < s["M"] < s["H"]
 
     lo_l, lo_m, lo_h, lo_ok = deck_at(g2 - 0.01)
     lo_zone = zone_of(inp["price"], lo_l, lo_m, lo_h) if lo_ok else ("stretched" if inp["price"] > lo_h else "ladder-broken")
@@ -280,7 +281,7 @@ def main() -> int:
     # ---- Report ----
     derived, sbc_fy28 = derived_haircut(inp)
     print(f"formula_id={FORMULA_ID}")
-    print(f"r={r:g} (operating) g2={g2:.4f} (peer median {inp['g_peer_median']:.4f} truncated to cap {G_CAP})  "
+    print(f"r={r:g} (篮 {baskets.get('r_perp')}) g2={g2:.4f} (peer median {inp['g_peer_median']:.4f} truncated to g_cap(r) {cap:.3f})  "
           f"sbc haircut {inp['sbc_haircut']:.3f} (derived {derived:.4f} from GAAP gap; implied FY28 SBC {sbc_fy28:.2f}M vs FY26 {inp['sbc_fy26']:g}M; "
           f"FY26-based {inp['sbc_fy26'] * (1 - inp['tax']) / (inp['eps_fy28_m'] * inp['shares'] / MILLION):.4f})")
     print(f"operating equity {equity_op:.3f}M = book {inp['equity']:g} - net cash {inp['net_cash']:g}; "
@@ -288,21 +289,22 @@ def main() -> int:
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> econ {eps[t]:.4f} -> core {core[t]:.4f}  ROE {roe[t]:.4f}  payout {1 - g2 / roe[t]:.3f}  "
               f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} + cash = scenario {scen[t]:.4f}")
-    print(f"tbvps={tbvps:.4f} floor(pb*tbvps)={floor:.4f}  scenario_L={scen['L']:.2f}  {'floor' if floor_wins else 'scenario'} wins  "
-          f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if floor wins)")
+    print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
+          f"{'BELOW' if below_floor else 'above'} floor by {abs(scen['L'] - floor):.2f}  "
+          f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if below floor)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+cash, L floored): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+cash): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"guardrail on band basis (anchor / FY27 cons {inp['eps_fy27_m']:g}): "
           f"L {band_basis['L']:.1f}x M {band_basis['M']:.1f}x H {band_basis['H']:.1f}x vs own band lower edge {inp['pe_own_min']:g} "
           f"(FY28-core multiples {pes['L']:.2f}/{pes['M']:.2f}/{pes['H']:.2f}x are a different basis)")
     print("band-edge g @ M ROE: " + " | ".join(
-        f"{k} {inp[f'pe_own_{k}']:g}x -> g {g:+.4f}{'' if cond else ' (ill-conditioned)'}{' (> cap, unreachable under ①)' if g > G_CAP else ''}"
+        f"{k} {inp[f'pe_own_{k}']:g}x -> g {g:+.4f}{'' if cond else ' (ill-conditioned)'}{' (> cap, unreachable under ①)' if g > cap else ''}"
         for k, (g, cond) in edges.items()) + f"  | max PE_M under ① = {pe_m_cap:.2f}x")
     print(f"L/M {L / M:.3f} (ex-cash {ex_cash['L'] / ex_cash['M']:.3f} = num {num_lm:.3f} x pe {pe_lm:.3f}) | "
           f"H/M {H / M:.3f} (ex-cash {ex_cash['H'] / ex_cash['M']:.3f} = num {num_hm:.3f} x pe {pe_hm:.3f}) | "
           f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
     print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} "
-          f"{'(ladder broken)' if not lo_ok else ''} zone {lo_zone}; +1pp exceeds cap {G_CAP} (①, unusable)")
+          f"{'(ladder broken)' if not lo_ok else ''} zone {lo_zone}; +1pp exceeds cap {cap:.3f} (①, unusable)")
     print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} (FY24 unit EBIT {inp['unit_gp'] - inp['unit_opex']:.3f}M after tax) x PE_M {pes['M']:.2f} = {unit_value:.2f}/unit])")
     opt = tuple(anchor + p * v_opt for anchor, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)

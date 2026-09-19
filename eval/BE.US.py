@@ -9,25 +9,26 @@ three points of one distribution (A7).  Multiples are generated, not borrowed:
 `two_stage_pe` runs one named transition year (FY28 FactSet aggregate, g1 =
 +60.2%, n = 1 — FY29 has no ≥2-house consensus) and then the peer-cluster
 reverse-solved perpetual g2 (GEV / VRT / ETN median 7.60%, capped at 6%, A13),
-with r = 10% and tier ROE = EPS_x × shares ÷ if-converted equity (A8/A9).  The
-L tier carries the same transition: its world is "delay", not "deterioration"
-(A14); the no-transition figure is printed as the deep_discount pressure
-coordinate, never as an anchor.
+with r = the basket the Inputs row names (篮 7 单押 / 故事股, 15%, A18) and tier
+ROE = EPS_x × shares ÷ if-converted equity (A8/A9).  The L tier carries the
+same transition: its world is "delay", not "deterioration" (A14); the
+no-transition figure is printed as the deep_discount pressure coordinate, never
+as an anchor.
 
 Valuation date (valuation-rules「两段式过渡 · 估值时点」, 2026-09-14): FY27 is
 t=1 for all three tiers, `two_stage_pe` and `perpetual_pe` share the date, and
 the FY28-basis multiple (PE / (1 + g1)) is printed because 表1 reports the
 post-transition numerator.
 
-Guardrail (裁决顺序 ③, ruled 2026-09-14): the ticker's own 12-month P/NTM band
-[47.4, 199] is non-representative (super-ramp, NTM basis ≠ FY27 anchor), so the
-band is the peer forward-PE cluster on the FY+1 basis (`pe_peer_lo/hi`, same
-day and same Gordon ruler that supplied g2; FY27 = FY+1, so the FY27-basis
-multiple is the one compared).  Rule applied: the M tier must sit inside the
-cluster (the band is what the market pays for the central case); L and H are
-reported against the edges as a disclosure, not a check -- L sits below the
-lower edge by ~0.7 turn since the valuation-date switch, a mechanical result of
-its ROE being the lowest, and g / r / the band are not twisted for it.
+Guardrail: none (裁决顺序 ③ has no band).  The ticker's own 12-month P/NTM band
+[47.4, 199] is non-representative (super-ramp, NTM basis ≠ FY27 anchor), and
+the peer forward-PE cluster (`pe_peer_lo/hi`, GEV / VRT / ETN) sits in 篮 4 --
+a guardrail band must share the leg's basket, so the cluster is printed as a
+cross-basket comparison only and never blocks (A8).
+
+Option (A16): the beyond-consensus GW runway is priced as V_opt with per-tier
+p_k; the script recomputes the corrected band and the market-implied p and
+checks the stated V_opt / p_k / A′ / B′.
 
 g2 leverage must be explicit: the zone is recomputed at g2 − 1pp and the eval
 fails if it differs from the zone at the cap (valuation-rules「g₂ 的杠杆 MUST
@@ -48,7 +49,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    R_OPERATING,
     check_g_cap,
     check_r,
     check_transition_years,
@@ -59,6 +59,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -103,16 +104,27 @@ def stated_v_opt(md: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(r"p_L/p_M/p_H\\\)\s*=\s*\*\*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)\*\*", md)
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
+
+
+def stated_option_cuts(md: str) -> tuple[float | None, float | None]:
+    a = re.search(r"A′ = \*\*([0-9.]+)\*\*", md)
+    b = re.search(r"B′ = \*\*([0-9.]+)\*\*", md)
+    return (float(a.group(1)) if a else None, float(b.group(1)) if b else None)
+
+
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
 
-    # Ordinary operating cash flow: no take-or-pay (not 7%), no revenue riding on
-    # unclosed financing (not 13%) — A8.
-    errs += check_r(inp["r_perp"], "r_perp")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating leg, expected {R_OPERATING}")
+    # r is the basket value the Inputs row names (篮 7 single-product / story
+    # stock, A18); a missing basket tag is itself an error.
+    if "r_perp" not in baskets:
+        errs.append("r_perp: Inputs source cell names no 篮 N")
+    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
 
-    errs += check_g_cap(inp["g2"], "g2")
+    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
@@ -144,7 +156,8 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets)
 
     r = inp["r_perp"]
     n = int(inp["n_g1"])
@@ -173,14 +186,12 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
 
-    # ---- Step 3: guardrail = peer FY+1 forward-PE cluster (裁决顺序 ③, A8) ----
-    # The M tier is the test (the cluster is what the market pays for the central
-    # case); L and H are disclosed against the edges below, never checked.
+    # ---- Step 3: cross-basket comparison, not a guardrail (A8) ----
+    # The peer FY+1 forward-PE cluster is 篮 4 (GEV / VRT / ETN); a ③ band must
+    # share the leg's basket, so the cluster is only printed against the tiers.
     lo, hi = inp["pe_peer_lo"], inp["pe_peer_hi"]
     if not (0 < lo < hi):
-        errors.append("pe_peer_lo/hi guardrail malformed")
-    if not (lo <= pes["M"] <= hi):
-        errors.append(f"M PE {pes['M']:.2f}x outside peer cluster [{lo:g}, {hi:g}] — BLOCKED, do not twist g")
+        errors.append("pe_peer_lo/hi comparison band malformed")
 
     # ---- Step 4: A2e-2c flat ladder + A2e-5 decomposition ----
     flat_errs, flat = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pes["M"])
@@ -193,9 +204,25 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+
+    # Option (A16): V_opt is a stated input of the framework (its four elements
+    # live in A16, not in Inputs); the script checks the corrected band and its
+    # cut-points reproduce, and reads the market-implied p from the ceiling.
     said_v = stated_v_opt(md)
-    if said_v is None or abs(said_v) > 1e-9:
-        errors.append(f"V_opt: stated {said_v}, expected 0 (no realised unit beyond consensus, A16)")
+    p_tiers = stated_p_tiers(md)
+    if said_v is None or p_tiers is None:
+        errors.append("V_opt / p_L/p_M/p_H not found in Outputs (A16 option)")
+        v_opt, p_tiers = 0.0, (0.0, 0.0, 0.0)
+    else:
+        v_opt = said_v
+    band_v = tuple(a + p * v_opt for a, p in zip((L, M, H), p_tiers))
+    A_v, B_v = cut_points(*band_v)
+    said_a_v, said_b_v = stated_option_cuts(md)
+    for name, said, got in (("A′", said_a_v, A_v), ("B′", said_b_v, B_v)):
+        if said is None or abs(said - got) > TOL:
+            errors.append(f"{name}: stated {said} vs recomputed {got:.4f}")
+    zone_v = zone_of(inp["price"], *band_v)
+    implied_p = (inp["price"] - H) / v_opt if v_opt else float("nan")
 
     # g2 leverage: every peer reverse-solves above the cap, so the evidence range
     # collapses onto it; the zone must be the same one step below (A13).
@@ -211,7 +238,7 @@ def main() -> int:
 
     # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
-    print(f"g1(FY28 aggregate / FY27 mean - 1)={g1:.4f} n={n} g2={g2:.4f} r={r:g}")
+    print(f"g1(FY28 aggregate / FY27 mean - 1)={g1:.4f} n={n} g2={g2:.4f} r={r:g} (篮 {baskets.get('r_perp')})")
     print(f"tier ROE L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f} (if-converted equity)")
     for t in TIERS:
         p1 = 1.0 - g1 / roe[t]
@@ -229,14 +256,21 @@ def main() -> int:
     )
     print(f"flat-multiple ladder @ M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
-        f"guardrail: peer FY+1 fwd-PE cluster [{lo:g}, {hi:g}] — M {pes['M']:.2f}x inside (test); "
-        f"disclosed: L {pes['L']:.2f}x (Δ lower edge {pes['L'] - lo:+.2f}), H {pes['H']:.2f}x (Δ upper edge {pes['H'] - hi:+.2f})"
+        f"cross-basket comparison (no ③): 篮 4 peer FY+1 fwd-PE cluster [{lo:g}, {hi:g}] vs "
+        f"L {pes['L']:.2f}x / M {pes['M']:.2f}x / H {pes['H']:.2f}x "
+        f"(M Δ lower edge {pes['M'] - lo:+.2f} turn; floor 1/r = {1 / r:.2f}x)"
     )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
         f"H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | "
-        f"width {(H - L) / (2 * M):.3f} | V_opt/M 0.000"
+        f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
     )
+    print(
+        f"option (A16): V_opt={v_opt:.2f} p={p_tiers[0]:g}/{p_tiers[1]:g}/{p_tiers[2]:g} -> "
+        f"{band_v[0]:.2f}/{band_v[1]:.2f}/{band_v[2]:.2f} A'={A_v:.2f} B'={B_v:.2f} zone={zone_v} | "
+        f"market-implied p=(P-H)/V_opt={implied_p:.2f}"
+    )
+    print(f"implied r(P), single-stage approx g2+(r-g2)*M/P = {g2 + (r - g2) * M / inp['price']:.4f} vs basket r {r:g}")
     no_tr = tier_pes(g2, transition=False)
     print(
         f"cross-check, no transition year: {eps['L'] * no_tr['L']:.2f}/{eps['M'] * no_tr['M']:.2f}/"

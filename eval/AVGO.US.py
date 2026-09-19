@@ -8,12 +8,15 @@ non-AI semi / software).  The tier ladder lives in the numerator: the two
 CoWoS-constrained legs (XPU, networking) scale with the shared quota axis
 (_AXIS.cowos-capacity.md), L <- γ, M <- β, H <- α -- the mirror image of NVDA.
 Multiples are generated, not borrowed: each leg names a perpetual g2 (peer
-cross-section reverse-solve, capped at G_CAP), tier ROE = EPS_x × shares /
+cross-section reverse-solve, capped at g_cap(r)), tier ROE = EPS_x × shares /
 equity, and the two AI legs run ONE named transition year (FY28 sell-side
 consensus EPS growth) through `two_stage_pe` in M/H only.  L is the digest
-world -- FY28 gets no credit -- so it calls `perpetual_pe` directly.  The lab
-tier of XPU is conditional cash flow (XPV financing + RVG), so it discounts at
-the 13% tier; everything else at 10%.
+world -- FY28 gets no credit -- so it calls `perpetual_pe` directly.  r comes
+from the basket each leg is assigned to (valuation-rules「§r 篮子」): the four
+operating legs sit in 篮 4 龙头制造 (`r_perp`), the lab tier of XPU -- revenue
+conditional on XPV financing closing and RVG contingent liabilities -- in 篮 7
+单押 / 故事 (`r_lab`).  The Inputs source cell names the basket; `check_r`
+demands the value match it.
 
 Numerator year (valuation-rules 裁决顺序 ②, A21): FY27 is the furthest year with a
 >=2-house consensus *range* (47 houses); FY28 is visible to three houses but only
@@ -26,8 +29,10 @@ The AI legs' M/H two-stage multiple is on the FY27 numerator with FY27 = t=1
 (same valuation date as L's `perpetual_pe`, valuation-rules「两段式过渡 · 估值时点」
 2026-09-14): divided by (1 + g1) it is the multiple on FY28 (= steady-state
 Gordon discounted one year) and must read below the steady-state cap
-perpetual_pe(g2); the zone must also survive the AI legs' g2 shifted ±1pp
-(valuation-rules「g₂ 的杠杆 MUST 显式」) or the eval reports BLOCKED.
+perpetual_pe(g2).  The AI legs' g2 shifted ±1pp is a disclosure (敏感区,
+valuation-rules「g₂ 的杠杆 MUST 显式」): a zone flip is printed, not an error.
+Implied r(P) -- one δ added to every leg's basket r until the M-tier sum meets
+the price -- is printed for the same reason.
 
 Run:  python3 eval/AVGO.US.py
 """
@@ -45,12 +50,10 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import check_cowos_mount, check_optical_oe_mount  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
-    G_CAP,
-    R_CONDITIONAL,
-    R_OPERATING,
     check_g_cap,
     check_r,
     check_transition_years,
+    g_cap,
     implied_g,
     perpetual_pe,
     two_stage_pe,
@@ -59,6 +62,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
     ladder,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -127,21 +131,23 @@ def eps_leg(rev: float, om: float, tax_rate: float, shares: float) -> float:
     return rev * om * (1.0 - tax_rate) / shares
 
 
-def sanity_checks(inp: dict[str, float]) -> list[str]:
+def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    errs += check_r(inp["r_perp"], "r_perp")
-    errs += check_r(inp["r_lab"], "r_lab")
-    if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
-        errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
-    if abs(inp["r_lab"] - R_CONDITIONAL) > 1e-9:
-        errs.append(f"r_lab={inp['r_lab']}: lab XPU is conditional cash flow (A7), expected {R_CONDITIONAL}")
+    # Each r row must name its basket and carry that basket's value (A23).
+    for key in ("r_perp", "r_lab"):
+        if key not in baskets:
+            errs.append(f"{key}: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+        errs += check_r(inp[key], key, baskets.get(key))
+    # g2 is capped by the r of every leg that reads it; the lab leg reads g2_xpu at r_lab.
     for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw", "g2_cand"):
-        errs += check_g_cap(inp[key], key)
+        errs += check_g_cap(inp[key], inp["r_perp"], key)
         gap = inp["r_perp"] - inp[key]
         if gap <= 0:
             errs.append(f"perpetuity diverges on {key}: g2 >= r")
         elif gap < MIN_R_MINUS_G:
             errs.append(f"r - {key} = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    errs += check_g_cap(inp["g2_xpu"], inp["r_lab"], "g2_xpu@r_lab")
+    errs += check_g_cap(inp["g2_cand"], inp["r_lab"], "g2_cand@r_lab")
     # Only FY28 carries a >=2-house consensus (A8); FY29 is a story.
     errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
     if inp["eps_fy28_cons"] <= inp["eps_fy27_cons"]:
@@ -163,7 +169,8 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    errors = sanity_checks(inp)
+    baskets = parse_baskets(md)
+    errors = sanity_checks(inp, baskets)
 
     s, t, bl = inp["shares"], inp["tax_rate"], inp["below_line_ps"]
     xpu_s, uw = inp["xpu_share_ai"], inp["xpu_uw_share"]
@@ -307,25 +314,38 @@ def main() -> int:
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v) > 1e-9:
-        errors.append(f"V_opt must be stated as 0 (lab XPU is a leg at r=13%, not an option), got {said_v}")
+        errors.append(f"V_opt must be stated as 0 (lab XPU is a 篮 7 leg, not an option), got {said_v}")
     errors += [f"axis: {e}" for e in check_cowos_mount("AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"])]
     errors += [f"axis: {e}" for e in check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))]
 
-    # ---- Step 9: g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」) ----
+    # ---- Step 9: g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」), disclosure only ----
     # The AI legs' g2 shifted ±1pp together (lab reads g2_xpu too); +1pp sits above
-    # G_CAP and is not a legal state.  The zone must survive, else BLOCKED.
+    # g_cap and is not a legal state.  A zone flip is the 敏感区 line, not BLOCKED.
     lever = []
     for delta in (-0.01, +0.01):
-        if inp["g2_xpu"] + delta > G_CAP + 1e-9:
+        if inp["g2_xpu"] + delta > g_cap(r) + 1e-9:
             continue
         lmh = tuple(anchor_at(tier, delta, TRANSITION_LEGS) for tier in TIERS)
         lever.append((delta, *lmh, zone_of(inp["price"], *lmh)))
-    if any(z != zone for *_, z in lever):
-        errors.append(
-            "zone not stable under AI-leg g2 ±1pp: "
-            + ", ".join(f"{d:+.2%} -> {z}" for d, *_, z in lever)
-            + " — BLOCKED, back to dialogue (valuation-rules「g₂ 的杠杆 MUST 显式」)"
-        )
+    sensitive = [f"{d:+.0%} -> {z}" for d, *_, z in lever if z != zone]
+
+    # ---- Step 10: implied r(P) — one δ on every leg's basket r so the M-tier sum meets the price ----
+    def m_at_r_shift(delta: float) -> float:
+        out = 0.0
+        for leg in LEGS:
+            g2, rr = inp[LEG_G2[leg]], inp[LEG_R[leg]] + delta
+            pe = two_stage_pe(g1_ai, n, g2, roe["M"], rr) if leg in TRANSITION_LEGS else perpetual_pe(g2, roe["M"], rr)
+            out += eps["M"][leg] * pe
+        return out
+
+    lo, hi = -0.03, 0.30  # M falls as r rises; bisect the price crossing
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if m_at_r_shift(mid) > inp["price"]:
+            lo = mid
+        else:
+            hi = mid
+    r_delta = (lo + hi) / 2
 
     # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
@@ -345,7 +365,7 @@ def main() -> int:
               f"  stage-1 payout {p1:+.3f} ({tag})")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
     print(f"flat-multiple ladder @ M {blended['M']:.2f}x: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
-    ai_cap_hit = inp["g2_xpu"] + band_edge_dg[1] > G_CAP + 1e-9
+    ai_cap_hit = inp["g2_xpu"] + band_edge_dg[1] > g_cap(r) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge Δg @ M ROE (all legs shifted): "
         f"lower {band_edge_dg[0]:+.4f} / upper {band_edge_dg[1]:+.4f}"
@@ -370,6 +390,12 @@ def main() -> int:
         "g2 leverage (AI legs ±1pp): "
         + " | ".join(f"{d:+.0%}: {l:.1f}/{m:.1f}/{h:.1f} zone={z}" for d, l, m, h, z in lever)
         + ("  (+1pp above the 6% cap, skipped)" if len(lever) == 1 else "")
+        + (f"  ⚠敏感区: {', '.join(sensitive)} (disclosed, not BLOCKED)" if sensitive else "")
+    )
+    print(
+        f"implied r(P): δ = {r_delta:+.4f} on every leg -> operating legs {r + r_delta:.4f} "
+        f"(篮 {baskets.get('r_perp')}) / lab {inp['r_lab'] + r_delta:.4f} (篮 {baskets.get('r_lab')}); "
+        f"M at δ = {m_at_r_shift(r_delta):.1f} = price — disclosure only"
     )
     l_with_transition = sum(eps["L"][leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
     m_no_transition = sum(eps["M"][leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
