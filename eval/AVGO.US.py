@@ -43,6 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_cowos_mount, check_optical_oe_mount  # noqa: E402
+from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     G_CAP,
     R_CONDITIONAL,
@@ -98,6 +99,7 @@ REQUIRED = [
     "g2_net",
     "g2_nonai",
     "g2_sw",
+    "g2_cand",
     "pe_own_min",
     "pe_own_max",
     "cowos_quota_l",
@@ -133,7 +135,7 @@ def sanity_checks(inp: dict[str, float]) -> list[str]:
         errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
     if abs(inp["r_lab"] - R_CONDITIONAL) > 1e-9:
         errs.append(f"r_lab={inp['r_lab']}: lab XPU is conditional cash flow (A7), expected {R_CONDITIONAL}")
-    for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw"):
+    for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw", "g2_cand"):
         errs += check_g_cap(inp[key], key)
         gap = inp["r_perp"] - inp[key]
         if gap <= 0:
@@ -383,6 +385,32 @@ def main() -> int:
     print(f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/{inp['cowos_quota_m'] / 1e4:.1f}/"
           f"{inp['cowos_quota_h'] / 1e4:.1f}万片 (L γ / M β / H α); optical OE mount checked")
     print(f"price={inp['price']:.2f} zone={zone}  P/L={inp['price'] / L - 1:+.1%}  P/M={inp['price'] / M - 1:+.1%}")
+
+    # A22 candidate band: same formula, only AI-leg g2 -> g2_cand (peak-normalized).
+    def cand_leg_pe(leg: str, tier: str) -> float:
+        g2 = inp["g2_cand"] if leg in TRANSITION_LEGS else inp[LEG_G2[leg]]
+        rr = inp[LEG_R[leg]]
+        if tier != "L" and leg in TRANSITION_LEGS:
+            return two_stage_pe(g1_ai, n, g2, roe[tier], rr)
+        return perpetual_pe(g2, roe[tier], rr)
+
+    cand = tuple(
+        sum(eps[tier][leg] * cand_leg_pe(leg, tier) for leg in LEGS) for tier in TIERS
+    )
+    if not (cand[0] < cand[1] < cand[2]):
+        errors.append(f"candidate band not a ladder: {cand}")
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A22)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
+            if abs(said - got) > TOL:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+    print(
+        f"候选带（AI g2={inp['g2_cand']:g} 峰值后归一；sw/nonai 不动；不进底牌/zone 判定）: "
+        f"L′/M′/H′={cand[0]:.1f}/{cand[1]:.1f}/{cand[2]:.1f}  "
+        f"候选 zone={zone_of(inp['price'], *cand)}"
+    )
     return report(errors)
 
 

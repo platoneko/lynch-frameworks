@@ -1,36 +1,31 @@
 #!/usr/bin/env python3
 """TSM.US valuation eval — recompute anchors from frameworks/TSM.US.md.
 
-formula_id: tsm_sotp_2027_two_stage_gordon_v5
+formula_id: tsm_sotp_2027_two_stage_gordon_v8
 
-Numerators are the three points of the 2027E consensus EPS range (low / mean /
-high, 13 houses, USD per ADR); L is the digest world (2028 does not grow) and
-calls `perpetual_pe`, M/H carry ONE named transition year -- 2028E sell-side
-consensus growth over 2027E consensus, both in TWD so FX cancels -- through
-`two_stage_pe`, then the perpetual g2.  Both rulers price 2027E as t=1 on the
-same date (valuation-rules「两段式过渡 · 估值时点」, 2026-09-14); the 2028-basis
-multiple (PE / (1 + g1)) is printed because 表1 reports the post-transition
-numerator.  Tier ROE = EPS_x × ADR shares / book equity.  Three legs share the
-multiple: A wafer, B1 advanced packaging as max(CoWoS capacity × UV, adv EPS ×
-PE), B2 other back-end.  No discounting: 2027E is the current year + 1.
+Numerators: 2027E consensus EPS range (low/mean/high, 13 houses, USD/ADR).
 
-COUPE (silicon photonics) is stated in the repo's 7d form: V_opt = the H-tier
-ceiling V_H from _AXIS.optical-comms OE × $450 × share × npm × same-tier PE,
-and p_k = V_k / V_H for the lower tiers (mechanical, no probability).  表3
-rows are base_k + p_k × V_opt and must reproduce the per-tier V_k exactly.
+Legs:
+  - Advanced wafer: share_wafer × (1 - mat_of_wafer) × platform PE
+  - Mature wafer:   share_wafer × mat_of_wafer × perpetual_pe(g_mat_wafer)
+    mat_of_wafer is NOT the trailing mix.  Mature wafer *revenue dollars* are
+    pinned at the as-of run-rate (2Q26 × 4 × mat_of_wafer_asof), so
+    mat_of_wafer = mat_of_wafer_asof × 4 × rev_2q26_twd / rev_2027_twd — all
+    2026→2027 revenue growth accrues to advanced.  g_mat_wafer = own measured
+    mature-$ CAGR ceiling (~2%).
+  - B1 advanced packaging: max(CoWoS×UV, adv EPS × platform PE)
+  - B2 other backend: share_other × perpetual_pe(g_b2), no 2028 transition
 
-Guardrail: every generated multiple must sit inside the ticker's own realised
-next-FY PE band (`pe_own_min/max`).  g2 is the band-edge reverse-solve
-(valuation-rules 裁决顺序 ③, A7): the semiconductor cross-section's 6.52% would
-generate multiples the market has never paid TSM, so g2 is solved to the value
-at which the first tier to touch the band (H, the highest ROE) sits exactly on
-the upper edge, on the same valuation date as the anchors (re-solved to 5.04%
-on 2026-09-14 when the date convention switched); the check is `g2 <= binding
-tier's band-edge g`, and the per-tier band-edge g printed below is evidence,
-not an input.  The g2 ±1pp zone line is PRINT ONLY: g2 is pinned by the band
-edge (not a free choice), so a zone flip inside ±1pp is a fact about the price
-sitting on a cut, and this ticker deliberately carries no hard check for it.  Numerator year (②, A20): 2027E is the furthest year with a >=2-house
-consensus range; 2028E is two point estimates and therefore the g1 layer.
+Platform PE (advanced wafer + B1): L = perpetual_pe(g2); M/H = two_stage_pe(
+g1_adv, n=1, g2).  g1_adv is the platform growth that reproduces the company
+2028E consensus growth once mature/B2 only grow at their own g — the
+consensus year must be fully expressed, not diluted by the slow legs.
+
+Guardrail: the own realised forward-PE band is measured on COMPANY EPS, so it
+bounds each tier's blended PE (tier price ÷ tier EPS), not the platform leg on
+its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
+
+COUPE: V_opt = H-tier OE×$450×share×npm×platform PE; p_k = V_k/V_H.
 
 Run:  python3 eval/TSM.US.py
 """
@@ -52,10 +47,12 @@ from eval.lib.axes import (  # noqa: E402
 )
 from eval.lib.gordon import (  # noqa: E402
     R_OPERATING,
+    check_branch,
     check_g_cap,
     check_r,
     check_transition_years,
     implied_g,
+    payout_gap,
     perpetual_pe,
     two_stage_pe,
 )
@@ -70,18 +67,17 @@ from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSM.US.md"
-FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v5"
+FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v8"
 TOL = 0.15
-P_TOL = 0.0005  # p_k are stated to 3 decimals
-MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
-NPM_TOL = 0.03  # A17: the margin-retreat mechanism must reproduce the consensus low
+P_TOL = 0.0005
+MIN_R_MINUS_G = 0.02
+NPM_TOL = 0.03
 
 _V_OPT = re.compile(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*")
 _P_TIERS = re.compile(
     r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
     r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)"
 )
-# 表3 rows: | L | 297.6 | 0.003 *(有锚…)* | 0.05 | **297.7** | …
 _T3_ROW = re.compile(
     r"\|\s*([LMH])\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)[^|]*\|\s*([0-9.]+)\s*\|\s*\*\*([0-9.]+)\*\*"
 )
@@ -90,6 +86,8 @@ REQUIRED = [
     "price",
     "shares_adr",
     "equity",
+    "rev_2q26_twd",
+    "rev_2027_twd",
     "eps_2027_l",
     "eps_2027_m",
     "eps_2027_h",
@@ -100,9 +98,13 @@ REQUIRED = [
     "share_wafer",
     "share_adv",
     "share_other",
+    "mat_of_wafer_asof",
     "npm_2027e_l",
     "npm_2027e_m",
+    "payout_ttm",
     "g2",
+    "g_mat_wafer",
+    "g_b2",
     "r_perp",
     "pe_own_min",
     "pe_own_max",
@@ -127,34 +129,40 @@ def sanity_checks(inp: dict[str, float]) -> list[str]:
     errs += check_r(inp["r_perp"], "r_perp")
     if abs(inp["r_perp"] - R_OPERATING) > 1e-9:
         errs.append(f"r_perp={inp['r_perp']}: operating legs, expected {R_OPERATING}")
-    errs += check_g_cap(inp["g2"], "g2")
-    gap = inp["r_perp"] - inp["g2"]
-    if gap <= 0:
-        errs.append("perpetuity diverges: g2 >= r")
-    elif gap < MIN_R_MINUS_G:
-        errs.append(f"r - g2 = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
-    # Only 2028E carries a >=2-house consensus (A6); 2029E is a story.
+    for key in ("g2", "g_mat_wafer", "g_b2"):
+        errs += check_g_cap(inp[key], key)
+        gap = inp["r_perp"] - inp[key]
+        if gap <= 0:
+            errs.append(f"perpetuity diverges: {key} >= r")
+        elif gap < MIN_R_MINUS_G:
+            errs.append(f"r - {key} = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
     if inp["eps_2028_cons_twd"] <= inp["eps_2027_cons_twd"]:
         errs.append("2028E consensus below 2027E: the transition year has no growth to name")
-    # A2e-2a: three points of one 13-house 2027E range.
+    if inp["rev_2027_twd"] <= 4.0 * inp["rev_2q26_twd"]:
+        errs.append("rev_2027_twd <= 2Q26 run-rate: pin-bridge for mature wafer share would not shrink")
     errs += ladder("numerator (2027E low/mean/high)", inp["eps_2027_l"], inp["eps_2027_m"], inp["eps_2027_h"])
-    # A17: the named margin-retreat mechanism reproduces the consensus low.
     mech = inp["eps_2027_m"] * inp["npm_2027e_l"] / inp["npm_2027e_m"]
     if abs(mech / inp["eps_2027_l"] - 1.0) > NPM_TOL:
         errs.append(
             f"A17 mechanism: mean × {inp['npm_2027e_l']:g}/{inp['npm_2027e_m']:g} = {mech:.2f} "
-            f"vs consensus low {inp['eps_2027_l']:g} (> {NPM_TOL:.0%} apart) — L is no longer the named world"
+            f"vs consensus low {inp['eps_2027_l']:g} (> {NPM_TOL:.0%} apart)"
         )
     share_sum = inp["share_wafer"] + inp["share_adv"] + inp["share_other"]
     if abs(share_sum - 1.0) > 1e-6:
         errs.append(f"leg shares sum {share_sum} != 1")
+    if not (0.0 < inp["mat_of_wafer_asof"] < 0.5):
+        errs.append(f"mat_of_wafer_asof={inp['mat_of_wafer_asof']} expected in (0, 0.5)")
     if not (inp["cowos_wpm_l"] < inp["cowos_wpm_m"] <= inp["cowos_wpm_h"]):
         errs.append("cowos_wpm ladder: expected L < M <= H")
     if abs(inp["asp_oe"] - 450.0) > 1e-9:
         errs.append(f"asp_oe={inp['asp_oe']} must be 450 (GS CPO OE BoM)")
     if not (inp["coupe_share_l"] < inp["coupe_share_m"] < inp["coupe_share_h"] <= 1.0):
         errs.append("coupe_share ladder: expected L < M < H <= 100%")
+    # Mature / B2 g must sit at or below platform g2.
+    for key in ("g_mat_wafer", "g_b2"):
+        if inp[key] > inp["g2"] + 1e-9:
+            errs.append(f"{key}={inp[key]:.4f} > g2={inp['g2']:.4f} — non-bottleneck leg cannot outgrow platform")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errs.append(f"p-class fields must not appear in Inputs: {leaked}")
@@ -172,78 +180,118 @@ def main() -> int:
         return report(errors)
     errors = sanity_checks(inp)
 
-    r, g2, n = inp["r_perp"], inp["g2"], int(inp["n_stage"])
+    r = inp["r_perp"]
+    g2, g_mat, g_b2 = inp["g2"], inp["g_mat_wafer"], inp["g_b2"]
+    n = int(inp["n_stage"])
     g1 = inp["eps_2028_cons_twd"] / inp["eps_2027_cons_twd"] - 1.0
     eps = {"l": inp["eps_2027_l"], "m": inp["eps_2027_m"], "h": inp["eps_2027_h"]}
 
-    # ---- Step 1: tier ROE from one equity field ----
+    # Pin mature wafer $ at the 2Q26 run-rate → 2027E mature share of wafer shrinks with revenue growth.
+    mat = inp["mat_of_wafer_asof"] * 4.0 * inp["rev_2q26_twd"] / inp["rev_2027_twd"]
+    share_aw = inp["share_wafer"] * (1.0 - mat)
+    share_mw = inp["share_wafer"] * mat
+
+    # 2028E consensus growth is company-level.  With mature/B2 held at their own
+    # g, the platform legs must grow faster than g1 for the company to reach it.
+    w_plat = share_aw + inp["share_adv"]
+    g1_adv = (g1 - share_mw * g_mat - inp["share_other"] * g_b2) / w_plat
+
     roe = {t: eps[t] * inp["shares_adr"] / inp["equity"] for t in TIERS}
+    # g2 comes from a reverse-solve, so the Gordon branch must match the payout policy.
+    errors += check_branch(g2, roe["m"], r, inp["payout_ttm"], "g2")
 
-    # ---- Step 2: multiples — L digest (perpetual), M/H one transition year ----
-    def tier_pe(t: str, transition: bool) -> float:
+    def platform_pe(t: str, g2_x: float, transition: bool) -> float:
         if transition:
-            return two_stage_pe(g1, n, g2, roe[t], r)
-        return perpetual_pe(g2, roe[t], r)
+            return two_stage_pe(g1_adv, n, g2_x, roe[t], r)
+        return perpetual_pe(g2_x, roe[t], r)
 
-    pe = {t: tier_pe(t, transition=(t != "l")) for t in TIERS}
+    pe_mat = {t: perpetual_pe(g_mat, roe[t], r) for t in TIERS}
+    pe_b2 = {t: perpetual_pe(g_b2, roe[t], r) for t in TIERS}
 
-    # Band-edge g2 per tier (裁决顺序 ③ 带即证据): the g2 at which this tier's own
-    # multiple would sit on the band's upper edge.  Reported only.
+    def capacity(wpm: float) -> float:
+        return (wpm / 10000.0) * inp["uv_per_10k_wpm"] / inp["shares_adr"]
+
+    def legs_at(t: str, p_plat: float, p_mature: float, p_other: float, mat_share: float = mat) -> dict[str, float]:
+        e = eps[t]
+        s_aw = inp["share_wafer"] * (1.0 - mat_share)
+        s_mw = inp["share_wafer"] * mat_share
+        paw = e * s_aw * p_plat
+        pmw = e * s_mw * p_mature
+        floor = e * inp["share_adv"] * p_plat
+        cap = capacity(inp[f"cowos_wpm_{t}"])
+        pb1 = max(cap, floor)
+        pb2 = e * inp["share_other"] * p_other
+        return {
+            "Paw": paw,
+            "Pmw": pmw,
+            "Pb1": pb1,
+            "Pb2": pb2,
+            "cap": cap,
+            "floor": floor,
+            "sum": paw + pmw + pb1 + pb2,
+        }
+
+    def blended_pe(t: str, g2_x: float) -> float:
+        return legs_at(t, platform_pe(t, g2_x, t != "l"), pe_mat[t], pe_b2[t])["sum"] / eps[t]
+
+    # The own band is measured on company EPS, so the band edge is where the
+    # tier's blended PE (not the platform leg alone) touches it.
     def g2_at_edge(t: str, target: float) -> float:
         lo, hi = -0.05, r - 1e-4
         for _ in range(200):
             mid = (lo + hi) / 2
-            if (perpetual_pe(mid, roe[t], r) if t == "l" else two_stage_pe(g1, n, mid, roe[t], r)) < target:
+            if blended_pe(t, mid) < target:
                 lo = mid
             else:
                 hi = mid
         return (lo + hi) / 2
 
     band_edge_g2 = {t: g2_at_edge(t, inp["pe_own_max"]) for t in TIERS}
+    pe = {t: platform_pe(t, g2, t != "l") for t in TIERS}
+    legs = {t: legs_at(t, pe[t], pe_mat[t], pe_b2[t]) for t in TIERS}
+    L, M, H = (legs[t]["sum"] for t in TIERS)
+    pe_blend = {t: legs[t]["sum"] / eps[t] for t in TIERS}
     for t in TIERS:
-        if not (inp["pe_own_min"] <= pe[t] <= inp["pe_own_max"]):
+        if not (inp["pe_own_min"] <= pe_blend[t] <= inp["pe_own_max"] + 1e-6):
             errors.append(
-                f"{t.upper()} generated PE {pe[t]:.2f}x outside own realised band "
+                f"{t.upper()} blended PE {pe_blend[t]:.2f}x outside own realised band "
                 f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
             )
-
-    # ---- Step 3: three legs; B1 = max(capacity × UV, adv EPS × PE) ----
-    def capacity(wpm: float) -> float:
-        return (wpm / 10000.0) * inp["uv_per_10k_wpm"] / inp["shares_adr"]
-
-    def legs_at(t: str, p: float) -> dict[str, float]:
-        e = eps[t]
-        floor = e * inp["share_adv"] * p
-        cap = capacity(inp[f"cowos_wpm_{t}"])
-        pa, pb1, pb2 = e * inp["share_wafer"] * p, max(cap, floor), e * inp["share_other"] * p
-        return {"Pa": pa, "Pb1": pb1, "Pb2": pb2, "cap": cap, "floor": floor, "sum": pa + pb1 + pb2}
-
-    legs = {t: legs_at(t, pe[t]) for t in TIERS}
-    L, M, H = (legs[t]["sum"] for t in TIERS)
     if not (L < M < H):
         errors.append(f"invariant L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
 
-    # ---- Step 4: A2e-2c flat ladder + A2e-5 decomposition ----
     eps_t = (eps["l"], eps["m"], eps["h"])
     flat_errs, _ = flat_multiple_ladder(eps_t, pe["m"])
     errors += flat_errs
-    flat = tuple(legs_at(t, pe["m"])["sum"] for t in TIERS)
+    flat = tuple(legs_at(t, pe["m"], pe_mat["m"], pe_b2["m"])["sum"] for t in TIERS)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
     dec = decompose((L, M, H), (pe["l"], pe["m"], pe["h"]))
 
-    # ---- Step 5: axes ----
     errors += [f"axis: {e}" for e in check_cowos_supply(inp["cowos_wpm_m"])]
     errors += [f"optical axis: {e}" for e in check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))]
     coupe_rev = {t: inp[f"oe_{t}"] * inp["asp_oe"] * inp[f"coupe_share_{t}"] for t in TIERS}
     errors += [f"COUPE narrow: {e}" for e in check_optical_narrow_attach({t.upper(): coupe_rev[t] for t in TIERS})]
 
-    # ---- Step 6: COUPE option in 7d form (V_opt = V_H, p_k = V_k / V_H) ----
-    v_k = {t: (coupe_rev[t] * inp["npm_coupe"] / inp["shares_adr"]) * pe[t] for t in TIERS}
+    # COUPE follows its own axis trajectory, not the wafer platform's: the M
+    # world pays out 2027 OE (oe_m) and then steps to the axis 2028 volume
+    # (oe_h) at the M-tier share, valued at t=2 on the steady g2 -- applying
+    # the platform PE to 2027 COUPE NI would let the platform's +33% stand in
+    # for a leg whose own named 2028 step is +525%.  L has no transition; H
+    # is the cap (2028 volume as the numerator, A19) and keeps the platform PE.
+    ni_per_adr = lambda oe, share: oe * inp["asp_oe"] * share * inp["npm_coupe"] / inp["shares_adr"]  # noqa: E731
+    v_k = {
+        "l": ni_per_adr(inp["oe_l"], inp["coupe_share_l"]) * pe["l"],
+        "m": (
+            ni_per_adr(inp["oe_m"], inp["coupe_share_m"])
+            + ni_per_adr(inp["oe_h"], inp["coupe_share_m"]) * perpetual_pe(g2, roe["m"], r)
+        )
+        / (1.0 + r),
+        "h": ni_per_adr(inp["oe_h"], inp["coupe_share_h"]) * pe["h"],
+    }
     v_opt = v_k["h"]
     p_k = {t: v_k[t] / v_opt for t in TIERS}
 
-    # ---- Step 7: zone and stated values ----
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
@@ -277,67 +325,102 @@ def main() -> int:
             if abs(float(adj_s) - (base + v_k[t])) > TOL:
                 errors.append(f"表3 adj_{t}: {adj_s} vs {base + v_k[t]:.4f}")
 
-    # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
-    print(f"g1 (2028E cons {inp['eps_2028_cons_twd']:g} / 2027E cons {inp['eps_2027_cons_twd']:g} TWD - 1) = {g1:.4f}"
-          f"  n={n}  g2={g2:g}  r={r:g}")
-    print(f"tier EPS (2027E, USD/ADR) = {eps['l']:.2f}/{eps['m']:.2f}/{eps['h']:.2f}  ROE = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f}"
-          f"  (equity {inp['equity']:.4g} USD)")
+    print(
+        f"g1(company)={g1:.4f} g1_adv(platform)={g1_adv:.4f} n={n} g2={g2:g} "
+        f"g_mat_wafer={g_mat:g} g_b2={g_b2:g} r={r:g}"
+    )
+    print(
+        f"mature pin: asof={inp['mat_of_wafer_asof']:.0%} of wafer × 2Q26 run-rate {4 * inp['rev_2q26_twd'] / 1e9:.0f}B "
+        f"/ 2027E rev {inp['rev_2027_twd'] / 1e9:.0f}B TWD → mat_of_wafer_2027={mat:.2%}  "
+        f"EPS shares aw={share_aw:.2%} mw={share_mw:.2%} b1={inp['share_adv']:.0%} b2={inp['share_other']:.0%}"
+    )
+    print(
+        f"tier EPS = {eps['l']:.2f}/{eps['m']:.2f}/{eps['h']:.2f}  "
+        f"ROE = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f}"
+    )
     for t in TIERS:
         lg = legs[t]
-        p1 = 1.0 - g1 / roe[t]
-        tag = "no transition (digest)" if t == "l" else ("issuance-funded" if p1 < 0 else "self-funded")
         print(
-            f"{t.upper()}: eps {eps[t]:.2f} x PE {pe[t]:.2f}x  wafer {lg['Pa']:.1f}  B1 {lg['Pb1']:.1f} "
-            f"(max cap {lg['cap']:.1f} / floor {lg['floor']:.1f})  B2 {lg['Pb2']:.1f}  = {lg['sum']:.1f}"
-            f"  stage-1 payout {p1:+.3f} ({tag})"
+            f"{t.upper()}: plat {pe[t]:.2f}x mat {pe_mat[t]:.2f}x b2 {pe_b2[t]:.2f}x blended {pe_blend[t]:.2f}x  "
+            f"aw {lg['Paw']:.1f} mw {lg['Pmw']:.1f} B1 {lg['Pb1']:.1f} "
+            f"(cap {lg['cap']:.1f}/fl {lg['floor']:.1f}) B2 {lg['Pb2']:.1f} = {lg['sum']:.1f}"
         )
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
-    # 表1 basis: M/H on the post-transition 2028 numerator (x (1 + g1)); L's 2028 = 2027E.
     print(
-        "2028-basis (post-transition numerator x multiple): "
-        f"L {eps['l']:.2f} x {pe['l']:.2f}x | M {eps['m'] * (1 + g1):.2f} x {pe['m'] / (1 + g1):.2f}x | "
-        f"H {eps['h'] * (1 + g1):.2f} x {pe['h'] / (1 + g1):.2f}x"
+        f"2028-basis aw M/H: {eps['m'] * share_aw * (1 + g1_adv):.2f} x {pe['m'] / (1 + g1_adv):.2f}x | "
+        f"{eps['h'] * share_aw * (1 + g1_adv):.2f} x {pe['h'] / (1 + g1_adv):.2f}x | "
+        f"mw M {eps['m'] * share_mw:.2f} x {pe_mat['m']:.2f}x (no g1)"
     )
-    print(f"flat-multiple ladder @ M {pe['m']:.2f}x: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
+    print(f"flat @ M: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
     print(
-        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge g2 (upper edge, per tier ROE): "
-        f"L {band_edge_g2['l']:.4%} / M {band_edge_g2['m']:.4%} / H {band_edge_g2['h']:.4%}"
-        f"  -> shared g2 {g2:.2%} {'<=' if g2 <= min(band_edge_g2.values()) + 1e-9 else '>'} binding tier"
+        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on BLENDED PE, band-edge g2: "
+        f"L {band_edge_g2['l']:.4%} / M {band_edge_g2['m']:.4%} / H {band_edge_g2['h']:.4%} "
+        f"-> g2 {g2:.2%} {'<=' if g2 <= min(band_edge_g2.values()) + 1e-9 else '>'} binding"
+    )
+    modelled, gap = payout_gap(g2, roe["m"], inp["payout_ttm"])
+    print(
+        f"branch: g2 {g2:.2%} at ROE_M {roe['m']:.1%} implies payout {modelled:.0%} vs paid {inp['payout_ttm']:.0%} "
+        f"(gap {gap:+.0%}; monotonic zone ROE>>r, sign only)"
     )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
-        f"H/M {dec['hm']:.3f} = num {eps_t[2] / eps_t[1]:.3f} x pe {dec['pe_hm']:.3f} "
-        f"x rest(B1 max) {dec['hm'] / (eps_t[2] / eps_t[1]) / dec['pe_hm']:.3f} | "
-        f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
+        f"H/M {dec['hm']:.3f} | width {(H - L) / (2 * M):.3f} | "
+        f"V_opt/M {v_opt / M:.3f} | mw/M {legs['m']['Pmw'] / M:.3f} | B2/M {legs['m']['Pb2'] / M:.3f}"
     )
-    no_tr = {t: legs_at(t, tier_pe(t, transition=False))["sum"] for t in TIERS}
-    print(f"cross-check, no transition year: {no_tr['l']:.1f}/{no_tr['m']:.1f}/{no_tr['h']:.1f}"
-          f"  (L with transition: {legs_at('l', tier_pe('l', transition=True))['sum']:.1f})")
-    # g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」), print only — see docstring: g2 is
-    # pinned by the band edge, so a zone flip inside ±1pp reports the price sitting on a cut,
-    # not a free g; +1pp above G_CAP / the band is shown as an illegal state, never a candidate.
+
+    def band_with(g2_x: float = g2, mat_share: float = mat, transition: bool = True) -> tuple[float, float, float]:
+        return tuple(
+            legs_at(t, platform_pe(t, g2_x, transition and t != "l"), pe_mat[t], pe_b2[t], mat_share)["sum"]
+            for t in TIERS
+        )
+
+    def fmt(b: tuple[float, float, float]) -> str:
+        return f"{b[0]:.1f}/{b[1]:.1f}/{b[2]:.1f} zone={zone_of(inp['price'], *b)}"
+
+    print(f"cross-check no transition (aw/B1): {fmt(band_with(transition=False))}")
+    print(f"cross-check no pin (as-of {inp['mat_of_wafer_asof']:.0%} held into 2027E): {fmt(band_with(mat_share=inp['mat_of_wafer_asof']))}")
+    n7 = inp.get("n7_of_wafer_asof")
+    if n7 is not None:
+        n7_mat = (inp["mat_of_wafer_asof"] + n7) * 4.0 * inp["rev_2q26_twd"] / inp["rev_2027_twd"]
+        print(f"cross-check N7 reclassed to mature (pinned share {n7_mat:.2%}): {fmt(band_with(mat_share=n7_mat))}")
+    # v7 read the band as a cap on the platform leg alone; kept as a coordinate.
+    lo, hi = -0.05, r - 1e-4
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if platform_pe("h", mid, True) < inp["pe_own_max"]:
+            lo = mid
+        else:
+            hi = mid
+    g2_leg = (lo + hi) / 2
+    print(f"cross-check band capping platform leg (v7 reading): g2={g2_leg:.2%} -> {fmt(band_with(g2_x=g2_leg))}")
     lever = []
     for delta in (-0.01, +0.01):
         g2_d = g2 + delta
-        pe_d = {t: (perpetual_pe(g2_d, roe[t], r) if t == "l" else two_stage_pe(g1, n, g2_d, roe[t], r)) for t in TIERS}
-        band_d = tuple(legs_at(t, pe_d[t])["sum"] for t in TIERS)
-        legal = g2_d <= 0.06 + 1e-9 and all(inp["pe_own_min"] <= pe_d[t] <= inp["pe_own_max"] for t in TIERS)
-        lever.append(f"{g2_d:.2%}: {band_d[0]:.1f}/{band_d[1]:.1f}/{band_d[2]:.1f} PE28 M/H "
-                     f"{pe_d['m'] / (1 + g1):.2f}/{pe_d['h'] / (1 + g1):.2f}x zone={zone_of(inp['price'], *band_d)}"
-                     f"{'' if legal else ' (above cap / band — not a legal state)'}")
-    print("g2 leverage ±1pp (print only): " + " | ".join(lever) + f" | base {g2:.2%}: zone={zone}")
+        legal = g2_d <= 0.06 + 1e-9 and all(
+            inp["pe_own_min"] <= blended_pe(t, g2_d) <= inp["pe_own_max"] + 1e-6 for t in TIERS
+        )
+        lever.append(f"{g2_d:.2%}: {fmt(band_with(g2_x=g2_d))}{'' if legal else ' (illegal)'}")
+    print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever) + f" | base zone={zone}")
     g_mkt, ok = implied_g(inp["price"] / eps["m"], roe["m"], r)
-    print(f"market-implied (P / 2027E mean = {inp['price'] / eps['m']:.1f}x, no transition): g = {g_mkt:.4f}"
-          f" ({'well' if ok else 'ill'}-conditioned) — reference only")
+    lo, hi = -0.05, r - 1e-4
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if band_with(g2_x=mid)[1] < inp["price"]:
+            lo = mid
+        else:
+            hi = mid
     print(
-        f"COUPE V_opt={v_opt:.2f} (H tier)  p_k={p_k['l']:.3f}/{p_k['m']:.3f}/{p_k['h']:.1f}  "
-        f"p·V = {v_k['l']:.2f}/{v_k['m']:.2f}/{v_k['h']:.2f}  "
-        f"zone+V = {L + v_k['l']:.1f}/{M + v_k['m']:.1f}/{H + v_k['h']:.1f}  "
+        f"market-implied (P/2027E mean={inp['price'] / eps['m']:.1f}x): single-leg Gordon g={g_mkt:.4f} "
+        f"({'well' if ok else 'ill'}-conditioned) | SOTP structure, platform g2 at M=price: {(lo + hi) / 2:.4f}"
+    )
+    print(
+        f"COUPE V_opt={v_opt:.2f} p_k={p_k['l']:.3f}/{p_k['m']:.3f}/{p_k['h']:.1f}  "
+        f"zone+V={L + v_k['l']:.1f}/{M + v_k['m']:.1f}/{H + v_k['h']:.1f}  "
         f"A'={(L + v_k['l'] + M + v_k['m']) / 2:.1f} B'={(M + v_k['m'] + H + v_k['h']) / 2:.1f}  "
         f"zone+V={zone_of(inp['price'], L + v_k['l'], M + v_k['m'], H + v_k['h'])}"
     )
-    print(f"price={inp['price']:.2f} zone={zone}  P/L={inp['price'] / L - 1:+.1%}  P/M={inp['price'] / M - 1:+.1%}")
+    print(f"price={inp['price']:.2f} zone={zone} P/L={inp['price'] / L - 1:+.1%} P/M={inp['price'] / M - 1:+.1%}")
     if inp["price"] > H:
         print(f"  market-implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
     return report(errors)

@@ -62,6 +62,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_cowos_mount  # noqa: E402
+from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     G_CAP,
     R_OPERATING,
@@ -93,6 +94,7 @@ REQUIRED = [
     "equity",
     "r_perp",
     "g2",
+    "g2_cand",
     "pe_own_min",
     "pe_own_max",
     "rev_fy27",
@@ -194,10 +196,13 @@ def main() -> int:
     if abs(r - R_OPERATING) > 1e-9:
         errors.append(f"r_perp={r}: whole-company operating leg, expected {R_OPERATING}")
     errors += check_g_cap(g2, "g2")
+    errors += check_g_cap(inp["g2_cand"], "g2_cand")
     if r - g2 <= 0:
         errors.append("perpetuity diverges: g2 >= r")
     elif r - g2 < MIN_R_MINUS_G:
         errors.append(f"r - g2 = {r - g2:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    if r - inp["g2_cand"] < MIN_R_MINUS_G:
+        errors.append(f"r - g2_cand = {r - inp['g2_cand']:.2%} < {MIN_R_MINUS_G:.0%}")
 
     # --- Step 2: the FY2028 bridge, run three times ---
     tax, shares, opex = inp["tax_rate"], inp["shares_fy28"], inp["opex_fy28"]
@@ -385,6 +390,26 @@ def main() -> int:
             f"  on-axis {on_axis / B:>5.1f}  ACIE {acie / B:>5.1f}"
             f"  ({acie / acie_m - 1.0:+.1%} vs M)"
         )
+
+    # A22 candidate band: same formula, only g2 -> g2_cand (peak-normalized).
+    g2c = inp["g2_cand"]
+    pe_c = tuple(perpetual_pe(g2c, roe, r) for roe in (roe_l, roe_m, roe_h))
+    cand = (eps_l * pe_c[0], eps_m * pe_c[1], eps_h * pe_c[2])
+    if not (cand[0] < cand[1] < cand[2]):
+        errors.append(f"candidate band not a ladder: {cand}")
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A22)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
+            if abs(said - got) > TOL:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+    print(
+        f"候选带（g2={g2c:g} 峰值后归一；不进底牌/zone 判定）: "
+        f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
+        f"pe={pe_c[0]:.2f}/{pe_c[1]:.2f}/{pe_c[2]:.2f}  "
+        f"候选 zone={zone_of(inp['price'], *cand)}"
+    )
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

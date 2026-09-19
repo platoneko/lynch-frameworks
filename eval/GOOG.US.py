@@ -17,7 +17,8 @@ costs — is derived, not chosen:
     Services + Alphabet-level   ROE 47.2%   (equity 247.8B, residual)
     Google Cloud                ROE 16.0%   (equity 160.0B, from HSBC 2027E ROIC)
 
-The tier ladder lives ENTIRELY in the numerator: g2_svc = 5.5% and
+The tier ladder lives ENTIRELY in the numerator: g2_svc = 5.5% (median of the
+META / RDDT / TTD market-implied cross-section, GOOG excluded; _local/ab/ad_cluster.py) and
 g2_cld = 6.0% (6.5% capped) are identical in L, M and H, so the multiple ratio across tiers
 is exactly 1.000 and every point of tier spread is a consensus-EPS point
 (A2e-2a / A2e-2c). The one derived exception is the L tier's cloud multiple:
