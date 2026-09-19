@@ -1,6 +1,6 @@
 # v2（篮子折现率）正式切换 — 设计稿
 
-> 2026-09-20 与用户对齐后定稿。目标：`sediment-framework-v2` 正式替换 v1，`_local/ab/frameworks_v2/` 的 62 份草稿转成正式框架，eval 全量改到不打补丁复现 v2 数字，日报自动读新框架。
+> 2026-09-20 与用户对齐后定稿。目标：`sediment-framework-v2` 正式替换 v1，`_local/ab/frameworks_v2/` 的 61 份草稿转成正式框架，eval 全量改到不打补丁复现 v2 数字，日报自动读新框架。
 
 ## 0. 用户已拍板的分岔
 
@@ -30,7 +30,7 @@
   ```
 
 - `G_CAP` 常量改函数 `g_cap(r) = min(0.06, r - 0.04)`；`check_g_cap(g, r, where)`、`capped_payout_pe(g_raw, roe, r, payout_observed)` 内部改用 `g_cap(r)`。模块 docstring 里「r = 10%」的措辞改为篮子 r。
-- 不新增 `decay_two_stage_pe`（62 份草稿无一使用；YAGNI）。
+- 不新增 `decay_two_stage_pe`（61 份草稿无一使用；YAGNI）。
 
 ### 1.2 `inputs.py`
 
@@ -112,11 +112,11 @@
 
    BLOCKED 票：eval 只校验对照带复现，不断言 zone。
 
-分批：US 20 → HK 21 → A 股 21（含 META.US 新增、600111.SH）。每批完成后主会话跑 `python3 -m pytest eval/lib -q`（或 unittest）与批内 eval。
+分批：US 20 → HK 15 → A 股 26（含 META.US 新增、600111.SH）。每批完成后主会话跑 `python3 -m pytest eval/lib -q`（或 unittest）与批内 eval。
 
 ## 5. 收口
 
-- `python3 scripts/gen_index.py`；`python3 scripts/daily_bands.py --dry-run --no-notify` 出 62 行且 ORCL 行为 BLOCKED；`python3 scripts/calibration.py`。
+- `python3 scripts/gen_index.py`；`python3 scripts/daily_bands.py --dry-run --no-notify` 出 61 行且 ORCL 行为 BLOCKED；`python3 scripts/calibration.py`。
 - 迁移记录 `docs/migrations/2026-09-20-v2-basket-r.md`：每票 v1 L/M/H zone → v2 L/M/H zone、篮子、备注（从 `_local/ab/report.md` 与正式文件生成，脚本一次性，不入库）。
 - 提交拆分：① v1 工作区改动；② 库层 + 测试；③ skill 改名与措辞 + AGENTS.md + 模板；④ 索引 / 日报 / calibration；⑤ 框架 + eval（可按市场分 3 个）；⑥ 迁移记录 + `_INDEX.md`。不含 `_local/`。
 

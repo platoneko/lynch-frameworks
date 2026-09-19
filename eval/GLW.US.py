@@ -31,11 +31,12 @@ sign test; `payout_gap` is printed as a disclosure only. Solar / LS stay on P/S
 series (A16, 19.7–91.1x on the trailing-quarter annualised core EPS) is now the
 guardrail, not a source.
 
-r is not a per-ticker dial: every `r*` Inputs row names its basket (`篮 N`) and
-the value must equal gordon.BASKET_R for that basket. Here OC / GI / AU and the
-option-leg r_disc all sit in basket 4 龙头制造 (10%, A30); `check_r(r, where,
-basket)` enforces the match and `check_g_cap(g, r, where)` caps every g2 at
-g_cap(r) = min(6%, r - 4%).
+r is not a per-ticker dial: the r_perp Inputs row names its basket (`篮 N`) and
+the value must equal gordon.BASKET_R for that basket. OC / GI / AU sit in basket
+4 龙头制造 (10%, A30); `check_r(r, where, basket)` enforces the match and
+`check_g_cap(g, r, where)` caps every g2 at g_cap(r) = min(6%, r - 4%).  The
+option-leg r_disc carries no tag of its own (disclosure-only r readings are
+untagged, AGENTS.md「篮子声明」) and must simply equal r_perp (A30).
 
 Constraint: generated OC PE < 30 and H / eps_fy28_l < 30 (the user's FY28<30
 rule read against the strictest denominator). Prepaid locked profit enters in
@@ -242,10 +243,12 @@ def main() -> int:
     # (valuation-rules「§r 篮子」), every perpetual g is at or below g_cap(r), and
     # the perpetuity converges.
     baskets = parse_baskets(md)
-    for where in ("r_perp", "r_disc"):
-        if where not in baskets:
-            guards.append(f"{where}: Inputs source cell names no 篮 N (valuation-rules「§r 篮子」)")
-        guards += check_r(inp[where], where, baskets.get(where))
+    if "r_perp" not in baskets:
+        guards.append("r_perp: Inputs source cell names no 篮 N (valuation-rules「§r 篮子」)")
+    guards += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    # r_disc is untagged (not a leg): A30 says it rides the same basket as r_perp.
+    if abs(inp["r_disc"] - inp["r_perp"]) > 1e-9:
+        guards.append(f"r_disc {inp['r_disc']} != r_perp {inp['r_perp']} (A30: 同篮)")
     for leg in ("oc", "gi", "au"):
         guards += check_g_cap(inp[f"g2_{leg}"], inp["r_perp"], f"g2_{leg}")
         if inp["r_perp"] - inp[f"g2_{leg}"] < 0.02:
@@ -322,7 +325,7 @@ def main() -> int:
     # valuation-rules「反解分支」(A5): the auto leg has no observable payout, so
     # the company payout stands in. With ROE_M >> r (单调区) check_branch is the
     # sign test only; the magnitude gap is a disclosure (printed below), not a
-    # red line — on a ~40% book any g2 <= G_CAP models >= 85% payout.
+    # red line — on a ~40% book any g2 <= g_cap(r) models >= 85% payout.
     payout_co = inp["dps_annual"] / inp["core_eps_ann"]
     branch = check_branch(inp["g2_au"], roe["m"], r, payout_co, "g2_au")
     if branch:
@@ -490,7 +493,7 @@ def main() -> int:
     )
     print(
         f"tier ROE L/M/H = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f} (eps x shares / equity {inp['equity']:,.0f}M)  "
-        f"r={r:g} (篮 {baskets['r_perp']}; r_disc 篮 {baskets['r_disc']})  g_cap={g_cap(r):.3f}  "
+        f"r={r:g} (篮 {baskets['r_perp']}; r_disc = r_perp)  g_cap={g_cap(r):.3f}  "
         f"g2 oc/gi/au = {inp['g2_oc']:.4f}/{inp['g2_gi']:.4f}/{inp['g2_au']:.4f}"
     )
     print(

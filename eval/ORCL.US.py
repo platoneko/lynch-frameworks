@@ -60,6 +60,7 @@ from eval.lib.axes import (  # noqa: E402
     capex_constituent_share,
     check_capex_constituent,
 )
+from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     basket_r,
     check_g_cap,
@@ -97,8 +98,6 @@ ROE_PROJ_TOL = 0.001
 K_REMAIN_REL_TOL = 0.01
 # ③ 降篮 path (A21): only the OpenAI sub-leg may step down, 篮 7 -> 6 -> 5 -> 4.
 OPENAI_DOWNGRADE_BASKETS = (7, 6, 5, 4)
-# Header contract (AGENTS.md「BLOCKED — 题头契约」).
-BLOCKED_HEADER = re.compile(r"^>\s*\*\*状态：BLOCKED\*\*", re.MULTILINE)
 # 表2′ band-edge band as stated in Outputs: `带边带 78.17 / 114.72 / 195.81`.
 STATED_BAND_EDGE = re.compile(r"带边带\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)")
 NET_DEBT_SENSITIVITY = 20000.0
@@ -423,7 +422,8 @@ def main() -> int:
         band_b = band_at(r_o=basket_r(b))
         downgrade.append((b, basket_r(b), band_b, band_b[1] / eps["m"]))
     blocked = out_of_band and all(pe_m < inp["pe_fwd_min"] for _, _, _, pe_m in downgrade)
-    header_blocked = bool(BLOCKED_HEADER.search(md))
+    # Header contract (AGENTS.md「BLOCKED — 题头契约」): same parser as the digest.
+    header_blocked = load_framework(FRAMEWORK).blocked is not None
     if blocked != header_blocked:
         errors.append(
             f"③ verdict: recomputed {'BLOCKED' if blocked else 'in band after 降篮'} but header "

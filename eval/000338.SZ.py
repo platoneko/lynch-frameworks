@@ -237,11 +237,12 @@ def main() -> int:
     roe = {t: inp[f"np_{t}"] / inp["equity"] for t in TIERS}
     # The core leg is one operating basket (篮 4 龙头制造, A15): the framework
     # names it on the r_perp row and r must be that basket's value.  r_disc
-    # only bridges the SOFC option one year and rides the same basket.
+    # only bridges the SOFC option one year: untagged (not a leg), same value.
     if "r_perp" not in baskets:
         errors.append("r_perp: Inputs source cell names no 篮 N (A15)")
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    errors += check_r(inp["r_disc"], "r_disc", baskets.get("r_disc"))
+    if abs(inp["r_disc"] - r) > 1e-9:
+        errors.append(f"r_disc {inp['r_disc']} != r_perp {r} (A15: 同值)")
     for t in ("m", "h"):
         errors += check_g_cap(inp[f"g2_{t}"], r, f"g2_{t}")
         if r - inp[f"g2_{t}"] < MIN_R_MINUS_G:
