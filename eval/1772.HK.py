@@ -23,12 +23,17 @@ years (A12).  Per-tier credits for both components are hard-coded here and
 never enter Inputs (A2e-7a); a value-weighted blend is also stated in the doc
 for the daily digest, which only reads one p triple.
 
-Multiples: Gordon with ONE flat g2 = the lithium-producer cross-section value
-(tier 1, 2.35%), tier ROE = EPS_HKD / BPS; the axis 永续 g2 row is referenced
-verbatim (`axis_g2_li`) and superseded.  The L tier is the axis L regime, not
-the company's realised trough (FY2024 loss); `recovery_two_stage_pe` on the
+Multiples: Gordon at the leg's basket r (篮 6 周期商品, both legs share it,
+A14) with ONE flat g2 = the commodity-leg tier default 0 (§13: lithium's
+long-run real price drift is negative, not taken below zero; the peer
+cross-section value is withdrawn, A7), tier ROE = EPS_HKD / BPS; at g = 0 the
+multiple is 1/r on every tier.  The axis 永续 g2 row is referenced verbatim
+(`axis_g2_li`) and superseded.  The L tier is the axis L regime, not the
+company's realised trough (FY2024 loss); `recovery_two_stage_pe` on the
 measured path (FY2025 17.63 亿 HKD -> 2026H1 x 2) is printed as a coordinate
-only.  L is floor-bound (realised PB 0.70 at the 2025-04-08 low).
+only.  The PB 0.70 floor (realised at the 2025-04-08 low) is DISCLOSED, never
+max()-ed into L: an asset number that does not move with r has no place inside
+an earnings ruler that shrinks with it (A8).
 """
 
 from __future__ import annotations
@@ -40,12 +45,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_LI2CO3, check_li2co3_mount, load_axis_g2  # noqa: E402
 from lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.inputs import check_against_stated, outputs_section, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
+from lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1772.HK.md"
 FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v1"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
+# The single perpetual r leg (both business legs share the basket, A14); r_disc
+# is the same number by construction but is a discount input, not a leg.
+LEG_R = ("r_perp",)
 
 # Per-tier option credits (A9): solid-state is a judgement call, the volume step
 # is anchored on Dongwu's 2028E/2027E (+12.5% / one realised 42.5% step ~ 0.29).
@@ -65,45 +75,6 @@ REQUIRED = [
     "r_perp", "g2", "axis_g2_li",
     "pe_own_min", "pe_own_max", "pb_floor",
 ]
-
-
-def parse_inputs(md: str) -> dict[str, float]:
-    out: dict[str, float] = {}
-    in_inputs = False
-    for line in md.splitlines():
-        if line.startswith("### Inputs"):
-            in_inputs = True
-            continue
-        if in_inputs and line.startswith("### "):
-            break
-        if not in_inputs or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        key, raw = cells[0], cells[1]
-        if key in ("字段名", "--------", "---") or raw == "取值":
-            continue
-        if "待补" in raw:
-            continue
-        try:
-            out[key] = float(raw.replace(",", ""))
-        except ValueError:
-            continue
-    return out
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A, B = (L + M) / 2, (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
 
 
 def first_float(pattern: str, md: str) -> float | None:
@@ -146,14 +117,15 @@ def v_opt_vol(inp: dict[str, float], li2co3: float, pe_m: float) -> float:
     return per_share_hkd(parent_from_pretax(pretax, inp), inp) * pe_m
 
 
-def scenario(inp: dict[str, float], tag: str, scale: float = 1.0) -> dict[str, float]:
+def scenario(inp: dict[str, float], tag: str, scale: float = 1.0, g2: float | None = None) -> dict[str, float]:
     """Base deck: scale = 1.0 (the line's own 2026 volume structure).  Candidate: vol_scale."""
+    g = inp["g2"] if g2 is None else g2
     li = li_2026(inp, inp[f"li2co3_{tag}"]) * scale
     pretax = li + inp["batt_pretax"] - inp["net_finance"]
     parent = parent_from_pretax(pretax, inp)
     eps = per_share_hkd(parent, inp)
     roe = eps / inp["bps"]
-    pe = perpetual_pe(inp["g2"], roe, inp["r_perp"])
+    pe = perpetual_pe(g, roe, inp["r_perp"])
     return {"li": li, "pretax": pretax, "parent": parent, "eps": eps, "roe": roe, "pe": pe, "px": eps * pe}
 
 
@@ -172,13 +144,20 @@ def main() -> int:
     errors: list[str] = []
     if not (inp["li2co3_l"] < inp["li2co3_m"] < inp["li2co3_h"]):
         errors.append("li2co3 ladder violated")
-    # valuation-rules「永续增长口径」: one flat tier-1 g2, multiple generated per
-    # tier from the tier ROE; the axis row is referenced verbatim and superseded.
-    errors += check_r(inp["r_perp"], "r_perp")
-    for k in ("g2", "axis_g2_li"):
-        errors += check_g_cap(inp[k], k)
-    if inp["r_perp"] - inp["g2"] < MIN_R_MINUS_G:
-        errors.append(f"r − g2 = {inp['r_perp'] - inp['g2']:.4f} < {MIN_R_MINUS_G} (pole)")
+    # valuation-rules「§r 篮子」/「永续增长口径」: r is the named basket's value, one
+    # flat g2 ≤ cap(r); the axis row is referenced verbatim and superseded.
+    baskets = parse_baskets(md)
+    for field in LEG_R:
+        if field not in baskets:
+            errors.append(f"{field}: no 篮 N in Inputs source cell (A14)")
+        errors += check_r(inp[field], field, baskets.get(field))
+        errors += check_g_cap(inp["g2"], inp[field], f"g2@{field}")
+        errors += check_g_cap(inp["axis_g2_li"], inp[field], f"axis_g2_li@{field}")
+        if inp[field] - inp["g2"] < MIN_R_MINUS_G:
+            errors.append(f"{field} − g2 = {inp[field] - inp['g2']:.4f} < {MIN_R_MINUS_G} (pole)")
+    # The candidate band / volume option discount at the same basket r as the leg (A14).
+    if abs(inp["r_disc"] - inp["r_perp"]) > 1e-9:
+        errors.append(f"r_disc={inp['r_disc']} must equal the leg's basket r r_perp={inp['r_perp']} (A14)")
     want_axis = load_axis_g2(AXIS_LI2CO3)
     if abs(inp["axis_g2_li"] - want_axis) > 1e-9:
         errors.append(f"axis_g2_li={inp['axis_g2_li']} vs _AXIS.lithium-carbonate 永续 g2 {want_axis}")
@@ -201,9 +180,10 @@ def main() -> int:
     for tag, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
         if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
             errors.append(f"guardrail: PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g")
+    # A8: the floor is disclosed only; L is the scenario value.
     floor = inp["pb_floor"] * inp["bps"]
     scenario_L = S["l"]["px"]
-    L = max(scenario_L, floor)
+    L = scenario_L
     M = S["m"]["px"]
     H = S["h"]["px"]
     A, B = (L + M) / 2, (M + H) / 2
@@ -219,24 +199,18 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
     # A2e-2c flat-multiple ladder at PE_M.
-    flat = (max(S["l"]["eps"] * pe_m, floor), M, S["h"]["eps"] * pe_m)
+    flat = (S["l"]["eps"] * pe_m, M, S["h"]["eps"] * pe_m)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
     # Candidate band (A2e-7h): same formula, only the single-house 2027E volume
-    # scale (× δ) swapped in; g2 / r / bridge untouched; L′ floor-bound like L.
+    # scale (× δ) swapped in; g2 / r / bridge untouched; L′ is the scenario value like L.
     C = {t: scenario(inp, t, vol_scale(inp)) for t in ("l", "m", "h")}
-    Lc = max(C["l"]["px"], floor)
-    Mc, Hc = C["m"]["px"], C["h"]["px"]
+    Lc, Mc, Hc = (C[t]["px"] for t in ("l", "m", "h"))
     if not (Lc < Mc < Hc):
         errors.append(f"candidate band not ordered: {Lc:.2f}/{Mc:.2f}/{Hc:.2f}")
 
-    out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    for k, v in {"L": L, "M": M, "H": H, "A": A, "B": B}.items():
-        s = first_float(rf"\b{k} = \*\*([0-9.]+)\*\*", out_sec)
-        if s is None:
-            errors.append(f"stated {k} not found")
-        elif abs(s - v) > TOL:
-            errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    out_sec = outputs_section(md)
     for label, want_v, rx in (
         ("scenario_L", scenario_L, r"`scenario_L` = \*\*([0-9.]+)\*\*"),
         ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*"),
@@ -277,7 +251,7 @@ def main() -> int:
                 errors.append(f"{name}_{k}: stated {got} vs eval constant {table[k]}")
     base = {"L": L, "M": M, "H": H}
     adj = {k: base[k] + P_SS[t] * v_ss + P_VOL[t] * v_vol for k, t in zip("LMH", "lmh")}
-    # Table 3 rows: | L | 18.67 | 0 | 0.00 | 0 | 0.00 | **18.67** | ...
+    # Table 3 rows: | L | 10.27 | 0 | 0.00 | 0 | 0.00 | **10.27** | ...
     for k, v in adj.items():
         m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [0-9.]+ \| [^|]+\| [0-9.]+ \| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
         if m3 is None or abs(float(m3.group(1)) - v) > TOL:
@@ -302,11 +276,6 @@ def main() -> int:
                     f"blended p_{t}={got} gives {k}′={blended:.4f}, components give {adj[k]:.4f}"
                 )
 
-    zm = re.search(r"底牌 zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
-
     slope = (inp["cal_li_pretax_1"] - inp["cal_li_pretax_0"]) / (inp["cal_p1"] - inp["cal_p0"])
     print(f"formula_id={FORMULA_ID}")
     print(
@@ -315,6 +284,7 @@ def main() -> int:
         + f"  slope={slope*1e4:.2f} 亿/万元"
         + f"  base scale 1.0 (2026 structure); candidate scale={inp['vol_2027e']:g}/{inp['vol_2026e']:g} x disc = {vol_scale(inp):.4f}"
     )
+    print("baskets: " + ", ".join(f"{k} 篮 {baskets[k]} r={inp[k]:g}" for k in LEG_R) + f"; r_disc={inp['r_disc']:g}")
     print(f"{'档':<3}{'锂腿税前':>9}{'税前':>8}{'归母':>8}{'EPS_HKD':>9}{'ROE':>7}{'PE':>7}{'锚点':>8}")
     for t in ("l", "m", "h"):
         s_ = S[t]
@@ -322,8 +292,8 @@ def main() -> int:
             f"{t.upper():<3}{s_['li']:9.1f}{s_['pretax']:8.1f}{s_['parent']:8.1f}"
             f"{s_['eps']:9.3f}{s_['roe']:7.1%}{s_['pe']:7.2f}{s_['px']:8.2f}"
         )
-    winner = "floor" if floor > scenario_L else "scenario_L"
-    print(f"floor={floor:.2f}  scenario_L={scenario_L:.2f}  winner={winner}  scenario_L/M={scenario_L / M:.3f}")
+    print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bps, disclosed only, A8)  scenario_L={scenario_L:.2f} = L  "
+          f"scenario_L/M={scenario_L / M:.3f}  floor vs band: {zone_of(floor, L, M, H)}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  "
           f"V_opt={v_opt:.2f} = ss {v_ss:.2f} + vol {v_vol:.2f} "
           f"(one realised step {realised_step(inp):.1%} = {inp['vol_2024a']:g}→{inp['vol_2025a']:g} 万吨 @axis M, δ², PE_M)")
@@ -332,15 +302,23 @@ def main() -> int:
     ) + f"  A′={(adj['L'] + adj['M']) / 2:.2f} B′={(adj['M'] + adj['H']) / 2:.2f}"
         f"  vol step @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], pe_m):.2f}/{v_opt_vol(inp, inp['li2co3_h'], pe_m):.2f}")
     print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}  -> {zone_of(inp['price'], Lc, Mc, Hc)}")
-    print(f"gordon: r={inp['r_perp']:g} g2={inp['g2']:g} flat [tier 1 lithium cluster] (axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "
+    print(f"gordon: r={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2={inp['g2']:g} flat [§13 commodity-leg tier default] "
+          f"(axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "
           f"roe={S['l']['roe']:.3f}/{S['m']['roe']:.3f}/{S['h']['roe']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} "
           f"inside own band [{inp['pe_own_min']}, {inp['pe_own_max']}]")
     g_lo, ok_lo = implied_g(inp["pe_own_min"], S["m"]["roe"], inp["r_perp"])
     g_hi, ok_hi = implied_g(inp["pe_own_max"], S["m"]["roe"], inp["r_perp"])
-    print(f"guardrail band-edge g at ROE_M: {g_lo:+.2%} ({'ok' if ok_lo else 'ill-conditioned'}) / {g_hi:+.2%} ({'ok' if ok_hi else 'ill-conditioned'}) — ROE_M≈r, reported only (A7)")
+    print(f"guardrail band-edge g at ROE_M: {g_lo:+.2%} ({'ok' if ok_lo else 'ill-conditioned'}) / {g_hi:+.2%} ({'ok' if ok_hi else 'ill-conditioned'}) — reported only (A7)")
     for dg in (-0.01, 0.01):
-        pe_alt = perpetual_pe(inp["g2"] + dg, S["m"]["roe"], inp["r_perp"])
-        print(f"  g2 {dg:+.0%} -> PE_M {pe_alt:.2f}, M {S['m']['eps'] * pe_alt:.2f}")
+        alt = {t: scenario(inp, t, g2=inp["g2"] + dg) for t in ("l", "m", "h")}
+        print(f"  g2 {dg:+.0%} -> PE {alt['l']['pe']:.2f}/{alt['m']['pe']:.2f}/{alt['h']['pe']:.2f}, "
+              f"band {alt['l']['px']:.2f}/{alt['m']['px']:.2f}/{alt['h']['px']:.2f} "
+              f"zone={zone_of(inp['price'], alt['l']['px'], alt['m']['px'], alt['h']['px'])}")
+    # Implied r(P): single-stage Gordon at g = 0 on the M-tier EPS (§7 rule 3 disclosure).
+    print(f"implied r(P) = E_M / P = {S['m']['eps']:.3f} / {inp['price']:g} = {S['m']['eps'] / inp['price']:.2%} "
+          f"(vs basket r {inp['r_perp']:.0%}: {S['m']['eps'] / inp['price'] - inp['r_perp']:+.1%})")
+    if inp["price"] > H:
+        print(f"market-implied p = (P − H) / V_opt = {(inp['price'] - H) / v_opt:.2f}")
     # A13 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) the
     # measured n with the model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
@@ -351,9 +329,9 @@ def main() -> int:
         print(f"谷底档坐标（A13）{label} n={n}: (i) measured CAGR {g1_meas:.0%} -> {pe_i:.1f}x -> {S['l']['eps'] * pe_i:.1f} "
               f"(vs M {M:.2f}: {'overshoot' if S['l']['eps'] * pe_i > M else 'below M'}); "
               f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {S['l']['eps'] * pe_ii:.2f} (L/M {S['l']['eps'] * pe_ii / M:.3f}, collapsed)")
-    print(f"谷底 x 1/r = {S['l']['eps'] / inp['r_perp']:.2f}  (deep_discount pressure coordinate)")
+    print(f"谷底 x 1/r = {S['l']['eps'] / inp['r_perp']:.2f}  (deep_discount pressure coordinate; = L at g = 0)")
     print(f"flat-multiple ladder @ PE_M {pe_m:.2f}x (A2e-2c): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for line in tier_report((scenario_L, M, H), (pe_l, pe_m, pe_h), (S["l"]["eps"], S["m"]["eps"], S["h"]["eps"])):
+    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (S["l"]["eps"], S["m"]["eps"], S["h"]["eps"])):
         print(line)
     print(
         f"L/M={L/M:.2f} H/M={H/M:.2f} (H-L)/2M={(H-L)/2/M:.2%} V_opt/M={v_opt/M:.1%} "

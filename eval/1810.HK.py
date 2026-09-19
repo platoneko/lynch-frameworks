@@ -36,6 +36,11 @@ Main ruler (four legs, summed — no hand-written total is ever consumed):
 The 1H26 segment recompute (A3) is kept for reconciliation, the leg weights and
 the A4' add-back upper bound; the run-rate worlds are pressure coordinates only.
 
+Discount rate: r_perp is a basket value (gordon.BASKET_R); the framework's
+Inputs source cell names the basket (篮 4 龙头制造, A23) and `check_r` requires
+r to equal that basket's value; both perpetual g2 are capped at g_cap(r).  The
+EV leg is a PS ruler (篮 7 by nature, no r in its formula).
+
 Guardrail: every tier's whole-ticker multiple (anchor / GAAP-TTM EPS) must sit
 inside the realised 5-year band [pe_own_min, pe_own_max] (A21, weak band).
 
@@ -54,6 +59,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
+from eval.lib.inputs import parse_baskets  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "1810.HK.md"
 FORMULA_ID = "xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v2"
@@ -257,10 +263,15 @@ def main() -> int:
     T = c["tiers"]
 
     checks: list[tuple[bool, str]] = []
-    for msg in (check_r(v["r_perp"], "r_perp")
-                + check_g_cap(v["g2_phone"], "g2_phone") + check_g_cap(v["g2_eco"], "g2_eco")):
+    baskets = parse_baskets(text)
+    if "r_perp" not in baskets:
+        checks.append((False, "r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"))
+    for msg in (check_r(v["r_perp"], "r_perp", baskets.get("r_perp"))
+                + check_g_cap(v["g2_phone"], v["r_perp"], "g2_phone")
+                + check_g_cap(v["g2_eco"], v["r_perp"], "g2_eco")):
         checks.append((False, msg))
-    checks.append((True, f"r_perp={v['r_perp']} g2_phone={v['g2_phone']} g2_eco={v['g2_eco']} ≤ cap; "
+    checks.append((True, f"r_perp={v['r_perp']} (篮 {baskets.get('r_perp')}) g2_phone={v['g2_phone']} "
+                         f"g2_eco={v['g2_eco']} ≤ g_cap(r); "
                          f"no transition stage in the deck (FY2028E single house -> candidate only)"))
     checks.append((v["eps27_l_cny"] < v["eps27_m_cny"] < v["eps27_h_cny"],
                    f"numerator ladder FY27E {v['eps27_l_cny']} < {v['eps27_m_cny']} < {v['eps27_h_cny']} CNY"))
@@ -355,6 +366,10 @@ def main() -> int:
     g_mkt, ok = implied_g(core_mkt, m["roe_eco"], v["r_perp"])
     print(f"market solves for (EV leg / closing at M): core PE {core_mkt:.2f}x on FY27E ops -> blended g {g_mkt:+.2%}"
           f"{'' if ok else ' (ill-conditioned)'}")
+    # disclosure only: single-stage approximation g + (r - g) * M / P against the basket r
+    r_implied = v["g2_eco"] + (v["r_perp"] - v["g2_eco"]) * c["M"] / v["price"]
+    print(f"implied r(P): {r_implied:.2%} (single-stage approx on M) vs 篮 {baskets.get('r_perp')} r {v['r_perp']:.1%}"
+          f" -> {r_implied - v['r_perp']:+.1%}")
     # pressure coordinates (deep_discount): whole-company run-rate at the L-tier multiples / at 1/r
     lt = T["l"]
     ev_l = c["rev_ev"] * v["ps_ev_l"]
@@ -365,7 +380,9 @@ def main() -> int:
     print("sensitivity:")
     for g in (v["g2_eco"] - 0.01, v["g2_eco"] + 0.01, -0.0098):
         alt = compute(dict(v, g2_eco=g))
-        print(f"  g2_eco={g:+.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+        flip = zone_of(v["price"], alt)
+        print(f"  g2_eco={g:+.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}  zone {flip}"
+              f"{'  ⚠敏感区' if flip != z else ''}")
     addback = -2.0 * c["op_ev_h1"] / (v["shares"] / YI)  # CNY/share equivalent of the run-rate EV loss
     alt = compute({**v, **{f"eps27_{b}_cny": v[f"eps27_{b}_cny"] + addback for b in BANDS}})
     print(f"  A4' upper bound (add back 1H26 annualized EV loss {-2 * c['op_ev_h1']:.1f} 亿): "

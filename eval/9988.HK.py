@@ -21,8 +21,10 @@ retains (interest, equity-method, other; A9b) because those assets are counted
 once in the NAV / net-cash closure.  The taxed numerator is split by run-rate
 adjusted-EBITA weight into the e-commerce leg (perpetual_pe, g2_ecom peer
 reverse-solve) and the cloud leg (perpetual_pe, g2_cloud peer cross-section
-capped at G_CAP).  ROE_k = FY28E EPS tier / BPS (company ROE; no leg equity is
-disclosed, A4).  There is no transition stage in the deck — FY2029E cloud
+capped at g_cap(r)).  ROE_k = FY28E EPS tier / BPS (company ROE; no leg equity
+is disclosed, A4).  r is the basket rate: the Inputs `r_perp` row names 篮 4
+龙头制造 (A20, both operating legs) and `check_r` requires r to equal that
+basket's value.  There is no transition stage in the deck — FY2029E cloud
 growth is single-house, so `check_transition_years` does not apply; the
 candidate band reruns the same formula with the cloud leg on
 two_stage_pe(g1_cloud_cand, n_cloud_cand) (A6').  The loss leg of gordon_v1 is
@@ -31,7 +33,7 @@ AI Labs upside stays outside the deck as V_opt = ALA revenue x ala_ps (A19).
 
 Checks beyond the anchor comparison:
   1. A9b closure: non-operating pre-tax equals the announcement's bridge value
-  2. r tier, g2 caps, r - g2 >= 2%, numerator ladder
+  2. r basket (Inputs 篮 N == r), g2 caps at g_cap(r), r - g2 >= 2%, numerator ladder
   3. own realised PE band guardrail (weak band; band-edge g printed as evidence)
   4. flat-multiple ladder (both multiples and d at M) still L < M < H
   5. candidate band matches the one Outputs line and is ordered
@@ -53,6 +55,7 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe,
 )
+from eval.lib.inputs import parse_baskets  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "9988.HK.md"
 FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v2"
@@ -241,15 +244,19 @@ def main() -> int:
     checks.append((all(c["e_ops"][k] > 0 for k in SCENARIOS), "operating numerators positive after non-op strip"))
     checks.append((v["ebita_cloud_q_cny"] > 0 and v["ebita_aeg_q_cny"] > 0, "leg weights from positive run-rate EBITA"))
 
-    # 2. growth-口径 discipline (valuation-rules「永续增长口径」)
-    for msg in (check_r(v["r_perp"], "r_perp")
-                + check_g_cap(v["g2_ecom"], "g2_ecom")
-                + check_g_cap(v["g2_cloud"], "g2_cloud")):
+    # 2. growth-口径 discipline (valuation-rules「永续增长口径」「§r 篮子」):
+    # the r_perp row must name its basket (A20) and r must be that basket's value.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        checks.append((False, "r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"))
+    for msg in (check_r(v["r_perp"], "r_perp", baskets.get("r_perp"))
+                + check_g_cap(v["g2_ecom"], v["r_perp"], "g2_ecom")
+                + check_g_cap(v["g2_cloud"], v["r_perp"], "g2_cloud")):
         checks.append((False, msg))
     for name in ("g2_ecom", "g2_cloud"):
         checks.append((v["r_perp"] - v[name] >= MIN_R_MINUS_G - 1e-9,
                        f"r - {name} = {v['r_perp'] - v[name]:.2%} >= {MIN_R_MINUS_G:.0%}"))
-    checks.append((True, f"r={v['r_perp']} g2_ecom={v['g2_ecom']} g2_cloud={v['g2_cloud']} "
+    checks.append((True, f"r={v['r_perp']} (篮 {baskets.get('r_perp')}) g2_ecom={v['g2_ecom']} g2_cloud={v['g2_cloud']} "
                          f"no transition stage in the deck (FY2029E single house -> candidate only)"))
     for k in SCENARIOS:
         checks.append((c["pe_ecom"][k] > 0 and c["pe_cloud"][k] > 0,

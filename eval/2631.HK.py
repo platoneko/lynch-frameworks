@@ -19,6 +19,13 @@ Gordon on realised units (post-ramp nameplate × ASP 2024 × margin 2024,
 `perpetual_pe` with ROE_H < r pinned at 1/r, discounted from 2030) is printed
 as a CROSS-CHECK only (A6): it shows the ROE gate, not the option's value.
 
+r is the basket rate (A14): the whole company sits in 篮 7 单押 / 故事 15%,
+`r_perp` / `r_disc` are read from Inputs and `check_r` requires the value to
+match the basket the source cell names (`parse_baskets`).  The basket touches
+only the cross-check and the earnings-ruler reference; the asset-PB bottom and
+the IPO-price option ceiling carry no r.  The 篮 7 steady-state floor
+(1/r × E) is printed as a disclosure and never max()-ed into L.
+
 Earnings-ruler reference (A2e-1 asset_play row): consensus NP × the same Gordon
 multiple, printed and required to sit below L — if it ever exceeds L the asset
 ruler is no longer the upper bound and the framework goes back to dialogue.
@@ -42,6 +49,7 @@ from eval.lib.inputs import (  # noqa: E402
     check_missing,
     ladder,
     outputs_section,
+    parse_baskets,
     parse_inputs,
     report,
 )
@@ -98,8 +106,16 @@ def main() -> int:
     if errors and any(e.startswith("missing") or "formula_id" in e for e in errors):
         return report(errors)
 
-    errors += check_r(inp["r_perp"], "r_perp") + check_r(inp["r_disc"], "r_disc")
-    errors += check_g_cap(inp["g2_opt"], "g2_opt")
+    # r must be the basket value named in the Inputs source cell (A14); r_disc
+    # carries no basket tag and only has to be a basket-table value.
+    baskets = parse_baskets(md)
+    if "r_perp" not in baskets:
+        errors.append("r_perp: no 篮 N in the Inputs source cell (A14)")
+    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errors += check_r(inp["r_disc"], "r_disc", baskets.get("r_disc"))
+    if abs(inp["r_disc"] - inp["r_perp"]) > 1e-9:
+        errors.append(f"r_disc {inp['r_disc']} != r_perp {inp['r_perp']}: the discount year uses the same basket r (A2 / A14)")
+    errors += check_g_cap(inp["g2_opt"], inp["r_perp"], "g2_opt")
     if not (inp["pb_l"] < inp["pb_m"] < inp["pb_h"]):
         errors.append(f"pb order violated: {inp['pb_l']}/{inp['pb_m']}/{inp['pb_h']}")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
@@ -167,6 +183,12 @@ def main() -> int:
           + f"  | all < L {L:.2f}: {all(x['v'] < L for x in ref.values())}")
     print(f"two-stage lever (g1 {g1:+.1%} x1y on 2027E, roe {roe27:.1%}): stage-1 payout {1 - g1 / roe27:+.1f}, "
           f"multiple {two_stage:.2f} -> degenerate, unavailable")
+    margin_gate = inp["r_perp"] * inp["equity_cny"] * YI / post["rev"]
+    g2_sens = perpetual_pe(0.01, post["roe"], inp["r_perp"])
+    print(f"r_perp {inp['r_perp']:g} (篮 {baskets.get('r_perp')}), cross-check only; ROE gate: post-ramp margin must be "
+          f">= {margin_gate:.1%} for ROE_H > r; g2 0 -> 1% at roe {post['roe']:.1%}: pe {g2_sens:.2f}")
+    print(f"篮 {baskets.get('r_perp')} floor 1/r x E (disclosure, not max()-ed): "
+          + " / ".join(f"{k} {x['v']:.2f}" for k, x in ref.items()) + f"  | L stays {L:.2f}")
     print(f"表2  price {inp['price']} -> zone = {zone}   P/H {inp['price'] / H:.2f}x")
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.05)
