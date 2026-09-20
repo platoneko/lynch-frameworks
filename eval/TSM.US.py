@@ -25,12 +25,12 @@ Guardrail: the own realised forward-PE band is measured on COMPANY EPS, so it
 bounds each tier's blended PE (tier price ÷ tier EPS), not the platform leg on
 its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
 
-ROE (v9): tier EPS ÷ tier-specific END-2027 BPS, book rolled from the 2Q26
-equity at the growth-required retention b1 = g/ROE (company g1 for M/H, g2
-for L; valuation-rules 裁决表 ② as of 2026-09-21), solved in closed form.
-v8 divided 2027 earnings by the mid-2026 book; rolling at the ACTUAL payout
-complement is also wrong (it puts cash-pile retention into the denominator)
-and is printed only as a cross-check in the framework.
+ROE (v9): tier EPS ÷ the numerator year's OPENING BPS (end-2026), the 2Q26
+book rolled over 2H26 unbooked earnings at the growth-required retention
+b1 = g/ROE (company g1 for M/H, g2 for L; valuation-rules 裁决表 ② as of
+62c72a2, 2026-09-21), solved in closed form.  v8 divided 2027 earnings by the
+mid-2026 book; year-end-book and actual-payout rolls are both wrong and kept
+only as cross-check rows in the framework.
 
 Cross band (A27, not the main ruler, not in _INDEX): the PB-ROIC "machine" —
 book rolled to end-2028 on company capex guidance, new capital earning the
@@ -235,21 +235,23 @@ def main() -> int:
     w_plat = share_aw + inp["share_adv"]
     g1_adv = (g1 - share_mw * g_mat - inp["share_other"] * g_b2) / w_plat
 
-    # ROE on the book of the numerator year, not on today's.  The book is rolled
-    # over the earnings not yet booked (2H26 = 2026E consensus minus 1H26 actual,
-    # then the tier's own 2027E) at the GROWTH-REQUIRED retention b1 = g/ROE --
-    # the same b two_stage_pe charges in stage 1 -- not at the actual payout
-    # complement (valuation-rules 裁决表 ② / 两段式过渡, 2026-09-21).  With
-    # ROE = eps / BPS and BPS = E0 + b1·N the fixed point is closed-form:
-    # BPS = E0 / (1 - g·N/eps).  M/H roll at the company g1 (the legs' g sum
-    # to it); L has no window and rolls at g2.  Actual retention beyond b1 is
-    # the B bucket, printed as a disclosure, not put into the book.
+    # ROE = E_{n+1} / B_n: the numerator year's earnings over its OPENING book
+    # (= end-2026), not today's 2Q26 book and not the year-end book (that would
+    # put retention the year has not yet earned into the denominator;
+    # valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The 2Q26 book is
+    # rolled over the 2H26 earnings not yet booked (2026E consensus minus 1H26
+    # actual) at the GROWTH-REQUIRED retention b1 = g/ROE -- the same b
+    # two_stage_pe charges in stage 1 -- not at the actual payout complement.
+    # With ROE = eps / BPS and BPS = E0 + b1·N the fixed point is closed-form:
+    # BPS = E0 / (1 - g·N/eps).  M/H roll at the company g1 (the legs' g sum to
+    # it); L has no window and rolls at g2.  Actual retention beyond b1 is the B
+    # bucket, printed as a disclosure, not put into the book.
     ni_2h26 = inp["eps_2026_m"] * inp["shares_adr"] - inp["ni_1h26_twd"] / inp["fx_twd"]
     bps_2q26 = inp["equity"] / inp["shares_adr"]
-    unbooked = {t: ni_2h26 / inp["shares_adr"] + eps[t] for t in TIERS}  # per ADR
+    unbooked = {t: ni_2h26 / inp["shares_adr"] for t in TIERS}  # per ADR, 2H26 only (opening-2027 book)
     g_roll = {"l": g2, "m": g1, "h": g1}
-    bps_2027 = {t: bps_2q26 / (1.0 - g_roll[t] * unbooked[t] / eps[t]) for t in TIERS}
-    roe = {t: eps[t] / bps_2027[t] for t in TIERS}
+    bps_open_2027 = {t: bps_2q26 / (1.0 - g_roll[t] * unbooked[t] / eps[t]) for t in TIERS}
+    roe = {t: eps[t] / bps_open_2027[t] for t in TIERS}
     b1 = {t: g_roll[t] / roe[t] for t in TIERS}
     for t in TIERS:
         if not (0.0 < b1[t] < 1.0):
@@ -488,7 +490,7 @@ def main() -> int:
         f"zone+V={zone_of(inp['price'], L + v_k['l'], M + v_k['m'], H + v_k['h'])}"
     )
     print(
-        f"ROE basis: BPS_2027 = {bps_2027['l']:.1f}/{bps_2027['m']:.1f}/{bps_2027['h']:.1f} USD/ADR "
+        f"ROE basis: BPS_2027 = {bps_open_2027['l']:.1f}/{bps_open_2027['m']:.1f}/{bps_open_2027['h']:.1f} USD/ADR (opening 2027 = end-2026) "
         f"(2Q26 book {bps_2q26:.1f} rolled at b1 = g/ROE = {b1['l']:.2f}/{b1['m']:.2f}/{b1['h']:.2f}, "
         f"g_roll {g_roll['l']:.2%}/{g_roll['m']:.2%}/{g_roll['h']:.2%}); "
         f"v8 basis (2Q26 book) would read ROE {eps['l'] * inp['shares_adr'] / inp['equity']:.1%}/"
@@ -496,7 +498,7 @@ def main() -> int:
     )
     print(
         f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.0%} − b1 → "
-        f"{excess_cash['l']:.1f}/{excess_cash['m']:.1f}/{excess_cash['h']:.1f} USD/ADR over 2H26+2027 "
+        f"{excess_cash['l']:.1f}/{excess_cash['m']:.1f}/{excess_cash['h']:.1f} USD/ADR over 2H26 "
         f"(disclosure only; not a leg, not in BPS)"
     )
 
