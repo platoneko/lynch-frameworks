@@ -12,9 +12,10 @@ cross band uses the same basket value.  The currency-segment reading
 (CNY r_f 1.5pp lower → 6.0%) is not a basket value and is printed as a
 disclosure only (A4).  Policy payout 75% is below the 80% near-full threshold, so the name is on
 the retention branch: g2 = (1 - payout_policy) x ROE_M = 1.75% shared by
-all tiers, and the multiple is the full form k(1 - g2/ROE_x)/(r - g2)
-with k = 1 - hk_div_tax x payout_policy = 0.85 the HK dividend-tax
-haircut on the numerator (A3 / A14).  Numerators are FY2027E consensus
+all tiers, and the multiple is the full form (1 - g2/ROE_x)/(r - g2).
+Anchors are pre-tax fair value: the southbound dividend tax is the
+holder's, not the asset's, and never enters the multiple (A3 / A14).
+Numerators are FY2027E consensus
 EPS low/mid/high in CNY; anchors are CNY value / fx_hkdcny.
 
 Full-sample own PE band [9.27, 16.08] is the guardrail (A2).  The book
@@ -50,7 +51,7 @@ R_LEGS = ("r_perp", "r_perp_a")
 REQUIRED = [
     "price", "price_a", "shares", "bps", "equity", "fx_hkdcny",
     "eps_l", "eps_m", "eps_h",
-    "r_perp", "r_perp_a", "cny_rf_gap", "hk_div_tax", "payout_policy", "payout_obs",
+    "r_perp", "r_perp_a", "cny_rf_gap", "payout_policy", "payout_obs",
     "g2_l", "g2_m", "g2_h",
     "g_evid_min", "g_evid_max",
     "pe_own_min", "pe_own_max",
@@ -72,7 +73,6 @@ def main() -> int:
     r = inp["r_perp"]
     r_a = inp["r_perp_a"]
     fx = inp["fx_hkdcny"]
-    tax = inp["hk_div_tax"]
     eps = {t: inp[f"eps_{t}"] for t in TIERS}
     g2 = {t: inp[f"g2_{t}"] for t in TIERS}
     payout_policy = inp["payout_policy"]
@@ -108,9 +108,8 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (branch)")
 
-    # HK dividend-tax haircut on the numerator; A-share is untaxed (A14).
-    k = 1.0 - tax * payout_policy
-    pe = {t: k * perpetual_pe(g2[t], roe[t], r) for t in TIERS}
+    # Pre-tax fair value: no holder-tax haircut on the multiple (A14).
+    pe = {t: perpetual_pe(g2[t], roe[t], r) for t in TIERS}
     for t in TIERS:
         if not (inp["pe_own_min"] - 1e-9 <= pe[t] <= inp["pe_own_max"] + 1e-9):
             errors.append(
@@ -126,11 +125,9 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
 
-    # Evidence interval = payout policy 80% / 70% (A13); k moves with payout.
+    # Evidence interval = payout policy 80% / 70% (A13).
     for g_ev in (inp["g_evid_min"], inp["g_evid_max"]):
-        payout_ev = 1.0 - g_ev / roe["m"]
-        k_ev = 1.0 - tax * payout_ev
-        a_ev = {t: eps[t] * k_ev * perpetual_pe(g_ev, roe[t], r) / fx for t in TIERS}
+        a_ev = {t: eps[t] * perpetual_pe(g_ev, roe[t], r) / fx for t in TIERS}
         z_ev = zone_of(inp["price"], a_ev["l"], a_ev["m"], a_ev["h"])
         if z_ev != zone:
             errors.append(
@@ -149,7 +146,7 @@ def main() -> int:
     flat_hkd = tuple(v / fx for v in flat_cny)
     dec = decompose(anc_t, pe_t)
 
-    # A-share cross band at the same basket r, untaxed (A4 / A9).
+    # A-share cross band at the same basket r, same multiple (A4 / A9).
     pe_a = {t: perpetual_pe(g2[t], roe[t], r_a) for t in TIERS}
     band_a = {t: eps[t] * pe_a[t] for t in TIERS}
     zone_a = zone_of(inp["price_a"], band_a["l"], band_a["m"], band_a["h"])
@@ -161,7 +158,7 @@ def main() -> int:
     # Disclosure-only readings: implied r at market (full form, M tier),
     # book floor in HKD, net cash per share.
     pe_mkt = inp["price"] * fx / eps["m"]
-    r_implied = g2["m"] + k * (1.0 - g2["m"] / roe["m"]) / pe_mkt
+    r_implied = g2["m"] + (1.0 - g2["m"] / roe["m"]) / pe_mkt
     pe_mkt_a = inp["price_a"] / eps["m"]
     r_implied_a = g2["m"] + (1.0 - g2["m"] / roe["m"]) / pe_mkt_a
     floor_hkd = inp["bps"] / fx
@@ -172,7 +169,7 @@ def main() -> int:
     )
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"baskets={baskets} r_perp={r} r_perp_a={r_a} k={k:.4f}")
+    print(f"baskets={baskets} r_perp={r} r_perp_a={r_a} (pre-tax fair value, A14)")
     print(f"ROE_l/m/h={[round(roe[t], 4) for t in TIERS]} g2={g2['m']}")
     print(f"PE_l/m/h={[round(pe[t], 4) for t in TIERS]}")
     print(f"L/M/H={[round(anchor[t], 4) for t in TIERS]} A={A:.4f} B={B:.4f}")
