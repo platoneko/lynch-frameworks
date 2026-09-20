@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TSM.US valuation eval — recompute anchors from frameworks/TSM.US.md.
 
-formula_id: tsm_sotp_2027_two_stage_gordon_v8
+formula_id: tsm_sotp_2027_two_stage_gordon_v9
 
 Numerators: 2027E consensus EPS range (low/mean/high, 13 houses, USD/ADR).
 
@@ -24,6 +24,18 @@ consensus year must be fully expressed, not diluted by the slow legs.
 Guardrail: the own realised forward-PE band is measured on COMPANY EPS, so it
 bounds each tier's blended PE (tier price ÷ tier EPS), not the platform leg on
 its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
+
+ROE (v9): tier EPS ÷ tier-specific END-2027 BPS, book rolled from the 2Q26
+equity at the growth-required retention b1 = g/ROE (company g1 for M/H, g2
+for L; valuation-rules 裁决表 ② as of 2026-09-21), solved in closed form.
+v8 divided 2027 earnings by the mid-2026 book; rolling at the ACTUAL payout
+complement is also wrong (it puts cash-pile retention into the denominator)
+and is printed only as a cross-check in the framework.
+
+Cross band (A27, not the main ruler, not in _INDEX): the PB-ROIC "machine" —
+book rolled to end-2028 on company capex guidance, new capital earning the
+gross cash return net of its own 5-year depreciation (lagged one year), the
+2028 book priced at the own 5-year PB quartiles and discounted two years.
 
 r: every leg (advanced / mature wafer, B1 / B2) discounts at the basket it is
 assigned to (valuation-rules「§r 篮子」) -- both legs sit in 篮 4 龙头制造, one
@@ -73,7 +85,7 @@ from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSM.US.md"
-FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v8"
+FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v9"
 TOL = 0.15
 P_TOL = 0.0005
 MIN_R_MINUS_G = 0.02
@@ -126,8 +138,26 @@ REQUIRED = [
     "coupe_share_m",
     "coupe_share_h",
     "npm_coupe",
+    "fx_twd",
+    "eps_2026_m",
+    "ni_1h26_twd",
+    "payout_3y",
+    "ic_2q26_twd",
+    "capex_2026",
+    "capex_2027",
+    "capex_2028",
+    "da_2026e",
+    "da_2027e",
+    "da_2028e",
+    "cash_return_gross",
+    "dep_life",
+    "pb_5y_q1",
+    "pb_5y_med",
+    "pb_5y_q3",
+    "n_disc",
 ]
 TIERS = ("l", "m", "h")
+_CROSS_BAND = re.compile(r"对照带（PB-ROIC 机器尺）：L′ ([0-9.]+) / M′ ([0-9.]+) / H′ ([0-9.]+)")
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -205,7 +235,27 @@ def main() -> int:
     w_plat = share_aw + inp["share_adv"]
     g1_adv = (g1 - share_mw * g_mat - inp["share_other"] * g_b2) / w_plat
 
-    roe = {t: eps[t] * inp["shares_adr"] / inp["equity"] for t in TIERS}
+    # ROE on the book of the numerator year, not on today's.  The book is rolled
+    # over the earnings not yet booked (2H26 = 2026E consensus minus 1H26 actual,
+    # then the tier's own 2027E) at the GROWTH-REQUIRED retention b1 = g/ROE --
+    # the same b two_stage_pe charges in stage 1 -- not at the actual payout
+    # complement (valuation-rules 裁决表 ② / 两段式过渡, 2026-09-21).  With
+    # ROE = eps / BPS and BPS = E0 + b1·N the fixed point is closed-form:
+    # BPS = E0 / (1 - g·N/eps).  M/H roll at the company g1 (the legs' g sum
+    # to it); L has no window and rolls at g2.  Actual retention beyond b1 is
+    # the B bucket, printed as a disclosure, not put into the book.
+    ni_2h26 = inp["eps_2026_m"] * inp["shares_adr"] - inp["ni_1h26_twd"] / inp["fx_twd"]
+    bps_2q26 = inp["equity"] / inp["shares_adr"]
+    unbooked = {t: ni_2h26 / inp["shares_adr"] + eps[t] for t in TIERS}  # per ADR
+    g_roll = {"l": g2, "m": g1, "h": g1}
+    bps_2027 = {t: bps_2q26 / (1.0 - g_roll[t] * unbooked[t] / eps[t]) for t in TIERS}
+    roe = {t: eps[t] / bps_2027[t] for t in TIERS}
+    b1 = {t: g_roll[t] / roe[t] for t in TIERS}
+    for t in TIERS:
+        if not (0.0 < b1[t] < 1.0):
+            errors.append(f"{t.upper()}: growth-required retention b1={b1[t]:.2f} outside (0,1) — book roll needs external equity")
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked[t] for t in TIERS}  # USD/ADR, modelled-as-distributed
     # g2 comes from a reverse-solve, so the Gordon branch must match the payout policy.
     errors += check_branch(g2, roe["m"], r, inp["payout_ttm"], "g2")
 
@@ -437,6 +487,65 @@ def main() -> int:
         f"A'={(L + v_k['l'] + M + v_k['m']) / 2:.1f} B'={(M + v_k['m'] + H + v_k['h']) / 2:.1f}  "
         f"zone+V={zone_of(inp['price'], L + v_k['l'], M + v_k['m'], H + v_k['h'])}"
     )
+    print(
+        f"ROE basis: BPS_2027 = {bps_2027['l']:.1f}/{bps_2027['m']:.1f}/{bps_2027['h']:.1f} USD/ADR "
+        f"(2Q26 book {bps_2q26:.1f} rolled at b1 = g/ROE = {b1['l']:.2f}/{b1['m']:.2f}/{b1['h']:.2f}, "
+        f"g_roll {g_roll['l']:.2%}/{g_roll['m']:.2%}/{g_roll['h']:.2%}); "
+        f"v8 basis (2Q26 book) would read ROE {eps['l'] * inp['shares_adr'] / inp['equity']:.1%}/"
+        f"{eps['m'] * inp['shares_adr'] / inp['equity']:.1%}/{eps['h'] * inp['shares_adr'] / inp['equity']:.1%}"
+    )
+    print(
+        f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.0%} − b1 → "
+        f"{excess_cash['l']:.1f}/{excess_cash['m']:.1f}/{excess_cash['h']:.1f} USD/ADR over 2H26+2027 "
+        f"(disclosure only; not a leg, not in BPS)"
+    )
+
+    # --- A27 cross band: PB-ROIC machine (user ruler 2026-09-21; not the main ruler) ---
+    # Capital: operating IC (equity + debt - cash) grows by company capex net of
+    # D&A; new capital earns the gross cash return minus its own straight-line
+    # depreciation, and only from the year after it is spent (fab lead time).
+    # Earnings base = 1H26 annualised (existing capacity held, pricing power).
+    # Book rolls at the 3-year mean retention; the 2028 book is priced at the
+    # own 5-year PB quartiles and discounted n_disc years at the basket r.
+    fx = inp["fx_twd"]
+    ret = ret_actual  # the machine ruler projects the ACTUAL book (no ROE in its multiple)
+    base_ni = 2.0 * inp["ni_1h26_twd"] / fx
+    c_net = inp["cash_return_gross"] - 1.0 / inp["dep_life"]
+    d_ic_2h26 = (inp["capex_2026"] - inp["da_2026e"]) / 2.0
+    d_ic_2027 = d_ic_2h26 + (inp["capex_2027"] - inp["da_2027e"])
+    d_ic_2028 = d_ic_2027 + (inp["capex_2028"] - inp["da_2028e"])
+    ni_2027_mach = base_ni + c_net * d_ic_2h26          # capital spent in 2H26 productive in 2027
+    ni_2028_mach = base_ni + c_net * d_ic_2027          # capital through 2027 productive in 2028
+    equity_2028 = inp["equity"] + ret * (base_ni / 2.0 + ni_2027_mach + ni_2028_mach)
+    bps_2028 = equity_2028 / inp["shares_adr"]
+    eps_2028_mach = ni_2028_mach / inp["shares_adr"]
+    roe_2028_mach = eps_2028_mach / bps_2028
+    pb_q = (inp["pb_5y_q1"], inp["pb_5y_med"], inp["pb_5y_q3"])
+    disc = (1.0 + r) ** inp["n_disc"]
+    cross = tuple(bps_2028 * pb / disc for pb in pb_q)
+    # PB at ROE_2028 read back as a perpetual g: PB = (ROE - g)/(r - g) → g = (ROE - r·PB)/(1 - PB).
+    g_impl_pb = tuple((roe_2028_mach - r * pb) / (1.0 - pb) for pb in pb_q)
+    cm = _CROSS_BAND.search(out_sec)
+    if cm is None:
+        errors.append("对照带（PB-ROIC 机器尺）L/M/H not stated in Outputs")
+    else:
+        for lab, said, got in zip("LMH", (float(x) for x in cm.groups()), cross):
+            if abs(said - got) > TOL:
+                errors.append(f"对照带 {lab}: stated {said} vs {got:.4f}")
+    if not (cross[0] < cross[1] < cross[2]):
+        errors.append(f"对照带 invariant L<M<H failed: {cross}")
+    ca, cb = cut_points(*cross)
+    print(
+        f"A27 machine: base NI {base_ni / 1e9:.1f}B, new capital ΔIC 2H26/27/28 = {d_ic_2h26 / 1e9:.1f}/{d_ic_2027 / 1e9:.1f}/{d_ic_2028 / 1e9:.1f}B "
+        f"× (c {inp['cash_return_gross']:.0%} − 1/{inp['dep_life']:g}) = {c_net:.0%} lagged → NI 2027/28 {ni_2027_mach / 1e9:.1f}/{ni_2028_mach / 1e9:.1f}B, "
+        f"EPS28 {eps_2028_mach:.2f}, BPS28 {bps_2028:.1f}, ROE28 {roe_2028_mach:.1%}"
+    )
+    print(
+        f"A27 cross band (PB 5y q1/med/q3 {pb_q[0]:g}/{pb_q[1]:g}/{pb_q[2]:g}, ÷(1+r)^{inp['n_disc']:g}): "
+        f"{cross[0]:.1f}/{cross[1]:.1f}/{cross[2]:.1f} (A {ca:.1f} / B {cb:.1f}) zone={zone_of(inp['price'], *cross)} | "
+        f"implied perpetual g at ROE28: {g_impl_pb[0]:.1%}/{g_impl_pb[1]:.1%}/{g_impl_pb[2]:.1%} (cap 6%)"
+    )
+
     print(f"price={inp['price']:.2f} zone={zone} P/L={inp['price'] / L - 1:+.1%} P/M={inp['price'] / M - 1:+.1%}")
     if inp["price"] > H:
         print(f"  market-implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
