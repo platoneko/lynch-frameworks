@@ -11,8 +11,16 @@ basket 2 (管制公用, A16) at r = 7.5%, fixed across markets: the A-share
 cross band uses the same basket value.  The currency-segment reading
 (CNY r_f 1.5pp lower → 6.0%) is not a basket value and is printed as a
 disclosure only (A4).  Policy payout 75% is below the 80% near-full threshold, so the name is on
-the retention branch: g2 = (1 - payout_policy) x ROE_M = 1.75% shared by
+the retention branch: g2 = (1 - payout_policy) x ROE_M = 1.73% shared by
 all tiers, and the multiple is the full form (1 - g2/ROE_x)/(r - g2).
+ROE_x = FY27E EPS / BPS at the OPENING of 2027 (= end-2026, E_{n+1}/B_n):
+the H1'26 book rolled over the 2H26 earnings not yet booked (FY2026E
+consensus minus 1H26 actual) at the growth-required retention b1 = g2/ROE
+(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A17).  g2 itself is
+(1 - payout) x ROE_M, so the M tier's b1 is exactly 1 - payout and the
+joint fixed point (ROE_M, BPS_M, g2) is closed-form: BPS_M = BPS0 +
+(1 - payout) N, ROE_M = EPS_M / BPS_M, g2 = (1 - payout) ROE_M; L / H
+then roll at that shared g2, BPS_x = BPS0 / (1 - g2 N / EPS_x).
 Anchors are pre-tax fair value: the southbound dividend tax is the
 holder's, not the asset's, and never enters the multiple (A3 / A14).
 Numerators are FY2027E consensus
@@ -52,6 +60,7 @@ REQUIRED = [
     "price", "price_a", "shares", "bps", "equity", "fx_hkdcny",
     "eps_l", "eps_m", "eps_h",
     "r_perp", "r_perp_a", "cny_rf_gap", "payout_policy", "payout_obs",
+    "eps26_m", "ni_1h26", "payout_3y",
     "g2_l", "g2_m", "g2_h",
     "g_evid_min", "g_evid_max",
     "pe_own_min", "pe_own_max",
@@ -77,6 +86,7 @@ def main() -> int:
     g2 = {t: inp[f"g2_{t}"] for t in TIERS}
     payout_policy = inp["payout_policy"]
     payout_obs = inp["payout_obs"]
+    payout_3y = inp["payout_3y"]
 
     # Each r leg must name its basket and carry that basket's value (A4 / A16).
     baskets = parse_baskets(md)
@@ -98,9 +108,31 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (inputs)")
 
-    roe = {t: eps[t] * inp["shares"] / (inp["equity"] * YI) for t in TIERS}
-    # g2 is pinned by policy: (1 - payout_policy) x ROE_M, to input rounding.
+    # ROE = E_{n+1} / B_n: FY27E EPS over the OPENING-2027 book (= end-2026),
+    # not the H1'26 book and not the end-2027 book (valuation-rules 裁决表 ②
+    # as of 62c72a2, 2026-09-21; A17).  The H1'26 book is rolled over the 2H26
+    # earnings not yet booked at the GROWTH-REQUIRED retention b1 = g2/ROE, never
+    # at the actual payout complement.  Because g2 = (1 - payout) x ROE_M, the M
+    # tier's b1 is exactly 1 - payout, so the joint fixed point (ROE_M, BPS_M,
+    # g2) is closed-form; L / H then roll at that shared g2 with
+    # BPS_x = BPS0 / (1 - g2 N / EPS_x).  FY2027's own retention is NOT rolled.
+    bps0 = inp["equity"] * YI / inp["shares"]
+    n_unbooked = inp["eps26_m"] - inp["ni_1h26"] * YI / inp["shares"]  # CNY/share, 2H26 only
+    if n_unbooked <= 0:
+        return report([f"2H26 unbooked EPS {n_unbooked:.4f} <= 0: roll is a no-op, check eps26_m / ni_1h26"])
+    bps_open = {"m": bps0 + (1.0 - payout_policy) * n_unbooked}
+    roe = {"m": eps["m"] / bps_open["m"]}
     g2_policy = (1.0 - payout_policy) * roe["m"]
+    for t in ("l", "h"):
+        bps_open[t] = bps0 / (1.0 - g2_policy * n_unbooked / eps[t])
+        roe[t] = eps[t] / bps_open[t]
+    b1 = {t: g2_policy / roe[t] for t in TIERS}
+    roe_old = {t: eps[t] / bps0 for t in TIERS}  # H1'26 book as denominator (superseded basis)
+    excess_cash = {t: ((1.0 - payout_3y) - b1[t]) * n_unbooked for t in TIERS}  # B bucket, disclosure only
+    for t in TIERS:
+        if not (0.0 < b1[t] < 1.0):
+            errors.append(f"ROE basis {t}: b1 = g2/ROE = {b1[t]:.3f} outside (0,1) — roll diverges")
+    # g2 is pinned by policy: (1 - payout_policy) x ROE_M, to input rounding.
     if abs(g2_policy - g2["m"]) > 0.0005:
         errors.append(f"g2_m {g2['m']:.4f} != (1 - payout_policy) x ROE_M = {g2_policy:.4f}")
     for t in TIERS:
@@ -170,7 +202,14 @@ def main() -> int:
 
     print(f"formula_id={FORMULA_ID}")
     print(f"baskets={baskets} r_perp={r} r_perp_a={r_a} (pre-tax fair value, A14)")
-    print(f"ROE_l/m/h={[round(roe[t], 4) for t in TIERS]} g2={g2['m']}")
+    print(f"ROE_l/m/h={[round(roe[t], 4) for t in TIERS]} g2={g2['m']} (policy {g2_policy:.4%})")
+    print(f"ROE basis: BPS_open 2027 = {[round(bps_open[t], 4) for t in TIERS]} CNY "
+          f"(H1'26 book {bps0:.4f} rolled over 2H26 unbooked {n_unbooked:.4f} CNY at b1 = g2/ROE = "
+          f"{[round(b1[t], 3) for t in TIERS]}; M tier b1 = 1 - payout_policy by construction); "
+          f"old basis (H1'26 book) would read ROE {[round(roe_old[t], 4) for t in TIERS]}")
+    print(f"B bucket: (actual retention {1 - payout_3y:.0%} − b1) × unbooked = "
+          f"{[round(excess_cash[t] / fx, 4) for t in TIERS]} HKD/share modelled-as-distributed, "
+          f"actually retained (disclosure only; not a leg, not in BPS)")
     print(f"PE_l/m/h={[round(pe[t], 4) for t in TIERS]}")
     print(f"L/M/H={[round(anchor[t], 4) for t in TIERS]} A={A:.4f} B={B:.4f}")
     print(f"zone={zone} price={inp['price']}")

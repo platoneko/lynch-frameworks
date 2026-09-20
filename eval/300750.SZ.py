@@ -37,6 +37,13 @@ reverse-solve from (300014.SZ ROE 12.9% ill-conditioned; the rest ROE ~ r or
 [10.4, 40.0] is only a fence (A10); the M-tier band-edge implied-g range is
 printed so ③ can be read off directly.
 
+ROE (A21): tier EPS ÷ the numerator year's OPENING BPS (end-2026 = E_{n+1}/B_n,
+valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The 2Q26 book is rolled
+over the 2H26 earnings not yet booked (FY2026E consensus minus 1H26 actual) at
+the growth-required retention b1 = g2/ROE (no g1 window, so each tier rolls at
+its own g2), closed form BPS = BPS_2Q26 / (1 - g2·N/eps).  Actual retention
+above b1 is the B bucket, printed as a disclosure only.
+
 Run:  python3 eval/300750.SZ.py
 """
 
@@ -68,11 +75,12 @@ FORMULA_FIELDS = frozenset({
     "shares", "equity", "r_perp",
     "eps_l", "eps_m", "eps_h",
     "g2_l", "g2_m", "g2_h",
+    "eps_fy26_mean", "ni_1h26",   # only via the 2H26 unbooked earnings in the book roll (A21)
 })
 
 REQUIRED = sorted(FORMULA_FIELDS | {
-    "price", "bps", "consensus_n_fy27",
-    "eps_fy26_lo", "eps_fy26_mean", "eps_fy26_hi", "eps_fy26_lb",
+    "price", "bps", "consensus_n_fy27", "payout_3y",
+    "eps_fy26_lo", "eps_fy26_hi", "eps_fy26_lb",
     "pe_own_hi_recent", "pe_own_hi", "pe_own_lo",
     "eps_ttm", "eps_fy2025", "eps_freeze", "eps_freeze_tax",
     "tp_street", "tp_consensus", "price_h", "fx_hkdcny",
@@ -82,13 +90,25 @@ REQUIRED = sorted(FORMULA_FIELDS | {
 })
 
 
-def forward_roe(inp: dict[str, float], eps: float) -> float:
-    """Forward ROE on reported group equity — net cash included, see A9."""
-    return eps * inp["shares"] / (inp["equity"] * 1e8)
+def unbooked_eps(inp: dict[str, float]) -> float:
+    """2H26 EPS not yet in the 2Q26 book: FY2026E consensus minus the 1H26 actual."""
+    return inp["eps_fy26_mean"] - inp["ni_1h26"] * 1e8 / inp["shares"]
+
+
+def bps_open_2027(inp: dict[str, float], eps: float, g: float) -> float:
+    """Opening-2027 (= end-2026) BPS: the 2Q26 book rolled over the unbooked
+    2H26 earnings at b1 = g/ROE, closed form since ROE = eps/BPS (A21)."""
+    bps_2q26 = inp["equity"] * 1e8 / inp["shares"]
+    return bps_2q26 / (1.0 - g * unbooked_eps(inp) / eps)
+
+
+def forward_roe(inp: dict[str, float], eps: float, g: float) -> float:
+    """E_{n+1}/B_n on reported group equity — net cash included, see A9 / A21."""
+    return eps / bps_open_2027(inp, eps, g)
 
 
 def multiple(inp: dict[str, float], eps: float, g2: float) -> float:
-    return perpetual_pe(g2, forward_roe(inp, eps), inp["r_perp"])
+    return perpetual_pe(g2, forward_roe(inp, eps, g2), inp["r_perp"])
 
 
 def anchor(inp: dict[str, float], tag: str) -> float:
@@ -137,10 +157,29 @@ def main() -> int:
         )
     if inp["equity"] <= 0:
         errors.append(f"equity={inp['equity']} must be positive")
+    # A21: the roll BPS = BPS0 / (1 - g·N/eps) diverges at g·N/eps >= 1.
+    n_unbooked = unbooked_eps(inp)
+    for t in TIERS:
+        k = inp[f"g2_{t}"] * n_unbooked / inp[f"eps_{t}"]
+        if k >= 1.0:
+            errors.append(f"book roll diverges for {t}: g2·N/eps = {k:.3f} >= 1 (A21)")
     if errors:
         return report(errors, "FAIL (inputs/ladders)")
 
-    roe = {t: forward_roe(inp, inp[f"eps_{t}"]) for t in TIERS}
+    # ROE = E_{n+1} / B_n: FY2027E EPS over the OPENING-2027 book, i.e. the 2Q26
+    # equity rolled over the 2H26 unbooked earnings at the growth-required
+    # retention b1 = g2/ROE — not over today's book (v2 前身: 分母少半年留存)
+    # and not to the year-end book (that charges retention 2027 has not yet
+    # earned).  No g1 window here, so each tier rolls at its own g2 (A21).
+    bps_open = {t: bps_open_2027(inp, inp[f"eps_{t}"], inp[f"g2_{t}"]) for t in TIERS}
+    roe = {t: forward_roe(inp, inp[f"eps_{t}"], inp[f"g2_{t}"]) for t in TIERS}
+    b1 = {t: inp[f"g2_{t}"] / roe[t] for t in TIERS}
+    for t in TIERS:
+        if not (0.0 < b1[t] < 1.0):
+            errors.append(f"b1_{t} = g2/ROE = {b1[t]:.3f} outside (0, 1) (A21)")
+    # B bucket (A21 / 留存去向审计): actual retention beyond b1, disclosure only.
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * n_unbooked for t in TIERS}
 
     # --- Step 3-4: convergence and the retention cost of growth (A8) --------
     # A20: r must be the basket the Inputs row names, not just any basket value.
@@ -211,6 +250,22 @@ def main() -> int:
         print(f"{t.upper():<3}{inp[f'eps_{t}']:10.3f}{ni:11.2f}{roe[t]:10.2%}"
               f"{g2:7.1%}{payout(g2, roe[t]):9.3f}{pe[t]:8.2f}{anchor(inp, t):10.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    bps_2q26 = inp["equity"] * 1e8 / inp["shares"]
+    print(
+        f"ROE basis (A21): BPS_2027 年初 = {bps_open['l']:.2f}/{bps_open['m']:.2f}/{bps_open['h']:.2f} "
+        f"(2Q26 book {bps_2q26:.2f} rolled over 2H26 unbooked EPS {n_unbooked:.2f} "
+        f"= FY2026E {inp['eps_fy26_mean']:.2f} − 1H26 {inp['ni_1h26'] * 1e8 / inp['shares']:.2f} "
+        f"at b1 = g2/ROE = {b1['l']:.3f}/{b1['m']:.3f}/{b1['h']:.3f}); "
+        f"old basis (2Q26 equity) would read ROE "
+        f"{inp['eps_l'] * inp['shares'] / (inp['equity'] * 1e8):.2%}/"
+        f"{inp['eps_m'] * inp['shares'] / (inp['equity'] * 1e8):.2%}/"
+        f"{inp['eps_h'] * inp['shares'] / (inp['equity'] * 1e8):.2%}"
+    )
+    print(
+        f"B bucket (模型视同派出、实际留存的现金): actual retention {ret_actual:.0%} − b1 → "
+        f"{excess_cash['l']:.2f}/{excess_cash['m']:.2f}/{excess_cash['h']:.2f} 元/股 over 2H26 "
+        f"(disclosure only; not a leg, not in BPS)"
+    )
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%}")
     print(f"分子比 L/M={inp['eps_l'] / inp['eps_m']:.3f} "
           f"H/M={inp['eps_h'] / inp['eps_m']:.3f} | "
@@ -240,7 +295,7 @@ def main() -> int:
           f"FY2025 实测 {inp['eps_fy2025']:.2f} × 同一尺 = {fy25:.2f}")
     # v1 structures, printed as rejected variants: n=3 on capacity (no
     # consensus year to hang it on) and n=1 with g1 = the consensus step.
-    roe26 = {t: forward_roe(inp, inp[k]) for k, t in
+    roe26 = {t: forward_roe(inp, inp[k], inp[f"g2_{t}"]) for k, t in
              (("eps_fy26_mean", "m"), ("eps_fy26_hi", "h"))}
     g1_m = inp["eps_m"] / inp["eps_fy26_mean"] - 1
     g1_h = inp["eps_h"] / inp["eps_fy26_hi"] - 1

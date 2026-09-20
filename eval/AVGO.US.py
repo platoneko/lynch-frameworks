@@ -8,8 +8,9 @@ non-AI semi / software).  The tier ladder lives in the numerator: the two
 CoWoS-constrained legs (XPU, networking) scale with the shared quota axis
 (_AXIS.cowos-capacity.md), L <- γ, M <- β, H <- α -- the mirror image of NVDA.
 Multiples are generated, not borrowed: each leg names a perpetual g2 (peer
-cross-section reverse-solve, capped at g_cap(r)), tier ROE = EPS_x × shares /
-equity, and the two AI legs run ONE named transition year (FY28 sell-side
+cross-section reverse-solve, capped at g_cap(r)), tier ROE = EPS_x / the FY27
+OPENING book per share (FY26Q3 equity rolled over Q4 FY26 unbooked earnings at
+the growth-required retention b1 = g/ROE, E_{n+1}/B_n, A24), and the two AI legs run ONE named transition year (FY28 sell-side
 consensus EPS growth) through `two_stage_pe` in M/H only.  L is the digest
 world -- FY28 gets no credit -- so it calls `perpetual_pe` directly.  r comes
 from the basket each leg is assigned to (valuation-rules「§r 篮子」): the four
@@ -112,6 +113,9 @@ REQUIRED = [
     "oe_l",
     "oe_m",
     "oe_h",
+    "eps_fy26_cons",
+    "eps_9m_fy26",
+    "payout_3y",
 ]
 TIERS = ("L", "M", "H")
 LEGS = ("uw", "lab", "net", "nonai", "sw")
@@ -214,14 +218,34 @@ def main() -> int:
     eps_total = {tier: sum(eps[tier].values()) for tier in TIERS}
     errors += ladder("numerator (γ/β/α)", eps_total["L"], eps_total["M"], eps_total["H"])
 
-    # ---- Step 3: tier ROE from one equity field; company ROE for every leg (A3 SOTP rule) ----
-    roe = {tier: eps_total[tier] * s / inp["equity"] for tier in TIERS}
-
-    # ---- Step 4: the FY28 transition year, consensus-to-consensus, carried by the AI legs only ----
+    # ---- Step 3: the FY28 transition year, consensus-to-consensus, carried by the AI legs only ----
     g1_co = inp["eps_fy28_cons"] / inp["eps_fy27_cons"] - 1.0
     ai_m = eps["M"]["uw"] + eps["M"]["lab"] + eps["M"]["net"]
     flat_m = eps["M"]["nonai"] + eps["M"]["sw"]
     g1_ai = ((1.0 + g1_co) * eps_total["M"] - flat_m) / ai_m - 1.0
+
+    # ---- Step 4: tier ROE on the FY27 OPENING book; company ROE for every leg (A3 SOTP rule) ----
+    # ROE = E_{n+1} / B_n: FY27 EPS over the FY27 opening book (= end-FY26), not
+    # today's FY26Q3 book (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A24).
+    # The FY26Q3 book is rolled over the Q4 FY26 earnings not yet booked (FY26
+    # consensus minus 9M actual, non-GAAP) at the GROWTH-REQUIRED retention
+    # b1 = g/ROE -- the same b two_stage_pe charges in stage 1 -- not at the
+    # actual payout complement.  M/H roll at the COMPANY g1 (the legs' g sum to
+    # it); L has no window and rolls at its EPS-weighted leg g2.  Closed form:
+    # BPS = BPS0 / (1 - g·N/eps).  Actual retention beyond b1 is the B bucket,
+    # printed as a disclosure, not put into the book.
+    unbooked = inp["eps_fy26_cons"] - inp["eps_9m_fy26"]  # per share, Q4 FY26 only
+    bps_q3 = inp["equity"] / s
+    g2_l = sum(eps["L"][leg] * inp[LEG_G2[leg]] for leg in LEGS) / eps_total["L"]
+    g_roll = {"L": g2_l, "M": g1_co, "H": g1_co}
+    bps_open = {tier: bps_q3 / (1.0 - g_roll[tier] * unbooked / eps_total[tier]) for tier in TIERS}
+    roe = {tier: eps_total[tier] / bps_open[tier] for tier in TIERS}
+    b1 = {tier: g_roll[tier] / roe[tier] for tier in TIERS}
+    for tier in TIERS:
+        if not (0.0 < b1[tier] < 1.0):
+            errors.append(f"{tier} growth-required retention b1 = {b1[tier]:.3f} outside (0,1)")
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {tier: (ret_actual - b1[tier]) * unbooked for tier in TIERS}  # disclosure only
 
     # ---- Step 5: multiples per leg per tier; L runs no transition (digest world) ----
     def leg_pe(leg: str, tier: str, transition: bool) -> float:
@@ -356,7 +380,18 @@ def main() -> int:
     )
     print(f"tier EPS (FY27, after below-line) L/M/H = {eps_total['L']:.3f}/{eps_total['M']:.3f}/{eps_total['H']:.3f}"
           f"  quota scale {quota_scale['L']:.4f}/1/{quota_scale['H']:.4f}")
-    print(f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} (equity {inp['equity']:.4g})")
+    print(
+        f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} on the FY27 opening book "
+        f"{bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f} USD/sh (FY26Q3 book {bps_q3:.2f} rolled over "
+        f"Q4 FY26 unbooked {unbooked:.3f}/sh at b1 = g/ROE = {b1['L']:.3f}/{b1['M']:.3f}/{b1['H']:.3f}, "
+        f"g_roll {g_roll['L']:.2%}/{g_roll['M']:.2%}/{g_roll['H']:.2%}); FY26Q3-book basis would read "
+        f"{eps_total['L'] * s / inp['equity']:.1%}/{eps_total['M'] * s / inp['equity']:.1%}/{eps_total['H'] * s / inp['equity']:.1%}"
+    )
+    print(
+        f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.1%} − b1 → "
+        f"{excess_cash['L']:.2f}/{excess_cash['M']:.2f}/{excess_cash['H']:.2f} USD/sh over Q4 FY26 "
+        f"(disclosure only; not a leg, not in BPS)"
+    )
     for tier in TIERS:
         p1 = 1.0 - g1_ai / roe[tier]
         tag = "no transition (digest)" if tier == "L" else ("issuance-funded" if p1 < 0 else "self-funded")

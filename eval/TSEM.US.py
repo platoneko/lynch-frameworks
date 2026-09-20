@@ -13,8 +13,14 @@ L numerator is the digestion year — FY2027 held at the FY2026 consensus mean
 (the silicon-photonics ramp pauses for a year); M/H are the consensus mean /
 high.
 
-Multiples are generated, not borrowed: tier ROE on *operating* equity (book
-less net cash, A6), r = basket 4 龙头制造 10% (A15; the Inputs row names the
+Multiples are generated, not borrowed: tier ROE = FY2027 economic EPS over
+the FY2027 OPENING *operating* book (book less net cash, A6): the 2Q26
+operating book rolled over the 2H26 earnings not yet booked (FY26 consensus
+minus 1H26 actual, on the same economic basis) at the growth-required
+retention b1 = g/ROE — g1 for M/H (the FY2028 window), g2 for L (no window);
+valuation-rules 62c72a2, A16.  b1 > 1 on M/H is the cash-pool funding the
+negative stage-1 payout already prices, so it is printed, not failed; only a
+diverging roll stops.  r = basket 4 龙头制造 10% (A15; the Inputs row names the
 basket and `check_r` holds the value to it), M/H carry the FY2028 consensus
 year as a one-year transition (`two_stage_pe`, g1 = 2028E / 2027E on the same
 consensus line, n = 1; A4) and L does not.  g2 = the semiconductor / optical
@@ -84,6 +90,8 @@ REQUIRED = [
     "gaap_gap_ps",
     "tax",
     "eps_2026_m",
+    "eps_1h26_a",
+    "payout_3y",
     "eps_2027_l",
     "eps_2027_m",
     "eps_2027_h",
@@ -181,10 +189,31 @@ def main() -> int:
     nii_ps = inp["nii_4q"] * (1.0 - inp["tax"]) / inp["shares"]
     ops = {t: street[t] - inp["gaap_gap_ps"] - nii_ps for t in TIERS}
 
-    # ---- Step 2: tier ROE on operating equity; Gordon (L) / two-stage (M, H) ----
+    # ---- Step 2: tier ROE = E_{2027} / opening-2027 operating book; Gordon (L) / two-stage (M, H) ----
+    # The 2Q26 operating book is rolled over the 2H26 earnings not yet booked
+    # (FY26 consensus less 1H26 actual, less the 2H26 half of the GAAP gap and
+    # interest so it is on the same economic basis as the numerator) at the
+    # growth-required retention b1 = g/ROE: g1 for M/H, g2 for L (A16).  ROE
+    # and BPS depend on each other; closed form BPS = BPS0 / (1 - g·N/eps).
+    # b1 > 1 (M/H) is the cash-pool funding stage-1 payout < 0 already prices.
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] / inp["shares"]
-    roe = {t: ops[t] * inp["shares"] / equity_op for t in TIERS}
+    bps_op_2q26 = equity_op / inp["shares"]
+    unbooked = (inp["eps_2026_m"] - inp["eps_1h26_a"]) - 0.5 * inp["gaap_gap_ps"] - 0.5 * nii_ps
+    g_roll = {"L": g2, "M": g1, "H": g1}
+
+    def opening_bps(t: str) -> float:
+        share = g_roll[t] * unbooked / ops[t]
+        if share >= 1.0:
+            raise ValueError(f"{t}: book roll diverges, g·N/eps = {share:.2f} >= 1 (BLOCKED-by-rule)")
+        return bps_op_2q26 / (1.0 - share)
+
+    bps_open = {t: opening_bps(t) for t in TIERS}
+    roe = {t: ops[t] / bps_open[t] for t in TIERS}
+    b1 = {t: g_roll[t] / roe[t] for t in TIERS}
+    roe_2q26 = {t: ops[t] * inp["shares"] / equity_op for t in TIERS}  # old basis, printed only
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
     pes = {
         "L": perpetual_pe(g2, roe["L"], r),
         "M": two_stage_pe(g1, n, g2, roe["M"], r),
@@ -257,6 +286,12 @@ def main() -> int:
     for t in TIERS:
         extra = f"  stage-1 payout {p1[t]:+.2f} (cash/external-funded growth)" if t in p1 else ""
         print(f"{t}: street {street[t]:.4f} -> op {ops[t]:.4f}  ROE_op {roe[t]:.4f}  PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} + cash = {scen[t]:.4f}{extra}")
+    print(f"ROE basis (A16): BPS_op opening-2027 = {bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f} "
+          f"(2Q26 op book {bps_op_2q26:.2f} rolled over 2H26 unbooked {unbooked:.3f}/sh at b1 = g/ROE = "
+          f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}, g_roll {g_roll['L']:.2%}/{g_roll['M']:.2%}/{g_roll['H']:.2%}); "
+          f"2Q26-book basis would read ROE {roe_2q26['L']:.4f}/{roe_2q26['M']:.4f}/{roe_2q26['H']:.4f}")
+    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
+          f"(L positive = cash the model deems distributed but the company keeps; M/H negative = cash-pool funding the model books; disclosure only, not a leg, not in BPS)")
     print(f"floor (disclosed only, not max()-ed) = PB {inp['pb_floor']:g} x BVPS {inp['bvps']:g} = {floor:.2f}; L = scenario {scen['L']:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f} P/B={inp['price'] / B:.3f}")
     print(f"band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]: L {pes['L']:.2f}x | M {pes['M']:.2f}x | H {pes['H']:.2f}x (all inside)")

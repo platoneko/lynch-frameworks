@@ -16,7 +16,9 @@ Three things here are specific to this ticker:
   frameworks/NOK.US.md -- a rung moved on one side only is a drift.  Debt-like
   cash-flow quality is carried by the multiple band, not by r=7%.
 - The other three legs stay Gordon flat at r_op = the basket r named in the
-  Inputs source cell (篮 4 龙头制造 10%, A15; enforced by `check_r`).  QTL sits
+  Inputs source cell (篮 4 龙头制造 10%, A15; enforced by `check_r`), on ROE_M =
+  FY27 M-tier EPS / the FY27 opening book per share (FY26Q3 equity rolled over
+  the Q4 FY26 unbooked earnings at b1 = g/ROE, E_{n+1}/B_n, A16).  QTL sits
   in 篮 3 按量专利许可 but its 8.5% never enters a formula -- the ladder carries
   the annuity quality, so there is no r_qtl row.  `cyclical` policy asks for
   flat multiples on the operating legs (A2e-5); the cycle lives in the numerator.
@@ -69,6 +71,7 @@ P_K = (0.00, 0.35, 1.00)
 
 REQUIRED = (
     ["price", "shares", "tax_rate", "equity", "v_opt", "r_op", "pe_own_min", "pe_own_max"]
+    + ["eps_fy26_cons", "eps_9m_fy26", "payout_3y"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"om_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -128,7 +131,25 @@ def main() -> int:
         ebt_by_tier.append(ebt)
         eps_by_tier_map.append(eps)
         eps_by_tier.append(total_eps)
-    roe_m = eps_by_tier[1] * inp["shares"] / inp["equity"]
+    # ROE_M = E_{n+1} / B_n: the FY27 M-tier EPS over the FY27 OPENING book (= end
+    # FY26), not today's FY26Q3 book (valuation-rules 裁决表 ② as of 62c72a2,
+    # 2026-09-21; A16).  The FY26Q3 book is rolled over the Q4 FY26 earnings not
+    # yet booked (FY26 consensus minus 9M actual, non-GAAP) at the GROWTH-REQUIRED
+    # retention b1 = g/ROE, not the actual payout complement.  No g1 window, so
+    # the roll g is the company g the multiples actually charge: the M-tier
+    # EPS-weighted g2 of the three Gordon legs, the QTL leg at 0 (its EV/EBIT
+    # ladder charges no retention).  Closed form: BPS = BPS0 / (1 - g·N/eps).
+    # Actual retention beyond b1 is the B bucket, printed as a disclosure only.
+    unbooked = inp["eps_fy26_cons"] - inp["eps_9m_fy26"]  # per share, Q4 FY26 only
+    bps_q3 = inp["equity"] / inp["shares"]
+    eps_m_legs = eps_by_tier_map[1]
+    g_roll = sum(eps_m_legs[leg] * inp[f"g2_{leg}"] for leg in OP_LEGS) / eps_by_tier[1]
+    bps_open = bps_q3 / (1.0 - g_roll * unbooked / eps_by_tier[1])
+    roe_m = eps_by_tier[1] / bps_open
+    b1 = g_roll / roe_m
+    if not (0.0 < b1 < 1.0):
+        errors += [f"growth-required retention b1 = {b1:.3f} outside (0,1)"]
+    excess_cash = (1.0 - inp["payout_3y"] - b1) * unbooked  # disclosure only
 
     # Operating legs: one Gordon PE each, shared by all three tiers (flat, A2e-5).
     pe_op = {leg: perpetual_pe(inp[f"g2_{leg}"], roe_m, inp["r_op"]) for leg in OP_LEGS}
@@ -162,6 +183,11 @@ def main() -> int:
     print(f"     {'eps':6} " + " / ".join(f"{e:6.3f}" for e in eps_by_tier)
           + f"   ROE_M {roe_m:.1%}")
     print(f"base L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
+    print(f"ROE basis: BPS_open_FY27 = {bps_open:.2f} USD/sh (FY26Q3 book {bps_q3:.2f} rolled over Q4 FY26 unbooked "
+          f"{unbooked:.2f}/sh at b1 = g/ROE = {b1:.4f}, g_roll {g_roll:.2%} = M-tier EPS-weighted g2, QTL at 0); "
+          f"FY26Q3-book basis would read ROE_M {eps_by_tier[1] * inp['shares'] / inp['equity']:.1%}")
+    print(f"B bucket (modelled-as-distributed, actually retained): actual retention {1 - inp['payout_3y']:.1%} − b1 → "
+          f"{excess_cash:.2f} USD/sh over Q4 FY26 (disclosure only; not a leg, not in BPS)")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}"
           f" V_opt/M={v_opt / M:.1%}")
     for line in tier_report(

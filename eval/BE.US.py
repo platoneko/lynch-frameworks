@@ -10,7 +10,12 @@ three points of one distribution (A7).  Multiples are generated, not borrowed:
 +60.2%, n = 1 — FY29 has no ≥2-house consensus) and then the peer-cluster
 reverse-solved perpetual g2 (GEV / VRT / ETN median 7.60%, capped at 6%, A13),
 with r = the basket the Inputs row names (篮 7 单押 / 故事股, 15%, A18) and tier
-ROE = EPS_x × shares ÷ if-converted equity (A8/A9).  The L tier carries the
+ROE = EPS_x ÷ the FY27 OPENING book per share (A8/A9/A19): the 2Q26
+if-converted book rolled over the 2H26 earnings not yet booked (FY26 consensus
+minus 1H26 actual) at the growth-required retention b1 = g1/ROE — the same b
+`two_stage_pe` charges in stage 1 (valuation-rules 62c72a2, 2026-09-21).  b1 >
+1 here is the issuance the framework already prices as a negative stage-1
+payout, so it is allowed and printed, not failed.  The L tier carries the
 same transition: its world is "delay", not "deterioration" (A14); the
 no-transition figure is printed as the deep_discount pressure coordinate, never
 as an anchor.
@@ -78,6 +83,8 @@ REQUIRED = [
     "shares",
     "equity",
     "eps_fy26_m",
+    "eps_1h26_a",
+    "payout_3y",
     "eps_fy27_l",
     "eps_fy27_m",
     "eps_fy27_h",
@@ -168,10 +175,33 @@ def main() -> int:
     g1 = inp["eps_fy28_cons"] / inp["eps_fy27_m"] - 1.0
     if abs(g1 - inp["g1"]) > DERIVED_TOL:
         errors.append(f"g1: stated {inp['g1']:.4f} vs recomputed {g1:.4f}")
-    roe = {t: eps[t] * inp["shares"] / inp["equity"] for t in TIERS}
+
+    # ROE = E_{n+1} / B_n: FY27 EPS over the FY27 OPENING book (= end-2026), not
+    # the 2Q26 book (A19; valuation-rules 62c72a2).  The 2Q26 if-converted book
+    # is rolled over the 2H26 earnings not yet booked (FY26 consensus minus 1H26
+    # actual) at the growth-required retention b1 = g1/ROE — all three tiers
+    # carry the FY28 window, so all three roll at g1.  ROE and BPS depend on
+    # each other; the fixed point is closed-form: BPS = BPS0 / (1 - g1·N/eps).
+    # b1 > 1 is the equity issuance the negative stage-1 payout already prices,
+    # so it is disclosed, not failed; only a diverging roll (g1·N/eps >= 1) stops.
+    bps_2q26 = inp["equity"] / inp["shares"]
+    unbooked = inp["eps_fy26_m"] - inp["eps_1h26_a"]  # per share, 2H26 only (opening-FY27 book)
+
+    def opening_bps(eps_x: float) -> float:
+        share = g1 * unbooked / eps_x
+        if share >= 1.0:
+            raise ValueError(f"book roll diverges: g1·N/eps = {share:.2f} >= 1 (BLOCKED-by-rule)")
+        return bps_2q26 / (1.0 - share)
+
+    bps_open = {t: opening_bps(eps[t]) for t in TIERS}
+    roe = {t: eps[t] / bps_open[t] for t in TIERS}
+    b1 = {t: g1 / roe[t] for t in TIERS}
     for t, key in zip(TIERS, ("roe_l", "roe_m", "roe_h")):
         if abs(roe[t] - inp[key]) > DERIVED_TOL:
             errors.append(f"{key}: stated {inp[key]:.4f} vs recomputed {roe[t]:.4f}")
+    ret_actual = 1.0 - inp["payout_3y"]
+    # (actual retention − b1) × N: negative here = the 2H26 issuance the model books (disclosure only)
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}
 
     # ---- Step 2: multiples (g shared across tiers; only ROE varies) and anchors ----
     def tier_pes(g2_: float, transition: bool = True) -> dict[str, float]:
@@ -239,7 +269,19 @@ def main() -> int:
     # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
     print(f"g1(FY28 aggregate / FY27 mean - 1)={g1:.4f} n={n} g2={g2:.4f} r={r:g} (篮 {baskets.get('r_perp')})")
-    print(f"tier ROE L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f} (if-converted equity)")
+    print(f"tier ROE L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f} (FY27 EPS / opening-FY27 if-converted book)")
+    print(
+        f"ROE basis: BPS_open_FY27 = {bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f} USD/sh "
+        f"(2Q26 book {bps_2q26:.2f} rolled over 2H26 unbooked {unbooked:.3f}/sh at b1 = g1/ROE = "
+        f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}; b1 > 1 = the issuance stage-1 payout < 0 already prices); "
+        f"old basis (2Q26 book) would read ROE {eps['L'] * inp['shares'] / inp['equity']:.4f}/"
+        f"{eps['M'] * inp['shares'] / inp['equity']:.4f}/{eps['H'] * inp['shares'] / inp['equity']:.4f}"
+    )
+    print(
+        f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → "
+        f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
+        f"(negative = equity the model books as raised over 2H26; disclosure only, not a leg, not in BPS)"
+    )
     for t in TIERS:
         p1 = 1.0 - g1 / roe[t]
         p2 = min(1.0, 1.0 - g2 / roe[t])
@@ -276,7 +318,7 @@ def main() -> int:
         f"cross-check, no transition year: {eps['L'] * no_tr['L']:.2f}/{eps['M'] * no_tr['M']:.2f}/"
         f"{eps['H'] * no_tr['H']:.2f}  (L no-transition {eps['L'] * no_tr['L']:.2f} = deep_discount pressure coordinate)"
     )
-    roe26 = inp["eps_fy26_m"] * inp["shares"] / inp["equity"]
+    roe26 = inp["eps_fy26_m"] / opening_bps(inp["eps_fy26_m"])
     pe26 = two_stage_pe(g1, n, g2, roe26, r)
     print(f"coordinate, L on FY26 mean {inp['eps_fy26_m']:.3f} (digest year): {inp['eps_fy26_m'] * pe26:.2f} ({pe26:.2f}x)")
     print(

@@ -14,7 +14,12 @@ house goes into the candidate band instead -- one extra year at HSBC's own
 two_stage_pe, everything else unchanged.  FY2027 is FY+1, so no discounting
 (A2e-3).  One perpetual g2 (peer cross-section reverse-solve, A6,
 self excluded) is shared by all three tiers; each tier's ROE is its own FY27
-EPS over BPS, so the multiple only drifts with the numerator.  The four
+EPS over the book at the OPENING of FY2027 (= end-2026, E_{n+1}/B_n): the
+H1'26 book rolled over the 2H26 earnings not yet booked (FY2026E consensus
+minus 1H26 actual non-IFRS NI) at the growth-required retention b1 = g/ROE
+-- g2 in the deck (no g1 window), the HSBC g1 in the candidate band --
+closed form BPS = BPS0 / (1 - g N / EPS) (valuation-rules 裁决表 ② as of
+62c72a2, 2026-09-21; A6b).  So the multiple only drifts with the numerator.  The four
 business legs share that multiple and are split by revenue weight for display
 only (A1b).  r is the basket rate: the Inputs `r_perp` row names 篮 4 龙头制造
 (A14) and `check_r` requires r to equal that basket's value; g2 is capped at
@@ -49,7 +54,7 @@ TIERS = ("l", "m", "h")
 
 REQUIRED = [
     "price", "shares", "fx",
-    "eps27_l_cny", "eps27_m_cny", "eps27_h_cny", "bps_hkd",
+    "eps27_l_cny", "eps27_m_cny", "eps27_h_cny", "bps_hkd", "eps26_m_cny", "ni_1h26_cny", "payout_3y",
     "r_perp", "g2", "g1_fy28_hsbc", "n_fy28_cand", "pe_own_min", "pe_own_max", "eps_ttm_ifrs",
     "w_dom", "w_intl", "w_ads", "w_fbs",
     "nav_hkd", "d_l", "d_m", "d_h", "net_cash_cny",
@@ -69,7 +74,21 @@ def scenario(inp: dict[str, float], tag: str, pe_override: float | None = None,
     single-house FY2028E year); nothing else in the chain moves.
     """
     eps = eps_hkd(inp, tag)
-    roe = eps / inp["bps_hkd"]
+    # ROE = E_{n+1} / B_n: FY27 EPS over the OPENING-2027 book (= end-2026), not
+    # the H1'26 book and not the end-2027 book (that would put retention the
+    # year has not yet earned into the denominator; valuation-rules 裁决表 ②
+    # as of 62c72a2, 2026-09-21; A6b).  The H1'26 book is rolled over the 2H26
+    # earnings not yet booked at the GROWTH-REQUIRED retention b1 = g/ROE --
+    # g2 in the deck (no g1 window), the HSBC g1 in the candidate band (the
+    # growth its stage 1 charges next) -- never at the actual payout
+    # complement.  ROE and BPS depend on each other; closed form
+    # BPS = BPS0 / (1 - g N / EPS).  FY2027's own retention is NOT rolled.
+    g_roll = inp["g1_fy28_hsbc"] if candidate else inp["g2"]
+    unbooked = (inp["eps26_m_cny"] - inp["ni_1h26_cny"] / inp["shares"]) * inp["fx"]  # HKD/share, 2H26 only
+    bps_open = inp["bps_hkd"] / (1.0 - g_roll * unbooked / eps)
+    roe = eps / bps_open
+    b1 = g_roll / roe
+    excess_cash = ((1.0 - inp["payout_3y"]) - b1) * unbooked  # B bucket: disclosure only, not in BPS
     if pe_override is not None:
         pe = pe_override
     elif candidate:
@@ -81,7 +100,8 @@ def scenario(inp: dict[str, float], tag: str, pe_override: float | None = None,
     nav = inp["nav_hkd"] * (1.0 - inp[f"d_{tag}"]) / inp["shares"]
     cash = inp["net_cash_cny"] * inp["fx"] / inp["shares"]
     out = dict(legs)
-    out.update(eps=eps, roe=roe, pe=pe, ops=ops, nav=nav, cash=cash, anchor=ops + nav + cash)
+    out.update(eps=eps, roe=roe, pe=pe, ops=ops, nav=nav, cash=cash, anchor=ops + nav + cash,
+               g_roll=g_roll, unbooked=unbooked, bps_open=bps_open, b1=b1, excess_cash=excess_cash)
     return out
 
 
@@ -145,6 +165,14 @@ def main() -> int:
         return report(errors)
 
     S = {t: scenario(inp, t) for t in TIERS}
+    for t in TIERS:
+        # b1 in (0,1): the deck prices no negative stage-1 payout, so b1 >= 1 would be an unpriced equity raise
+        if not (0.0 < S[t]["b1"] < 1.0):
+            errors.append(f"ROE basis {t.upper()}: b1 = g/ROE = {S[t]['b1']:.3f} outside (0,1) — roll diverges, BLOCKED")
+    if not (0 < inp["ni_1h26_cny"] / inp["shares"] < inp["eps26_m_cny"]):
+        errors.append("1H26 booked NI/share must sit inside the FY2026E consensus")
+    if errors:
+        return report(errors)
     L, M, H = (S[t]["anchor"] for t in TIERS)
     if not (L < M < H):
         return report([f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
@@ -225,9 +253,17 @@ def main() -> int:
         print(f"{t.upper()}: eps27 {inp[f'eps27_{t}_cny']:.2f} CNY = {s['eps']:.2f} HKD roe {s['roe']:.4f} pe {s['pe']:.3f}"
               f"  ops {s['ops']:.1f} nav {s['nav']:.1f} cash {s['cash']:.1f} -> {s['anchor']:.1f}"
               f"  | own-band {s['anchor'] / inp['eps_ttm_ifrs']:.2f}x in [{inp['pe_own_min']}, {inp['pe_own_max']}]")
+    print(f"ROE basis: BPS_open 2027 = {'/'.join(f'{S[t]['bps_open']:.2f}' for t in TIERS)} HKD "
+          f"(H1'26 book {inp['bps_hkd']:.2f} rolled over unbooked 2H26 {S['m']['unbooked']:.2f} HKD at "
+          f"b1 = g/ROE = {'/'.join(f'{S[t]['b1']:.3f}' for t in TIERS)}, g_roll {S['m']['g_roll']:.2%}); "
+          f"old basis (H1'26 book) would read ROE {'/'.join(f'{S[t]['eps'] / inp['bps_hkd']:.2%}' for t in TIERS)}")
+    print(f"B bucket: (actual retention {1 - inp['payout_3y']:.0%} − b1) × unbooked = "
+          f"{'/'.join(f'{S[t]['excess_cash']:.2f}' for t in TIERS)} HKD/share modelled-as-distributed, "
+          f"actually retained (disclosure only; not a leg, not in BPS)")
     print(f"flat ladder @ PE_M: {flat['l']:.1f}/{flat['m']:.1f}/{flat['h']:.1f}")
     print(f"candidate (FY2028E HSBC single, g1 {inp['g1_fy28_hsbc']:.4f} x {int(inp['n_fy28_cand'])}y): "
-          f"{cand['l']:.1f}/{cand['m']:.1f}/{cand['h']:.1f}")
+          f"{cand['l']:.1f}/{cand['m']:.1f}/{cand['h']:.1f}  (book rolled at g1: ROE "
+          f"{'/'.join(f'{cand_S[t]['roe']:.2%}' for t in TIERS)}, b1 {'/'.join(f'{cand_S[t]['b1']:.3f}' for t in TIERS)})")
     # A2e-3: a two-stage leg reports its multiple on the post-transition-year
     # numerator; the FY2027 reading carries (1+g1) and is a cross line only
     post = (1.0 + inp["g1_fy28_hsbc"]) ** int(inp["n_fy28_cand"])

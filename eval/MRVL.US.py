@@ -14,8 +14,14 @@ valuation-rules「两段式过渡 · 估值时点」2026-09-14); the FY29-basis 
 (PE / (1 + g1)) is printed because 表1 reports the post-transition numerator.
 The tier ladder lives in the numerator only: L = FY27
 consensus (FY28 as a digest year), M = FY28 consensus mean, H = FY28 consensus
-high.  Tier ROE = EPS_x * shares / equity, so the L multiple falls out lower
-mechanically, not by policy.
+high.  Tier ROE = FY28 EPS_x / the FY28 OPENING BPS (E_{n+1}/B_n, A17): the
+Q2 FY27 book is rolled over the 2H FY27 earnings not yet booked (FY27
+consensus minus the 1H actual) at the growth-required retention b1 = g1/ROE
+-- every tier carries the g1 window, so every tier rolls at g1; b1 > 1 here
+because the framework already prices stage-1 payout below zero
+(issuance-funded growth) -- closed form BPS = BPS0 / (1 - g1·N/EPS)
+(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The L multiple falls
+out lower mechanically, not by policy.
 
 Numerator year (valuation-rules 裁决顺序 ②, A3): FY28 is the furthest year with a
 >=2-house consensus *range* (41 houses); FY29 is visible to three houses but only
@@ -81,6 +87,8 @@ REQUIRED = [
     "eps_fy28_m",
     "eps_fy28_h",
     "eps_fy29_cons",
+    "eps_1h_fy27",
+    "payout_3y",
     "n_stage",
     "r_perp",
     "g2_cu",
@@ -186,8 +194,27 @@ def main() -> int:
     eps = {"L": inp["eps_fy27_m"], "M": inp["eps_fy28_m"], "H": inp["eps_fy28_h"]}
     weights = {"cu": inp["w_custom"], "conn": inp["w_conn"], "comm": inp["w_comm"]}
 
-    # ---- Step 1: tier ROE from one equity field (AGENTS.md 永续增长口径) ----
-    roe = {t: eps[t] * inp["shares"] / inp["equity"] for t in TIERS}
+    # ---- Step 1: tier ROE = E_{n+1} / B_n on the FY28 OPENING book (A17) ----
+    # The Q2 FY27 book (latest balance sheet) is rolled over the 2H FY27 earnings
+    # not yet booked (FY27 consensus minus 1H actual, analyst-basis EPS) at the
+    # growth-required retention b1 = g1/ROE -- the same b `two_stage_pe` charges
+    # in stage 1; all three tiers carry the g1 window (A4/A6) so all roll at g1.
+    # Closed form: BPS = BPS0 / (1 - g1·N/EPS).  FY28's own retention is NOT
+    # rolled (year-end error).  b1 > 1 is the issuance the framework already
+    # prices as a negative stage-1 payout, not a defect.  Actual retention above
+    # b1 would be the B bucket (disclosure only); here it is below b1.
+    bps0 = inp["equity"] / inp["shares"]
+    unbooked = inp["eps_fy27_m"] - inp["eps_1h_fy27"]  # 2H FY27, per share
+    for t in TIERS:
+        if g1 * unbooked / eps[t] >= 1.0:
+            errors.append(f"opening-book roll diverges on {t}: g1·N/EPS = {g1 * unbooked / eps[t]:.3f} ≥ 1")
+    if errors:
+        return report(errors)
+    bps_open = {t: bps0 / (1.0 - g1 * unbooked / eps[t]) for t in TIERS}
+    roe = {t: eps[t] / bps_open[t] for t in TIERS}
+    b1 = {t: g1 / roe[t] for t in TIERS}  # = 1 - stage-1 payout; > 1 is the priced issuance
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
 
     # ---- Step 2: multiples per leg per tier (g shared across tiers) ----
     def leg_pes(tier: str, transition: bool = True) -> dict[str, float]:
@@ -266,7 +293,18 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}")
     print(f"g1(FY29 cons / FY28 cons - 1)={g1:.4f} n={n} r={r:g}  g2 cu/conn/comm="
           f"{inp['g2_cu']:.4f}/{inp['g2_conn']:.4f}/{inp['g2_comm']:.4f}")
-    print(f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} (equity-based)")
+    print(
+        f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} "
+        f"(FY28 EPS / opening-FY28 BPS {bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f}; "
+        f"Q2 FY27 book {bps0:.2f} rolled over 2H FY27 unbooked {unbooked:.2f} at b1 = g1/ROE = "
+        f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f} (>1 = issuance-funded, A4); "
+        f"v3 basis EPS/Q2 book would read {eps['L'] / bps0:.3f}/{eps['M'] / bps0:.3f}/{eps['H'] / bps0:.3f})"
+    )
+    print(
+        f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.0%} − b1 → "
+        f"{excess_cash['L']:.2f}/{excess_cash['M']:.2f}/{excess_cash['H']:.2f} USD/share over 2H FY27 "
+        f"(negative = model charges issuance beyond actual retention; disclosure only, not in BPS)"
+    )
     for t in TIERS:
         p1 = 1.0 - g1 / roe[t]
         tag = "issuance-funded" if p1 < 0 else "self-funded"

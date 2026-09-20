@@ -12,8 +12,14 @@ digestion year — FY2027 held at the FY2026 consensus mean — because for a
 `cyclical` the consensus low is too narrow to be "the measured bad" (②-b);
 M/H are the consensus mean / high.
 
-Multiples are generated, not borrowed: tier ROE on *operating* equity (book
-less net cash, A6), r = the basket rate — the whole company is one leg in
+Multiples are generated, not borrowed: tier ROE = FY2027 economic EPS over
+the FY2027 OPENING *operating* book (book less net cash, A6): the 2Q26
+operating book rolled over the 2H26 earnings not yet booked (FY26 consensus
+minus 1H26 actual, on the same economic basis) at the growth-required
+retention b1 = g/ROE — g1 for M/H (the FY2028 window), g2 for L (no window);
+valuation-rules 62c72a2, A20.  b1 > 1 on M/H is the cash-pool / external
+funding the negative stage-1 payout already prices, so it is printed, not
+failed; only a diverging roll stops.  r = the basket rate — the whole company is one leg in
 basket 4 龙头制造 (10%, A19; the Inputs row names the basket and `check_r`
 holds the value to it), M/H carry the FY2028 consensus year as a one-year
 transition (`two_stage_pe`, g1 = 2028E / 2027E on the same GAAP consensus
@@ -85,6 +91,8 @@ REQUIRED = [
     "sbc_annual",
     "tax",
     "eps_2026_m",
+    "eps_1h26_a",
+    "payout_3y",
     "eps_2027_l",
     "eps_2027_m",
     "eps_2027_h",
@@ -200,16 +208,41 @@ def main() -> int:
     nii_ps = inp["nii_4q"] * (1.0 - inp["tax"]) / inp["shares"]
     ops = {t: street[t] - sbc_ps - nii_ps for t in TIERS}
 
-    # ---- Step 2: tier ROE on operating equity; Gordon (L) / two-stage (M, H) ----
+    # ---- Step 2: tier ROE = E_{2027} / opening-2027 operating book; Gordon (L) / two-stage (M, H) ----
+    # The 2Q26 operating book is rolled over the 2H26 earnings not yet booked
+    # (FY26 consensus less 1H26 actual, less the 2H26 half of SBC and interest
+    # so it is on the numerator's economic basis) at the growth-required
+    # retention b1 = g/ROE: g1 for M/H, g2 for L (A20).  ROE and BPS depend on
+    # each other; closed form BPS = BPS0 / (1 - g·N/eps).  b1 > 1 (M/H) is the
+    # external funding stage-1 payout < 0 already prices.  Every contrast band
+    # below rolls the same way with its own g and numerator.
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] / inp["shares"]
-    roe = {t: ops[t] * inp["shares"] / equity_op for t in TIERS}
+    bps_op_2q26 = equity_op / inp["shares"]
+    unbooked = (inp["eps_2026_m"] - inp["eps_1h26_a"]) - 0.5 * sbc_ps - 0.5 * nii_ps
+
+    def opening_bps(eps_x: float, g: float, n_unbooked: float = unbooked) -> float:
+        share = g * n_unbooked / eps_x
+        if share >= 1.0:
+            raise ValueError(f"book roll diverges: g·N/eps = {share:.2f} >= 1 (BLOCKED-by-rule)")
+        return bps_op_2q26 / (1.0 - share)
+
+    def rolled_roe(num: dict[str, float], g: float, g1_: float, n_unbooked: float = unbooked) -> dict[str, float]:
+        g_roll = {"L": g, "M": g1_, "H": g1_}
+        return {t: num[t] / opening_bps(num[t], g_roll[t], n_unbooked) for t in TIERS}
+
+    roe = rolled_roe(ops, g2, g1)
+    b1 = {t: g / roe[t] for t, g in zip(TIERS, (g2, g1, g1))}
+    roe_2q26 = {t: ops[t] * inp["shares"] / equity_op for t in TIERS}  # old basis, printed only
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
 
     def deck(g: float, g1_: float) -> tuple[dict[str, float], dict[str, float]]:
+        roe_ = rolled_roe(ops, g, g1_)
         pe = {
-            "L": perpetual_pe(g, roe["L"], r),
-            "M": two_stage_pe(g1_, n, g, roe["M"], r),
-            "H": two_stage_pe(g1_, n, g, roe["H"], r),
+            "L": perpetual_pe(g, roe_["L"], r),
+            "M": two_stage_pe(g1_, n, g, roe_["M"], r),
+            "H": two_stage_pe(g1_, n, g, roe_["H"], r),
         }
         return pe, {t: ops[t] * pe[t] + cash_ps for t in TIERS}
 
@@ -274,13 +307,16 @@ def main() -> int:
     else:
         errors.append("frameworks/TSEM.US.md missing — mirror-state check impossible (A12)")
 
-    # ---- Contrast bands (printed only) ----
-    no_tr = tuple(ops[t] * perpetual_pe(g2, roe[t], r) + cash_ps for t in TIERS)
-    roe_tot = {t: (street[t] - sbc_ps) * inp["shares"] / inp["equity"] for t in TIERS}
+    # ---- Contrast bands (printed only; each rolls its own book the A20 way) ----
+    roe_no_tr = rolled_roe(ops, g2, g2)  # no window anywhere -> every tier rolls at g2
+    no_tr = tuple(ops[t] * perpetual_pe(g2, roe_no_tr[t], r) + cash_ps for t in TIERS)
+    roe_tot = {t: (street[t] - sbc_ps) * inp["shares"] / inp["equity"] for t in TIERS}  # 2Q26 total book, not rolled (A15)
     tot = ((street["L"] - sbc_ps) * perpetual_pe(g2, roe_tot["L"], r), (street["M"] - sbc_ps) * two_stage_pe(g1, n, g2, roe_tot["M"], r), (street["H"] - sbc_ps) * two_stage_pe(g1, n, g2, roe_tot["H"], r))
     nosbc = {t: street[t] - nii_ps for t in TIERS}
-    roe_nosbc = {t: nosbc[t] * inp["shares"] / equity_op for t in TIERS}
+    roe_nosbc = rolled_roe(nosbc, g2, g1, unbooked + 0.5 * sbc_ps)
     nosbc_deck = (nosbc["L"] * perpetual_pe(g2, roe_nosbc["L"], r) + cash_ps, nosbc["M"] * two_stage_pe(g1, n, g2, roe_nosbc["M"], r) + cash_ps, nosbc["H"] * two_stage_pe(g1, n, g2, roe_nosbc["H"], r) + cash_ps)
+    r_contrast = {rr: tuple(ops[t] * (perpetual_pe(g2, roe[t], rr) if t == "L" else two_stage_pe(g1, n, g2, roe[t], rr)) + cash_ps for t in TIERS) for rr in (0.09, 0.08)}
+    cap_deck = deck(g_cap(r), g1)[1]
     mkt_g, mkt_ok = implied_g((inp["price"] - cash_ps) / ops["M"], roe["M"], r)
     implied_r = _implied_r(inp["price"], ops["M"], roe["M"], g1, n, g2, cash_ps)
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
@@ -292,6 +328,12 @@ def main() -> int:
     for t in TIERS:
         extra = f"  stage-1 payout {p1[t]:+.2f} (cash/external-funded growth)" if t in p1 else ""
         print(f"{t}: street {street[t]:.4f} -> econ {ops[t]:.4f}  ROE_op {roe[t]:.4f}  PE {pes[t]:.4f}x -> {ops[t] * pes[t]:.4f} + cash = {anchors[t]:.4f}{extra}")
+    print(f"ROE basis (A20): BPS_op opening-2027 = {opening_bps(ops['L'], g2):.2f}/{opening_bps(ops['M'], g1):.2f}/{opening_bps(ops['H'], g1):.2f} "
+          f"(2Q26 op book {bps_op_2q26:.2f} rolled over 2H26 unbooked {unbooked:.3f}/sh at b1 = g/ROE = {b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}, "
+          f"g_roll {g2:.2%}/{g1:.2%}/{g1:.2%}); 2Q26-book basis would read ROE {roe_2q26['L']:.4f}/{roe_2q26['M']:.4f}/{roe_2q26['H']:.4f}; "
+          f"ROE_M - r = {roe['M'] - r:+.4f} (病态区, multiple pinned near 1/r)")
+    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
+          f"(L positive = cash the model deems distributed but the company keeps; M/H negative = external/cash-pool funding the model books; disclosure only, not a leg, not in BPS)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f}")
     print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
@@ -306,7 +348,9 @@ def main() -> int:
           + (f"+1pp ({g2 + 0.01:.4f}) -> {hi['L']:.2f}/{hi['M']:.2f}/{hi['H']:.2f} zone {hi_zone}" if hi else "+1pp exceeds cap"))
     if lo_zone != zone or (hi_zone is not None and hi_zone != zone):
         print(f"WARN (A5): zone moves within g2 +-1pp ({lo_zone} / {zone} / {hi_zone}) — the price sits on H (P/H {inp['price'] / H:.3f}); g2 is the cluster median, not a free choice; disclosed, not failed")
-    print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | SBC not deducted: {nosbc_deck[0]:.2f}/{nosbc_deck[1]:.2f}/{nosbc_deck[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f}")
+    print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | SBC not deducted: {nosbc_deck[0]:.2f}/{nosbc_deck[1]:.2f}/{nosbc_deck[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} (2Q26, not rolled) no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f}")
+    print(f"contrast r 9% / 8% (not a path, A18): {r_contrast[0.09][0]:.2f}/{r_contrast[0.09][1]:.2f}/{r_contrast[0.09][2]:.2f} | {r_contrast[0.08][0]:.2f}/{r_contrast[0.08][1]:.2f}/{r_contrast[0.08][2]:.2f}; "
+          f"g2 at cap {g_cap(r):.0%}: {cap_deck['L']:.2f}/{cap_deck['M']:.2f}/{cap_deck['H']:.2f} (M/FY27 street {cap_deck['M'] / inp['eps_2027_m']:.2f}x)")
     print(f"market-implied perpetual g (no transition, econ M) {mkt_g:.4f} well_conditioned={mkt_ok}")
     print(f"V_opt={v_opt:.2f} (1 x Tower-sized SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f} zone+V={zone_of(inp['price'], *opt)}")
     print(f"A2f endpoint: P {inp['price']:.2f} {'<=' if inp['price'] <= H + v_opt else '>'} H+V_opt {H + v_opt:.2f}; implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")

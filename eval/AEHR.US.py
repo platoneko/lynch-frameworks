@@ -13,8 +13,12 @@ amortisation (A9).  Multiples are generated, not borrowed:
 reverse-solved median truncated to g_cap(r) (A5), r = 13% — the whole company
 is one leg in basket 6 周期商品 / 小盘 (small-cap equipment maker whose earnings
 are the derivative of a few customers' capacity plans, A17; basket 7 is the
-named alternative, its single-customer threshold unmet, A12) — and tier ROE on *operating* equity: book equity less net cash, with
-the after-tax interest the consensus EPS earns on that cash stripped from the
+named alternative, its single-customer threshold unmet, A12) — and tier ROE = FY28 core EPS over the FY28 OPENING
+*operating* book: book equity less net cash at FY26 year-end (2026-05-29, the
+latest balance sheet), rolled over the whole FY27 consensus not yet booked (no
+FY27 quarter reported yet) at the growth-required retention b1 = g2/ROE — no
+g1 window, so every tier rolls at g2 (valuation-rules 62c72a2, A18).  The
+after-tax interest the consensus EPS earns on that cash is stripped from the
 numerator and the net cash added back per share as a closing item (A15, the
 1810.HK A15 treatment).  FY29 has no >=2-house consensus anywhere, so there is
 no g1 and no discount (FY28 = current FY + 1).
@@ -82,6 +86,7 @@ REQUIRED = [
     "tangible_book",
     "pb_floor",
     "eps_fy27_m",
+    "payout_3y",
     "eps_fy28_l",
     "eps_fy28_m",
     "eps_fy28_h",
@@ -208,10 +213,31 @@ def main() -> int:
     int_ps = inp["cash"] * inp["cash_yield"] * (1.0 - inp["tax"]) * MILLION / inp["shares"]
     core = {t: eps[t] - int_ps for t in TIERS}
 
-    # ---- Step 3-4: tier ROE on operating equity, Gordon multiple, cash added back ----
+    # ---- Step 3-4: tier ROE = E_FY28 / opening-FY28 operating book, Gordon multiple, cash added back ----
+    # The FY26 year-end operating book (latest balance sheet) is rolled over the
+    # FY27 consensus not yet booked — the whole year, on the same core basis
+    # (haircut, interest stripped) — at the growth-required retention b1 =
+    # g2/ROE (no g1 window, A18).  ROE and BPS depend on each other; closed form
+    # BPS = BPS0 / (1 - g2·N/core).  A diverging roll (g2·N/core >= 1) stops.
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] * MILLION / inp["shares"]
-    roe = {t: core[t] * inp["shares"] / (equity_op * MILLION) for t in TIERS}
+    bps_op_fy26 = equity_op * MILLION / inp["shares"]
+    unbooked = inp["eps_fy27_m"] * (1.0 - inp["sbc_haircut"]) - int_ps  # FY27 core EPS, all of it still unbooked
+
+    def opening_bps(core_x: float, g: float) -> float:
+        share = g * unbooked / core_x
+        if share >= 1.0:
+            raise ValueError(f"book roll diverges: g·N/core = {share:.2f} >= 1 (BLOCKED-by-rule)")
+        return bps_op_fy26 / (1.0 - share)
+
+    def rolled_roe(g: float) -> dict[str, float]:
+        return {t: core[t] / opening_bps(core[t], g) for t in TIERS}
+
+    roe = rolled_roe(g2)
+    b1 = {t: g2 / roe[t] for t in TIERS}
+    roe_fy26 = {t: core[t] * inp["shares"] / (equity_op * MILLION) for t in TIERS}  # old basis, printed only
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
     pes = {t: perpetual_pe(g2, roe[t], r) for t in TIERS}
     ex_cash = {t: core[t] * pes[t] for t in TIERS}
     scen = {t: ex_cash[t] + cash_ps for t in TIERS}
@@ -256,7 +282,8 @@ def main() -> int:
 
     # ---- g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」): zone must survive -1pp; +1pp breaks ① ----
     def deck_at(g: float) -> tuple[float, float, float, bool]:
-        s = {t: core[t] * perpetual_pe(g, roe[t], r) + cash_ps for t in TIERS}
+        roe_g = rolled_roe(g)  # the book rolls at the g being tested
+        s = {t: core[t] * perpetual_pe(g, roe_g[t], r) + cash_ps for t in TIERS}
         return s["L"], s["M"], s["H"], s["L"] < s["M"] < s["H"]
 
     lo_l, lo_m, lo_h, lo_ok = deck_at(g2 - 0.01)
@@ -289,6 +316,14 @@ def main() -> int:
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> econ {eps[t]:.4f} -> core {core[t]:.4f}  ROE {roe[t]:.4f}  payout {1 - g2 / roe[t]:.3f}  "
               f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} + cash = scenario {scen[t]:.4f}")
+    print(f"ROE basis (A18): BPS_op opening-FY28 = {opening_bps(core['L'], g2):.3f}/{opening_bps(core['M'], g2):.3f}/{opening_bps(core['H'], g2):.3f} "
+          f"(FY26-end op book {bps_op_fy26:.3f} rolled over FY27 unbooked core {unbooked:.3f}/sh at b1 = g2/ROE = {b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}); "
+          f"FY26-book basis would read ROE {roe_fy26['L']:.4f}/{roe_fy26['M']:.4f}/{roe_fy26['H']:.4f}")
+    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × FY27 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
+          f"(cash the model deems distributed but the company keeps; disclosure only, not a leg, not in BPS)")
+    for rr, tag in ((0.10, "篮 4 10%"), (0.15, "篮 7 15%")):
+        alt = {t: core[t] * perpetual_pe(g2, roe[t], rr) + cash_ps for t in TIERS}
+        print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_opt {inp['v_opt_units'] * d_eps * perpetual_pe(g2, roe['M'], rr):.2f})")
     print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
           f"{'BELOW' if below_floor else 'above'} floor by {abs(scen['L'] - floor):.2f}  "
           f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if below floor)")

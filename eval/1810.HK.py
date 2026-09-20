@@ -27,7 +27,14 @@ Main ruler (four legs, summed — no hand-written total is ever consumed):
   1. phone leg  : ni_phone_k x perpetual_pe(g2_phone=0, ROE, r).  g2 = 0 pins
                   the multiple at 1/r, flat across tiers whatever the ROE (A7).
   2. eco leg    : ni_eco_k x perpetual_pe(g2_eco, ROE_eco_k, r); ROE on operating
-                  net assets, not book equity (A15).
+                  net assets, not book equity (A15), at the OPENING of FY2027
+                  (= end-2026, E_{n+1}/B_n): the 1H26 operating net assets
+                  rolled over the 2H26 earnings not yet booked (FY2026E
+                  consensus net of the same strip, minus 1H26 actual) at the
+                  growth-required retention b1 = g/ROE -- the leg's g2 in the
+                  deck, the MS g1 in the candidate band -- closed form
+                  B = B0 / (1 - g N / E) (valuation-rules 裁决表 ② as of
+                  62c72a2, 2026-09-21; A24).  Phone g2 = 0 so its book never rolls.
   3. EV leg     : FY26E segment revenue x realised peer PS cluster p25/p50/p75 (A9).
   4. closing    : net cash (never discounted) + investment portfolio x (1 - d).
   Overlay (NOT in L/M/H):
@@ -73,7 +80,7 @@ REQUIRED = (
     "adj_np_h1", "gp_core_h1", "gp_phone_h1", "gp_ev_h1",
     "rev_core_q1", "rev_core_q2", "opex_ratio_q1", "opex_ratio_q2",
     "opex_total_h1", "sbc_h1", "fin_net_h1",
-    "r_perp", "g2_phone", "g2_eco", "g1_fy28_ms", "n_fy28_cand", "equity_cny",
+    "r_perp", "g2_phone", "g2_eco", "g1_fy28_ms", "n_fy28_cand", "equity_cny", "eps26_m_cny", "payout_3y",
     "ev_units_fy26e", "ev_asp_cny", "ev_other_rev",
     "ps_ev_l", "ps_ev_m", "ps_ev_h",
     "cash_like", "debt", "invest_cny",
@@ -184,9 +191,26 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     rev_ev = v["ev_units_fy26e"] * v["ev_asp_cny"] / YI + v["ev_other_rev"]
     per_share = v["fx_cny_hkd"] * YI / v["shares"]
 
-    def multiples(b: str) -> tuple[float, float, float]:
-        roe_ph = ni[b] * w_phone / eq_phone
-        roe_ec = ni[b] * (1.0 - w_phone) / eq_eco
+    # ROE = E_{n+1} / B_n: each leg's FY27E numerator over its operating net
+    # assets at the OPENING of FY2027 (= end-2026), not the 1H26 figure and not
+    # the end-2027 one (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A24).
+    # The 1H26 operating net assets are rolled over the 2H26 earnings not yet
+    # booked -- FY2026E consensus on the same SBC / net-financial strip, minus
+    # the 1H26 actual -- split by the same gross-profit weight, at the
+    # GROWTH-REQUIRED retention b1 = g/ROE (the leg's g2 in the deck, the MS g1
+    # in the candidate band), never at the actual payout complement.  Closed
+    # form B = B0 / (1 - g N / E); FY2027's own retention is NOT rolled.
+    # Phone g2 = 0 => b1 = 0, its book does not move in the deck.
+    unbooked = v["eps26_m_cny"] * v["shares"] / YI - 2.0 * strip_h1 - (v["adj_np_h1"] - strip_h1)  # 亿, 2H26 only
+    g_roll = {"phone": v["g1_fy28_ms"] if candidate else v["g2_phone"],
+              "eco": v["g1_fy28_ms"] if candidate else v["g2_eco"]}
+
+    def multiples(b: str) -> dict[str, float]:
+        ni_ph, ni_ec = ni[b] * w_phone, ni[b] * (1.0 - w_phone)
+        eq_ph_open = eq_phone / (1.0 - g_roll["phone"] * unbooked * w_phone / ni_ph)
+        eq_ec_open = eq_eco / (1.0 - g_roll["eco"] * unbooked * (1.0 - w_phone) / ni_ec)
+        roe_ph = ni_ph / eq_ph_open
+        roe_ec = ni_ec / eq_ec_open
         if candidate:
             n = int(v["n_fy28_cand"])
             pe_ph = two_stage_pe(v["g1_fy28_ms"], n, v["g2_phone"], roe_ph, r)
@@ -194,14 +218,19 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         else:
             pe_ph = perpetual_pe(v["g2_phone"], roe_ph, r)
             pe_ec = perpetual_pe(v["g2_eco"], roe_ec, r)
-        return pe_ph, pe_ec, roe_ec
+        b1_ec = g_roll["eco"] / roe_ec
+        return {"pe_phone": pe_ph, "pe_eco": pe_ec, "roe_eco": roe_ec, "roe_phone": roe_ph,
+                "eq_eco_open": eq_ec_open, "b1_eco": b1_ec, "b1_phone": g_roll["phone"] / roe_ph,
+                # B bucket (disclosure only): actual retention beyond b1 on the eco share of 2H26
+                "excess_eco": ((1.0 - v["payout_3y"]) - b1_ec) * unbooked * (1.0 - w_phone)}
 
     pe_m = multiples("m")
     tiers: dict[str, dict[str, float]] = {}
     for b in BANDS:
-        pe_ph, pe_ec, roe_ec = multiples(b)
+        mult = multiples(b)
+        pe_ph, pe_ec, roe_ec = mult["pe_phone"], mult["pe_eco"], mult["roe_eco"]
         if flat_at_m:
-            pe_ph, pe_ec = pe_m[0], pe_m[1]
+            pe_ph, pe_ec = pe_m["pe_phone"], pe_m["pe_eco"]
             ps, d = v["ps_ev_m"], v["d_invest_m"]
         else:
             ps, d = v[f"ps_ev_{b}"], v[f"d_invest_{b}"]
@@ -214,6 +243,8 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         tiers[b] = {
             "ni": ni[b], "ni_phone": ni_phone, "ni_eco": ni_eco,
             "pe_phone": pe_ph, "pe_eco": pe_ec, "roe_eco": roe_ec,
+            "eq_eco_open": mult["eq_eco_open"], "b1_eco": mult["b1_eco"], "b1_phone": mult["b1_phone"],
+            "roe_eco_old": ni_eco / eq_eco, "excess_eco": mult["excess_eco"],
             "blend": w_phone * pe_ph + (1.0 - w_phone) * pe_ec,
             "phone": phone * per_share, "eco": eco * per_share, "ev": ev * per_share,
             "closing": closing * per_share,
@@ -228,7 +259,7 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         "opex_core_h1": opex_core_h1, "opex_ev_h1": opex_ev_h1,
         "op_core_h1": op_core_h1, "op_ev_h1": op_ev_h1,
         "core_np_rr": core_np_rr, "np_rr": np_rr, "strip_h1": strip_h1,
-        "w_phone": w_phone, "equity_op": equity_op, "eq_eco": eq_eco,
+        "w_phone": w_phone, "equity_op": equity_op, "eq_eco": eq_eco, "unbooked": unbooked, "g_roll": g_roll,
         "rev_ev": rev_ev, "net_cash": net_cash, "per_share": per_share,
         "tiers": tiers, "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
         "mimo_rev_ann": mimo_rev_ann, "V_opt": v_opt,
@@ -287,6 +318,13 @@ def main() -> int:
     checks.append((0 < c["w_phone"] < 1, f"w_phone in (0,1) ({c['w_phone']:.4f})"))
     checks.append((c["op_ev_h1"] < 0, f"EV segment still loss-making (op_ev_h1 = {c['op_ev_h1']:.2f} 亿; A4' bound)"))
     checks.append((c["equity_op"] > 0, f"operating net assets positive ({c['equity_op']:.2f} 亿, A15)"))
+    checks.append((c["unbooked"] > 0, f"2H26 unbooked operating earnings positive ({c['unbooked']:.2f} 亿, A24)"))
+    for b in BANDS:
+        # b1 in (0,1) for the rolled legs; phone b1 = 0 in the deck (g2 = 0) by construction
+        ok_b1 = (0.0 <= T[b]["b1_phone"] < 1.0 and 0.0 < T[b]["b1_eco"] < 1.0
+                 and 0.0 < cand["tiers"][b]["b1_eco"] < 1.0 and 0.0 < cand["tiers"][b]["b1_phone"] < 1.0)
+        checks.append((ok_b1, f"ROE basis {b.upper()}: roll converges, b1 eco = g/ROE = {T[b]['b1_eco']:.4f} "
+                              f"(candidate {cand['tiers'][b]['b1_eco']:.3f} / phone {cand['tiers'][b]['b1_phone']:.3f}) in (0,1)"))
     checks.append((c["L"] < c["M"] < c["H"], f"L < M < H ({c['L']:.2f} < {c['M']:.2f} < {c['H']:.2f})"))
     checks.append((fc["L"] < fc["M"] < fc["H"],
                    f"flat ladder (eco pe / PS / d at M) still L<M<H ({fc['L']:.2f} < {fc['M']:.2f} < {fc['H']:.2f})"))
@@ -336,9 +374,19 @@ def main() -> int:
         print(f"  {b.upper()}: phone ni {t['ni_phone']:.2f} x {t['pe_phone']:.2f}"
               f" | eco ni {t['ni_eco']:.2f} roe {t['roe_eco']:.2f} x {t['pe_eco']:.3f}"
               f" | ev {t['ev']:.2f} | closing {t['closing']:.2f}  =  {t['total']:.2f} HKD")
+    print(f"ROE basis : eco op. net assets opening-2027 = " + " / ".join(f"{T[b]['eq_eco_open']:.2f}" for b in BANDS)
+          + f" 亿 (1H26 {c['eq_eco']:.2f} rolled over 2H26 unbooked {c['unbooked']:.2f} 亿 x eco share at "
+          + "b1 = g/ROE = " + " / ".join(f"{T[b]['b1_eco']:.4f}" for b in BANDS)
+          + f", g_roll {c['g_roll']['eco']:.2%}); old basis (1H26) would read ROE "
+          + " / ".join(f"{T[b]['roe_eco_old']:.0%}" for b in BANDS) + "; phone g2 = 0 -> no roll")
+    print(f"B bucket  : (actual retention {1 - v['payout_3y']:.0%} − b1) × eco 2H26 unbooked = "
+          + " / ".join(f"{T[b]['excess_eco'] * c['per_share']:.2f}" for b in BANDS)
+          + " HKD/share modelled-as-distributed, actually retained (disclosure only; not a leg, not in BPS)")
     print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f}   (A {c['A']:.2f} · B {c['B']:.2f})")
     print(f"candidate : g1 {v['g1_fy28_ms']:.4f} x {int(v['n_fy28_cand'])}y on both Gordon legs -> "
-          f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}")
+          f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}  (books rolled at g1: eco ROE "
+          + " / ".join(f"{cand['tiers'][b]['roe_eco']:.0%}" for b in BANDS) + ", b1 eco "
+          + " / ".join(f"{cand['tiers'][b]['b1_eco']:.3f}" for b in BANDS) + ")")
     # A2e-3: a two-stage leg reports its multiple on the post-transition-year
     # numerator; the FY27E reading carries (1+g1) and is a cross line only
     post = (1.0 + v["g1_fy28_ms"]) ** int(v["n_fy28_cand"])

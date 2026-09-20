@@ -15,7 +15,13 @@ Cross-check: the former look-through SOTP (HSBC / BOCHK Gordon PB-ROE, China
 Coal via 1898.HK, cyclical sleeves = constituents' FY2027E consensus over TTM
 x flat Gordon multiples generated from the leg's payout policy — energy on the
 retention branch, industrial BLOCKED and resolved at the named zero-growth
-reference) is recomputed at r_perp and must reproduce the Outputs「对账」row;
+reference) is recomputed at r_perp and must reproduce the Outputs「对账」row.
+The energy ROE is E_{2027}/B_{2026 末} (A14; valuation-rules 裁决表 ② as of
+62c72a2, 2026-09-21): per name FY27E EPS over the 2Q26 BPS rolled over the
+2H26 unbooked EPS (FY26E − 1H26 actual) at b1 = g2_ene/ROE, closed form
+ROE = (EPS27 − g2·N)/BPS_2Q26; the 4-name leg values (roe_ene / g2_ene) are
+the joint fixed point solved in 520900.SH and copied here, this file rolls
+its own 3-name subset at that g2 for the evidence upper end;
 its branch guards stay red lines because they are the sleeve facts the
 framework's E-side reading rests on.  Constituent raw data is cross-checked
 against 520900.SH; the shared leg's Gordon parameters are printed only, since
@@ -62,11 +68,15 @@ SLEEVES = {"ind": ("cosco", "sitc", "sinotruk"), "ene": ("shenhua", "cnooc", "pe
 NAME_FIELDS = ("fy27_l", "fy27_m", "fy27_h", "ttm", "w", "pe")
 # FY2025 DPS / basic EPS (one currency per name) and BPS in the fy27 currency (A2).
 PAYOUT_FIELDS = ("dps25", "eps25", "bps")
+# FY2026E consensus mean and 1H26 actual EPS (fy27 currency): the 2H26 unbooked
+# earnings that roll the 2Q26 book to the opening-2027 book (A14, energy only).
+ROLL_FIELDS = ("fy26_m", "h1_26")
 # Report-year regime (pressure coordinate only) — four energy SOEs equal-weighted.
 ENERGY_NI = ("shenhua_ni", "cnooc_ni", "petrochina_ni", "sinopec_ni")
 SHARED_WITH_PEER = (
     tuple(f"{n}_{f}" for n in ("shenhua", "cnooc", "petrochina", "cosco") for f in ("fy27_l", "fy27_m", "fy27_h", "ttm", "pe"))
     + tuple(f"{n}_{f}" for n in ("shenhua", "cnooc", "petrochina", "cosco") for f in PAYOUT_FIELDS)
+    + tuple(f"{n}_{f}" for n in ("shenhua", "cnooc", "petrochina") for f in ROLL_FIELDS)
     + tuple(f"{k}_{t}" for k in ENERGY_NI for t in "lmh")
     + ("cosco_eps22", "cosco_dps22")
 )
@@ -98,6 +108,7 @@ REQUIRED = [
     "px_cc", "cc_l", "cc_m", "cc_h", "cc_h_cand",
     "cosco_ni_l", "cosco_ni_m", "cosco_eps22", "cosco_dps22",
     *(f"{n}_{f}" for names in SLEEVES.values() for n in names for f in NAME_FIELDS + PAYOUT_FIELDS),
+    *(f"{n}_{f}" for n in SLEEVES["ene"] for f in ROLL_FIELDS),
     *(f"{k}_{t}" for k in ENERGY_NI for t in "lmh"),
     *CHAN_FIELDS, "chan_slope_2019", "chan_slope_2021",
     "pe_1y_lo", "pe_1y_hi", "dy_10y_p25", "dy_10y_med", "dy_10y_p75", "ey_implied", "beta_rate_prior",
@@ -117,17 +128,28 @@ def sleeve_ratio(inp: dict[str, float], names: tuple[str, ...], tier: str) -> fl
     return sum(w[n] * inp[f"{n}_fy27_{tier}"] / inp[f"{n}_ttm"] for n in names)
 
 
-def leg_policy(inp: dict[str, float], names: tuple[str, ...]) -> tuple[float, float]:
+def name_roe(inp: dict[str, float], n: str, g: float) -> float:
+    """E_{2027}/B_{2026 末} of one name: FY27E mean EPS over the 2Q26 BPS rolled
+    over the 2H26 unbooked EPS (FY26E − 1H26 actual) at b1 = g/ROE; with
+    ROE = eps/BPS the fixed point is BPS = BPS0/(1 − g·N/eps), i.e.
+    ROE = (eps − g·N)/BPS0 (A14).  g = 0 is the old current-book reading
+    (industrial names carry no roll fields and are read at g = 0)."""
+    n_unbooked = inp.get(f"{n}_fy26_m", 0.0) - inp.get(f"{n}_h1_26", 0.0)
+    return (inp[f"{n}_fy27_m"] - g * n_unbooked) / inp[f"{n}_bps"]
+
+
+def leg_policy(inp: dict[str, float], names: tuple[str, ...], g_roll: float = 0.0) -> tuple[float, float]:
     """(observed payout, forward ROE_M) of a sleeve, earnings-weighted like the numerator.
 
     payout_k = FY2025 DPS / FY2025 basic EPS (same currency per name);
-    ROE_k = FY2027E mean EPS / BPS (same currency per name) -- the M-tier
-    forward ROE valuation-rules asks for, so g2 and PE describe the same year
-    as the numerator.
+    ROE_k = FY2027E mean EPS / opening-2027 BPS (same currency per name), the
+    2Q26 book rolled at `g_roll` (A14) -- the M-tier forward ROE
+    valuation-rules asks for, so g2 and PE describe the same year as the
+    numerator.
     """
     w = sleeve_weights(inp, names)
     payout = sum(w[n] * inp[f"{n}_dps25"] / inp[f"{n}_eps25"] for n in names)
-    roe = sum(w[n] * inp[f"{n}_fy27_m"] / inp[f"{n}_bps"] for n in names)
+    roe = sum(w[n] * name_roe(inp, n, g_roll) for n in names)
     return payout, roe
 
 
@@ -206,8 +228,15 @@ def main() -> int:
                 errors.append(f"eps_{leg}_{tier}={inp[f'eps_{leg}_{tier}']} != earnings-weighted FY27E/TTM {gen:.4f}")
         errors += ladder(f"eps_{leg}", *(inp[f"eps_{leg}_{t}"] for t in "lmh"))
     cap = g_cap(r)
-    # Energy: shared leg (4-name 央企 basket).  This sleeve's own 3-name subset is the evidence upper end.
-    payout_own, roe_own = leg_policy(inp, SLEEVES["ene"])
+    # Energy: shared leg (4-name 央企 basket; roe_ene / g2_ene are its joint
+    # fixed point, solved in 520900.SH).  This sleeve's own 3-name subset, rolled
+    # at the leg's g2 (A14), is the evidence upper end.
+    for n in SLEEVES["ene"]:
+        if inp["g2_ene"] * (inp[f"{n}_fy26_m"] - inp[f"{n}_h1_26"]) / inp[f"{n}_fy27_m"] >= 1.0:
+            errors.append(f"{n}: book roll diverges (g2·N/eps >= 1, A14)")
+    if errors:
+        return report(errors)
+    payout_own, roe_own = leg_policy(inp, SLEEVES["ene"], inp["g2_ene"])
     g_own_raw = (1.0 - payout_own) * roe_own
     if payout_own >= NEAR_FULL_PAYOUT:
         errors.append(f"energy subset pays out {payout_own:.0%} — the retention branch no longer describes it (A2)")
@@ -332,15 +361,24 @@ def main() -> int:
     print("sleeve FY27E/TTM: ind " + "/".join(f"{sleeve_ratio(inp, SLEEVES['ind'], t):.3f}" for t in "lmh")
           + " | ene " + "/".join(f"{sleeve_ratio(inp, SLEEVES['ene'], t):.3f}" for t in "lmh")
           + f" | HSBC k {k_hsbc:.3f}  BOCHK k {k_bochk:.3f} | flat PE ind/ene/res {inp['pe_ind']}/{inp['pe_ene']}/{inp['pe_res']} vs index {inp['pe_now']}")
-    print("成份 (FY2025 DPS/EPS → 派息率; FY27E/BPS → ROE; 留存分支 g = (1−派息)×ROE):")
+    print("成份 (FY2025 DPS/EPS → 派息率; 能源 FY27E ÷ 2027 年初 BPS → ROE, 2Q26 账面按 b1 = g2_ene/ROE 滚过 2H26 未入账 EPS (A14), 工业 FY27E/BPS; 留存分支 g = (1−派息)×ROE):")
     for leg, names in SLEEVES.items():
         w = sleeve_weights(inp, names)
         for n in names:
             pay = inp[f"{n}_dps25"] / inp[f"{n}_eps25"]
-            roe = inp[f"{n}_fy27_m"] / inp[f"{n}_bps"]
+            g_roll = inp["g2_ene"] if leg == "ene" else 0.0
+            roe = name_roe(inp, n, g_roll)
             g = (1 - pay) * roe
             print(f"  {leg} {n:<10} DPS {inp[f'{n}_dps25']:.4f} / EPS {inp[f'{n}_eps25']:.4f} = {pay:.1%}  ROE {roe:.1%}  g_ret {g:+.2%}"
                   f"{' → clip ' + format(cap, '.0%') if g > cap else ''}  权重 {w[n]:.3f}")
+            if leg == "ene":
+                n_unbooked = inp[f"{n}_fy26_m"] - inp[f"{n}_h1_26"]
+                b1 = g_roll / roe
+                print(f"      ROE basis: 2Q26 BPS {inp[f'{n}_bps']:.3f} + 2H26 未入账 {n_unbooked:.3f} (FY26E {inp[f'{n}_fy26_m']:.3f} − 1H26 {inp[f'{n}_h1_26']:.4f}) × b1 {b1:.3f} "
+                      f"→ 2027 年初 {inp[f'{n}_bps'] / (1 - g_roll * n_unbooked / inp[f'{n}_fy27_m']):.3f}; 旧口径 ÷ 2Q26 BPS {inp[f'{n}_fy27_m'] / inp[f'{n}_bps']:.1%}; "
+                      f"模型视同派出、实际留存 ({1 - pay:.1%} − b1) × N = {((1 - pay) - b1) * n_unbooked:+.3f} 元/股 (只披露)")
+    print(f"  腿级 (A14): b1 = g2_ene/roe_ene = {inp['g2_ene'] / inp['roe_ene']:.3f} ≡ 1 − 实付派息率 {1 - inp['payout_ene']:.3f} (g2 由派息政策生成 → 留存去向审计 B 桶在腿级恒为 0); "
+          f"四名不动点 roe_ene / g2_ene 由 520900.SH 复算, 本票抄值; 旧口径 (÷ 2Q26 BPS) 子集 ROE_M {leg_policy(inp, SLEEVES['ene'])[1]:.1%}")
     band_pin = "病态区 |ROE−r| < 3pp" if abs(inp["roe_ene"] - r) < 0.03 else ("单调区 ROE > r" if inp["roe_ene"] > r else "峰形区 ROE < r")
     modelled, gap = payout_gap(inp["g2_ene"], inp["roe_ene"], inp["payout_ene"])
     own_mod, own_gap = payout_gap(inp["g2_ene"], roe_own, payout_own)
@@ -372,7 +410,7 @@ def main() -> int:
         g = min(cap, inp["g2_ene"] + dg)
         b = band(perpetual_pe(g, inp["roe_ene"], r), inp["pe_ind"])
         print(f"SOTP 敏感性 g2_ene {dg:+.0%} ({g:+.2%}): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    g_floor = min((1 - inp[f"{n}_dps25"] / inp[f"{n}_eps25"]) * inp[f"{n}_fy27_m"] / inp[f"{n}_bps"] for n in SLEEVES["ene"])
+    g_floor = min((1 - inp[f"{n}_dps25"] / inp[f"{n}_eps25"]) * name_roe(inp, n, inp["g2_ene"]) for n in SLEEVES["ene"])
     b = band(perpetual_pe(g_floor, inp["roe_ene"], r), inp["pe_ind"])
     print(f"SOTP 敏感性 单名下限 g2_ene {g_floor:+.2%} (神华, 非腿读数): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
     b = band(perpetual_pe(inp["g2_ene"], roe_own, r), inp["pe_ind"])

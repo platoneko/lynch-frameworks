@@ -21,8 +21,14 @@ retains (interest, equity-method, other; A9b) because those assets are counted
 once in the NAV / net-cash closure.  The taxed numerator is split by run-rate
 adjusted-EBITA weight into the e-commerce leg (perpetual_pe, g2_ecom peer
 reverse-solve) and the cloud leg (perpetual_pe, g2_cloud peer cross-section
-capped at g_cap(r)).  ROE_k = FY28E EPS tier / BPS (company ROE; no leg equity
-is disclosed, A4).  r is the basket rate: the Inputs `r_perp` row names 篮 4
+capped at g_cap(r)).  ROE_k = FY28E EPS tier / BPS at the OPENING of FY2028
+(= end-FY2027, E_{n+1}/B_n): the June-2026 book rolled over the FY2027E
+earnings not yet booked (consensus minus the June quarter) at the
+growth-required retention b1 = g/ROE, g = the EBITA-weighted company g2 (no
+g1 window in the deck; the candidate band rolls at its own company g with
+the cloud leg on g1) -- closed form BPS = BPS0 / (1 - g N / EPS)
+(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A21).  Company ROE: no
+leg equity is disclosed (A4).  r is the basket rate: the Inputs `r_perp` row names 篮 4
 龙头制造 (A20, both operating legs) and `check_r` requires r to equal that
 basket's value.  There is no transition stage in the deck — FY2029E cloud
 growth is single-house, so `check_transition_years` does not apply; the
@@ -76,6 +82,7 @@ REQUIRED = (
     "pe_own_min", "pe_own_max", "eps_ttm_gaap",
     "nav_cny", "d_l", "d_m", "d_h",
     "net_cash_cny", "placement_hkd",
+    "eps27_m_cny", "eps_1q27_cny", "payout_3y",
 )
 
 SCENARIOS = ("l", "m", "h")
@@ -169,7 +176,24 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
 
     e_full = {k: v[f"eps28_{k}_cny"] * fx for k in SCENARIOS}
     e_ops = {k: (v[f"eps28_{k}_cny"] - nonop_ps) * fx for k in SCENARIOS}
-    roe = {k: e_full[k] / v["bps_hkd"] for k in SCENARIOS}
+    # ROE = E_{n+1} / B_n: FY28E EPS over the book at the OPENING of FY2028
+    # (= end-FY2027), not the June-2026 book and not the FY2028 year-end book
+    # (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A21).  The June-2026
+    # book (end of 1Q FY27) is rolled over the FY2027E earnings not yet booked
+    # (consensus minus the June quarter) at the GROWTH-REQUIRED retention
+    # b1 = g/ROE, g = the company-level g the multiples charge next: the
+    # EBITA-weighted blend of the two legs' g2 in the deck (no g1 window), or
+    # of g2_ecom and g1_cloud_cand in the candidate band.  ROE and BPS depend
+    # on each other; closed form BPS = BPS0 / (1 - g N / EPS).  FY2028's own
+    # retention is NOT rolled (that would be the year-end error).  Actual
+    # retention beyond b1 is the B bucket: disclosure only, not in BPS.
+    g_cloud_roll = v["g1_cloud_cand"] if candidate else v["g2_cloud"]
+    g_roll = w_ecom * v["g2_ecom"] + w_cloud * g_cloud_roll
+    unbooked = (v["eps27_m_cny"] - v["eps_1q27_cny"]) * fx  # HKD/share, 2Q–4Q FY27 only
+    bps_open = {k: v["bps_hkd"] / (1.0 - g_roll * unbooked / e_full[k]) for k in SCENARIOS}
+    roe = {k: e_full[k] / bps_open[k] for k in SCENARIOS}
+    b1 = {k: g_roll / roe[k] for k in SCENARIOS}
+    excess_cash = {k: ((1.0 - v["payout_3y"]) - b1[k]) * unbooked for k in SCENARIOS}  # B bucket, disclosure only
     pe_ecom = {k: perpetual_pe(v["g2_ecom"], roe[k], r) for k in SCENARIOS}
     if candidate:
         pe_cloud = {k: two_stage_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], roe[k], r)
@@ -196,6 +220,7 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         "nonop_ps": nonop_ps, "w_ecom": w_ecom, "w_cloud": w_cloud,
         "nav_ps": nav_ps, "cash_ps": cash_ps, "legs": legs, "V_opt": v_opt,
         "e_full": e_full, "e_ops": e_ops, "roe": roe, "pe_ecom": pe_ecom, "pe_cloud": pe_cloud,
+        "g_roll": g_roll, "unbooked": unbooked, "bps_open": bps_open, "b1": b1, "excess_cash": excess_cash,
         "blend": {k: w_ecom * pe_ecom[k] + w_cloud * pe_cloud[k] for k in SCENARIOS},
         "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
     }
@@ -262,6 +287,10 @@ def main() -> int:
         checks.append((c["pe_ecom"][k] > 0 and c["pe_cloud"][k] > 0,
                        f"ROE_{k}={c['roe'][k]:.4f} -> pe_ecom {c['pe_ecom'][k]:.2f} / pe_cloud {c['pe_cloud'][k]:.2f} "
                        f"(payout {1 - v['g2_ecom'] / c['roe'][k]:.2f} / {1 - v['g2_cloud'] / c['roe'][k]:.2f}) positive"))
+        # b1 in (0,1): the deck has no negative stage-1 payout, so b1 >= 1 would be an unpriced equity raise
+        checks.append((0.0 < c["b1"][k] < 1.0 and 0.0 < cand["b1"][k] < 1.0,
+                       f"ROE basis {k}: roll converges, b1 = g/ROE = {c['b1'][k]:.3f} (candidate {cand['b1'][k]:.3f}) in (0,1)"))
+    checks.append((0 < v["eps_1q27_cny"] < v["eps27_m_cny"], "1Q FY27 booked EPS inside FY2027E consensus"))
 
     # 3. bands and ordering
     d_vals = [v[f"d_{k}"] for k in SCENARIOS]
@@ -322,9 +351,19 @@ def main() -> int:
         print(f"  {k.upper()} roe {c['roe'][k]:.4f} pe_ecom {c['pe_ecom'][k]:.3f} pe_cloud {c['pe_cloud'][k]:.3f} "
               f"blend {c['blend'][k]:.3f}: " + " ".join(f"{n}={x:+.2f}" for n, x in legs.items())
               + f"  ->  {sum(legs.values()):.2f}")
+    print(f"ROE basis : BPS_open FY28 = {c['bps_open']['l']:.2f}/{c['bps_open']['m']:.2f}/{c['bps_open']['h']:.2f} HKD "
+          f"(2026-06 book {v['bps_hkd']:.2f} rolled over unbooked 2Q–4Q FY27 {c['unbooked']:.2f} HKD at "
+          f"b1 = g/ROE = {c['b1']['l']:.3f}/{c['b1']['m']:.3f}/{c['b1']['h']:.3f}, g_roll {c['g_roll']:.2%} = "
+          f"EBITA-weighted g2); old basis (2026-06 book) would read ROE "
+          + "/".join(f"{c['e_full'][k] / v['bps_hkd']:.2%}" for k in SCENARIOS))
+    print(f"B bucket  : (actual retention {1 - v['payout_3y']:.0%} − b1) × unbooked = "
+          f"{c['excess_cash']['l']:.2f}/{c['excess_cash']['m']:.2f}/{c['excess_cash']['h']:.2f} HKD/share "
+          f"modelled-as-distributed, actually retained (disclosure only; not a leg, not in BPS)")
     print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f} (A {c['A']:.2f} · B {c['B']:.2f})")
     print(f"candidate : cloud two_stage g1={v['g1_cloud_cand']} n={int(v['n_cloud_cand'])} -> "
-          f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}")
+          f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}  (book rolled at company g {cand['g_roll']:.2%}: "
+          f"ROE {cand['roe']['l']:.2%}/{cand['roe']['m']:.2%}/{cand['roe']['h']:.2%}, "
+          f"b1 {cand['b1']['l']:.3f}/{cand['b1']['m']:.3f}/{cand['b1']['h']:.3f})")
     # A2e-3: a two-stage leg reports its multiple on the post-transition-year
     # numerator; the FY28E reading carries (1+g1) and is a cross line only
     post = (1.0 + v["g1_cloud_cand"]) ** int(v["n_cloud_cand"])

@@ -17,7 +17,9 @@ so the index basket column is populated and the cross-check runs at basket r.
 
 Cross-check (v1 look-through SOTP, kept as 对照尺 and E-side guardrail): white
 goods Gordon (FY2027E consensus three points; g2 from the 美的 / 海尔 retention
-branch, 格力 7.71x excluded as unreachable in the monotone regime, A5) + CMB /
+branch, 格力 7.71x excluded as unreachable in the monotone regime, A5; each
+name's ROE = FY27E EPS ÷ OPENING-2027 BPS, the 2Q26 book rolled over the 2H26
+unbooked EPS at b1 = g2/ROE — g2 and ROE are a joint fixed point, A11) + CMB /
 Yuntianhua / Chalco look-through + Industrial Bank PB-ROE (篮 5, r 11%) + other
 financials × k_bank + residual Gordon (index ROE 10.8% ~ r: ill-conditioned,
 g2 from the payout policy, A6).  Its band is printed and compared with the
@@ -63,7 +65,7 @@ CHAN_TOL = {"slope": 0.0015, "sigma": 0.0015, "z": 0.01, "idx": 1.0}
 LOOKTHROUGH = {"cmb": "600036.SH", "yth": "600096.SH", "alc": "601600.SH"}
 WEIGHTS = ("w_white", "w_cmb", "w_xyb", "w_obank", "w_yth", "w_alc", "w_res")
 WHITE = ("gree", "midea", "haier")
-WHITE_FIELDS = ("w", "pe", "fpe", "roe", "dps25", "eps25", "fy26", "fy27")
+WHITE_FIELDS = ("w", "pe", "fpe", "roe", "dps25", "eps25", "fy26", "fy27", "h1_26", "bps_2q26")
 BLOCKED_WHITE = ("gree",)  # forward PE below 1/r on a retaining, monotone-regime name (A5)
 LEG_TOL = 0.005
 G2_TOL = 0.0005
@@ -90,6 +92,29 @@ REQUIRED = [
     "g2_res_l", "g2_res_m", "g2_res_h", "g_evid_res_min", "g_evid_res_max",
     "pe_res_l", "pe_res_m", "pe_res_h", "eps_res_l", "eps_res_m", "eps_res_h",
 ]
+
+
+def white_roe(inp: dict[str, float], n: str, g2: float) -> float:
+    """E_{2027}/B_{2026 末}: FY27E EPS over the 2Q26 book rolled over the 2H26
+    unbooked EPS (FY26E − 1H26 actual) at b1 = g2/ROE.  With ROE = eps/BPS and
+    BPS = BPS0 + b1·N the fixed point is BPS = BPS0 / (1 − g2·N/eps), i.e.
+    ROE = (eps − g2·N) / BPS0 (A11; valuation-rules 裁决表 ② as of 62c72a2)."""
+    n_unbooked = inp[f"{n}_fy26"] - inp[f"{n}_h1_26"]
+    return (inp[f"{n}_fy27"] - g2 * n_unbooked) / inp[f"{n}_bps_2q26"]
+
+
+def solve_g2_white(inp: dict[str, float], r: float) -> tuple[float, dict[str, float]]:
+    """Joint fixed point of g2_white (cluster median of the retention-branch
+    reverse-solve) and the per-name ROE that the roll at g2 produces (A11)."""
+    g2 = inp["g2_white"]
+    for _ in range(100):
+        cluster = {n: implied_g_retaining(inp[f"{n}_fpe"], white_roe(inp, n, g2), r)[0]
+                   for n in WHITE if n not in BLOCKED_WHITE}
+        g2_next = median(cluster.values())
+        if abs(g2_next - g2) < 1e-10:
+            break
+        g2 = g2_next
+    return g2, cluster
 
 
 def white_weights(inp: dict[str, float]) -> dict[str, float]:
@@ -196,6 +221,21 @@ def main() -> int:
         errors.append(f"payout_white {inp['payout_white']} != earnings-weighted FY2025 DPS/EPS {payout_white:.4f}")
     if abs(roe_white - inp["roe_white"]) > LEG_TOL:
         errors.append(f"roe_white {inp['roe_white']} != earnings-weighted ROE_M {roe_white:.4f}")
+    # A11: each name's stated ROE must be the opening-2027 reading at the
+    # stated g2_white, and g2_white must be the fixed point of its own cluster.
+    g2_fixed, _ = solve_g2_white(inp, r)
+    if abs(g2_fixed - inp["g2_white"]) > G2_TOL:
+        errors.append(f"g2_white {inp['g2_white']} != joint fixed point {g2_fixed:.4f} (A11)")
+    for n in WHITE:
+        n_unbooked = inp[f"{n}_fy26"] - inp[f"{n}_h1_26"]
+        if inp["g2_white"] * n_unbooked / inp[f"{n}_fy27"] >= 1.0:
+            errors.append(f"{n}: book roll diverges (g2·N/eps >= 1, A11)")
+            continue
+        roe_open = white_roe(inp, n, inp["g2_white"])
+        if abs(roe_open - inp[f"{n}_roe"]) > LEG_TOL / 10:
+            errors.append(f"{n}_roe {inp[f'{n}_roe']} != FY27E / opening-2027 BPS {roe_open:.4f} (A11)")
+        if not 0.0 < inp["g2_white"] / roe_open < 1.0:
+            errors.append(f"{n}: b1 = g2/ROE = {inp['g2_white'] / roe_open:.3f} outside (0, 1) (A11)")
     cluster: dict[str, float] = {}
     blocked: dict[str, float] = {}
     for n in WHITE:
@@ -311,9 +351,16 @@ def main() -> int:
           f"EPS/点 同比 {inp['eps_pt_yoy']:+.1%}, 自峰 {inp['eps_pt_from_peak']:+.1%} · 利率轴 β 先验 {inp['beta_rate_prior']:+.0f} (待 _AXIS.rates.md) · look-through 篮子 r: r_perp 篮 {baskets['r_perp']} {r:.1%} / r_bank 篮 {baskets['r_bank']} {r_bank:.1%}")
 
     print(f"--- 对照尺 {SOTP_FORMULA_ID} @ 篮子 r (白电 / 残余 {r:.0%}, 兴业 {r_bank:.0%}) ---")
-    print("白电成份 (FY2025 DPS/EPS → 派息率; 09-11 收盘 ÷ FY27E → 前瞻 PE; 留存分支反解; FY26E→FY27E 方向):")
+    print("白电成份 (FY2025 DPS/EPS → 派息率; ROE = FY27E ÷ 2027 年初 BPS, 2Q26 账面按 b1 = g2/ROE 滚过 2H26 未入账 EPS; "
+          "09-11 收盘 ÷ FY27E → 前瞻 PE; 留存分支反解; FY26E→FY27E 方向):")
     for n in WHITE:
         pay = inp[f"{n}_dps25"] / inp[f"{n}_eps25"]
+        n_unbooked = inp[f"{n}_fy26"] - inp[f"{n}_h1_26"]
+        bps_open = inp[f"{n}_bps_2q26"] / (1.0 - inp["g2_white"] * n_unbooked / inp[f"{n}_fy27"])
+        b1 = inp["g2_white"] / inp[f"{n}_roe"]
+        print(f"  {n:<6} ROE basis (A11): 2Q26 BPS {inp[f'{n}_bps_2q26']:.2f} + 2H26 未入账 {n_unbooked:.3f} × b1 {b1:.3f} → 2027 年初 {bps_open:.2f}; "
+              f"ROE {inp[f'{n}_roe']:.1%} (旧口径 ÷ 2Q26 BPS {inp[f'{n}_fy27'] / inp[f'{n}_bps_2q26']:.1%}); "
+              f"模型视同派出、实际留存 ({1 - pay:.1%} − b1) × {n_unbooked:.3f} = {((1 - pay) - b1) * n_unbooked:.3f} 元/股 (只披露)")
         g_ret, ok = implied_g_retaining(inp[f"{n}_fpe"], inp[f"{n}_roe"], r)
         g_full, _ = implied_g(inp[f"{n}_fpe"], inp[f"{n}_roe"], r)
         status = "BLOCKED 剔除 (< 1/r 顶, 留存公司不可达)" if n in blocked else "入簇"
@@ -321,7 +368,7 @@ def main() -> int:
               f"fPE {inp[f'{n}_fpe']:.2f}x → 留存分支 {g_ret:+.2%} (cond={ok}; 全派息读数 {g_full:+.2%})  "
               f"共识 {inp[f'{n}_fy26']:.3f}→{inp[f'{n}_fy27']:.3f} ({inp[f'{n}_fy27'] / inp[f'{n}_fy26'] - 1:+.1%})  {status}")
     modelled_w, gap_w = payout_gap(inp["g2_white"], inp["roe_white"], inp["payout_white"])
-    print(f"白电腿: 派息率 {inp['payout_white']:.1%} (< {NEAR_FULL_PAYOUT:.0%} 留存) · ROE_M {inp['roe_white']:.1%} (单调区 ≥ r+3pp) · 簇 n={len(cluster)} 中位 g2 {inp['g2_white']:+.2%} "
+    print(f"白电腿: 派息率 {inp['payout_white']:.1%} (< {NEAR_FULL_PAYOUT:.0%} 留存) · ROE_M {inp['roe_white']:.1%} (2027 年初口径, 单调区 ≥ r+3pp) · 簇 n={len(cluster)} 中位 g2 {inp['g2_white']:+.2%} (= 与 ROE 的联立不动点 {g2_fixed:+.4%}) "
           f"(证据区间 [{inp['g_evid_white_min']:+.2%}, {inp['g_evid_white_max']:+.2%}]) → PE {pe_white('l', inp['g2_white']):.2f}/{pe_white('m', inp['g2_white']):.2f}/{pe_white('h', inp['g2_white']):.2f} vs 现 {inp['pe_white_now']}x; "
           f"check_branch ✓ (符号) · payout_gap: 模型派息率 {modelled_w:.1%} vs 实付 {inp['payout_white']:.1%} 差 {gap_w:+.1%} (账面 ROE ≠ 边际 ROE, 只披露)")
     modelled_r, gap_r = payout_gap(inp["g2_res_m"], inp["roe_idx"], inp["payout_res"])

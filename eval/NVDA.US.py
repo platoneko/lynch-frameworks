@@ -8,11 +8,13 @@ formula_id: nvda_fy28_scenario_rev_gm_gordon_v2
 
 Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     eps_i = (rev_i * gm_i - opex_fy28) * (1 - tax_rate) / shares_fy28
-    ROE_i = eps_i * shares_fy28 / equity
+    ROE_i = eps_i / BPS_open_FY28_i      (E_{n+1} / B_n, A24)
     anchor_i = eps_i * perpetual_pe(g2, ROE_i, r_perp)
 The multiple is generated, not borrowed: one perpetual g2 shared by all three
-tiers (peer cross-section reverse-solve, capped at g_cap(r)), tier ROE from one
-equity field.  With ROE far above r the payout is ~1 and the three multiples
+tiers (peer cross-section reverse-solve, capped at g_cap(r)), tier ROE on the
+FY2028 OPENING book: the FY27Q2 equity rolled over the 2H FY27 earnings not
+yet booked at the growth-required retention b1 = g2/ROE (closed form
+BPS = BPS0 / (1 - g2·N/eps); valuation-rules 裁决表 ② as of 62c72a2).  With ROE far above r the payout is ~1 and the three multiples
 differ by well under a turn, so the tiers are still told apart by the numerator
 alone (A2e-2c; the cyclical secondary's flat policy survives mechanically).
 Revenue for all three comes from the same analyst range:
@@ -112,6 +114,8 @@ REQUIRED = [
     "hyper_share_dc",
     "china_dc_rev_unit",
     "v_opt_units",
+    "eps_1h_fy27",
+    "payout_3y",
 ]
 
 _ANCHORS = re.compile(
@@ -216,7 +220,29 @@ def main() -> int:
         errors.append(f"eps order: {eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}")
 
     # --- Step 2b: multiples generated from g2 and tier ROE (AGENTS.md 永续增长口径) ---
-    roe_l, roe_m, roe_h = (e * shares / inp["equity"] for e in (eps_l, eps_m, eps_h))
+    # ROE = E_{n+1} / B_n: FY2028 EPS over the FY2028 OPENING book (= end of
+    # FY2027), not today's FY27Q2 book (valuation-rules 裁决表 ② as of 62c72a2,
+    # 2026-09-21; A24).  The FY27Q2 book is rolled over the 2H FY27 earnings not
+    # yet booked (FY27 consensus minus 1H FY27 actual, non-GAAP) at the
+    # GROWTH-REQUIRED retention b1 = g/ROE -- not the actual payout complement.
+    # No g1 window here (FY29 has no consensus, A20), so every tier rolls at g2.
+    # With ROE = eps / BPS and BPS = BPS0 + b1·N the fixed point is closed-form:
+    # BPS = BPS0 / (1 - g2·N/eps).  Actual retention beyond b1 is the B bucket,
+    # printed as a disclosure, not put into the book.
+    unbooked = (inp["eps_fy27_cons"] - inp["eps_1h_fy27"]) * inp["shares_fy27"] / shares
+    bps_q2 = inp["equity"] / shares
+    bps_open = {}
+    roe_t = {}
+    b1 = {}
+    for t, e in (("l", eps_l), ("m", eps_m), ("h", eps_h)):
+        bps_open[t] = bps_q2 / (1.0 - g2 * unbooked / e)
+        roe_t[t] = e / bps_open[t]
+        b1[t] = g2 / roe_t[t]
+        if not (0.0 < b1[t] < 1.0):
+            errors.append(f"{t.upper()} growth-required retention b1 = {b1[t]:.3f} outside (0,1)")
+    roe_l, roe_m, roe_h = roe_t["l"], roe_t["m"], roe_t["h"]
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in b1}  # disclosure only
     pe_l, pe_m, pe_h = (perpetual_pe(g2, roe, r) for roe in (roe_l, roe_m, roe_h))
     # Guardrail (裁决顺序 ③, A19): inside the ticker's own realised next-FY PE band.
     for label, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
@@ -361,6 +387,17 @@ def main() -> int:
         f" | FY28-M {eps_m:.3f} vs cons {inp['eps_fy28_cons']} ({dev28:+.1%})"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
+    print(
+        f"ROE basis: BPS_open_FY28 = {bps_open['l']:.2f}/{bps_open['m']:.2f}/{bps_open['h']:.2f} USD/sh "
+        f"(FY27Q2 book {bps_q2:.2f} rolled over 2H FY27 unbooked {unbooked:.2f}/sh at b1 = g2/ROE = "
+        f"{b1['l']:.3f}/{b1['m']:.3f}/{b1['h']:.3f}); FY27Q2-book basis would read ROE "
+        f"{eps_l * shares / inp['equity']:.1%}/{eps_m * shares / inp['equity']:.1%}/{eps_h * shares / inp['equity']:.1%}"
+    )
+    print(
+        f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.1%} − b1 → "
+        f"{excess_cash['l']:.2f}/{excess_cash['m']:.2f}/{excess_cash['h']:.2f} USD/sh over 2H FY27 "
+        f"(disclosure only; not a leg, not in BPS)"
+    )
     cap_hit = band_edge_g[1] > g_cap(r) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge g @ M ROE: "
