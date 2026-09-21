@@ -105,7 +105,7 @@ REQUIRED = [
     "ebit_pb_fy26", "ebit_corp_fy26",
     "eps27_l_usd", "eps27_m_usd", "eps27_h_usd", "tax_rate", "fin_income_eur",
     *EPS28_POINTS, "eps28_jpm_high_eur",
-    "n_g1", "g2_ni", "r_perp", "n_disc_ni", "ic_group_eur", "ni_rev_share",
+    "n_g1", "g2_ni", "r_perp", "n_disc_ni", "ic_group_eur", "ni_rev_share", "payout_3y",
     "ev_ebit_ts_l", "ev_ebit_ts_m", "ev_ebit_ts_h", "ev_ebit_mi", "ev_ebit_corp",
     *CLOSING_COMPONENTS, "price_trough_usd", "oe_l", "oe_m", "oe_h",
 ]
@@ -176,12 +176,25 @@ def bridge(v: dict) -> dict:
         - v["ebit_pb_fy26"] - v["ebit_corp_fy26"],
         "eps27_eur": eps27_eur, "ebit_grp27": ebit_grp27, "ni27": ni27,
         "equity_ni": v["ic_group_eur"] * v["ni_rev_share"],
+        # Unbooked 2H26 NI-leg NOPAT: the proxy equity is as of 2026-06-30, the
+        # numerator is FY2027, so the book rolls to the FY2027 opening (A7e).
+        "unbooked_ni": v["ebit_ni_fy26"] * net / 2.0,
         "g1": eps28_mean / eps27_eur["m"] - 1.0,
         "g1_cand": v["eps28_jpm_high_eur"] / eps27_eur["m"] - 1.0,
         "ev_corp": v["ebit_corp_fy26"] * v["ev_ebit_corp"],
         "adj": sum(v[k] for k in CLOSING_COMPONENTS),
         "unit": v["fx_eur_usd"] * v["adr_ratio"] / v["shares"],  # EUR total -> USD/ADR
     }
+
+
+def roe_open(nopat27: float, b: dict, g_roll: float) -> float:
+    """ROE = E_{n+1}/B_n (valuation-rules 62c72a2, A7e): FY2027 NI NOPAT over the
+    proxy equity rolled to the FY2027 opening at b1 = g/ROE over the unbooked
+    2H26 NOPAT, closed form B_open = B0 / (1 - g*N/E)."""
+    share = g_roll * b["unbooked_ni"] / nopat27
+    if share >= 1.0:
+        raise ValueError(f"opening-book roll diverges: g*N/E = {share:.3f}")
+    return nopat27 / (b["equity_ni"] / (1.0 - share))
 
 
 def compute(v: dict, b: dict, *, g2: float | None = None, disc_years: float | None = None,
@@ -198,8 +211,8 @@ def compute(v: dict, b: dict, *, g2: float | None = None, disc_years: float | No
     tiers, anchors = {}, {}
     for k in TIERS:
         ni = b["ni27"][k]
-        roe = ni * net / b["equity_ni"]
         g1 = (g1_by_tier or {}).get(k, b["g1"])
+        roe = roe_open(ni * net, b, g1)  # every tier has the g1 window -> rolls at g1
         pe = pin_pe if pin_pe is not None else two_stage_pe(g1, int(v["n_g1"]), g2, roe, v["r_perp"])
         ev_ni = ni * ni_evebit_flat * disc if ni_evebit_flat is not None else ni * net * pe * disc
         ev_ts = b["ebit_ts"] * ts_mult[k]
@@ -207,6 +220,7 @@ def compute(v: dict, b: dict, *, g2: float | None = None, disc_years: float | No
         ev = ev_ni + ev_ts + ev_mi + b["ev_corp"]
         tiers[k] = {
             "roe": roe, "pe": pe, "evx": pe * net, "payout1": 1.0 - g1 / roe,
+            "roe_b0": ni * net / b["equity_ni"], "b1": g1 / roe,
             "payout2": payout(g2, roe), "ev_ni": ev_ni, "ev_ts": ev_ts, "ev_mi": ev_mi,
             "ev": ev, "group_ev_ebit": ev / v["ebit_group_fy26"],
         }
@@ -230,7 +244,7 @@ def implied_ni27(target_usd: float, v: dict, b: dict, c: dict) -> tuple[float, f
     ev_ni = target_usd / b["unit"] - b["adj"] - rest
     ni, pe = b["ni27"]["m"], c["tiers"]["m"]["pe"]
     for _ in range(60):
-        pe = two_stage_pe(b["g1"], int(v["n_g1"]), v["g2_ni"], ni * net / b["equity_ni"], v["r_perp"])
+        pe = two_stage_pe(b["g1"], int(v["n_g1"]), v["g2_ni"], roe_open(ni * net, b, b["g1"]), v["r_perp"])
         ni = ev_ni / (net * pe * c["disc"])
     return ni, pe
 
@@ -383,13 +397,14 @@ def main() -> None:
           + " -> group EBIT27 " + " / ".join(f"{b['ebit_grp27'][k] / bn:.2f}" for k in TIERS)
           + " -> NI27 " + " / ".join(f"{b['ni27'][k] / bn:.3f}" for k in TIERS) + "bn"
           + f"  | others@FY26E {(b['ebit_grp27']['m'] - b['ni27']['m']) / bn:.2f}bn")
-    print(f"NI Gordon : equity_ni {b['equity_ni'] / bn:.3f}bn = IC {v['ic_group_eur'] / bn:.2f} x "
-          f"{v['ni_rev_share']:.1%} | g1 {b['g1']:+.2%} (n={int(v['n_g1'])}, 2028E 4-house mean "
+    print(f"NI Gordon : equity_ni B0 {b['equity_ni'] / bn:.3f}bn = IC {v['ic_group_eur'] / bn:.2f} x "
+          f"{v['ni_rev_share']:.1%} (2026-06-30) rolled to FY2027 opening at b1 = g1/ROE over unbooked 2H26 "
+          f"{b['unbooked_ni'] / bn:.3f}bn (A7e) | g1 {b['g1']:+.2%} (n={int(v['n_g1'])}, 2028E 4-house mean "
           f"{sum(v[f] for f in EPS28_POINTS) / len(EPS28_POINTS):.4f} EUR) | g2 {v['g2_ni']:.1%} | "
           f"r {v['r_perp']:.0%} (篮 {basket}) | df {c['disc']:.4f} ({v['n_disc_ni']:g}y)")
     for k in TIERS:
         t = c["tiers"][k]
-        print(f"  {k.upper()}: ROE {t['roe']:6.2%}  PE {t['pe']:5.2f}x  EV/EBIT-eq {t['evx']:5.2f}x  "
+        print(f"  {k.upper()}: ROE {t['roe']:6.2%} (on B0 {t['roe_b0']:.2%}, b1 {t['b1']:.2f})  PE {t['pe']:5.2f}x  EV/EBIT-eq {t['evx']:5.2f}x  "
               f"payout1 {t['payout1']:+.2f} payout2 {t['payout2']:.2f}  | NI {t['ev_ni'] * b['unit']:.3f} "
               f"TS {t['ev_ts'] * b['unit']:.3f} RAN {t['ev_mi'] * b['unit']:.3f} close {closing_ps:.3f} "
               f"-> {c[k.upper()]:.4f} USD | NI/EV {t['ev_ni'] / t['ev']:.1%} | group EV/EBIT {t['group_ev_ebit']:.2f}x")
@@ -401,6 +416,12 @@ def main() -> None:
               f"{k.upper()} {b['ni27'][k] * (1.0 - v['tax_rate']) * (1.0 + b['g1']) * b['unit']:.4f} x "
               f"{c['tiers'][k]['pe'] / (1.0 + b['g1']):.2f}x / {c['tiers'][k]['evx'] / (1.0 + b['g1']):.2f}x"
               for k in TIERS))
+    ret_actual = 1.0 - v["payout_3y"]
+    print("模型视同派出、实际留存的现金 (B bucket, disclosure only; group cash payout_3y "
+          f"{v['payout_3y']:.2f} as NI-leg proxy): "
+          + " | ".join(f"{k.upper()} {(ret_actual - c['tiers'][k]['b1']) * b['unbooked_ni'] * b['unit']:+.3f} USD/ADR"
+                       for k in TIERS)
+          + "  [negative = the model retains more than the company actually did]")
     print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f}  (A {c['A']:.2f} · B {c['B']:.2f})"
           f"  zone@{price} = {z}  (P/H {price / c['H'] - 1:+.1%})")
     print(f"candidate : (2028E·JPM单家高情景, g1_H {b['g1_cand']:+.1%}, payout1 "
