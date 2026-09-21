@@ -23,7 +23,7 @@ description: >
 |------|------|
 | 第 2 块业务地图 / 定 pe 带 / 银行票 | `references/heuristics.md` |
 | 第 3 块归篮 / 任何涉及 \(r\) 的讨论 | `references/valuation-rules.md`「§r 篮子」 |
-| 第 7 块定锚**之前**、任何选倍数形式（完整式 / \(1/r\) / \(1/(r-g)\) / 窗口 NPV）的讨论 | `references/valuation-rules.md`「留存去向审计」（先拉 ≥7 年 capex / NPPE / 净债，分桶后才许定形式） |
+| 第 7 块定锚**之前**、任何选倍数形式（完整式 / \(1/r\) / \(1/(r-g)\) / 窗口 NPV）的讨论 | `references/valuation-rules.md`「留存去向审计」+「杠杆门」（先拉 ≥7 年 capex / NPPE / 净债，分桶、算净债 / EBITDA 与利息 / EBIT 后才许定形式） |
 | 第 6 块定锚 / 框架纠正改尺 | `references/construction.md` |
 | 生成的 M 倍数低于自身实测带下沿（③ 出带） | `references/valuation-rules.md`「③ 出带处理流程」（先补 ②、带同基、增长率诚实、逐档降篮、篮 4 仍出带 → BLOCKED + 带边 r 并列） |
 | zone ∈ {`stretched`,`deep_discount`} | `references/zone-reflection.md` |
