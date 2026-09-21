@@ -6,7 +6,8 @@ L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
 formula_id: crrc_hk_anchored_consensus_pe_gordon_v3
 
-Main ruler: whole-company PE on the H share.  EPS tiers rescale one consensus
+Main ruler: whole-company PE on the H share.  ROE is EPS / the FY2026 OPENING
+book (end-2025 reported equity, E_{n+1}/B_n, A18).  EPS tiers rescale one consensus
 range (2026-04-20: low .514 / mean .554 / high .594) onto the latest mean
 (.538), so both ends stay same-source even though the newest print has
 degenerated to a point estimate.  FY2026 is the furthest year with >= 2
@@ -26,9 +27,9 @@ multiple below it has TWO readings: a business paying out 100% and shrinking
 (what `implied_g` returns for PE < 1/r) or one retaining g2/ROE and growing.
 The formula cannot tell them apart; the payout ratio can.  CRRC pays out 50%
 (FY2025 DPS 0.23 / EPS 0.459) and has grown DPS at +6% for seven years, so it
-sits on the RETENTION branch: g2 = (1 - payout) x ROE_M = +4.37%, shared by
+sits on the RETENTION branch: g2 = (1 - payout) x ROE_M = +4.48%, shared by
 all tiers, and each tier's own ROE sets the payout it needs (46/50/53%) and
-hence its multiple (8.20/8.89/9.49).  `check_branch` guards this
+hence its multiple (8.37/9.07/9.68).  `check_branch` guards this
 mechanically.  The peer cluster's 100%-payout reading (-3.67%, flat 7.32x)
 describes a different company and also fails the same-world gate (裁决顺序 ④):
 CRRC's consensus and realised growth both point up.
@@ -168,6 +169,8 @@ def main() -> int:
         return report(errors, "FAIL (numerators)")
 
     # --- Step 2: tier ROE, then g2 on the retention branch (A11) --------------
+    # `equity` is the FY2026 OPENING book (end-2025, reported): E_{n+1}/B_n per
+    # valuation-rules 62c72a2 (A18).  Nothing to roll — the year has started.
     roe = {t: eps[t] * inp["shares"] / (inp["equity"] * YI) for t in TIERS}
     payout_fy25 = inp["dps_fy25"] * inp["shares"] / (inp["ni_fy25"] * YI)
     g2_derived = (1.0 - payout_fy25) * roe["m"]
@@ -229,12 +232,17 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     zone = zone_of(inp["price"], L, M, H)
 
-    # 校验步骤 4a: the zone must hold across the g2 evidence interval, else the
-    # framework is picking a g inside the interval to make the zone look right.
+    # 校验步骤 4a (A18): a zone flip inside the g2 evidence interval means the
+    # price sits on a cut point — the base deck reads the interval's lower end
+    # (first-tier source) and the Outputs must carry a ⚠敏感区 line naming the
+    # other zone.  It is not a reason to pick a g inside the interval.
     evid = {g: band_at(g, eps, roe, r, fx) for g in (inp["g_evid_min"], inp["g_evid_max"])}
-    for g, b in evid.items():
-        if zone_of(inp["price"], *b) != zone:
-            errors.append(f"zone flips to {zone_of(inp['price'], *b)} at g2={g:+.2%} inside the evidence interval — BLOCKED (A11)")
+    flipped = {g: zone_of(inp["price"], *b) for g, b in evid.items() if zone_of(inp["price"], *b) != zone}
+    if flipped and "⚠敏感区" not in md:
+        errors.append(f"zone flips to {flipped} inside the evidence interval — Outputs must state ⚠敏感区 (A18)")
+    for g, z in flipped.items():
+        if f"`{z}`" not in md.split("⚠敏感区", 1)[-1][:400]:
+            errors.append(f"⚠敏感区 line must name the flipped zone `{z}` at g2={g:+.2%} (A18)")
 
     flat_errs, flat_cny = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), pe["m"])
     errors += flat_errs
