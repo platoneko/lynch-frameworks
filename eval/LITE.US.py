@@ -15,14 +15,20 @@ every tier prices off `perpetual_pe` (no `two_stage_pe`, so
 `check_transition_years` does not apply).  Perpetual g2 is the peer
 cross-section reverse-solve truncated at the repo cap; `cyclical` primary
 means g is FLAT across tiers, so the only tier-to-tier multiple difference is
-the mechanical ROE effect (ROE_x = EPS_x x shares / equity).
+the mechanical ROE effect.  ROE is E_{n+1}/B_n (valuation-rules 62c72a2): the
+FY28 numerator over the FY28 OPENING book = FY26 reported equity rolled over
+the not-yet-booked FY27 EPS at the growth-required retention b1 = g2/ROE, i.e.
+BPS_open = BPS0 / (1 - g2 * N / EPS_x) with N = FY27 consensus EPS after the
+SBC haircut.  No g1 window, so every tier rolls at g2.
 
 Candidate band (A2e-7h, A19): the company's FY28 EPS target ($40, company
 guidance, above the consensus high) replaces only the H numerator -> H'.
 Never a zone input.
 
-Guardrail: every tier's multiple (and H') must sit inside the ticker's own
-realised current-FY forward-PE band [pe_own_min, pe_own_max].
+Guardrail (valuation-rules 裁决顺序 ③): the M multiple must sit inside the
+ticker's own realised current-FY forward-PE band [pe_own_min, pe_own_max];
+L / H / H' are printed against the band but not asserted (the band is on the
+current-FY consensus, the tiers are on FY28 scenarios — not the same basis).
 
 r is set by the leg's basket (valuation-rules.md「§r 篮子」): the framework
 names `篮 N` on the r_perp row (A20) and r must equal that basket's value
@@ -166,6 +172,7 @@ def main() -> int:
         "g2",
         "shares_dil",
         "equity",
+        "payout_3y",
         "pe_own_min",
         "pe_own_max",
         "rev_fy27_cons",
@@ -205,10 +212,19 @@ def main() -> int:
     shares = inp["shares_dil"] * 1e6
     haircut = 1.0 - inp["sbc_haircut"]
 
-    def tier(eps: float) -> tuple[float, float]:
-        """(ROE, Gordon multiple) for one FY28 numerator — no transition stage."""
-        roe = eps * shares / inp["equity"]
-        return roe, perpetual_pe(g2, roe, r)
+    bps0 = inp["equity"] / shares  # FY26 reported book per share
+    unbooked = inp["eps_fy27"] * haircut  # FY27 EPS not yet in the book (A21)
+
+    def tier(eps: float, g: float = g2) -> tuple[float, float]:
+        """(ROE, Gordon multiple) for one FY28 numerator — no transition stage.
+
+        ROE = EPS_FY28 / BPS_open(FY28); the book rolls over the unbooked FY27
+        EPS at b1 = g/ROE, closed form BPS_open = BPS0 / (1 - g*N/EPS) (A21).
+        """
+        if g * unbooked / eps >= 1.0:
+            raise ValueError(f"book roll diverges: g*N/EPS = {g * unbooked / eps:.3f}")
+        roe = eps / (bps0 / (1.0 - g * unbooked / eps))
+        return roe, perpetual_pe(g, roe, r)
 
     # ---- Step 1: one FY28 numerator axis, three points (裁决顺序 ②, A2e-2a) ----
     eps = {
@@ -219,22 +235,27 @@ def main() -> int:
     flat_errs, _ = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), 1.0)
     errors += flat_errs
 
-    # ---- Step 2-3: tier ROE from one equity field, then generated multiples ----
+    # ---- Step 2-3: tier ROE on the FY28 opening book, then generated multiples ----
     roe, pe = {}, {}
     for t in TIERS:
         roe[t], pe[t] = tier(eps[t])
-
-    # Guardrail (valuation-rules 永续增长口径 / A17): generated multiple must sit
-    # inside the ticker's own realised current-FY forward-PE band.
-    def guard(label: float | str, mult: float) -> None:
-        if not (inp["pe_own_min"] <= mult <= inp["pe_own_max"]):
-            errors.append(
-                f"{label} multiple {mult:.2f}x outside own realised band "
-                f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] — stop, back to dialogue"
-            )
-
+    b1 = {t: g2 / roe[t] for t in TIERS}
     for t in TIERS:
-        guard(t, pe[t])
+        if not (0.0 < b1[t] < 1.0):
+            errors.append(f"{t}: b1 = g2/ROE = {b1[t]:.3f} outside (0,1) — stage payout would be priced negative")
+
+    # Guardrail (valuation-rules 裁决顺序 ③ / A17): the generated M multiple must
+    # sit inside the ticker's own realised current-FY forward-PE band. L / H / H'
+    # are reported against the band only — they are FY28 scenarios, the band is
+    # current-FY consensus, so a tier straddling the floor is disclosure, not a stop.
+    def in_band(mult: float) -> bool:
+        return inp["pe_own_min"] <= mult <= inp["pe_own_max"]
+
+    if not in_band(pe["M"]):
+        errors.append(
+            f"M multiple {pe['M']:.2f}x outside own realised band "
+            f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] — ③ 出带, stop, back to dialogue"
+        )
 
     # ---- Step 4-5: anchors, cut points, zone ----
     L, M, H = (eps[t] * pe[t] for t in TIERS)
@@ -247,7 +268,6 @@ def main() -> int:
     # ---- Step 6: candidate band — company FY28 target replaces the H numerator only (A19) ----
     eps_c = inp["eps_fy28_guide"] * haircut
     roe_c, pe_c = tier(eps_c)
-    guard("H' (candidate)", pe_c)
     cand = (L, M, eps_c * pe_c)
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not ordered: {cand}")
@@ -300,24 +320,42 @@ def main() -> int:
         f" -> EPS L/M/H = {eps['L']:.4f}/{eps['M']:.4f}/{eps['H']:.4f}"
     )
     print(f"g2={g2:.4f} (flat, no transition) r={r:g} (篮 {baskets['r_perp']}, cap {g_cap(r):.3f})")
-    print(f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f} (EPS x shares / equity)")
+    print(
+        f"ROE basis (A21): EPS_FY28 / BPS_open(FY28); BPS0 {bps0:.2f} (FY26 book) rolled over unbooked FY27 {unbooked:.3f}"
+        f" at b1 = g2/ROE -> BPS_open L/M/H = "
+        + "/".join(f"{eps[t] / roe[t]:.2f}" for t in TIERS)
+    )
+    print(
+        f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f}"
+        f" (on current book: {'/'.join(f'{eps[t] * shares / inp['equity']:.3f}' for t in TIERS)});"
+        f" b1 = {b1['L']:.3f}/{b1['M']:.3f}/{b1['H']:.3f}"
+    )
+    ret_actual = 1.0 - inp["payout_3y"]
+    print(
+        "模型视同派出、实际留存的现金 / 股 (B bucket, disclosure only) L/M/H = "
+        + "/".join(f"{(ret_actual - b1[t]) * unbooked:.2f}" for t in TIERS)
+        + f"  [(1 - payout {inp['payout_3y']:.2f} - b1) x unbooked {unbooked:.2f}]"
+    )
     for t in TIERS:
-        print(f"{t}: eps {eps[t]:.4f} x {pe[t]:.2f}x = {eps[t] * pe[t]:.2f}  [perpetual_pe, payout {1 - g2 / roe[t]:.3f}]")
+        print(f"{t}: eps {eps[t]:.4f} x {pe[t]:.2f}x = {eps[t] * pe[t]:.2f}  [perpetual_pe, payout {1 - b1[t]:.3f}]")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
         f"candidate (A19, guide {inp['eps_fy28_guide']:g} -> H' only): "
         f"L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}  [eps {eps_c:.3f} x {pe_c:.2f}x, ROE {roe_c:.3f}]"
     )
+    flags = {t: "" if in_band(pe[t]) else " OUT" for t in TIERS}
     print(
-        f"guardrail: multiples {pe['L']:.2f}/{pe['M']:.2f}/{pe['H']:.2f}x (H' {pe_c:.2f}x) vs own band "
+        f"guardrail (③ asserts M only): multiples L {pe['L']:.2f}{flags['L']} / M {pe['M']:.2f}{flags['M']}"
+        f" / H {pe['H']:.2f}{flags['H']}x (H' {pe_c:.2f}{'' if in_band(pe_c) else ' OUT'}x) vs own band "
         f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; on FY27 basis M {M / eps27_adj:.1f}x H {H / eps27_adj:.1f}x"
     )
-    g_lo, ok_lo = implied_g(inp["pe_own_min"], roe["M"], r)
-    g_hi, ok_hi = implied_g(inp["pe_own_max"], roe["M"], r)
-    print(
-        f"band-edge implied g @ ROE_M {roe['M']:.3f}: [{g_lo:+.2%}{'' if ok_lo else ' (ill-conditioned)'}, "
-        f"{g_hi:+.2%}{'' if ok_hi else ' (ill-conditioned)'}] — g2 {g2:.2%} inside: {g_lo <= g2 <= g_hi}"
-    )
+    for t in TIERS:
+        g_lo, ok_lo = implied_g(inp["pe_own_min"], roe[t], r)
+        g_hi, ok_hi = implied_g(inp["pe_own_max"], roe[t], r)
+        print(
+            f"band-edge implied g @ ROE_{t} {roe[t]:.3f}: [{g_lo:+.2%}{'' if ok_lo else ' (ill-conditioned)'}, "
+            f"{g_hi:+.2%}{'' if ok_hi else ' (ill-conditioned)'}] — g2 {g2:.2%} inside: {g_lo <= g2 <= g_hi}"
+        )
     print(f"flat-multiple ladder @ M {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f}"
@@ -346,7 +384,7 @@ def main() -> int:
     )
     # Sensitivities the doc quotes (Outputs 敏感性)
     for g in (g2 - 0.01, g2 + 0.01, 0.0664):
-        vals = [eps[t] * perpetual_pe(g, roe[t], r) for t in TIERS]
+        vals = [eps[t] * tier(eps[t], g)[1] for t in TIERS]  # book re-rolls at the perturbed g
         tag = " (above cap, reference only)" if g > g_cap(r) + 1e-9 else ""
         print(f"  sens g2={g:.4f}{tag}: {vals[0]:.2f}/{vals[1]:.2f}/{vals[2]:.2f}")
     for f in (0.9, 1.1):
