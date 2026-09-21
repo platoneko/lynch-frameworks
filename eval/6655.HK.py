@@ -4,47 +4,52 @@
 frameworks/6655.HK.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 
-formula_id: huaxin_dom_ovs_split_perpetual_g_hk_anchored_v3
+formula_id: huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4
 
 Main ruler: split the NUMERATOR by leg, let each tier name a PERPETUAL GROWTH
-RATE for each leg, price each leg on its own Gordon multiple at its BASKET r,
-and add the legs up (SOTP).
+RATE for each leg, price each leg on its own Gordon multiple at its BASKET r
+and its OWN ROE, and add the legs up (SOTP).
 
-  overseas NI = overseas EBITDA x k      (k = group's realised NI/EBITDA)
-  domestic NI = group NI - overseas NI   (residual)
-  PE_leg      = min(1, 1 - g_leg/ROE) / (r_leg - g_leg)
-  V           = NI_dom x PE_dom + NI_ovs x PE_ovs
+  L numerator per leg  = FY2025 segment note (境内 / 境外 pre-tax profit, one
+                         effective tax rate, NCI profit allocated by the same
+                         rule as NCI equity) -> overseas 19.70 / domestic 8.83
+  M / H numerator      = consensus mean / high group NI x the FY2025 realised
+                         overseas share (constant across tiers)
+  ROE_leg              = NI_leg / end-FY2025 leg 归母 net assets (segment assets
+                         - segment liabilities, parent's investment in overseas
+                         subs eliminated, NCI subtracted) -- valuation-rules
+                         「分腿 ROE 来源优先序」①, numerator year's opening book
+  PE_leg               = min(1, 1 - g_leg/ROE_leg) / (r_leg - g_leg)
+  V                    = NI_dom x PE_dom + NI_ovs x PE_ovs
 
 r comes from the basket each leg is assigned to (valuation-rules.md「§r 篮子」,
 values in gordon.BASKET_R); the Inputs rows `r_dom` / `r_ovs` name the basket
 in their source cell and `check_r` enforces that the value is that basket's.
-Both legs sit in 篮 6 (13%), so a no-growth leg is worth 1/r = 7.69x.  The
-company-wide forward ROE is shared by both legs (no per-region assets are
-disclosed), so above zero growth the retention term is a penalty while
-ROE < r — the framework discloses the 1/r alternative for the overseas leg
-rather than deciding it.
+Both legs sit in 篮 6 (13%), so a no-growth leg is worth 1/r = 7.69x.
+
+Until 2026-09-21 the overseas leg was overseas EBITDA x a company-wide
+NI/EBITDA conversion with the domestic leg as the residual, and both legs
+shared the company ROE.  The FY2025 segment note replaces both: overseas
+already earns ~69% of 归母, so EBITDA x k_FY2025 on the 2026 EBITDA rows would
+push the domestic residual below its L value in every tier (a broken leg
+ladder, construction.md §2c).  The overseas EBITDA rows therefore stay in
+Inputs ONLY as a cross-check (implied conversion per tier) and a leak guard
+asserts they never reach the anchors.
 
 The multiples are NOT quantiles of the ticker's own historical PE.  A realised
-PE carries whatever growth the market was pricing at the time: a low-growth or
-shrinking year prints a low PE, and a cyclical trough prints a high one because
-the denominator collapsed.  Using those quantiles as tiers imports the past's
-growth expectations into today's numerator.  This deviates from skill A2e-2b by
-explicit user decision (2026-09-09); the measured band survives as a fence, and
-every tier's company-level multiple (anchor / group EPS) has to land inside it.
+PE carries whatever growth the market was pricing at the time; using those
+quantiles as tiers imports the past's growth expectations into today's
+numerator.  This deviates from skill A2e-2b by explicit user decision
+(2026-09-09); the measured band survives as a fence, and every tier's
+company-level multiple (anchor / group EPS) has to land inside it.
 
-Two guards carry most of the weight here:
+Guards:
 
-  * the zero-growth floor on the overseas leg's H (A10).  "Modelled success"
-    cannot shrink the growth leg forever, so g_ovs_H >= 0.
-  * the historical fence (A9).  If a company-level multiple leaves
-    [4.24, 12.78], the normative anchor has walked past any price this stock
-    has ever printed and the construction goes back to the conversation.
-
-The L numerator is FY2025's realised group net income — domestic already sits
-at its measured trough (16.49 -> 15.23 once the overseas leg is stripped out)
-and the overseas leg freezes at what it has already earned, because plants that
-are running cannot un-ramp.  It comes in below the consensus low (1.437 x
-shares = 29.88), so the tier is not merely "last year".
+  * the zero-growth floor on the overseas leg's H (A10): g_ovs_H >= 0.
+  * the historical fence (A9): company-level multiple inside [4.24, 12.78].
+  * 回代校验: leg 归母 net assets + unallocated = group 归母 equity (±0.5),
+    and the two L-tier leg numerators add back to the group L numerator.
+  * EBITDA rows must not leak into the anchor path.
 
 Run:  python3 eval/6655.HK.py
 """
@@ -64,7 +69,7 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "6655.HK.md"
-FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v3"
+FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4"
 
 TIERS = ("l", "m", "h")
 # Perpetual-g inputs carry the `g2_` prefix so scripts/calibration.py reports
@@ -72,12 +77,16 @@ TIERS = ("l", "m", "h")
 # own basket r row.
 LEGS = ("dom", "ovs")
 R_ROWS = {"dom": "r_dom", "ovs": "r_ovs"}
+MONOTONIC_GAP = 0.03        # |ROE - r| threshold of the domain table (gordon._ROE_NEAR_R)
 
 REQUIRED = [
-    "price", "price_a", "shares", "bps", "fx_hkdcny", "equity",
+    "price", "price_a", "shares", "bps", "fx_hkdcny",
+    "equity_group", "equity_ovs", "equity_dom", "equity_unalloc",
+    "nci_equity", "nci_equity_ovs", "nci_profit", "nci_profit_ovs",
+    "pretax_ovs", "pretax_dom", "tax_eff", "da_ovs",
     "r_dom", "r_ovs",
     "ni_group_l", "ni_group_m", "ni_group_h",
-    "ebitda_ovs_l", "ebitda_ovs_m", "ebitda_ovs_h", "k_ni_ebitda",
+    "ebitda_ovs_l", "ebitda_ovs_m", "ebitda_ovs_h",
     "g2_dom_l", "g2_dom_m", "g2_dom_h",
     "g2_ovs_l", "g2_ovs_m", "g2_ovs_h",
     "pe_own_lo", "pe_own_hi", "pe_own_mid",
@@ -85,67 +94,109 @@ REQUIRED = [
 ]
 
 
-def legs(inp: dict[str, float], tag: str) -> dict[str, float]:
-    """{leg: net income} for one tier, in 亿元 CNY."""
-    ovs = inp[f"ebitda_ovs_{tag}"] * inp["k_ni_ebitda"]
-    return {"dom": inp[f"ni_group_{tag}"] - ovs, "ovs": ovs}
+def domain(roe: float, r: float) -> str:
+    """valuation-rules.md 域判定表, per leg and tier."""
+    if roe - r >= MONOTONIC_GAP:
+        return "单调区"
+    if abs(roe - r) < MONOTONIC_GAP:
+        return "病态区"
+    return "峰形区"
 
 
-def blended_g(inp: dict[str, float], tag: str) -> float:
-    """Profit-weighted g across legs — printed as an intermediate, never priced."""
-    ni = legs(inp, tag)
+def nci_profit_ovs(inp: dict[str, float], nci_equity_ovs: float) -> float:
+    """NCI profit assigned to the overseas leg under an NCI-equity allocation.
+
+    The disclosed Lafarge Africa share (equity 7.06 / profit 0.68, A18) is the
+    only hard datum; NCI equity beyond it is split domestic/overseas by
+    assumption, and its profit follows the same split pro rata.
+    """
+    laf_eq, laf_profit = inp["nci_equity_ovs"], inp["nci_profit_ovs"]
+    rest_eq = inp["nci_equity"] - laf_eq
+    rest_profit = inp["nci_profit"] - laf_profit
+    extra = max(0.0, nci_equity_ovs - laf_eq) / rest_eq if rest_eq > 0 else 0.0
+    return laf_profit * min(1.0, nci_equity_ovs / laf_eq) + rest_profit * extra
+
+
+def leg_split(inp: dict[str, float], nci_equity_ovs: float | None = None) -> tuple[dict[str, float], dict[str, float]]:
+    """({leg: 归母 net assets}, {leg: FY2025 归母 NI}) for an NCI allocation.
+
+    Default = the framework's base allocation (only the disclosed Lafarge
+    Africa NCI sits overseas).  Other allocations move NCI equity between the
+    legs and move NCI profit with it.
+    """
+    base = inp["nci_equity_ovs"]
+    nci_ovs = base if nci_equity_ovs is None else nci_equity_ovs
+    equity = {"ovs": inp["equity_ovs"] + base - nci_ovs,
+              "dom": inp["equity_dom"] - (base - nci_ovs)}
+    p_ovs = nci_profit_ovs(inp, nci_ovs)
+    after_tax = 1.0 - inp["tax_eff"]
+    ni_l = {"ovs": inp["pretax_ovs"] * after_tax - p_ovs,
+            "dom": inp["pretax_dom"] * after_tax - (inp["nci_profit"] - p_ovs)}
+    return equity, ni_l
+
+
+def legs(inp: dict[str, float], tag: str, ni_l: dict[str, float]) -> dict[str, float]:
+    """{leg: net income} for one tier, 亿元 CNY: L from the segment note,
+    M/H = consensus group NI x the FY2025 realised overseas share."""
+    if tag == "l":
+        return dict(ni_l)
+    share = ni_l["ovs"] / (ni_l["ovs"] + ni_l["dom"])
     group = inp[f"ni_group_{tag}"]
-    return sum(ni[leg] / group * inp[f"g2_{leg}_{tag}"] for leg in LEGS)
+    return {"ovs": group * share, "dom": group * (1.0 - share)}
 
 
-def forward_roe(inp: dict[str, float], tag: str) -> float:
-    return inp[f"ni_group_{tag}"] / inp["equity"]
-
-
-def leg_pe(inp: dict[str, float], leg: str, tag: str, r_shift: float = 0.0,
+def leg_pe(inp: dict[str, float], leg: str, tag: str, roe: float, r_shift: float = 0.0,
            g_override: float | None = None) -> float:
     g = inp[f"g2_{leg}_{tag}"] if g_override is None else g_override
-    return perpetual_pe(g, forward_roe(inp, tag), inp[R_ROWS[leg]] + r_shift)
+    return perpetual_pe(g, roe, inp[R_ROWS[leg]] + r_shift)
 
 
-def value_cny(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    """Sum of legs, 亿元 CNY.  `pes` overrides the per-leg multiples (flat / sensitivity)."""
-    ni = legs(inp, tag)
-    pe = pes or {leg: leg_pe(inp, leg, tag) for leg in LEGS}
-    return sum(ni[leg] * pe[leg] for leg in LEGS)
+class Model:
+    """One SOTP under one NCI allocation; everything else read from Inputs."""
 
+    def __init__(self, inp: dict[str, float], nci_equity_ovs: float | None = None):
+        self.inp = inp
+        self.equity, self.ni_l = leg_split(inp, nci_equity_ovs)
+        self.ni = {t: legs(inp, t, self.ni_l) for t in TIERS}
+        self.roe = {t: {leg: self.ni[t][leg] / self.equity[leg] for leg in LEGS} for t in TIERS}
+        self.pe = {t: {leg: leg_pe(inp, leg, t, self.roe[t][leg]) for leg in LEGS} for t in TIERS}
 
-def per_share_cny(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    return value_cny(inp, tag, pes) * 1e8 / inp["shares"]
+    def value_cny(self, tag: str, pes: dict[str, float] | None = None) -> float:
+        pe = pes or self.pe[tag]
+        return sum(self.ni[tag][leg] * pe[leg] for leg in LEGS)
 
+    def per_share_cny(self, tag: str, pes: dict[str, float] | None = None) -> float:
+        return self.value_cny(tag, pes) * 1e8 / self.inp["shares"]
 
-def anchor(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    """HKD per share."""
-    return per_share_cny(inp, tag, pes) / inp["fx_hkdcny"]
+    def anchor(self, tag: str, pes: dict[str, float] | None = None) -> float:
+        """HKD per share."""
+        return self.per_share_cny(tag, pes) / self.inp["fx_hkdcny"]
 
+    def band(self, pes_by_tier: dict[str, dict[str, float]] | None = None) -> list[float]:
+        return [self.anchor(t, pes_by_tier[t] if pes_by_tier else None) for t in TIERS]
 
-def implied_r_shift(inp: dict[str, float], price_cny: float) -> float:
-    """δ such that the M-tier SOTP with every leg at r_leg + δ equals the price.
+    def implied_r_shift(self, price_cny: float) -> float:
+        """δ such that the M-tier SOTP with every leg at r_leg + δ equals the price.
 
-    Both legs' basket r move together; the answer is the parallel shift the
-    market is applying to the basket table, not a per-leg r.  Bisection on
-    δ ∈ [-8%, +20%]: the SOTP is monotone decreasing in δ over that range.
-    """
-    lo, hi = -0.08, 0.20
+        Both legs' basket r move together; the answer is the parallel shift the
+        market is applying to the basket table, not a per-leg r.  Bisection on
+        δ ∈ [-8%, +20%]: the SOTP is monotone decreasing in δ over that range.
+        """
+        lo, hi = -0.08, 0.20
 
-    def f(delta: float) -> float:
-        pes = {leg: leg_pe(inp, leg, "m", r_shift=delta) for leg in LEGS}
-        return per_share_cny(inp, "m", pes) - price_cny
+        def f(delta: float) -> float:
+            pes = {leg: leg_pe(self.inp, leg, "m", self.roe["m"][leg], r_shift=delta) for leg in LEGS}
+            return self.per_share_cny("m", pes) - price_cny
 
-    if f(lo) < 0 or f(hi) > 0:
-        raise ValueError("implied r shift outside bisection bracket")
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        if f(mid) > 0:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
+        if f(lo) < 0 or f(hi) > 0:
+            raise ValueError("implied r shift outside bisection bracket")
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if f(mid) > 0:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
 
 
 def check_southbound_mount(md: str) -> list[str]:
@@ -153,7 +204,7 @@ def check_southbound_mount(md: str) -> list[str]:
 
     The southbound axis locks no numerator and, since valuation-rules.md
     「永续增长口径」took multiples away from historical quantiles, no multiple
-    either (A16: it acts on the implied-g convergence).  What it still locks
+    either (A16: it acts on the implied-r convergence).  What it still locks
     is the reporting contract its own §4 direction check depends on.
     """
     if not AXIS_SOUTHBOUND.exists():
@@ -193,30 +244,37 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (baskets)")
 
-    # --- Step 2: numerators -------------------------------------------------
-    errors += ladder(
-        "ni_group", inp["ni_group_l"], inp["ni_group_m"], inp["ni_group_h"]
-    )
-    errors += ladder(
-        "ebitda_ovs", inp["ebitda_ovs_l"], inp["ebitda_ovs_m"], inp["ebitda_ovs_h"]
-    )
-    if not 0.0 < inp["k_ni_ebitda"] < 1.0:
-        errors.append(f"k_ni_ebitda={inp['k_ni_ebitda']} outside (0, 1)")
-    if inp["equity"] <= 0:
-        errors.append(f"equity={inp['equity']} must be positive")
-
-    # Both legs must ladder on their own.  The domestic leg is a residual, so a
-    # reversal there means the split is fighting the cycle rather than showing
-    # it — a construction failure, not a scenario.
-    ni = {t: legs(inp, t) for t in TIERS}
-    errors += ladder("ni_dom (residual)", *(ni[t]["dom"] for t in TIERS))
-    errors += ladder("ni_ovs", *(ni[t]["ovs"] for t in TIERS))
+    # --- Step 2: leg book and numerators -------------------------------------
+    m = Model(inp)
+    # 回代校验 (valuation-rules.md 分腿 ROE 来源优先序 护栏): the two legs'
+    # 归母 net assets plus the unallocated block must rebuild group 归母 equity,
+    # and the segment-derived L legs must rebuild the group L numerator.
+    rebuilt = m.equity["ovs"] + m.equity["dom"] + inp["equity_unalloc"]
+    if abs(rebuilt - inp["equity_group"]) > 0.5:
+        errors.append(f"leg equity {m.equity['ovs']:.2f} + {m.equity['dom']:.2f} + unallocated "
+                      f"{inp['equity_unalloc']:.2f} = {rebuilt:.2f} != equity_group {inp['equity_group']}")
+    leg_sum = m.ni_l["ovs"] + m.ni_l["dom"]
+    if abs(leg_sum - inp["ni_group_l"]) > 0.05:
+        errors.append(f"segment legs {m.ni_l['ovs']:.2f} + {m.ni_l['dom']:.2f} = {leg_sum:.2f} "
+                      f"!= ni_group_l {inp['ni_group_l']} (tax / NCI allocation does not add back)")
+    for leg in LEGS:
+        if m.equity[leg] <= 0:
+            errors.append(f"equity_{leg}={m.equity[leg]:.2f} must be positive (回对话)")
+    for t in TIERS:
+        for leg in LEGS:
+            if m.roe[t][leg] > 0.60:
+                errors.append(f"ROE_{leg}_{t}={m.roe[t][leg]:.1%} > 60% — leg book implausible (回对话)")
+    errors += ladder("ni_group", inp["ni_group_l"], inp["ni_group_m"], inp["ni_group_h"])
+    errors += ladder("ebitda_ovs (cross-check)", inp["ebitda_ovs_l"], inp["ebitda_ovs_m"], inp["ebitda_ovs_h"])
+    # Both legs must ladder on their own.
+    errors += ladder("ni_dom", *(m.ni[t]["dom"] for t in TIERS))
+    errors += ladder("ni_ovs", *(m.ni[t]["ovs"] for t in TIERS))
+    if errors:
+        return report(errors, "FAIL (book / numerators)")
 
     # --- Step 3: the growth ladders, per leg against its own basket r --------
     errors += ladder("g_dom", inp["g2_dom_l"], inp["g2_dom_m"], inp["g2_dom_h"])
     errors += ladder("g_ovs", inp["g2_ovs_l"], inp["g2_ovs_m"], inp["g2_ovs_h"])
-    g_bar = {t: blended_g(inp, t) for t in TIERS}
-    errors += ladder("g blended", *(g_bar[t] for t in TIERS))
     for leg in LEGS:
         for t in TIERS:
             g = inp[f"g2_{leg}_{t}"]
@@ -245,10 +303,9 @@ def main() -> int:
             f"H tier overseas g={inp['g2_ovs_h']:.2%} < 0 — the optimistic tier cannot "
             f"price perpetual decline on the growth leg (A10)"
         )
-    pe = {t: {leg: leg_pe(inp, leg, t) for leg in LEGS} for t in TIERS}
     # A9: the company-level multiple (SOTP value / group NI) still has to be a
     # price this stock could print.
-    pe_company = {t: value_cny(inp, t) / inp[f"ni_group_{t}"] for t in TIERS}
+    pe_company = {t: m.value_cny(t) / inp[f"ni_group_{t}"] for t in TIERS}
     for t in TIERS:
         if not (lo - 1e-9 <= pe_company[t] <= hi + 1e-9):
             errors.append(
@@ -258,23 +315,27 @@ def main() -> int:
     # A12: growth is paid for out of retained earnings, and a shrinking
     # business is not assumed to hand back more than it earns — per leg.
     for t in TIERS:
-        roe = forward_roe(inp, t)
         for leg in LEGS:
             g = inp[f"g2_{leg}_{t}"]
-            pay = payout(g, roe)
+            pay = payout(g, m.roe[t][leg])
             if not 0.0 < pay <= 1.0 + 1e-12:
                 errors.append(f"payout_{leg}_{t}={pay:.3f} outside (0, 1]")
             if g <= 0 and abs(pay - 1.0) > 1e-12:
                 errors.append(f"payout_{leg}_{t}={pay:.3f} but g={g:.2%} <= 0 — cap not binding")
     # Comparison-only fields must stay out of the computation path.
     for key in ("pe_a_mid", "pe_own_mid"):
-        if any(abs(inp[key] - pe["m"][leg]) < 1e-9 for leg in LEGS):
+        if any(abs(inp[key] - m.pe["m"][leg]) < 1e-9 for leg in LEGS):
             errors.append(f"{key} leaked into the multiple path — it is a comparison field")
+    # A4: the overseas EBITDA rows are a cross-check only.  Doubling them must
+    # leave every anchor untouched.
+    scaled = Model({**inp, **{f"ebitda_ovs_{t}": 2 * inp[f"ebitda_ovs_{t}"] for t in TIERS}})
+    if any(abs(a - b) > 1e-9 for a, b in zip(m.band(), scaled.band())):
+        errors.append("ebitda_ovs_* leaked into the anchor path — they are cross-check rows (A4)")
     if errors:
         return report(errors, "FAIL (guards)")
 
     # --- Step 6: anchors ----------------------------------------------------
-    L, M, H = (anchor(inp, t) for t in TIERS)
+    L, M, H = m.band()
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
@@ -282,8 +343,8 @@ def main() -> int:
     zone = zone_of(inp["price"], L, M, H)
 
     # flat-multiple: each leg held at its own PE_M across the three tiers.
-    flat = {t: anchor(inp, t, pe["m"]) for t in TIERS}
-    errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
+    flat = m.band({t: m.pe["m"] for t in TIERS})
+    errors += ladder("flat-multiple", *flat)
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
 
@@ -293,51 +354,81 @@ def main() -> int:
     print("篮子: " + "; ".join(
         f"{R_ROWS[leg]} 篮 {baskets[R_ROWS[leg]]} {basket_r(baskets[R_ROWS[leg]]):.0%}"
         f" (零增长 {1 / r[leg]:.2f}x)" for leg in LEGS))
-    print(f"{'档':<3}{'集团归母':>10}{'海外NI':>9}{'国内NI':>9}{'海外权重':>10}"
-          f"{'g_dom':>8}{'g_ovs':>8}{'ROE':>8}{'PE_dom':>8}{'PE_ovs':>8}{'派息ovs':>9}"
-          f"{'合成g':>9}{'公司PE':>8}{'CNY价值':>10}{'锚点HKD':>10}")
+    share = m.ni_l["ovs"] / inp["ni_group_l"]
+    print(f"分腿净资产(FY2025 末, 归母): 海外 {m.equity['ovs']:.2f} 国内 {m.equity['dom']:.2f} "
+          f"未分配 {inp['equity_unalloc']:.2f} → 合计 {rebuilt:.2f} vs 归母权益 {inp['equity_group']} ✓")
+    print(f"FY2025 分部归母: 海外 {m.ni_l['ovs']:.2f} 国内 {m.ni_l['dom']:.2f} (合计 {leg_sum:.2f}; "
+          f"税率 {inp['tax_eff']:.2%}; NCI 损益 海外 {nci_profit_ovs(inp, inp['nci_equity_ovs']):.2f} / "
+          f"国内 {inp['nci_profit'] - nci_profit_ovs(inp, inp['nci_equity_ovs']):.2f}) → 海外份额 {share:.1%}")
+    print(f"{'档':<3}{'集团归母':>10}{'海外NI':>9}{'国内NI':>9}{'ROE_ovs':>9}{'域':>6}{'ROE_dom':>9}{'域':>6}"
+          f"{'PE_dom':>8}{'PE_ovs':>8}{'派息ovs':>9}{'公司PE':>8}{'CNY价值':>10}{'锚点HKD':>10}")
     for t in TIERS:
-        roe = forward_roe(inp, t)
-        print(f"{t.upper():<3}{inp[f'ni_group_{t}']:10.2f}{ni[t]['ovs']:9.2f}{ni[t]['dom']:9.2f}"
-              f"{ni[t]['ovs'] / inp[f'ni_group_{t}']:10.1%}{inp[f'g2_dom_{t}']:8.0%}"
-              f"{inp[f'g2_ovs_{t}']:8.0%}{roe:8.2%}{pe[t]['dom']:8.2f}{pe[t]['ovs']:8.2f}"
-              f"{payout(inp[f'g2_ovs_{t}'], roe):9.1%}{g_bar[t]:9.2%}{pe_company[t]:8.2f}"
-              f"{value_cny(inp, t):10.2f}{anchor(inp, t):10.2f}")
+        print(f"{t.upper():<3}{inp[f'ni_group_{t}']:10.2f}{m.ni[t]['ovs']:9.2f}{m.ni[t]['dom']:9.2f}"
+              f"{m.roe[t]['ovs']:9.2%}{domain(m.roe[t]['ovs'], r['ovs']):>6}"
+              f"{m.roe[t]['dom']:9.2%}{domain(m.roe[t]['dom'], r['dom']):>6}"
+              f"{m.pe[t]['dom']:8.2f}{m.pe[t]['ovs']:8.2f}"
+              f"{payout(inp[f'g2_ovs_{t}'], m.roe[t]['ovs']):9.1%}{pe_company[t]:8.2f}"
+              f"{m.value_cny(t):10.2f}{m.anchor(t):10.2f}")
+    print("海外 EBITDA 交叉（不进锚点）: " + " / ".join(
+        f"{t.upper()} {inp[f'ebitda_ovs_{t}']:.2f} → 隐含归母转化率 {m.ni[t]['ovs'] / inp[f'ebitda_ovs_{t}']:.3f}"
+        for t in TIERS))
     alt_l = inp["eps_consensus_low"] * inp["shares"] / 1e8
     print(f"L 分子 {inp['ni_group_l']:.2f} 亿 vs 共识下沿隐含 {alt_l:.2f} 亿 — "
           f"L {'低于' if inp['ni_group_l'] < alt_l else '高于'}街上最低预期")
     print(f"公司口径 PE {pe_company['l']:.2f}/{pe_company['m']:.2f}/{pe_company['h']:.2f} "
           f"落在 own-year 实测带 [{lo}, {hi}] 内 (p50={inp['pe_own_mid']:g}) ✓ — ③ 不出带")
-    print(f"flat-multiple @PE_M (国内 {pe['m']['dom']:.2f}× / 海外 {pe['m']['ovs']:.2f}×): "
-          f"L={flat['l']:.2f} M={flat['m']:.2f} H={flat['h']:.2f} — "
-          f"带宽 {(flat['h'] - flat['l']) / (2 * flat['m']):.0%}")
+    print(f"flat-multiple @PE_M (国内 {m.pe['m']['dom']:.2f}× / 海外 {m.pe['m']['ovs']:.2f}×): "
+          f"L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%}")
     num_l = inp["ni_group_l"] / inp["ni_group_m"]
     num_h = inp["ni_group_h"] / inp["ni_group_m"]
     print(f"分子比 L/M={num_l:.2f} H/M={num_h:.2f} | 公司口径倍数比 "
           f"L/M={pe_company['l'] / pe_company['m']:.2f} H/M={pe_company['h'] / pe_company['m']:.2f}")
-    print(f"分腿分子比 海外 L/M={ni['l']['ovs'] / ni['m']['ovs']:.2f} H/M={ni['h']['ovs'] / ni['m']['ovs']:.2f} | "
-          f"国内 L/M={ni['l']['dom'] / ni['m']['dom']:.2f} H/M={ni['h']['dom'] / ni['m']['dom']:.2f}")
+    ni = m.ni
+    print(f"分腿价值比 海外 L/M={ni['l']['ovs'] * m.pe['l']['ovs'] / (ni['m']['ovs'] * m.pe['m']['ovs']):.2f} "
+          f"H/M={ni['h']['ovs'] * m.pe['h']['ovs'] / (ni['m']['ovs'] * m.pe['m']['ovs']):.2f} | "
+          f"国内 L/M={ni['l']['dom'] * m.pe['l']['dom'] / (ni['m']['dom'] * m.pe['m']['dom']):.2f} "
+          f"H/M={ni['h']['dom'] * m.pe['h']['dom'] / (ni['m']['dom'] * m.pe['m']['dom']):.2f}")
 
     # Disclosure rows (never max()'d into the deck).
     print(f"地板（只披露）: BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD; "
           f"锚点隐含 PB {L * fx / inp['bps']:.2f} / {M * fx / inp['bps']:.2f} / {H * fx / inp['bps']:.2f}")
-    one_over_r = {t: {"dom": pe[t]["dom"], "ovs": 1 / r["ovs"]} for t in TIERS}
-    alt = [anchor(inp, t, one_over_r[t]) for t in TIERS]
-    print(f"海外腿按 1/r（项目 ROE ≥ r 的坐标）: {alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f}")
-    naive = [anchor(inp, t, {leg: 1 / (r[leg] - inp[f"g2_{leg}_{t}"]) for leg in LEGS}) for t in TIERS]
+    one_over_r = {t: {"dom": m.pe[t]["dom"], "ovs": 1 / r["ovs"]} for t in TIERS}
+    alt = m.band(one_over_r)
+    print(f"海外腿按 1/r（不给轴 credit）: {alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f} zone={zone_of(inp['price'], *alt)}")
+    naive = m.band({t: {leg: 1 / (r[leg] - inp[f"g2_{leg}_{t}"]) for leg in LEGS} for t in TIERS})
     print(f"若按 100% 派息的 1/(r-g)：{naive[0]:.2f} / {naive[1]:.2f} / {naive[2]:.2f}"
           f" — H 档高估 {naive[2] / H - 1:.0%}（留存成本，A12）")
     for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
-        band = [anchor(inp, t, {"dom": pe[t]["dom"],
-                                "ovs": leg_pe(inp, "ovs", t, g_override=inp[f"g2_ovs_{t}"] + dg)})
-                for t in TIERS]
+        band = m.band({t: {"dom": m.pe[t]["dom"],
+                           "ovs": leg_pe(inp, "ovs", t, m.roe[t]["ovs"], g_override=inp[f"g2_ovs_{t}"] + dg)}
+                       for t in TIERS})
         print(f"敏感区 g2_ovs_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
               f"zone={zone_of(inp['price'], *band)}")
-    for dr, label in ((-0.005, "12.5%"), (0.005, "13.5%")):
-        band = [anchor(inp, t, {leg: leg_pe(inp, leg, t, r_shift=dr) for leg in LEGS}) for t in TIERS]
+    for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
+        band = m.band({t: {"ovs": m.pe[t]["ovs"],
+                           "dom": leg_pe(inp, "dom", t, m.roe[t]["dom"], g_override=inp[f"g2_dom_{t}"] + dg)}
+                       for t in TIERS})
+        print(f"敏感区 g2_dom_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
+              f"zone={zone_of(inp['price'], *band)}")
+    for dr, label in ((-0.005, "12.5%"), (0.005, "13.5%"), (-0.02, "11%（篮 5 读数，仅示）")):
+        band = m.band({t: {leg: leg_pe(inp, leg, t, m.roe[t][leg], r_shift=dr) for leg in LEGS} for t in TIERS})
         print(f"敏感区 两腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
+              f"zone={zone_of(inp['price'], *band)}")
+    # A18: the NCI allocation is the largest construction-side degree of
+    # freedom left.  The base subtracts only the disclosed Lafarge Africa NCI
+    # from the overseas segment; the alternatives move the rest across.
+    print("敏感区 NCI 分配（A18；海外 NCI 权益 → 海外归母净资产 / 份额 → L/M/H zone）:")
+    for label, nci_ovs in (("基准：仅 Lafarge 7.06", inp["nci_equity_ovs"]),
+                           ("一半在海外", inp["nci_equity"] / 2),
+                           ("全在海外", inp["nci_equity"]),
+                           ("全在国内", 0.0)):
+        alt_m = Model(inp, nci_ovs)
+        band = alt_m.band()
+        s = alt_m.ni_l["ovs"] / (alt_m.ni_l["ovs"] + alt_m.ni_l["dom"])
+        print(f"  {label:<16} 海外净资产 {alt_m.equity['ovs']:7.2f} 份额 {s:5.1%} "
+              f"ROE_ovs M {alt_m.roe['m']['ovs']:5.1%} → {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
               f"zone={zone_of(inp['price'], *band)}")
 
     # What the market, the street and book value each require in r terms:
@@ -345,12 +436,11 @@ def main() -> int:
     # price, plus the single-segment g=0 approximation E_M / P.
     eps_m_cny = inp["ni_group_m"] * 1e8 / inp["shares"]
     print(f"price(H)={inp['price']} zone={zone}")
-    for label, price_cny in (
-        ("H 股现价", inp["price"] * fx),
-        ("账面 PB=1.0", inp["bps"]),
-        ("A 股现价", inp["price_a"]),
-    ):
-        delta = implied_r_shift(inp, price_cny)
+    coords = [("H 股现价", inp["price"] * fx), ("账面 PB=1.0", inp["bps"]), ("A 股现价", inp["price_a"])]
+    if "tp_sellside_h" in inp:   # disclosure-only row; absent is fine
+        coords.append(("卖方 H 股 TP", inp["tp_sellside_h"] * fx))
+    for label, price_cny in coords:
+        delta = m.implied_r_shift(price_cny)
         print(f"  {label:<10} 隐含 PE={price_cny / eps_m_cny:5.2f} → δ={delta:+.2%} "
               f"(两腿 r {r['dom'] + delta:.1%}) | g=0 近似 E_M/P={eps_m_cny / price_cny:.1%}")
     la, ma, ha = L * fx, M * fx, H * fx
