@@ -20,6 +20,13 @@ tiers differ ONLY in that layer plus the RL loss path (A7).  The multiple is
 told apart by tier ROIC, whose denominator is the FY27 invested-capital path
 $425B (A6): capex is half debt-funded, so equity alone cannot see it.
 
+Option (meta_amd_warrant_option_v1, A14) -- table 3 only, never the deck:
+  V_opt = amd_warrant_shares * (amd_price - amd_warrant_strike) * (1-tax) / shares
+The AMD performance warrant is a one-off asset (a purchase rebate paid in AMD
+stock), not an earnings stream, so it is taken at after-tax face value like a
+closing item -- no multiple, no discount; outcome risk sits in p_k = 0 / 1/6 / 1
+(first 1 GW tranche of 6 GW for M, full vesting at AMD >= $600 for H).
+
 r is not a per-ticker dial: every `r*` Inputs row names its basket (`篮 N`) and
 the value must equal gordon.BASKET_R for that basket.  Both legs sit in basket 4
 龙头制造 (10%, A2) -- the RL loss stream is paid out of group cash flow, and a
@@ -49,6 +56,7 @@ Run:  python3 eval/META.US.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -85,6 +93,10 @@ PAYOUT_OBSERVED = 0.61
 # Contingent 30% of the state settlement (A8), pressure row only.
 SETTLEMENT_CONTINGENT_B = 5.3
 IC_STRESS_MULT = 1.58  # A9 upper IC stress
+# A14: per-tier credit on the AMD warrant -- M = first 1 GW tranche of 6 GW
+# (tranche sizes undisclosed, linear in GW), H = full vesting.
+P_TIERS = (0.0, 1.0 / 6.0, 1.0)
+V_OPT_TOL = 0.05
 
 REQUIRED = [
     "price",
@@ -113,9 +125,28 @@ REQUIRED = [
     "rf_cap",
     "capex_guide_low",
     "capex_guide_high",
+    "amd_warrant_shares",
+    "amd_warrant_strike",
+    "amd_price",
 ]
 
 TIERS = ("l", "m", "h")
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
+    return float(m.group(1)) if m else None
+
+
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(r"p_L/p_M/p_H\\\)\s*=\s*\*\*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)\*\*", md)
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
+
+
+def warrant_value(inp: dict[str, float], amd_price: float | None = None) -> float:
+    """A14: after-tax face value per META share of the AMD warrant at full vesting."""
+    px = inp["amd_price"] if amd_price is None else amd_price
+    return inp["amd_warrant_shares"] * (px - inp["amd_warrant_strike"]) * (1.0 - inp["tax"]) / inp["shares"]
 
 
 def band(
@@ -234,6 +265,20 @@ def main() -> int:
     # --- Step 6: compare with the stated Outputs block ---
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut}, zone)
 
+    # --- Step 7: option leg (A14) -- table 3 only; the deck above never sees it ---
+    v_opt = warrant_value(inp)
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v - v_opt) > V_OPT_TOL:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    said_p = stated_p_tiers(md)
+    if said_p is None or any(abs(a - b) > 0.01 for a, b in zip(said_p, P_TIERS)):
+        errors.append(f"p_L/p_M/p_H: stated {said_p} vs expected {tuple(round(p, 3) for p in P_TIERS)}")
+    adj = tuple(v + p * v_opt for v, p in zip((L, M, H), P_TIERS))
+    if abs(adj[0] - L) > 1e-9:
+        errors.append("table 3 L row must equal base L (p_L = 0, check_no_p_leak)")
+    a_adj, b_adj = cut_points(*adj)
+    zone_adj = zone_of(price, *adj)
+
     print(f"formula_id={FORMULA_ID}")
     print(
         f"r={r:g} (r_foa 篮 {baskets.get('r_foa')}, r_rl 篮 {baskets.get('r_rl')})  "
@@ -247,7 +292,18 @@ def main() -> int:
         )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}  price={price} zone={zone}")
     print(f"flat (all {pe_m:.2f}x): " + " / ".join(f"{x:.1f}" for x in flat))
-    print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}")
+    print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}  V_opt/M {v_opt / M:.1%}")
+    print(
+        f"V_opt (A14 AMD warrant) = {inp['amd_warrant_shares']:g}B sh x (AMD {inp['amd_price']:g} - {inp['amd_warrant_strike']:g}) "
+        f"x (1-{inp['tax']:g}) / {shares}B = {v_opt:.2f}/sh  p_k {P_TIERS[0]:g}/{P_TIERS[1]:.3f}/{P_TIERS[2]:g}"
+    )
+    print(f"表3: {adj[0]:.1f} / {adj[1]:.1f} / {adj[2]:.1f}  A'={a_adj:.1f} B'={b_adj:.1f}  zone+V={zone_adj}")
+    implied_p = f"{(price - H) / v_opt:.2f}" if price > H else "n/a (P <= H)"
+    print(
+        f"market-implied p = {implied_p}; AMD $400/$600/$800 -> V_opt "
+        + " / ".join(f"{warrant_value(inp, x):.1f}" for x in (400.0, 600.0, 800.0))
+        + f"; p_M 0.5 -> M' {M + 0.5 * v_opt:.1f}"
+    )
     print(
         f"payout: modelled {payout_modelled:.0%} at M ROIC vs observed {PAYOUT_OBSERVED:.0%} "
         f"(gap {gap:+.0%}; ROIC >= r + 3pp so sign test only — disclosure)"
