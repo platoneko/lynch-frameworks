@@ -136,6 +136,9 @@ REQUIRED = [
     "corp_oneoff_h1",
     "oi_other_bets_h1",
     "r_perp",
+    "r_cld_lab",
+    "roic_marg_cld",
+    "share_lab_cld",
     "equity_services",
     "equity_cloud",
     "payout_3y",
@@ -192,6 +195,14 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if "r_perp" not in baskets:
         errs.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
     errs += check_r(r, "r_perp", baskets.get("r_perp"))
+    if "r_cld_lab" not in baskets:
+        errs.append("r_cld_lab: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errs += check_r(inp["r_cld_lab"], "r_cld_lab", baskets.get("r_cld_lab"))
+    errs += check_g_cap(inp["g2_cld"], inp["r_cld_lab"], "g2_cld@lab")
+    if not (0.0 < inp["share_lab_cld"] < 1.0):
+        errs.append("share_lab_cld outside (0,1)")
+    if not (0.0 < inp["roic_marg_cld"] < 1.0):
+        errs.append("roic_marg_cld outside (0,1)")
 
     # Growth: one rate per leg, shared by every tier. Both must sit under the
     # cap set by the legs' basket r (valuation-rules「永续增长口径」) and clear the pole.
@@ -320,27 +331,44 @@ def main() -> int:
             raise ValueError(f"opening-capital roll diverges: g*N/E = {g * unbooked / e_fy27:.3f}")
         return e_fy27 / (ic0 / (1.0 - g * unbooked / e_fy27))
 
-    def tier_multiples(g_svc: float, g_cld: float, ic_scale: float = 1.0) -> dict[str, dict[str, float]]:
-        """Per-tier ROE and multiple for both legs; `ic_scale` is the A23 sensitivity."""
-        out: dict[str, dict[str, float]] = {"roe_svc": {}, "roe_cld": {}, "pe_svc": {}, "pe_cld": {}}
+    r_lab = inp["r_cld_lab"]
+
+    def tier_multiples(g_svc: float, g_cld: float, ic_scale: float = 1.0,
+                       roic_marg: float | None = None, r_lab_: float | None = None) -> dict[str, dict[str, float]]:
+        """Per-tier ROE and multiple for both legs; `ic_scale` is the A23 sensitivity.
+
+        The cloud leg's snapshot ROE (FY2027E NOPAT / FY2027 opening capital) is
+        computed and printed, but the retention that funds g_cld is priced at
+        the MARGINAL steady-state ROIC of the capex wave (A26), scaled by the
+        A18 margin retreat in the L tier.  The lab sub-leg (A27) shares that
+        retention rate and takes 篮 7's r.
+        """
+        rm = inp["roic_marg_cld"] if roic_marg is None else roic_marg
+        rl = r_lab if r_lab_ is None else r_lab_
+        out: dict[str, dict[str, float]] = {"roe_svc": {}, "roe_cld": {}, "ret_cld": {}, "pe_svc": {}, "pe_cld": {}, "pe_lab": {}}
         for tier, k_field, scale in (("l", "k_eps_l", cloud_retreat), ("m", "k_eps_m", 1.0), ("h", "k_eps_h", 1.0)):
             k = inp[k_field]
             out["roe_svc"][tier] = roe_open(svc_leg * k, inp["equity_services"] * ic_scale, g_svc, unbooked_svc)
             out["roe_cld"][tier] = roe_open(nopat_cloud * scale * k, inp["equity_cloud"] * ic_scale, g_cld, unbooked_cld)
+            out["ret_cld"][tier] = rm * scale
             out["pe_svc"][tier] = perpetual_pe(g_svc, out["roe_svc"][tier], r)
-            out["pe_cld"][tier] = perpetual_pe(g_cld, out["roe_cld"][tier], r)
+            out["pe_cld"][tier] = perpetual_pe(g_cld, out["ret_cld"][tier], r)
+            out["pe_lab"][tier] = perpetual_pe(g_cld, out["ret_cld"][tier], rl)
         return out
 
     tm = tier_multiples(inp["g2_svc"], inp["g2_cld"])
-    roe_svc, roe_cld, pe_svc, pe_cld = tm["roe_svc"], tm["roe_cld"], tm["pe_svc"], tm["pe_cld"]
+    roe_svc, roe_cld, pe_svc, pe_cld, pe_lab, ret_cld = tm["roe_svc"], tm["roe_cld"], tm["pe_svc"], tm["pe_cld"], tm["pe_lab"], tm["ret_cld"]
     b1_svc = {t: inp["g2_svc"] / roe_svc[t] for t in "lmh"}
-    b1_cld = {t: inp["g2_cld"] / roe_cld[t] for t in "lmh"}
+    b1_cld = {t: inp["g2_cld"] / ret_cld[t] for t in "lmh"}
+    share_lab = inp["share_lab_cld"]
 
     # The cloud leg MUST come out cheaper than the services leg. This is the
     # reversal of the retired lambda = 1.2727: even a percentage point of extra
     # growth cannot make an ROE-20% leg out-multiple an ROE-60% leg, because
     # that growth costs it ~3x the retained capital.
     for tier in ("l", "m", "h"):
+        if pe_lab[tier] >= pe_cld[tier]:
+            errors.append(f"tier {tier}: 篮 7 lab sub-leg must not out-multiple the 篮 4 cloud sub-leg")
         lam = pe_cld[tier] / pe_svc[tier]
         if lam >= 1.0:
             errors.append(
@@ -362,12 +390,19 @@ def main() -> int:
         d_ob: float,
         cloud_scale: float,
         mult_svc: float,
+        mult_lab: float,
     ) -> dict[str, float]:
-        """Per-share contribution of each leg; the anchor is their sum."""
+        """Per-share contribution of each leg; the anchor is their sum.
+
+        The cloud numerator is split (A27): (1 - share_lab_cld) at the 篮 4
+        multiple, share_lab_cld (Anthropic) at the 篮 7 multiple.
+        """
         sh = inp["shares_diluted"]
+        cld_num = nopat_cloud * cloud_scale * k_eps
         return {
             "svc": svc_leg * k_eps * mult_svc / sh,
-            "cld": nopat_cloud * cloud_scale * k_eps * mult_cld / sh,
+            "cld": cld_num * (1 - share_lab) * mult_cld / sh,
+            "lab": cld_num * share_lab * mult_lab / sh,
             "cash": net_cash / sh,
             "port": portfolio_gross * (1 - d_port) / sh,
             "ob": waymo_gross * (1 - d_ob) / sh,
@@ -380,13 +415,19 @@ def main() -> int:
         d_ob: float,
         cloud_scale: float,
         mult_svc: float,
+        mult_lab: float,
     ) -> float:
         """Tier value: the FY2027E consensus scalar rides the whole numerator."""
-        return sum(legs(k_eps, mult_cld, d_port, d_ob, cloud_scale, mult_svc).values())
+        return sum(legs(k_eps, mult_cld, d_port, d_ob, cloud_scale, mult_svc, mult_lab).values())
 
-    L = anchor(inp["k_eps_l"], pe_cld["l"], inp["d_port_l"], inp["d_ob_l"], cloud_retreat, pe_svc["l"])
-    M = anchor(inp["k_eps_m"], pe_cld["m"], inp["d_port_m"], inp["d_ob_m"], 1.0, pe_svc["m"])
-    H = anchor(inp["k_eps_h"], pe_cld["h"], inp["d_port_h"], inp["d_ob_h"], 1.0, pe_svc["h"])
+    def anchor_from(t_: dict[str, dict[str, float]], tier: str) -> float:
+        scale = cloud_retreat if tier == "l" else 1.0
+        return anchor(inp[f"k_eps_{tier}"], t_["pe_cld"][tier], inp[f"d_port_{tier}"], inp[f"d_ob_{tier}"],
+                      scale, t_["pe_svc"][tier], t_["pe_lab"][tier])
+
+    L = anchor_from(tm, "l")
+    M = anchor_from(tm, "m")
+    H = anchor_from(tm, "h")
     A, B = (L + M) / 2, (M + H) / 2
 
     if not (L < M < H):
@@ -407,8 +448,8 @@ def main() -> int:
 
     # A2e-2c: price every tier at the M multiples (both legs) and the ladder
     # must still stand — proof the tiers are numerator, not multiple.
-    flat_l = anchor(inp["k_eps_l"], pe_cld["m"], inp["d_port_l"], inp["d_ob_l"], cloud_retreat, pe_svc["m"])
-    flat_h = anchor(inp["k_eps_h"], pe_cld["m"], inp["d_port_h"], inp["d_ob_h"], 1.0, pe_svc["m"])
+    flat_l = anchor(inp["k_eps_l"], pe_cld["m"], inp["d_port_l"], inp["d_ob_l"], cloud_retreat, pe_svc["m"], pe_lab["m"])
+    flat_h = anchor(inp["k_eps_h"], pe_cld["m"], inp["d_port_h"], inp["d_ob_h"], 1.0, pe_svc["m"], pe_lab["m"])
     if not (flat_l < M < flat_h):
         print(
             f"FAIL: flat-multiple ladder collapsed: "
@@ -436,14 +477,10 @@ def main() -> int:
 
     # The roll retains only b1 = g/ROE; the capex wave retains far more, so the
     # true FY2027 opening capital is larger and these multiples too high (A23).
-    def band_at(g_svc: float, g_cld: float, ic_scale: float = 1.0) -> tuple[float, float, float, dict[str, dict[str, float]]]:
-        t_ = tier_multiples(g_svc, g_cld, ic_scale)
-        return (
-            anchor(inp["k_eps_l"], t_["pe_cld"]["l"], inp["d_port_l"], inp["d_ob_l"], cloud_retreat, t_["pe_svc"]["l"]),
-            anchor(inp["k_eps_m"], t_["pe_cld"]["m"], inp["d_port_m"], inp["d_ob_m"], 1.0, t_["pe_svc"]["m"]),
-            anchor(inp["k_eps_h"], t_["pe_cld"]["h"], inp["d_port_h"], inp["d_ob_h"], 1.0, t_["pe_svc"]["h"]),
-            t_,
-        )
+    def band_at(g_svc: float, g_cld: float, ic_scale: float = 1.0, roic_marg: float | None = None,
+                r_lab_: float | None = None) -> tuple[float, float, float, dict[str, dict[str, float]]]:
+        t_ = tier_multiples(g_svc, g_cld, ic_scale, roic_marg, r_lab_)
+        return anchor_from(t_, "l"), anchor_from(t_, "m"), anchor_from(t_, "h"), t_
 
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
     stated = {
@@ -497,15 +534,15 @@ def main() -> int:
         f"one g per leg: g2_svc={inp['g2_svc']:.1%} g2_cld={inp['g2_cld']:.1%}; multiples differ by tier only through ROE"
         f"  (lambda M {pe_cld['m'] / pe_svc['m']:.3f}; L cloud also carries A18 margin retreat x{cloud_retreat:.4f})"
     )
-    print("  tier  k_eps   numerator EPS   ROE svc/cld      svc PE   cld PE   b1 svc/cld    payout svc/cld")
+    print("  tier  k_eps   numerator EPS   ROE svc/cld(snapshot)  cld ret@   svc PE   cld PE  lab PE   b1 svc/cld    payout svc/cld")
     tier_rows = (("l", "k_eps_l", cloud_retreat), ("m", "k_eps_m", 1.0), ("h", "k_eps_h", 1.0))
     for tier, k_field, scale in tier_rows:
         k = inp[k_field]
         num_eps = (svc_leg * k + nopat_cloud * scale * k) / inp["shares_diluted"]
         print(
             f"    {tier.upper()}  {k:.5f} {num_eps:14.2f}   {roe_svc[tier]:6.1%}/{roe_cld[tier]:6.1%}"
-            f" {pe_svc[tier]:8.2f} {pe_cld[tier]:8.2f}   {b1_svc[tier]:.3f}/{b1_cld[tier]:.3f}"
-            f"   {payout(inp['g2_svc'], roe_svc[tier]):+.1%} / {payout(inp['g2_cld'], roe_cld[tier]):+.1%}"
+            f"   {ret_cld[tier]:6.1%} {pe_svc[tier]:8.2f} {pe_cld[tier]:8.2f} {pe_lab[tier]:6.2f}   {b1_svc[tier]:.3f}/{b1_cld[tier]:.3f}"
+            f"   {payout(inp['g2_svc'], roe_svc[tier]):+.1%} / {payout(inp['g2_cld'], ret_cld[tier]):+.1%}"
         )
     print(
         "模型视同派出、实际留存的现金 ($/sh, B bucket, disclosure only; cash dividends only, buybacks = retained-cash use):  "
@@ -523,17 +560,18 @@ def main() -> int:
         f" {pe_svc['l'] / pe_svc['m']:.3f} / {pe_svc['h'] / pe_svc['m']:.3f} (ROE-mechanical, one g)"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print("  leg $/sh   services(PE)      cloud(PE)   net_cash   portfolio(d)     waymo(d)     total")
+    print("  leg $/sh   services(PE)      cloud-non(PE)  lab(PE)   net_cash   portfolio(d)     waymo(d)     total")
     for tier, k_field, scale, dp_field, do_field in (
         ("L", "k_eps_l", cloud_retreat, "d_port_l", "d_ob_l"),
         ("M", "k_eps_m", 1.0, "d_port_m", "d_ob_m"),
         ("H", "k_eps_h", 1.0, "d_port_h", "d_ob_h"),
     ):
         t = tier.lower()
-        lg = legs(inp[k_field], pe_cld[t], inp[dp_field], inp[do_field], scale, pe_svc[t])
+        lg = legs(inp[k_field], pe_cld[t], inp[dp_field], inp[do_field], scale, pe_svc[t], pe_lab[t])
         print(
             f"    {tier}   {lg['svc']:7.2f}({pe_svc[t]:5.2f}x)"
             f" {lg['cld']:7.2f}({pe_cld[t]:5.2f}x)"
+            f" {lg['lab']:6.2f}({pe_lab[t]:4.2f}x)"
             f" {lg['cash']:9.2f}"
             f" {lg['port']:9.2f}(-{inp[dp_field]:.0%})"
             f" {lg['ob']:9.2f}(-{inp[do_field]:.0%})"
@@ -550,13 +588,31 @@ def main() -> int:
         f" L={L / inp['eps_fy27e_consensus']:.1f}x M={M / inp['eps_fy27e_consensus']:.1f}x"
         f" H={H / inp['eps_fy27e_consensus']:.1f}x"
     )
-    roe_cld_l_noretreat = roe_open(nopat_cloud * inp["k_eps_l"], inp["equity_cloud"], inp["g2_cld"], unbooked_cld)
     print(
         f"cloud L retreat: OI margin {inp['cloud_om_l']:.1%} (realised, a year ago)"
         f" vs {inp['cloud_om_now']:.1%} now -> x{cloud_retreat:.4f}"
-        f" -> L-tier cloud ROE {roe_cld_l_noretreat:.1%} -> {roe_cld['l']:.1%}"
-        f" -> PE {perpetual_pe(inp['g2_cld'], roe_cld_l_noretreat, r):.2f}x -> {pe_cld['l']:.2f}x"
+        f" -> L-tier cloud retention ROIC {inp['roic_marg_cld']:.1%} -> {ret_cld['l']:.1%}"
+        f" -> PE {pe_cld['m']:.2f}x -> {pe_cld['l']:.2f}x (A26: marginal ROIC, snapshot ROE {roe_cld['l']:.1%} only printed)"
     )
+    print(
+        f"cloud lab sub-leg (A27): share {share_lab:.0%} of the cloud numerator at 篮 7 r {r_lab:.0%}"
+        f" -> PE {pe_lab['m']:.2f}x vs 篮 4 {pe_cld['m']:.2f}x"
+    )
+    for label, kw in (
+        ("cloud marginal ROIC 13%", dict(roic_marg=0.13)),
+        ("cloud marginal ROIC 20%", dict(roic_marg=0.20)),
+        ("lab sub-leg at 篮 4", dict(r_lab_=r)),
+    ):
+        sL, sM, sH, _ = band_at(inp["g2_svc"], inp["g2_cld"], **kw)
+        sz = zone_of(inp["price"], sL, sM, sH)
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+    for sl in (0.15, 0.50):
+        share_lab_saved = share_lab
+        share_lab = sl
+        sL, sM, sH = anchor_from(tm, "l"), anchor_from(tm, "m"), anchor_from(tm, "h")
+        share_lab = share_lab_saved
+        sz = zone_of(inp["price"], sL, sM, sH)
+        print(f"敏感区 lab share {sl:.0%}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
     print(
         f"flat-multiple ladder (A2e-2c, every tier at the M multiples):"
         f" {flat_l:.2f}/{M:.2f}/{flat_h:.2f}  width {(flat_h - flat_l) / M:.1%}"
@@ -604,8 +660,8 @@ def main() -> int:
     # above H stops being unbounded — it splits into "paying for a named
     # option" and "beyond every option we can name".
     v_opt = inp["v_opt"]
-    if v_opt < 0:
-        errors.append(f"v_opt must be >= 0, got {v_opt}")
+    if v_opt != 0:
+        errors.append(f"v_opt must be 0 — A17 has no consensus-referenced anchor (A28); got {v_opt}")
     if v_opt > OPTION_DOMINANT_SHARE * M:
         print(
             f"NOTE: V_opt/M = {v_opt / M:.0%} > {OPTION_DOMINANT_SHARE:.0%} — 期权主导型，"
@@ -620,25 +676,10 @@ def main() -> int:
     # Reported in absolute price, because that is what a reader compares against
     # the quote.  The ratios are for scripts/calibration.py, so they ride along
     # in parentheses rather than taking the headline.
-    print(
-        f"V_opt = +{v_opt:.2f}/sh on H {H:.2f} -> {H + v_opt:.2f}"
-        f"  ({v_opt / H:+.1%} on H, {v_opt / M:.1%} of M; 期权主导型阈值 {OPTION_DOMINANT_SHARE:.0%})"
-        f"  — reported ALONGSIDE the band; zone edges untouched, `stretched` stays P > {H:.2f}"
-    )
-    print(
-        f"premium over H {H:.2f} vs the +{v_opt:.2f} the named option can carry: "
-        + " | ".join(
-            f"{lbl} {p:.2f} -> "
-            + (
-                "inside H"
-                if p <= H
-                else f"+{p - H:.2f} ({(p - H) / v_opt:.0%} of it)"
-                if p <= H + v_opt
-                else f"+{p - H:.2f} EXCEEDS it"
-            )
-            for lbl, p in (("spot", inp["price"]), ("BRK VWAP", 359.69), ("TP mean", 422.34))
-        )
-    )
+    if v_opt > 0:
+        print(f"V_opt = +{v_opt:.2f}/sh on H {H:.2f} -> {H + v_opt:.2f} ({v_opt / M:.1%} of M)")
+    else:
+        print("V_opt = 0 (A28): no consensus-referenced option anchor; the region above H is narrative, not option")
     print(f"price={inp['price']} zone={zone}")
 
     if errors:

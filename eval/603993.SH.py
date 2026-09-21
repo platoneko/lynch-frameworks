@@ -4,44 +4,31 @@
 frameworks/603993.SH.md is the source of truth; this script re-derives
 L/M/H / A/B / zone from its §3 Inputs table and exits 1 on any mismatch.
 
-formula_id: cmoc_fed_path_cu_au_ladder_gp_bridge_pe_v2_gordon_v2
+formula_id: cmoc_fed_path_fwd2028_two_stage_v1
 
-Scenario axis is the Fed rate path: L = hiking, M = on hold, H = cutting
-without recession (see A19).  The recession-cut case moves gold and copper in
-opposite directions and is deliberately NOT an anchor.
+Scenario axis is the Fed rate path (L hiking / M hold / H cutting without
+recession, A19); the recession-cut case is deliberately NOT an anchor.
 
-Main ruler: the 2026 interim segment gross-profit table is the audited base.
-The copper leg is shifted by (annualised copper sales volume x LME price delta
-x realisation x FX x (1 - DRC royalty)); the gold leg rides the shared gold
-ladder; the cobalt leg is a quota-driven gross-profit level given per scenario;
-the other-mining / IXM-trading / elimination / opex blocks are held flat across
-all three scenarios.  Gross profit -> pretax -> x(1-tax)x(1-minority) -> net
-profit to parent.
+Forward-capacity numerator (user ruling 2026-09-20/21, A4 / A9): copper FY28 =
+2026 guidance mid + KFM Phase 2 (+100 kt/yr from 2027), gold FY28 = the 2029
+">20 t" target interpolated to 2028, each × an achievement ladder (L = growth
+stalls at the 2026 guidance / current gold run-rate, M = plan × measured
+achievement, H = full).  Cobalt stays the quota leg (given per tier, no volume
+growth); Mo-W-Nb-P, IXM and eliminations stay frozen.  Copper is priced as
+volume × (unit revenue − unit COGS) rather than the old price-delta shift so
+volume can move; at the base volumes the two are identical (M guard below).
 
-Multiples are generated per leg, not sampled (valuation-rules「永续增长口径」
-「§r 篮子」, A24 / A26): net profit is split across four legs by each tier's
-gross-profit share (copper + gold / cobalt quota / Mo-W-Nb-P incl. eliminations
-/ IXM trading), and every leg carries its own basket r and its own flat g —
-copper + gold on 篮 4 (10%) with the §13 commodity-leg g2 (inflation 2.5%),
-cobalt and Mo-W-Nb-P on 篮 6 (13%) at g 0, IXM on 篮 5 (11%) at g 0.  All legs
-share the company tier ROE (ROE_x = NP_x / equity), so the tier-to-tier spread
-of the copper + gold multiple is the ROE term only.  The axis 永续 g2 row is
-referenced verbatim (`axis_g2_aucu`) and superseded by the §13 tier default.
+FY28 P&L same-year: unit costs frozen at 2026H1 (A-share COGS carries D&A),
+volume-linked opex (销售+管理+研发) scaled by a price-neutral volume index,
+finance / levy base fixed, incremental DRC royalty 3.5% on incremental copper
+revenue, NCI 12.46% on the base and 28.75% on the KFM increment (A6).
 
-L tier (valuation-rules「谷底档」): the axis L world (copper 9,431 = 2025H1
-platform, gold 3,942) is a regime, not the company's realised trough, so it is
-priced as a low steady state.  `recovery_two_stage_pe` on the company's own
-measured path (FY2019 18.57 亿 → FY2021 51.06 亿, n = 2) is printed as a
-coordinate on the copper + gold ruler — it overshoots M with the measured CAGR
-and collapses into M with the model's L→M magnitude — and is not the anchor.
-The ticker's own 5-year PE band is only a guardrail: a copper + gold leg
-multiple or a blended equivalent PE (anchor / EPS) outside it fails the run.
-
-Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
-
-Beyond the anchor comparison, the shared-ladder guard checks the USD gold and
-copper ladders cell by cell against frameworks/axes/fed-path-gold-copper.md (logical id `_AXIS.fed-path-gold-copper`)
-(and, as a dual check, the peer mount 601899.SH).
+Multiple: per leg `gordon.two_stage_pe(g1_leg, 2, g2, ROE28, r)` — stage-1
+payout 1 − g1/ROE28 (library form), ROE28 = NP28 / B27 with B27 = 2026H1
+equity + b1 × (2026H2 + FY27 earnings), b1 = g1/ROE28 solved jointly.  Tail:
+copper+gold 篮 4 g2 2.5%; cobalt / Mo-W-Nb-P 篮 6 and IXM 篮 5 at 1/r.
+ROIC gate (A28): marginal ROIC ≥ r_perp or the tier keeps the same form with
+growth switched off (g1 := g2 on 篮 4, 0 elsewhere).
 
 Run:  python3 eval/603993.SH.py
 """
@@ -54,87 +41,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
-from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "603993.SH.md"
 PEER = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
-FORMULA_ID = "cmoc_fed_path_cu_au_ladder_gp_bridge_pe_v2_gordon_v2"
+FORMULA_ID = "cmoc_fed_path_fwd2028_two_stage_v1"
 MIN_R_MINUS_G = 0.02
-# A23: the company's own realised trough→recovery path (Longbridge annual parent NI,
-# FY2019 18.57 亿 → FY2021 51.06 亿, the last copper cycle trough).
-RECOVERY_MEASURED = {"FY2019→FY2021": (18.57, 51.06, 2)}
-TOL = 0.05  # anchors are stated to 2 decimals
-YI = 1e8  # 亿
+TOL = 0.05
+DELTA_TOL = 0.0005
+YI = 1e8
+TIERS = ("l", "m", "h")
 
-# Legs (A24): label -> (r row, g row).  Order is the Outputs 表1 order.
-LEGS = {
-    "铜金": ("r_perp", "g2_aucu"),
-    "钴": ("r_co", "g2_co"),
-    "钼钨铌磷": ("r_other", "g2_other"),
-    "IXM": ("r_ixm", "g2_ixm"),
-}
-
-# Peer field aliases (dual check after the axis mount).
-SHARED_LADDER = {
-    "p_cu_l": "lme_cu_l",
-    "p_cu_m": "lme_cu_m",
-    "p_cu_h": "lme_cu_h",
-    "lme_au_l": "lme_au_l",
-    "lme_au_m": "lme_au_m",
-    "lme_au_h": "lme_au_h",
-}
-
-# Audited baseline: 2026 interim net profit to parent x 2 (161.52187亿 x 2).
-# The M scenario re-uses the base copper price, so its recomputed net profit
-# must land back on this number — that is what welds the bridge to the filing.
+LEGS = {"铜金": ("r_perp", "g2_aucu"), "钴": ("r_co", "g2_co"), "钼钨铌磷": ("r_other", "g2_other"), "IXM": ("r_ixm", "g2_ixm")}
+BASKET4_LEGS = {"铜金"}
+SHARED_LADDER = {"p_cu_l": "lme_cu_l", "p_cu_m": "lme_cu_m", "p_cu_h": "lme_cu_h",
+                 "lme_au_l": "lme_au_l", "lme_au_m": "lme_au_m", "lme_au_h": "lme_au_h"}
 BASE_NP_PARENT_YI = 323.0437
 BASE_NP_TOL_YI = 0.5
 
 REQUIRED = [
-    "price",
-    "shares",
-    "fx_usd_cny",
-    "vol_cu",
-    "p_cu_base",
-    "p_cu_l",
-    "p_cu_m",
-    "p_cu_h",
-    "lme_au_l",
-    "lme_au_m",
-    "lme_au_h",
-    "vol_au_oz",
-    "cost_au_oz",
-    "price_au_m_oz",
-    "realization_cu",
-    "royalty_cu",
-    "gp_cu_base",
-    "gp_co_l",
-    "gp_co_m",
-    "gp_co_h",
-    "gp_other",
-    "gp_ixm",
-    "gp_misc",
-    "opex",
-    "tax_rate",
-    "mi_rate",
-    "equity",
-    "r_perp",
-    "r_co",
-    "r_other",
-    "r_ixm",
-    "g2_aucu",
-    "g2_co",
-    "g2_other",
-    "g2_ixm",
-    "axis_g2_aucu",
-    "pe_own_min",
-    "pe_own_max",
+    "price", "shares", "fx_usd_cny", "vol_cu", "p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h",
+    "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_oz", "cost_au_oz", "price_au_m_oz",
+    "realization_cu", "royalty_cu", "cogs_cu", "gp_cu_base", "gp_co_l", "gp_co_m", "gp_co_h",
+    "gp_other", "gp_ixm", "gp_misc", "opex", "opex_vol", "tax_rate", "mi_rate", "mi_kfm",
+    "vol_cu_2028", "vol_au_2028_oz", "ach_l_cu", "ach_l_au", "ach_m_cu", "ach_m_au",
+    "payout_actual", "n_transition", "growth_capex_26_28", "capex_kfm2", "net_debt",
+    "k_l", "k_m", "k_h",
+    "equity", "r_perp", "r_co", "r_other", "r_ixm", "g2_aucu", "g2_co", "g2_other", "g2_ixm",
+    "axis_g2_aucu", "pe_own_min", "pe_own_max",
 ]
-
-# Axis §1「永续 g2（2026-09-14）」row: the M-tier g every mounted ticker reads.
 _AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%\*\*", re.MULTILINE)
 
 
@@ -145,259 +83,211 @@ def axis_g2(path=AXIS_AU_CU) -> float:
     return float(m.group(1)) / 100.0
 
 
+def first_float(pattern: str, md: str) -> float | None:
+    m = re.search(pattern, md)
+    return float(m.group(1)) if m else None
+
+
+def unit_rev_cu(inp: dict[str, float], tag: str) -> float:
+    return inp[f"p_cu_{tag}"] * inp["realization_cu"] * inp["fx_usd_cny"]
+
+
+def year(inp: dict[str, float], tag: str, v_cu: float, v_au: float, forward: bool) -> dict[str, float]:
+    """One tier-year P&L (亿 CNY).  forward=False is the audited-base run-rate."""
+    gp_cu = v_cu * (unit_rev_cu(inp, tag) - inp["cogs_cu"]) / YI
+    p_au = inp["price_au_m_oz"] * inp[f"lme_au_{tag}"] / inp["lme_au_m"]
+    gp_au = v_au * (p_au - inp["cost_au_oz"]) / YI
+    gp_co = inp[f"gp_co_{tag}"]
+    gp = gp_cu + gp_au + gp_co + inp["gp_other"] + inp["gp_ixm"] + inp["gp_misc"]
+    # base royalty sits inside opex; the framework applies (1 − royalty) to the price move only (A13)
+    roy_price = inp["royalty_cu"] * inp["vol_cu"] * (unit_rev_cu(inp, tag) - unit_rev_cu(inp, "m")) / YI
+    if forward:
+        base_rev = inp["vol_cu"] * unit_rev_cu(inp, "m") + inp["vol_au_oz"] * inp["price_au_m_oz"]
+        vidx = (v_cu * unit_rev_cu(inp, "m") + v_au * inp["price_au_m_oz"]) / base_rev
+        roy_vol = inp["royalty_cu"] * (v_cu - inp["vol_cu"]) * unit_rev_cu(inp, tag) / YI
+        opex = (inp["opex"] - inp["opex_vol"]) + inp["opex_vol"] * vidx + roy_price + roy_vol
+        pretax_kfm = max((v_cu - inp["vol_cu"]) * (unit_rev_cu(inp, tag) * (1 - inp["royalty_cu"]) - inp["cogs_cu"]) / YI, 0.0)
+    else:
+        vidx, opex, pretax_kfm = 1.0, inp["opex"] + roy_price, 0.0
+    pretax = gp - opex
+    np_ = ((pretax - pretax_kfm) * (1 - inp["mi_rate"]) + pretax_kfm * (1 - inp["mi_kfm"])) * (1 - inp["tax_rate"])
+    legs = {"铜金": gp_cu + gp_au, "钴": gp_co, "钼钨铌磷": inp["gp_other"] + inp["gp_misc"], "IXM": inp["gp_ixm"]}
+    return {"np": np_, "eps": np_ * YI / inp["shares"], "gp": gp, "gp_cu": gp_cu, "gp_au": gp_au, "p_au": p_au,
+            "pretax": pretax, "vidx": vidx, "w": {k: legs[k] / gp for k in legs}}
+
+
+def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str, float] | None = None) -> dict:
+    ach = {"cu": 1.0, "au": 1.0} if tag == "h" else {"cu": inp[f"ach_{tag}_cu"], "au": inp[f"ach_{tag}_au"]}
+    v_cu, v_au = inp["vol_cu_2028"] * ach["cu"], inp["vol_au_2028_oz"] * ach["au"]
+    cur, fwd = year(inp, tag, inp["vol_cu"], inp["vol_au_oz"], False), year(inp, tag, v_cu, v_au, True)
+    lc = {k: cur["eps"] * cur["w"][k] for k in LEGS}
+    l28 = {k: fwd["eps"] * fwd["w"][k] for k in LEGS}
+    n = int(inp["n_transition"])
+    g1_raw = {k: (l28[k] / lc[k]) ** (1.0 / n) - 1.0 for k in LEGS}
+    g1_co = (fwd["eps"] / cur["eps"]) ** (1.0 / n) - 1.0
+    roic = (fwd["np"] - cur["np"]) / inp["growth_capex_26_28"]
+    gate = roic >= inp["r_perp"]
+    g2 = {k: inp[g_key] for k, (_, g_key) in LEGS.items()}
+    g1 = g1_raw if gate else {k: (g2[k] if k in BASKET4_LEGS else 0.0) for k in LEGS}
+    w = {k: lc[k] / cur["eps"] for k in LEGS}
+    g1_roll = g1_co if gate else sum(w[k] * g1[k] for k in LEGS)
+    cum_roll = (cur["eps"] / 2 + cur["eps"] * (1 + g1_co)) * inp["shares"] / YI
+    cum_win = cum_roll + fwd["np"]
+    roe = fwd["np"] / inp["equity"]
+    for _ in range(60):
+        b1 = max(g1_roll / roe, 0.0)
+        b27 = inp["equity"] + b1 * cum_roll
+        roe_new = fwd["np"] / b27
+        if abs(roe_new - roe) < 1e-10:
+            break
+        roe = roe_new
+    r = {k: (r_over or {}).get(r_key, inp[r_key]) + r_shift for k, (r_key, _) in LEGS.items()}
+    pe = {k: two_stage_pe(g1[k], n, g2[k], roe, r[k]) for k in LEGS}
+    contrib = {k: lc[k] * pe[k] for k in LEGS}
+    anchor_pre_k = sum(contrib.values())
+    # Retention beyond b1 was treated as distributed at face value; k is the
+    # probability-weighted shortfall of reinvesting it below r (valuation-rules
+    # 留存去向审计「打折 k」) and only ever subtracts.
+    cash_ps = max((1 - inp["payout_actual"]) - b1, 0.0) * cum_win * YI / inp["shares"]
+    haircut = inp[f"k_{tag}"] * cash_ps
+    anchor = anchor_pre_k - haircut
+    return {"cur": cur, "fwd": fwd, "v_cu": v_cu, "v_au": v_au, "legs_cur": lc, "g1": g1, "g1_raw": g1_raw, "g1_co": g1_co,
+            "roic": roic, "gate": gate, "b1": b1, "b27": b27, "roe28": roe, "pe": pe, "p1": {k: 1 - g1[k] / roe for k in LEGS},
+            "contrib": contrib, "anchor": anchor, "eq_pe": anchor_pre_k / cur["eps"],
+            "cash_ps": cash_ps, "haircut": haircut, "anchor_pre_k": anchor_pre_k,
+            "issue": b1 > (1 - inp["payout_actual"])}
+
+
+def implied_delta(inp: dict[str, float]) -> float:
+    lo, hi = -0.08, 0.15
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if tier(inp, "m", r_shift=mid)["anchor"] > inp["price"]:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
         print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
         return 1
-
     inp = parse_inputs(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-
     r = {leg: inp[rrow] for leg, (rrow, _) in LEGS.items()}
     g = {leg: inp[grow] for leg, (_, grow) in LEGS.items()}
-
-    # --- Step 1: baskets — each leg's r must be the basket its row names -------
     baskets = parse_baskets(md)
     for leg, (rrow, _) in LEGS.items():
         if rrow not in baskets:
-            errors.append(f"{rrow}: Inputs source cell names no 篮 N (AGENTS.md「篮子声明」)")
+            errors.append(f"{rrow}: Inputs source cell names no 篮 N")
         errors += check_r(r[leg], rrow, baskets.get(rrow))
     if errors:
         return report(errors, "FAIL (baskets)")
-
-    # --- sanity guards (see §3 校验步骤) -------------------------------------
-    if not (inp["p_cu_l"] < inp["p_cu_m"] < inp["p_cu_h"]):
-        errors.append(
-            f"copper price order violated: {inp['p_cu_l']}/{inp['p_cu_m']}/{inp['p_cu_h']}"
-        )
-    if not (inp["lme_au_l"] < inp["lme_au_m"] < inp["lme_au_h"]):
-        errors.append(
-            f"gold price order violated: {inp['lme_au_l']}/{inp['lme_au_m']}/{inp['lme_au_h']}"
-        )
-    if inp["price_au_m_oz"] <= inp["cost_au_oz"]:
-        errors.append("gold unit cost exceeds M price — check 口径")
+    if not (inp["p_cu_l"] < inp["p_cu_m"] < inp["p_cu_h"]) or not (inp["lme_au_l"] < inp["lme_au_m"] < inp["lme_au_h"]):
+        errors.append("price ladder order violated")
     if not (inp["gp_co_l"] < inp["gp_co_m"] < inp["gp_co_h"]):
-        errors.append(
-            f"cobalt leg order violated: {inp['gp_co_l']}/{inp['gp_co_m']}/{inp['gp_co_h']}"
-        )
-    # Gordon inputs: every leg's g under its own basket's cap; commodity / fee legs
-    # never below 0; the copper + gold leg off the pole; the axis row referenced
-    # verbatim (superseded by the §13 tier default, A22).
+        errors.append("cobalt leg order violated")
+    if inp["price_au_m_oz"] <= inp["cost_au_oz"]:
+        errors.append("gold unit cost exceeds M price")
+    for k in ("cu", "au"):
+        if not (0 < inp[f"ach_l_{k}"] <= inp[f"ach_m_{k}"] <= 1.0):
+            errors.append(f"achievement ladder {k} violated")
     for leg, (_, grow) in LEGS.items():
         errors += check_g_cap(g[leg], r[leg], grow)
         if g[leg] < 0:
-            errors.append(f"{grow}={g[leg]} < 0 — commodity / fee-type leg g floors at 0 (valuation-rules §13)")
+            errors.append(f"{grow} < 0")
     errors += check_g_cap(inp["axis_g2_aucu"], r["铜金"], "axis_g2_aucu")
     if r["铜金"] - g["铜金"] < MIN_R_MINUS_G:
-        errors.append(f"r_perp − g2_aucu = {r['铜金'] - g['铜金']:.4f} < {MIN_R_MINUS_G} (pole)")
-    g2_axis = axis_g2()
-    if abs(inp["axis_g2_aucu"] - g2_axis) > 1e-9:
-        errors.append(f"axis_g2_aucu={inp['axis_g2_aucu']} vs axis 永续 g2 {g2_axis}")
-    if inp["equity"] <= 0:
-        errors.append("equity must be positive")
-    for k in ("tax_rate", "mi_rate", "royalty_cu"):
-        if not (0.0 <= inp[k] < 1.0):
-            errors.append(f"{k}={inp[k]} outside [0,1)")
-    if not (0.80 <= inp["realization_cu"] <= 1.05):
-        errors.append(f"realization_cu={inp['realization_cu']} implausible")
+        errors.append("r_perp − g2_aucu below pole margin")
+    if abs(inp["axis_g2_aucu"] - axis_g2()) > 1e-9:
+        errors.append(f"axis_g2_aucu={inp['axis_g2_aucu']} vs axis 永续 g2 {axis_g2()}")
+    if inp["equity"] <= 0 or not (0 < inp["payout_actual"] < 1) or inp["n_transition"] != 2:
+        errors.append("equity / payout_actual / n_transition invalid")
+    if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
+        errors.append(f"haircut ladder k_L ≤ k_M ≤ k_H within [0,1] violated: {inp['k_l']}/{inp['k_m']}/{inp['k_h']}")
     if abs(inp["p_cu_m"] - inp["p_cu_base"]) > 1e-6:
-        errors.append("p_cu_m must equal p_cu_base (M is the audited baseline)")
+        errors.append("p_cu_m must equal p_cu_base (M = audited base)")
+    for k in inp:
+        if k.startswith("p_") and k not in ("p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h"):
+            errors.append(f"probability-style input {k}")
     if errors:
-        return report(errors)
-
-    # --- shared-ladder guard vs axis (+ peer dual check) ---------------------
-    errors += check_au_cu_mount(
-        (inp["lme_au_l"], inp["lme_au_m"], inp["lme_au_h"]),
-        (inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"]),
-    )
+        return report(errors, "FAIL (guards)")
+    errors += check_au_cu_mount((inp["lme_au_l"], inp["lme_au_m"], inp["lme_au_h"]), (inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"]))
     peer = parse_inputs(PEER.read_text(encoding="utf-8"))
     for ours, theirs in SHARED_LADDER.items():
-        if theirs not in peer:
-            errors.append(f"peer 601899.SH missing {theirs}")
-        elif abs(inp[ours] - peer[theirs]) > 1e-6:
-            errors.append(
-                f"shared ladder drift: {ours}={inp[ours]} vs 601899.{theirs}={peer[theirs]}"
-            )
+        if theirs not in peer or abs(inp[ours] - peer[theirs]) > 1e-6:
+            errors.append(f"shared ladder drift: {ours} vs 601899.{theirs}")
     if errors:
         return report(errors, "FAIL (shared ladder)")
 
-    # --- the ruler -----------------------------------------------------------
-    def copper_leg(price_usd_t: float) -> float:
-        """Annualised copper gross profit, 亿 CNY."""
-        delta = (
-            inp["vol_cu"]
-            * (price_usd_t - inp["p_cu_base"])
-            * inp["realization_cu"]
-            * inp["fx_usd_cny"]
-            * (1.0 - inp["royalty_cu"])
-        )
-        return inp["gp_cu_base"] + delta / YI
-
-    def gold_leg(lme_au_usd_oz: float) -> tuple[float, float]:
-        """Annualised gold gross profit, 亿 CNY, riding the shared gold ladder."""
-        price_oz = inp["price_au_m_oz"] * lme_au_usd_oz / inp["lme_au_m"]
-        return price_oz, inp["vol_au_oz"] * (price_oz - inp["cost_au_oz"]) / YI
-
-    def scenario(price_usd_t: float, lme_au: float, gp_co: float, r=r, g=g, np_override=None) -> dict:
-        """One tier: the gross-profit bridge, then the four-leg Gordon sum (A24)."""
-        gp_cu = copper_leg(price_usd_t)
-        price_au_oz, gp_au = gold_leg(lme_au)
-        legs = {
-            "铜金": gp_cu + gp_au,
-            "钴": gp_co,
-            "钼钨铌磷": inp["gp_other"] + inp["gp_misc"],
-            "IXM": inp["gp_ixm"],
-        }
-        gp = sum(legs.values())
-        pretax = gp - inp["opex"]
-        np_parent = pretax * (1.0 - inp["tax_rate"]) * (1.0 - inp["mi_rate"])
-        if np_override is not None:
-            np_parent = np_override(pretax)
-        eps = np_parent * YI / inp["shares"]
-        roe = np_parent / inp["equity"]
-        pes = {leg: perpetual_pe(g[leg], roe, r[leg]) for leg in legs}
-        weights = {leg: v / gp for leg, v in legs.items()}
-        per_leg = {leg: eps * weights[leg] * pes[leg] for leg in legs}
-        return {
-            "gp_cu": gp_cu, "gp_au": gp_au, "price_au_oz": price_au_oz, "gp": gp,
-            "pretax": pretax, "np": np_parent, "eps": eps, "roe": roe,
-            "pes": pes, "weights": weights, "per_leg": per_leg,
-            "anchor": sum(per_leg.values()),
-        }
-
-    sc = {
-        "L": scenario(inp["p_cu_l"], inp["lme_au_l"], inp["gp_co_l"]),
-        "M": scenario(inp["p_cu_m"], inp["lme_au_m"], inp["gp_co_m"]),
-        "H": scenario(inp["p_cu_h"], inp["lme_au_h"], inp["gp_co_h"]),
-    }
-    sc_l, sc_m, sc_h = sc["L"], sc["M"], sc["H"]
-    # The copper + gold leg is the only leg whose multiple moves with ROE (g > 0);
-    # its tier ladder and the blended equivalent PE are what the guardrail reads.
-    pe_l, pe_m, pe_h = (sc[t]["pes"]["铜金"] for t in ("L", "M", "H"))
-    eq_pe = {t: sc[t]["anchor"] / sc[t]["eps"] for t in ("L", "M", "H")}
-
-    # Guardrail (裁决顺序 ③): copper + gold leg multiples and the blended
-    # equivalent PE inside the ticker's own realised band.  A failure is BLOCKED,
-    # never fixed by twisting g or r (A25).
-    for tag, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
-        if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
-            errors.append(
-                f"guardrail: 铜金 PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g"
-            )
-    for tag, pe in eq_pe.items():
-        if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
-            errors.append(
-                f"guardrail: blended PE_{tag}={pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED"
-            )
-
-    # Baseline closure: M must reproduce the filed net profit to parent.
-    if abs(sc_m["np"] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
-        errors.append(
-            f"baseline closure broken: M net profit {sc_m['np']:.4f}亿 vs filed "
-            f"{BASE_NP_PARENT_YI}亿 (2026H1 x 2)"
-        )
-
-    L, M, H = sc_l["anchor"], sc_m["anchor"], sc_h["anchor"]
-    A = (L + M) / 2
-    B = (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
-
+    T = {t: tier(inp, t) for t in TIERS}
+    # M guard: base-volume M run-rate reproduces the audited interim ×2, and the
+    # volume × (unit revenue − unit COGS) copper leg reproduces gp_cu_base.
+    base_m = T["m"]["cur"]
+    if abs(base_m["np"] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
+        errors.append(f"M base parent {base_m['np']:.4f}亿 vs audited {BASE_NP_PARENT_YI}")
+    if abs(base_m["gp_cu"] - inp["gp_cu_base"]) > 0.5:
+        errors.append(f"copper leg at base {base_m['gp_cu']:.2f} vs gp_cu_base {inp['gp_cu_base']}")
+    L, M, H = (T[t]["anchor"] for t in TIERS)
     if not (L < M < H):
-        errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
-
-    # A2e-2c flat-multiple ladder: with every tier at the copper + gold PE_M the
-    # order must survive, i.e. the ladder has to live in the numerator.
-    flat = [sc[t]["eps"] * pe_m for t in ("L", "M", "H")]
+        errors.append(f"L<M<H violated: {L:.2f}/{M:.2f}/{H:.2f}")
+    if errors:
+        return report(errors, "FAIL (M guard)")
+    for t in TIERS:
+        for label, pe in ((f"铜金 PE_{t.upper()}", T[t]["pe"]["铜金"]), (f"equivalent PE_{t.upper()}", T[t]["eq_pe"])):
+            if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
+                errors.append(f"guardrail: {label}={pe:.2f} outside own band — BLOCKED")
+        if T[t]["issue"]:
+            errors.append(f"{t.upper()}: b1 > actual retention (发股融资)")
+        recomb = sum(T[t]["legs_cur"][k] * (1 + T[t]["g1_raw"][k]) ** inp["n_transition"] for k in LEGS)
+        if abs(recomb / T[t]["fwd"]["eps"] - 1) > 0.005:
+            errors.append(f"{t.upper()}: per-leg g1 recombination off")
+    flat = [T[t]["cur"]["eps"] * T["m"]["pe"]["铜金"] for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
-        errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
-    # No probability field may sit in Inputs (A2e-7a); the copper alias p_cu_* is the axis's, not a p_k.
-    for k in inp:
-        if k.startswith("p_") and not k.startswith("p_cu_"):
-            errors.append(f"probability-style input {k} in Inputs")
-
+        errors.append("flat-multiple ladder broken")
+    A, B = (L + M) / 2, (M + H) / 2
+    zone = zone_of(inp["price"], L, M, H)
+    delta = implied_delta(inp)
+    alt = [tier(inp, t, r_over={"r_perp": 0.11})["anchor"] for t in TIERS]
+    kfm2_ret = {t: max((100_000 * (unit_rev_cu(inp, t) * (1 - inp["royalty_cu"]) - inp["cogs_cu"]) / YI) * (1 - inp["tax_rate"]), 0) / inp["capex_kfm2"] for t in TIERS}
+    net_cash_ps = -inp["net_debt"] / inp["shares"]
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    out_sec = md.split("### Outputs", 1)[-1]
+    for label, want, rx, tol in (("δ", delta * 100, r"δ = \*\*([+-]?[0-9.]+)%\*\*", DELTA_TOL * 100),
+                                 ("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
+                                 ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > tol:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
-    # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print("baskets: " + " · ".join(
-        f"{leg} {rrow} 篮 {baskets[rrow]} {basket_r(baskets[rrow]):.0%} g {g[leg]:.1%}"
-        for leg, (rrow, _) in LEGS.items()
-    ))
-    print("shared ladder OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH): cu " + "/".join(
-        f"{inp[k]:g}" for k in ("p_cu_l", "p_cu_m", "p_cu_h")
-    ) + " $/t, au " + "/".join(
-        f"{inp[k]:g}" for k in ("lme_au_l", "lme_au_m", "lme_au_h")
-    ) + " $/oz")
-    for tag, p, au in (("L", inp["p_cu_l"], inp["lme_au_l"]), ("M", inp["p_cu_m"], inp["lme_au_m"]), ("H", inp["p_cu_h"], inp["lme_au_h"])):
-        s = sc[tag]
-        print(
-            f"{tag}: cu={p:>9.2f}$/t au={au:>7.0f}$/oz  gp_cu={s['gp_cu']:7.2f}  gp_au={s['gp_au']:6.2f}  "
-            f"gp={s['gp']:7.2f}  pretax={s['pretax']:7.2f}  np={s['np']:7.2f}亿  eps={s['eps']:.4f}  "
-            f"roe={s['roe']:.4f}  anchor={s['anchor']:.4f}"
-        )
-        print("    legs: " + "  ".join(
-            f"{leg} w={s['weights'][leg]:.3f} pe={s['pes'][leg]:.2f} ->{s['per_leg'][leg]:.2f}" for leg in LEGS
-        ) + f"  | blended pe={eq_pe[tag]:.2f}")
-    per_kusd = (
-        inp["vol_cu"] * 1000.0 * inp["realization_cu"] * inp["fx_usd_cny"] * (1.0 - inp["royalty_cu"]) / YI
-    )
-    d_anchor = scenario(inp["p_cu_m"] + 1000.0, inp["lme_au_m"], inp["gp_co_m"])["anchor"] - M
-    print(
-        f"sensitivity: +$1000/t copper -> pretax {per_kusd:.2f}亿, "
-        f"eps {per_kusd * (1 - inp['tax_rate']) * (1 - inp['mi_rate']) * YI / inp['shares']:.4f}, M anchor {d_anchor:+.2f}"
-    )
-    print(
-        f"gordon 铜金: r={r['铜金']:g} g2={g['铜金']:g} flat (§13 tier; axis row {g2_axis:g} referenced, superseded) "
-        f"roe={sc_l['roe']:.3f}/{sc_m['roe']:.3f}/{sc_h['roe']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f}; "
-        f"blended pe={eq_pe['L']:.2f}/{eq_pe['M']:.2f}/{eq_pe['H']:.2f} inside own band "
-        f"[{inp['pe_own_min']}, {inp['pe_own_max']}] (spread = ROE term only)"
-    )
-    for dg in (-0.01, 0.01):
-        g_alt = {**g, "铜金": g["铜金"] + dg}
-        alt = [scenario(inp[f"p_cu_{t}"], inp[f"lme_au_{t}"], inp[f"gp_co_{t}"], g=g_alt)["anchor"] for t in ("l", "m", "h")]
-        print(f"  g2_aucu {dg:+.0%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
-    # A26 basket alternatives (disclosure): 铜金 on 篮 5 (country add-on) / 篮 6.
-    for label, rb in (("铜金 篮 5 11%", 0.11), ("铜金 篮 6 13%", 0.13)):
-        r_alt = {**r, "铜金": rb}
-        alt = [scenario(inp[f"p_cu_{t}"], inp[f"lme_au_{t}"], inp[f"gp_co_{t}"], r=r_alt)["anchor"] for t in ("l", "m", "h")]
-        print(f"  {label} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
-    # Implied r (δ): parallel shift of all four basket r's that prices the M tier at P.
-    lo, hi = -0.08, 0.15
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        m_alt = scenario(inp["p_cu_m"], inp["lme_au_m"], inp["gp_co_m"], r={k: v + mid for k, v in r.items()})["anchor"]
-        lo, hi = (mid, hi) if m_alt > inp["price"] else (lo, mid)
-    delta = (lo + hi) / 2
-    print("implied r(P) δ=" + f"{delta:+.2%}: " + " / ".join(f"{leg} {r[leg] + delta:.1%}" for leg in LEGS))
-    # A23 谷底档 coordinates on the copper + gold ruler: (i) the measured
-    # trough→recovery CAGR on the L numerator; (ii) the measured n with the
-    # model's own L→M magnitude.  Printed, not anchors.
-    for label, (np0, np1, n) in RECOVERY_MEASURED.items():
-        g1_meas = (np1 / np0) ** (1.0 / n) - 1.0
-        pe_i = recovery_two_stage_pe(g1_meas, n, g["铜金"], sc_m["roe"], r["铜金"])
-        g1_lm = (sc_m["eps"] / sc_l["eps"]) ** (1.0 / n) - 1.0
-        pe_ii = recovery_two_stage_pe(g1_lm, n, g["铜金"], sc_m["roe"], r["铜金"])
-        print(
-            f"谷底档坐标（A23）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {sc_l['eps'] * pe_i:.2f} "
-            f"(vs M {M:.2f}: {'overshoot' if sc_l['eps'] * pe_i > M else 'below M'}); "
-            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {sc_l['eps'] * pe_ii:.2f} (L/M {sc_l['eps'] * pe_ii / M:.3f}, collapsed)"
-        )
-    print(f"谷底 x 1/r = {sc_l['eps'] / r['铜金']:.2f}  (deep_discount pressure coordinate)")
-    print(f"co_gp={inp['gp_co_l']}/{inp['gp_co_m']}/{inp['gp_co_h']}")
+    print("shared Au/Cu OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH)")
+    print(f"{'档':<3}{'铜kt':>7}{'金koz':>7}{'ROIC':>7}{'门':>4}{'E_cur':>8}{'E28':>8}{'g1co':>8}{'b1':>6}{'B27亿':>8}{'ROE28':>8}{'PE铜金':>8}{'合并':>7}{'现金/股':>8}{'锚点':>8}")
+    for t in TIERS:
+        x = T[t]
+        print(f"{t.upper():<3}{x['v_cu'] / 1e3:7.0f}{x['v_au'] / 1e3:7.0f}{x['roic']:7.0%}{'过' if x['gate'] else '关':>4}{x['cur']['eps']:8.3f}{x['fwd']['eps']:8.3f}"
+              f"{x['g1_co']:8.1%}{x['b1']:6.0%}{x['b27']:8.0f}{x['roe28']:8.1%}{x['pe']['铜金']:8.2f}{x['eq_pe']:7.2f}{x['cash_ps']:8.2f}{x['anchor']:8.2f}")
+    print("baskets: " + ", ".join(f"{rrow} 篮 {baskets[rrow]} r={inp[rrow]:g} g2={inp[grow]:g}" for rrow, grow in LEGS.values()))
+    for t in TIERS:
+        x = T[t]
+        print(f"  {t.upper()}: g1 " + " / ".join(f"{k} {x['g1'][k]:+.1%}" for k in LEGS) + f" | p1 铜金 {x['p1']['铜金']:.0%} | PE "
+              + " ".join(f"{k} {x['pe'][k]:.2f}" for k in LEGS) + " | $/股 " + " + ".join(f"{x['contrib'][k]:.2f}" for k in LEGS)
+              + f" | KFM2 项目回报 {kfm2_ret[t]:.0%}")
+    print(f"M guard OK: base parent {base_m['np']:.4f}亿 = audited {BASE_NP_PARENT_YI}; net cash/share {net_cash_ps:+.2f} (cross-note)")
+    print("视同派出现金/股 k 前 → k 后: " + " | ".join(
+        f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
+        for t in TIERS))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat-multiple ladder @ 铜金 PE_M {pe_m:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (sc_l["eps"], sc_m["eps"], sc_h["eps"])):
+    print(f"flat-multiple ladder @ 铜金 PE_M {T['m']['pe']['铜金']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)
-    print(
-        f"L/M {L / M:.3f} = num {sc_l['eps'] / sc_m['eps']:.3f} x pe {(L / M) / (sc_l['eps'] / sc_m['eps']):.3f} | "
-        f"H/M {H / M:.3f} = num {sc_h['eps'] / sc_m['eps']:.3f} x pe {(H / M) / (sc_h['eps'] / sc_m['eps']):.3f} | "
-        f"width {(H - L) / (2 * M):.3f}"
-    )
+    print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
+    print(f"implied r: δ={delta:+.2%}; alt 篮 5 铜金 11% -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
     print(f"price={inp['price']} zone={zone}")
-
     return report(errors)
 
 

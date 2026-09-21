@@ -7,18 +7,22 @@
 
 - [AEHR.US](./AEHR.US.md) — 篮子：篮 6 13%
 - [ALB.US](./ALB.US.md) — 篮子：r_perp 篮 6 13% · r_spec 篮 4 10%
+- [AMZN.US](./AMZN.US.md) — 篮子：r_perp 篮 4 10% · r_aws_lab 篮 7 15%
 - [AVGO.US](./AVGO.US.md) — 篮子：r_perp 篮 4 10% · r_lab 篮 7 15%
 - [BE.US](./BE.US.md) — 篮子：篮 7 15%
 - [COHR.US](./COHR.US.md) — 篮子：篮 4 10%
 - [GFS.US](./GFS.US.md) — 篮子：篮 4 10%
 - [GLW.US](./GLW.US.md) — 篮子：篮 4 10%
-- [GOOG.US](./GOOG.US.md) — 篮子：篮 4 10%
+- [GOOG.US](./GOOG.US.md) — 篮子：r_perp 篮 4 10% · r_cld_lab 篮 7 15%
 - [INTC.US](./INTC.US.md) — 篮子：篮 4 10%
 - [LITE.US](./LITE.US.md) — 篮子：篮 4 10%
 - [META.US](./META.US.md) — 篮子：篮 4 10%
 - [MRVL.US](./MRVL.US.md) — 篮子：篮 4 10%
+- [MSFT.US](./MSFT.US.md) — 篮子：r_perp 篮 4 10% · r_az_lab 篮 7 15%
+- [NEM.US](./NEM.US.md) — 篮子：r_perp 篮 4 10% · r_pbzn 篮 6 13%
 - [NOK.US](./NOK.US.md) — 篮子：篮 4 10%
 - [NVDA.US](./NVDA.US.md) — 篮子：篮 4 10%
+- [NVO.US](./NVO.US.md) — 篮子：篮 4 10%
 - [ORCL.US](./ORCL.US.md) — 篮子：r_perp 篮 4 10% · r_oci_non 篮 4 10% · r_oci_open 篮 7 15% · **BLOCKED**
 - [QCOM.US](./QCOM.US.md) — 篮子：篮 4 10%
 - [SOFI.US](./SOFI.US.md) — 篮子：篮 6 13%
@@ -76,7 +80,7 @@
 ## 共享情景轴
 
 - [`_AXIS.africa-corridor`](./axes/africa-corridor.md) — 非洲建材与矿业通道情景轴 · 挂载票：`6655.HK` · `600499.SH` · `603871.SH`
-- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US
+- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
 - [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：1（`000543.SZ` 皖能电力，电厂侧；候选：`1898.HK` 中煤能源 · `600011.SH` 华能国际；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
 - [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US · TSM.US

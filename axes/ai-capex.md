@@ -1,6 +1,6 @@
 # _AXIS.ai-capex — AI 资本开支情景轴
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-12 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-22 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 > 口径：**2027 日历年、前五大 hyperscaler（Amazon / Microsoft / Google / Meta / Oracle）总资本开支，USD**
 
 共享情景轴（`AGENTS.md`「锚点语义」§共享情景轴）。挂载票的 §3 Inputs **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。
@@ -63,6 +63,8 @@
 | **构成方** | **GOOG.US** | 本身是前五大 hyperscaler 之一，其 capex 指引 **$1,950–2,050 亿（2026）** 就在轴的基数里。轴对它的约束是**反向**的：它 **MUST NOT** 独立断言一个比轴更悲观的 capex 情景；其云腿倍数命名的「AI capex 周期见顶」须与轴的 L 档口径一致（当前轴 L 仍是 **+32%** 高增长，不是转负）。构成方**不消费**轴值作分子 |
 | **构成方** | **ORCL.US** | 前五大之一（Oracle），FY27（截 2027-05）capex 指引 **$900–950 亿**，占轴 2026 基数 ~**11–12%**。同 GOOG：不消费轴值作分子，L 档命名的「OCI 回报退潮」不得比轴 L 档更悲观；其 OCI 腿底牌按 g=0 定价、第二段增长走 \(V_{opt}\)（见 `ORCL.US.md` A6/A9/A16） |
 | **构成方** | **META.US** | 前五大之一（Meta），FY26（日历年）capex 指引 **$1,300–1,450 亿**（2026-07-29 Q2 call；4 月为 1,250–1,450），中值占轴 2026 基数 ~**17%**（16–18%）。同 GOOG / ORCL：不消费轴值作分子（「出售智能 / 算力租赁」收入未成段，走 \(V_{opt}\)，见 `META.US.md` A10）；其 L 档命名的「AI 算力回报退潮」只表达为 ROIC 分母膨胀 + 折旧吃利润（A4 / A6），**MUST NOT** 比轴 L 档（+32%）更悲观；管理层不给 2027 capex 指引，卖方 2027E $1,710–2,430 亿均 ≥ 轴 L 隐含量级 |
+| **构成方** | **MSFT.US** | 前五大之一（Microsoft），FY26（截 2026-06）现金 capex **$1,159 亿**（另有融资租赁新增），占轴 2026 基数 ~**14%**；FY27 指引只说「增速高于 FY26」，数字待补（`MSFT.US.md` A12）。同 GOOG：不消费轴值作分子；其 L 档 = 共识下沿、不叠 capex 退潮（`stalwart` 的 L 是 de-rate 不是分子退坡），**MUST NOT** 比轴 L 档（+32%）更悲观；Azure 增长的资本代价按边际 ROIC 14.6% 进倍数（A4），capex 潮的分母膨胀走 +20%/+40% 敏感行 |
+| **构成方** | **AMZN.US** | 前五大之一（Amazon），2026 capex 指引 **$2,200 亿**（Q2 call 上调自 2,000 亿），占轴 2026 基数 ~**27%**，其中 76% 给 AWS；卖方 2027E $3,650 亿（JPM）。同 GOOG：不消费轴值作分子；其 L 档命名的「AWS 利润率退回 FY2025 实测 35.4%」是回报退潮不是 capex 转负，**MUST NOT** 比轴 L 档（+32%）更悲观（`AMZN.US.md` A12）；AWS 增长的资本代价按边际 ROIC 18.9% 进倍数（A4） |
 
 **待补**：`eval/lib/axes.py` 尚无 capex 轴的 checker——构成方的 capex 指引与轴基数目前靠人工对齐，未做逐格校验。
 
