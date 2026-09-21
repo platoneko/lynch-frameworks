@@ -124,7 +124,7 @@ Gordon 用的 ROE 含财务杠杆：ROE = 资产回报 × 权益乘数。篮子 
 \frac{\text{净债务}}{EBITDA} > 3\qquad\text{或}\qquad\frac{\text{利息支出}}{EBIT} > \tfrac{1}{3}
 \]
 
-1. **ROE 拆解披露**：Inputs / Outputs 并列 ROE、权益乘数、\(ROIC = EBIT\times(1-t)/(\text{归母权益}+\text{净债务})\)（分腿票逐腿；分部净资产口径的腿用 分部税前利润 ÷ 分部资产 作粗读，标明口径）。域判定 **MUST** 同时报 ROE 侧与 ROIC 侧：ROE ≥ r 而 ROIC < r（正号全靠杠杆）→ 该腿按 ROIC 侧判域（病态 / 峰形），倍数上限 \(1/r\)，**MUST NOT** 走单调区留存分支
+1. **ROE 拆解 + 留存分支改用 ROIC**：Inputs / Outputs 并列 ROE、权益乘数、\(ROIC = EBIT\times(1-t)/(\text{归母权益}+\text{少数股东权益}+\text{净债务})\)（NOPAT 在少数股东之前，分母须同口径含 NCI；分腿票逐腿；分部净资产口径的腿用 分部税前利润 ÷ 分部资产 作粗读，标明口径）。**理由**：门触发 = 杠杆已用满，留存下来的每一元权益不能再按原比例配债，边际回报是不加杠杆的 ROIC，不是账面 ROE。故触发腿的留存分支 **MUST** 用 \(b=g/ROIC\)、域按 ROIC 对 r 判（ROIC < r − 3pp 即峰形区，倍数上限 \(1/r\)，**MUST NOT** 走单调区留存分支）；ROE 侧域判并列披露。**分工**：ROIC 只进 \(g>0\) 的留存项，**MUST NOT** 用它折存量利润的倍数——归母转化率 / 少数股东分走的部分归分子（`603799.SH` `conv` 三档、A13），两处各扣一次不重叠
 2. **分子去杠杆**：留存去向审计 A 桶成立（还债路径可命名）→ 分子用还完债后的 EPS、省息不进 g（A 桶既有规则，此处强制）；A 桶不成立（杠杆是稳态）→ 分子不动，但利息 / EBIT > 1/3 的票 **MUST** 加一行「利率 +100bp 对分子 EPS 的影响」进敏感区（进锚点的 r 不动，见「利率轴」）
 3. **换尺判定**：触发且命中 `construction.md` §5b 决策树第 1 条（EBIT ≈ 可分配现金、卖方 / 同业惯用 EV/EBIT）→ 主尺 **MUST** 改 EV/EBIT，Gordon 降交叉；不命中 → Gordon 留主尺，但 §0 **MUST** 一句写明「杠杆门触发、主尺仍 Gordon 的原因」，且 EV 口径读数（EV/EBITDA 或 EV/EBIT 对同业簇）**MUST** 进交叉备注。**MUST NOT** 为规避杠杆门把净债的一部分「分摊」到不进公式的腿
 
