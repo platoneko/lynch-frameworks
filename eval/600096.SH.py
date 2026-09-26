@@ -40,7 +40,7 @@ The beta guard below is what keeps that honest: if the measured elasticity ever
 climbs above 0.20, the "does not transmit" premise has failed and the ruler has
 to be rebuilt rather than quietly re-fitted.
 
-Run:  python3 eval/600096.SH.py
+Run:  python3 frameworks/eval/600096.SH.py
 """
 
 from __future__ import annotations

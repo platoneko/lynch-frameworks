@@ -52,7 +52,7 @@ Two things this script deliberately does NOT do, both recorded as `待补`:
     listed crown jewel of that segment, trades at PE 8.48 — below CRRC's own
     9.28.  There is no market evidence for a segment premium.
 
-Run:  python3 eval/1766.HK.py
+Run:  python3 frameworks/eval/1766.HK.py
 """
 
 from __future__ import annotations

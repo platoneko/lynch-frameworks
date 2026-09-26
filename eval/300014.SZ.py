@@ -58,7 +58,7 @@ are not on the same basis, so 裁决顺序 ③ does not apply (B16).  They are
 disclosed, not enforced.  r is the basket value and MUST NOT be tuned per
 ticker; re-basketing goes through the ③ 出带 process with a paper trail.
 
-Run:  python3 eval/300014.SZ.py
+Run:  python3 frameworks/eval/300014.SZ.py
 """
 
 from __future__ import annotations

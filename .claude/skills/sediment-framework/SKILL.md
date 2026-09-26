@@ -15,7 +15,7 @@ description: >
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
 「继续 / 嗯 / 好」≠ 授权落盘。标的池 = 扫 `frameworks/*.md`（排除 `_` 前缀与 `AGENTS.md` / `README.md`）；**MUST NOT** 维护 `universe.yaml`。  
-模板：`frameworks/_TEMPLATE.md`。仓库契约：`AGENTS.md`。语义真源：`references/valuation-rules.md`。
+模板：`frameworks/_TEMPLATE.md`。仓库契约：`frameworks/AGENTS.md`。语义真源：`references/valuation-rules.md`。
 
 ### 懒加载（MUST）
 

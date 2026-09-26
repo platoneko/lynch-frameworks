@@ -30,7 +30,7 @@ copper+gold 篮 4 g2 2.5%; cobalt / Mo-W-Nb-P 篮 6 and IXM 篮 5 at 1/r.
 ROIC gate (A28): marginal ROIC ≥ r_perp or the tier keeps the same form with
 growth switched off (g1 := g2 on 篮 4, 0 elsewhere).
 
-Run:  python3 eval/603993.SH.py
+Run:  python3 frameworks/eval/603993.SH.py
 """
 
 from __future__ import annotations

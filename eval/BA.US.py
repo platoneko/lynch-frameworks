@@ -20,7 +20,7 @@ pays out in full and only the tail carries the retention term, at the FY2028
 ROIC.  L carries no transition — the world where the recovery stalls at the
 FY2027 consensus low.  Basket 4 r 10%, g2 = peer-cluster median capped at 6%.
 
-Run:  python3 eval/BA.US.py
+Run:  python3 frameworks/eval/BA.US.py
 """
 
 from __future__ import annotations

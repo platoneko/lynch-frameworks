@@ -26,7 +26,7 @@ only (A1b).  r is the basket rate: the Inputs `r_perp` row names 篮 4 龙头制
 `g_cap(r)` = min(6%, r - 4%).  The realised 5-year monthly PE band [pe_own_min, pe_own_max]
 (IFRS-basis series, denominator `eps_ttm_ifrs`) is a guardrail, never an input.
 
-Run:  python3 eval/0700.HK.py
+Run:  python3 frameworks/eval/0700.HK.py
 """
 
 from __future__ import annotations

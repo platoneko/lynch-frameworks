@@ -28,7 +28,7 @@ never used in the formula: what the two sides share is the constraint "this
 bear is not worse than the axis L", which no arithmetic can verify, so the
 restatement is what makes an axis edit force a re-read here.
 
-Run:  python3 eval/HOOD.US.py
+Run:  python3 frameworks/eval/HOOD.US.py
 """
 
 from __future__ import annotations

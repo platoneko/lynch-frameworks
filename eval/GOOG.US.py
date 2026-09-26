@@ -47,7 +47,7 @@ Disclosures (printed, never errors): the band with g2_svc shifted -1pp / -0.5pp
 and the zone it lands in (敏感区, valuation-rules「g₂ 的杠杆 MUST 显式」), and the
 single-stage implied r(P) against the basket r.
 
-Run:  python3 eval/GOOG.US.py
+Run:  python3 frameworks/eval/GOOG.US.py
 """
 
 from __future__ import annotations

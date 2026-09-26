@@ -13,7 +13,7 @@ as disclosure rows; `check_r` holds every r row to its basket's value and the
 ③ 出带 reference band (display leg at 1/r of 篮 6) is printed, not asserted.
 There is no g2 row (flat multiples), so `check_g_cap` has nothing to check.
 
-Run after every edit of frameworks/000100.SZ.md:   python3 eval/000100.SZ.py
+Run after every edit of frameworks/000100.SZ.md:   python3 frameworks/eval/000100.SZ.py
 """
 
 from __future__ import annotations

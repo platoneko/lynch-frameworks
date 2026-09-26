@@ -42,7 +42,7 @@ The street's EV/EBIT read (JPM 13x / HSBC 14x on OCI EBIT) is recomputed as a
 cross-check only.  Net debt is taken at face at the start of FY28 and the
 mandatory convertible preferred at its liquidation preference (A11).
 
-Run:  python3 eval/ORCL.US.py
+Run:  python3 frameworks/eval/ORCL.US.py
 """
 
 from __future__ import annotations

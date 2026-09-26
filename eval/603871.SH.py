@@ -28,7 +28,7 @@ with 6655.HK and 600499.SH.  Those two mount it as perpetual nominal g;
 Jiayou mounts the window transform (axis §3).  Guard 3 checks Jiayou's
 window rates against PV-parity + H cap — not against the raw axis rungs.
 
-Run:  python3 eval/603871.SH.py
+Run:  python3 frameworks/eval/603871.SH.py
 """
 
 from __future__ import annotations

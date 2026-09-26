@@ -23,7 +23,7 @@ Candidate band (A2e-7h): Barclays 2027E adjusted EPS (single house) on the
 same multiple.  Cross (not a scale): EV/EBITDA per sell-side (Barclays 17×,
 JPM 22×) and the multiple the current price pays on consensus-revenue EBITDA.
 
-Run:  python3 eval/HIMS.US.py
+Run:  python3 frameworks/eval/HIMS.US.py
 """
 
 from __future__ import annotations

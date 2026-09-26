@@ -45,7 +45,7 @@ Checks beyond the anchor comparison:
   5. candidate band matches the one Outputs line and is ordered
   6. no p_* fields in Inputs; V_opt / p tiers as stated
 
-Run after every edit of frameworks/9988.HK.md:  python3 eval/9988.HK.py
+Run after every edit of frameworks/9988.HK.md:  python3 frameworks/eval/9988.HK.py
 """
 
 from __future__ import annotations

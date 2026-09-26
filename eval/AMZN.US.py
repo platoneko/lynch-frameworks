@@ -30,7 +30,7 @@ segment margin (A5); L and H are the two ends of the same 52-house FY2027E
 distribution (A2e-2a).  No V_opt: the post-FY2027 second stage has no
 consensus anchor; the single-house FY2028E point estimate is a candidate band.
 
-Run:  python3 eval/AMZN.US.py
+Run:  python3 frameworks/eval/AMZN.US.py
 """
 
 from __future__ import annotations

@@ -55,7 +55,7 @@ Sanity checks beyond the anchor comparison:
     sum to 55,421 — a world that never happened (A22)
   * L < M < H on the *total* only — individual legs may be non-monotonic
 
-Run:  python3 eval/0189.HK.py
+Run:  python3 frameworks/eval/0189.HK.py
 """
 
 from __future__ import annotations

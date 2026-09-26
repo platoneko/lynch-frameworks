@@ -30,7 +30,7 @@ Earnings-ruler reference (A2e-1 asset_play row): consensus NP × the same Gordon
 multiple, printed and required to sit below L — if it ever exceeds L the asset
 ruler is no longer the upper bound and the framework goes back to dialogue.
 
-Run:  python3 eval/2631.HK.py
+Run:  python3 frameworks/eval/2631.HK.py
 """
 
 from __future__ import annotations

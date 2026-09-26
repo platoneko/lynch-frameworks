@@ -51,7 +51,7 @@ Sanity checks beyond the anchor comparison:
     numerator from silently drifting into the anchors
   * L < M < H; stated V_opt and p_L/p_M/p_H present and consistent
 
-Run:  python3 eval/NVDA.US.py
+Run:  python3 frameworks/eval/NVDA.US.py
 """
 
 from __future__ import annotations

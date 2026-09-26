@@ -29,7 +29,7 @@ Metal leg 篮 4 r 10% g2 2.5%; lead/zinc 篮 6 r 13% g2 0.  ROIC gate (A7):
 marginal ROIC = (NP28 − NP_cur) ÷ growth capex 2026–28 ≥ r_perp, else the tier
 keeps the form with g1 := g2 (metal) / 0 (lead/zinc).
 
-Run:  python3 eval/NEM.US.py
+Run:  python3 frameworks/eval/NEM.US.py
 """
 
 from __future__ import annotations

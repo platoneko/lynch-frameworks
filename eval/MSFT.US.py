@@ -24,7 +24,7 @@ Cross-check (b): the FY26 three OLD segments (PBP / IC / MPC), each with its
 own g and allocated capital, the IC leg retaining at the same marginal ROIC.
 Printed and compared to (a); it does not set the zone.
 
-Run:  python3 eval/MSFT.US.py
+Run:  python3 frameworks/eval/MSFT.US.py
 """
 
 from __future__ import annotations

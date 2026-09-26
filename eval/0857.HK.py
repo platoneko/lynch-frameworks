@@ -41,7 +41,7 @@ module is not part of this ticker's task.  Same row shape as the other
 commodity axes (| **L** | regime | **68** | ...), so a future
 `load_brent_rungs` in lib/axes.py is a drop-in.
 
-Run:  python3 eval/0857.HK.py
+Run:  python3 frameworks/eval/0857.HK.py
 """
 
 from __future__ import annotations

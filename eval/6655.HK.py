@@ -51,7 +51,7 @@ Guards:
     and the two L-tier leg numerators add back to the group L numerator.
   * EBITDA rows must not leak into the anchor path.
 
-Run:  python3 eval/6655.HK.py
+Run:  python3 frameworks/eval/6655.HK.py
 """
 
 from __future__ import annotations

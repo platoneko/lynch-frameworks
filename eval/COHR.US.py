@@ -44,7 +44,7 @@ Sanity checks beyond the L<M<H / Outputs reconciliation:
   - option: stated V_opt and 表3 reconcile; p never leaks into the base;
     the ceiling anchor is the deal mark, not the price
 
-Run:  python3 eval/COHR.US.py
+Run:  python3 frameworks/eval/COHR.US.py
 """
 
 from __future__ import annotations

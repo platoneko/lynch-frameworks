@@ -41,7 +41,7 @@ foundry_discount; 表3 = base_k + p_k × V_opt with P_K an eval constant, never
 an Input (A2e-7a).  p_M is the value-ratio E[P_f]/V_opt from the pre-split
 0.20/0.55/0.25 weighting (A7).
 
-Run:  python3 eval/INTC.US.py
+Run:  python3 frameworks/eval/INTC.US.py
 """
 
 from __future__ import annotations

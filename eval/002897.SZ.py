@@ -30,7 +30,7 @@ cluster prices 篮 4 names (cross-basket, §13 rule 7) and the own band never
 priced "13% + no ramp".  Ruling on the basket is a §13 research step, not this
 script.  No floor enters L; book value per share is printed as disclosure.
 
-Run:  python3 eval/002897.SZ.py
+Run:  python3 frameworks/eval/002897.SZ.py
 """
 
 from __future__ import annotations

@@ -41,7 +41,7 @@ Two guards here are specific to this ticker:
 The integration-shape ordering against Hongqiao lives in 1378.HK's eval, which
 reads this table; it is not duplicated here.
 
-Run:  python3 eval/002532.SZ.py
+Run:  python3 frameworks/eval/002532.SZ.py
 """
 
 from __future__ import annotations

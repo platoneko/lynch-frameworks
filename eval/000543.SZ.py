@@ -47,7 +47,7 @@ equal `perpetual_pe` on the retention branch),
 floor logic, ladder, zone stable across the E_M evidence interval and the axis
 M window, and the 纠正对账门 table (valuation-rules 2026-09-15).
 
-Run:  python3 eval/000543.SZ.py
+Run:  python3 frameworks/eval/000543.SZ.py
 """
 
 from __future__ import annotations

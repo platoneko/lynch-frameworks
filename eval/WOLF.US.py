@@ -26,7 +26,7 @@ ruler and there is no g2.  `r_perp` is disclosure only; the script checks the
 basket tag and value agree and prints the 篮 7 steady-state floor
 (1/r × E, zero for E < 0) without max()-ing it into L.
 
-Run:  python3 eval/WOLF.US.py
+Run:  python3 frameworks/eval/WOLF.US.py
 """
 
 from __future__ import annotations

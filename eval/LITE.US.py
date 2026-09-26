@@ -34,7 +34,7 @@ r is set by the leg's basket (valuation-rules.md「§r 篮子」): the framework
 names `篮 N` on the r_perp row (A20) and r must equal that basket's value
 (gordon.BASKET_R); g2 must sit under g_cap(r).
 
-Run:  python3 eval/LITE.US.py
+Run:  python3 frameworks/eval/LITE.US.py
 """
 
 from __future__ import annotations

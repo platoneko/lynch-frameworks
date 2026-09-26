@@ -27,7 +27,7 @@ criterion holds positively and that 篮 4 is the user's ruling, not a derivation
 Axis: full mount on _AXIS.crypto-cycle — all three numerators are the axis's
 own rungs, so editing either side alone turns this eval red.
 
-Run:  python3 eval/COIN.US.py
+Run:  python3 frameworks/eval/COIN.US.py
 """
 
 from __future__ import annotations

@@ -48,7 +48,7 @@ fails if it differs from the zone at the cap (valuation-rules「g₂ 的杠杆 M
 显式」).  Order-gate fields (cover, concentration) are recomputed / watched but
 never enter the anchors.  No probability enters the base deck.
 
-Run:  python3 eval/BE.US.py
+Run:  python3 frameworks/eval/BE.US.py
 """
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ floor (BPS in HKD) is disclosed only, never max()-ed into L.
 Cloud / AIDC has revenue but no segment EBIT → V_opt = 0 (A6).
 Southbound axis is NOT mounted for multiples (A9); A/H is dual-reported.
 
-Run:  python3 eval/0728.HK.py
+Run:  python3 frameworks/eval/0728.HK.py
 """
 
 from __future__ import annotations

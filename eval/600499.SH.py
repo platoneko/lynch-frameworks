@@ -56,7 +56,7 @@ ROIC_proj read off steady-state peer years (L = 2026H1 price-war reading, M =
 peer FY2024-25 median, H = best integrated peer through-cycle).  The charge
 floors at 0: unspent money earns no credit above r.
 
-Run:  python3 eval/600499.SH.py
+Run:  python3 frameworks/eval/600499.SH.py
 """
 
 from __future__ import annotations

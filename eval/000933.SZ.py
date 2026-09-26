@@ -32,7 +32,7 @@ not as the anchor.  The guard below asserts that ordering: if the k fitting
 point ever stops being the worse corner, A4's story has changed and the
 reference must be re-opened, not silently kept.
 
-Run:  python3 eval/000933.SZ.py
+Run:  python3 frameworks/eval/000933.SZ.py
 """
 
 from __future__ import annotations

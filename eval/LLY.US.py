@@ -22,7 +22,7 @@ Retained-cash audit: E bucket (capex 10.8bn vs D&A 2.0bn, no named end) with a
 single-stage perpetual form → the "modelled-as-paid, actually retained" cash =
 (1 − actual payout − g2/ROE) × E ÷ (r − g2), haircut k and subtracted.
 
-Run:  python3 eval/LLY.US.py
+Run:  python3 frameworks/eval/LLY.US.py
 """
 
 from __future__ import annotations

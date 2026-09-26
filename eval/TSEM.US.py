@@ -42,7 +42,7 @@ multiple (A9).  Probabilities live only in the zone+V table.
 Cross-file: `sipho_unit_rev` must equal the same field in GFS.US.md — the one
 realised unit both frameworks price against (A14).
 
-Run:  python3 eval/TSEM.US.py
+Run:  python3 frameworks/eval/TSEM.US.py
 """
 
 from __future__ import annotations

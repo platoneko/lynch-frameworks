@@ -43,7 +43,7 @@ only in the zone+V table.
 Cross-file: `sipho_unit_rev` must equal the same field in TSEM.US.md — the
 one realised unit both frameworks price against (A12).
 
-Run:  python3 eval/GFS.US.py
+Run:  python3 frameworks/eval/GFS.US.py
 """
 
 from __future__ import annotations

@@ -73,7 +73,7 @@ own p_k. Everything past 2038 is worth zero here. The two segments sum to the
 p_k is hard-coded on purpose: p-class fields must never appear in §3 Inputs
 (A2e-7a).
 
-Run:  python3 eval/GLW.US.py
+Run:  python3 frameworks/eval/GLW.US.py
 """
 
 from __future__ import annotations

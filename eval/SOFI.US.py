@@ -21,7 +21,7 @@ Main ruler: Gordon PB-ROE on tangible book, with *owner earnings* as the numerat
   L (two-stage off, g = 0, undiscounted):
       OE_L = OE_26 - (ΔNII_{+100bp} + ΔCredit_{NCO→3.8%}) × (1 - t);  P_L = OE_L / r / shares
 
-Run:  python3 eval/SOFI.US.py
+Run:  python3 frameworks/eval/SOFI.US.py
 """
 
 from __future__ import annotations

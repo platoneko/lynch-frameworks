@@ -41,7 +41,7 @@ legs 篮 4 龙头制造, 10%); `check_r` pins the value to the named basket and
 `check_g_cap` caps each leg's g2 at g_cap(r) = min(6%, r - 4%).  Disclosure
 only: the single-stage implied r(P) and the g2 -1pp band (no zone flip expected).
 
-Run:  python3 eval/MRVL.US.py
+Run:  python3 frameworks/eval/MRVL.US.py
 """
 
 from __future__ import annotations

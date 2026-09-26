@@ -36,7 +36,7 @@ Disclosure rows: 「模型视同派出、实际留存的现金/股」 = (actual 
 × window cumulative EPS (a premise of the anchor, never added), today's net
 cash per share (cross-note), implied-r δ, alt 篮 5, PB floor.
 
-Run:  python3 eval/601899.SH.py
+Run:  python3 frameworks/eval/601899.SH.py
 """
 
 from __future__ import annotations

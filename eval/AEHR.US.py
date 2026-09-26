@@ -35,7 +35,7 @@ second AI processor customer and a return of SiC to its FY24 peak, both named
 outside the consensus by the covering houses, A14), priced at the M-tier
 multiple.  Probabilities live only in the zone+V table.
 
-Run:  python3 eval/AEHR.US.py
+Run:  python3 frameworks/eval/AEHR.US.py
 """
 
 from __future__ import annotations

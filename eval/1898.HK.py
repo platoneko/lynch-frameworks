@@ -61,7 +61,7 @@ The asset floor (PB = 1.0 = 14.4661 HKD) sits ABOVE H: with r 13% > ROE_M
 10.2% the justified PB is ROE/r = 0.79 and the whole earnings band sits under
 book by construction.  The floor is printed, never max()'d (A10).
 
-Run:  python3 eval/1898.HK.py
+Run:  python3 frameworks/eval/1898.HK.py
 """
 
 from __future__ import annotations

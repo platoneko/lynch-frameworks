@@ -45,7 +45,7 @@ min(6%, r - 4%) (A25).  Implied r(P) is printed as a disclosure only.
 
 COUPE: V_opt = H-tier OE×$450×share×npm×platform PE; p_k = V_k/V_H.
 
-Run:  python3 eval/TSM.US.py
+Run:  python3 frameworks/eval/TSM.US.py
 """
 
 from __future__ import annotations

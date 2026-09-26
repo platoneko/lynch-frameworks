@@ -17,7 +17,7 @@ the §3 Inputs table still carries p_l / p_m / p_h rows, which A2e-7a forbids.
 That is reported as a warning below rather than a failure so the anchor
 recomputation stays runnable until the rebuild lands.
 
-Run:  python3 eval/000725.SZ.py
+Run:  python3 frameworks/eval/000725.SZ.py
 """
 
 from __future__ import annotations

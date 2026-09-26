@@ -28,7 +28,7 @@ Three things here are specific to this ticker:
   Inputs table and enters only 表3; `check_no_p_leak` proves it by rebuilding
   the p=0 row and requiring it to equal the base L exactly.
 
-Run:  python3 eval/QCOM.US.py
+Run:  python3 frameworks/eval/QCOM.US.py
 """
 
 from __future__ import annotations

@@ -56,7 +56,7 @@ contract, perp leverage and TTM anchoring on the run-rate cross band,
 reference rows kept out of the formula, band-edge reverse-solve, A20 bridge
 reproduction, stated-vs-recomputed anchors.
 
-Run:  python3 eval/600011.SH.py
+Run:  python3 frameworks/eval/600011.SH.py
 """
 
 from __future__ import annotations

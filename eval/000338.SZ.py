@@ -69,7 +69,7 @@ outside proof, guardrail, trough-tier precondition (ROE_L < r), shape check,
 flat-multiple ladder, KION-share band, SOFC cross-check against BE.US, p-leak
 scan, southbound-axis mount.
 
-Run:  python3 eval/000338.SZ.py
+Run:  python3 frameworks/eval/000338.SZ.py
 """
 
 from __future__ import annotations

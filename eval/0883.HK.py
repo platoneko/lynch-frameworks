@@ -40,7 +40,7 @@ the price is only used to read the implied r (A10) -- never to fit anchors.
 The g2 +/-1pp sensitivity is printed, and a zone flip there is a disclosure
 (⚠敏感区), not a failure.
 
-Run:  python3 eval/0883.HK.py
+Run:  python3 frameworks/eval/0883.HK.py
 """
 
 from __future__ import annotations

@@ -40,7 +40,7 @@ marginal conversion rate, which is why k must stay far below the other mounts'.
 The guard below asserts exactly that, so a future revision cannot quietly
 recover the missing four-tenths.
 
-Run:  python3 eval/601600.SH.py
+Run:  python3 frameworks/eval/601600.SH.py
 """
 
 from __future__ import annotations

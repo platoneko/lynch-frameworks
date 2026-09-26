@@ -52,7 +52,7 @@ Guardrail: every tier's whole-ticker multiple (anchor / GAAP-TTM EPS) must sit
 inside the realised 5-year band [pe_own_min, pe_own_max] (A21, weak band).
 
 Money inputs are in 亿元人民币; per-share anchors are HKD via fx_cny_hkd.
-Run after every edit of frameworks/1810.HK.md:   python3 eval/1810.HK.py
+Run after every edit of frameworks/1810.HK.md:   python3 frameworks/eval/1810.HK.py
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ EPS (numerator year + 3 stage-1 years), haircut k and subtracted from each
 anchor.  Anchors are computed in DKK and converted to USD at `fx_dkk_usd`
 (1 ADR = 1 ordinary share).
 
-Run:  python3 eval/NVO.US.py
+Run:  python3 frameworks/eval/NVO.US.py
 """
 
 from __future__ import annotations

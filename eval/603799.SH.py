@@ -56,7 +56,7 @@ framework carries the D-bucket conclusion and the priced k row.
 
 Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
 
-Run:  python3 eval/603799.SH.py
+Run:  python3 frameworks/eval/603799.SH.py
 """
 
 from __future__ import annotations

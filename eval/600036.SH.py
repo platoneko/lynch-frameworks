@@ -18,7 +18,7 @@ Main ruler: Gordon PB-ROE.
 The provision identity is recomputed from NPL × Δcoverage so ROE_L cannot
 quietly become an unsourced number.
 
-Run:  python3 eval/600036.SH.py
+Run:  python3 frameworks/eval/600036.SH.py
 """
 
 from __future__ import annotations

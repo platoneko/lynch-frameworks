@@ -51,7 +51,7 @@ Disclosures printed for the A2f record (never fed back into the anchors):
   the zone each lands in (the sensitivity zone), IC frozen / x1.58, RL = 0,
   contingent settlement 30%, tax 21%.
 
-Run:  python3 eval/META.US.py
+Run:  python3 frameworks/eval/META.US.py
 """
 
 from __future__ import annotations

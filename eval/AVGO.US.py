@@ -35,7 +35,7 @@ valuation-rules「g₂ 的杠杆 MUST 显式」): a zone flip is printed, not an
 Implied r(P) -- one δ added to every leg's basket r until the M-tier sum meets
 the price -- is printed for the same reason.
 
-Run:  python3 eval/AVGO.US.py
+Run:  python3 frameworks/eval/AVGO.US.py
 """
 
 from __future__ import annotations

@@ -34,7 +34,7 @@ shallowest.  The guard below asserts that ordering against Tianshan, whose
 alumina is captive: if the two ever invert, one framework has treated the
 L world's alumina differently from the axis.
 
-Run:  python3 eval/1378.HK.py
+Run:  python3 frameworks/eval/1378.HK.py
 """
 
 from __future__ import annotations

@@ -45,7 +45,7 @@ realised trough multiple, stated Outputs incl. 表1 / zone-table bounds /
 candidate band, flat-@M ladder, g2 evidence-range zone stability, no p_* leak,
 optical axis mount).
 
-Run after every edit of frameworks/NOK.US.md:  python3 eval/NOK.US.py
+Run after every edit of frameworks/NOK.US.md:  python3 frameworks/eval/NOK.US.py
 """
 
 from __future__ import annotations

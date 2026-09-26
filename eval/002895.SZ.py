@@ -29,7 +29,7 @@ disclosure-only `r_perp` row: the script checks the basket tag and value agree
 (`check_r`), prints the 篮 6 contrast band at 1/r, the implied r(P) and the
 PB=1 floor (disclosed, never max()-ed into L).
 
-Run:  python3 eval/002895.SZ.py
+Run:  python3 frameworks/eval/002895.SZ.py
 """
 
 from __future__ import annotations

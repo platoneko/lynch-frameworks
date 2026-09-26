@@ -2,7 +2,7 @@
 
 长线标的的**估值框架**内容仓库，检出在代码仓库 `lynch/` 的 `frameworks/` 下（代码仓库忽略此目录）。标的由用户指定；挖掘在 `../invest`，本仓不负责。
 
-**路径约定**：本文件与 skill 里的路径一律相对 `lynch/`（研究会话的根）。唯一例外：框架题头的 `eval: eval/<TICKER>.py` 相对本仓库根解析。提交框架改动要在 `frameworks/` 里 `git commit`，`lynch/` 根的 `git status` 看不到这里。
+**路径约定**：本文件与 skill 里的路径一律相对 `lynch/`（研究会话的根）。例外两条：框架题头的 `eval: eval/<TICKER>.py` 相对本仓库根解析；本仓文档里裸写的 `AGENTS.md` 指本文件（`frameworks/AGENTS.md`），不是代码仓库的开发契约。提交框架改动要在 `frameworks/` 里 `git commit`，`lynch/` 根的 `git status` 看不到这里。
 
 面向用户的说明用**简体中文**。代码标识符、`formula_id`、林奇枚举值用英文。
 

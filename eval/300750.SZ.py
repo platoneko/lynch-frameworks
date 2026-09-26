@@ -44,7 +44,7 @@ the growth-required retention b1 = g2/ROE (no g1 window, so each tier rolls at
 its own g2), closed form BPS = BPS_2Q26 / (1 - g2·N/eps).  Actual retention
 above b1 is the B bucket, printed as a disclosure only.
 
-Run:  python3 eval/300750.SZ.py
+Run:  python3 frameworks/eval/300750.SZ.py
 """
 
 from __future__ import annotations

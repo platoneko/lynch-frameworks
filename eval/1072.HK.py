@@ -69,7 +69,7 @@ as a fence in `pe_own_lo/hi` — a generated multiple outside [7.04, 11.97] mean
 the normative anchor has walked past any price this stock has printed, and the
 construction goes back to the conversation.
 
-Run:  python3 eval/1072.HK.py
+Run:  python3 frameworks/eval/1072.HK.py
 """
 
 from __future__ import annotations

@@ -22,7 +22,7 @@ Unlevered SOTP (USD bn → per share), every leg priced on FY2027 (t=1):
 Candidate band (A2e-7h): Starlink two-stage with g1 from the single-house JPM
 2030 subscriber path; L′ copies the deck (no transition in the bad world).
 
-Run:  python3 eval/SPCX.US.py
+Run:  python3 frameworks/eval/SPCX.US.py
 """
 
 from __future__ import annotations

@@ -69,7 +69,7 @@ as a tripwire for future edits).
 No two-stage transition is run (the FY2027 consensus sits inside [L, H], A9 /
 口径), so `check_transition_years` does not apply.  No shared axis.
 
-Run:  python3 eval/600309.SH.py
+Run:  python3 frameworks/eval/600309.SH.py
 """
 
 from __future__ import annotations
