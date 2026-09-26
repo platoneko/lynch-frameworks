@@ -60,7 +60,7 @@
 
 - **深度折价**：低于保守可算地板（相对本框架）
 - **保守 / 中性 / 乐观**：仍在框架内；乐观 ≤「已建模的成功/上沿情景」
-- **叙事溢价**：超过框架内成功上沿；仍可能用 stretch 叙事解释，但是 **H 以外**。名字是历史沿用——残差的来源 **MUST** 由该票 §0 的 A2f 记录具名（叙事 / 街倍数 / 费用结构 / 折现率差 / 分支未定），读日报时看来源，不望文生义（实测：`513530.SH` 的残差是 QDII 费 6%，`0883.HK` 的是市价隐含 r≈14%）
+- **叙事溢价**：超过框架内成功上沿；仍可能用 stretch 叙事解释，但是 **H 以外**。名字是历史沿用——H 以上的价格可能来自叙事 / 街倍数 / 费用结构 / 折现率差 / 分支未定，读日报时结合该票 Assumptions 理解，不望文生义（例：`513530.SH` 的来源是 QDII 费 6%，`0883.HK` 的是折现率差——市场要的 r 高于篮子）
 
 ### 估值构造口径（真源已移至 skill）
 
@@ -68,7 +68,7 @@
 
 **跨票可比性**：`scripts/daily_bands.py` 把所有票的 zone 并排推送，故构造方法 **MUST** 可比。每票 §3 **MUST** 报 \(L/M\)、\(H/M\)、\((H-L)/2M\)（`neutral` 档宽占 M 的比例）；三者的仓库分布由 `scripts/calibration.py` 输出。`_INDEX.md` 每票带篮子列（各腿 `篮 N r%`），由 Inputs `r*` 行的 `篮 N` 标签生成。
 
-**篮子声明 — 行契约**：Inputs 表每条**进锚点公式的 r 行**的来源单元格 **MUST** 含 `篮 N`（N ∈ 1..7）+ 归篮理由；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样（写「同 `r_perp`，不归篮」之类）；eval 以 `inputs.parse_baskets` + `gordon.check_r(r, where, basket)` 校验值与篮子一致，`check_g_cap(g, r, where)` 校验永续 g。
+**篮子声明 — 行契约**：Inputs 表每条**进锚点公式的 r 行**的来源单元格 **MUST** 含 `篮 N`（N ∈ 1..7）+ 归篮理由；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 r）**MUST NOT** 含 `篮 N` 字样（写「同 `r_perp`，不归篮」之类）；eval 以 `inputs.parse_baskets` + `gordon.check_r(r, where, basket)` 校验值与篮子一致，`check_g_cap(g, r, where)` 校验永续 g。
 
 **BLOCKED 只在落盘前**：规则拦下（BLOCKED）= 停下来向用户报告原因，不落盘（skill references「BLOCKED 的语义」）。用户看过原因仍拍板落盘，该票就是正常票——底牌照常出 zone、进 `_INDEX` / `calibration.py`、参与跨带告警；未满足的规则写进 Outputs 披露行（样板 `ORCL.US`「③ 出带」行）。已落盘的文件 **MUST NOT** 带 BLOCKED 状态行。
 
@@ -81,8 +81,12 @@
 轴落盘为 `frameworks/axes/<轴名>.md`（不进标的池）；文档与 Assumptions 里的稳定引用写逻辑 id `` `_AXIS.<轴名>` ``，路径由 `eval/lib/axes.py` 的 `axis_path()` 解析。内含三档值、每档具名来源与 as-of、传导规则、跨票加总校验。怎么造见 skill references「共享情景轴」。
 
 价带与 zone 由脚本演算；弱 LLM 至多做归因。**MUST NOT** 让弱流水线擅自改 `frameworks/*.md` 或自行改概率锚点。  
-标的文档 **MUST** 输出锚点 \(L/M/H\)、切点 \(A/B\)、以及**填入本票数字的五档价格区间表**与现行 `zone` id。  
+标的文档 **MUST** 输出锚点 \(L/M/H\)、切点 \(A/B\)、以及**填入本票数字的五档价格区间表**；**MUST NOT** 写现行 `zone`——现价落在哪档只由日报与 app 用实时报价现场算（2026-09-27 定）。  
 **MUST NOT** 在标的文档重复规则长文；契约真源在本节，构造口径真源在 skill references，标的文档只落数字区间。
+
+**现价 — 禁写契约（2026-09-27 定）**：标的文档（§4 Changelog 除外）**MUST NOT** 含本票现价及其函数：现行 zone、「现价 → zone」行、市价隐含 r / g / p / \(\delta\)、现价到锚点或切点的距离（P/H、P/L、距切点 %…）、当前市值、当前 PE / PB / 股息率，以及拿现价立论的散文。允许的市场数据（每项 **MUST** 带 as-of）：① 本票**带日期的历史**成交价 / 倍数带（实证坐标、自身实测带护栏、同等盈利月份价、谷底价）——as-of 当日价不算历史；② **他物**市价：汇率、他股 / 同业的价格与倍数（含同业反解 \(g_2\)）、商品价；③ ETF 的 `nav_ref`（与折算所用指数值同一 as-of 日的 ETF 净值）+ 同日指数值。现价 **MAY** 在研究对话里作诊断（A2f 价带偏离反思、隐含 r 对账、\(g_2\) 证据区间门、纠正对账门等），但现价与诊断结论都 **MUST NOT** 落盘。§4 Changelog 是事件历史，其中带日期的价格与 zone 迁移原样保留。
+
+**过渡**：现有标的文档逐票迁移；迁移前旧的现价行原样保留（eval 库两种都认：`check_against_stated` 在文档不声明 zone 时跳过 zone 比对）。迁移属框架纠正，不写 Changelog；题头「更新：」写该文件最后修改的日期。
 
 日报：`scripts/daily_bands.py` 只读框架锚点 + Longbridge 现价 → 写 `output/bands/` → 飞书（**每天都发**；跨带 `@所有人`）。**MUST NOT** 回写框架 MD。
 

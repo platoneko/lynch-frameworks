@@ -10,7 +10,7 @@ description: >
 
 # 沉淀估值框架（sediment-framework · 篮子折现率）
 
-折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `frameworks/eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**，未接入的票只报隐含 r(P)。
+折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `frameworks/eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**。
 
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
@@ -26,7 +26,7 @@ description: >
 | 第 7 块定锚**之前**、任何选倍数形式（完整式 / \(1/r\) / \(1/(r-g)\) / 窗口 NPV）的讨论 | `references/valuation-rules.md`「留存去向审计」+「杠杆门」（先拉 ≥7 年 capex / NPPE / 净债，分桶、算净债 / EBITDA 与利息 / EBIT 后才许定形式） |
 | 第 6 块定锚 / 框架纠正改尺 | `references/construction.md` |
 | 生成的 M 倍数低于自身实测带下沿（③ 出带） | `references/valuation-rules.md`「③ 出带处理流程」（先补 ②、带同基、增长率诚实、逐档降篮、篮 4 仍出带 → BLOCKED + 带边 r 并列） |
-| zone ∈ {`stretched`,`deep_discount`} | `references/zone-reflection.md` |
+| zone ∈ {`stretched`,`deep_discount`}（研究当日现价归 zone，只在对话里） | `references/zone-reflection.md` |
 | 拟落盘摘要之后、授权之前 | `references/checklist.md` |
 
 未按上表加载对应 reference → **不得**报价带 / 声称 A2f 完成 / 勾自检完成。
@@ -46,11 +46,11 @@ description: >
 9. **档位跨票可比**：构造走 `construction.md`；语义见 `valuation-rules.md`「锚点语义」。散布 **MUST NOT** 来自手法。
 10. **不做交易指令**。
 11. **Ticker 规范化**：见下方表；文件名 = 题头 `# TICKER` = `frameworks/eval/<TICKER>.py`。
-12. **两端 zone MUST 反思**：`stretched` / `deep_discount` → `zone-reflection.md`。现价不是输入；两终点同等合法（\(P\le H+V_{opt}\)，或接受溢价并举证）。中间三档不强制。
+12. **两端 zone MUST 反思**：`stretched` / `deep_discount` → `zone-reflection.md`。现价不是输入；两终点同等合法（\(P\le H+V_{opt}\)，或接受溢价并举证）。中间三档不强制。现价只在研究对话里用，A2f 结论不落盘（2026-09-27 定）。
 13. **BLOCKED 不落盘**：见 `valuation-rules.md`「BLOCKED 的语义」「纠正对账门」。泛授权（「按推荐来 / 不用对话」）解不开 BLOCKED；只有用户看过原因后明确拍板才落盘——落盘后按正常票出 zone，未满足的规则写进 Outputs 披露行，**MUST NOT** 加 BLOCKED 状态行；subagent prompt **MUST** 转述本条。
-14. **r 只能归篮，不能拧**：每腿 \(r\) 只能是 `valuation-rules.md`「§r 篮子」表中 7 个值之一（真源 `gordon.py` `BASKET_R`）；一腿 **MAY** 按「篮子对」声明过渡篮 / 终值篮**两个**篮子值（默认相等；四条判据 + \(k\) 强制见该节；稳态特征**不要求今天已满足**，差距归 \(k\)），仍**只能取表中值**；Inputs 每条**进锚点公式的 r 行**来源单元格 **MUST** 写 `篮 N` + 归篮理由（eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` 校验）；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样；改篮子值属仓库级，单票 **MUST NOT** 动。市价与篮子尺的差走「隐含 r 对账」，不走 r。
+14. **r 只能归篮，不能拧**：每腿 \(r\) 只能是 `valuation-rules.md`「§r 篮子」表中 7 个值之一（真源 `gordon.py` `BASKET_R`）；一腿 **MAY** 按「篮子对」声明过渡篮 / 终值篮**两个**篮子值（默认相等；四条判据 + \(k\) 强制见该节；稳态特征**不要求今天已满足**，差距归 \(k\)），仍**只能取表中值**；Inputs 每条**进锚点公式的 r 行**来源单元格 **MUST** 写 `篮 N` + 归篮理由（eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` 校验）；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 r）**MUST NOT** 含 `篮 N` 字样；改篮子值属仓库级，单票 **MUST NOT** 动。市价与篮子尺的差只在研究对话里走「隐含 r 对账」（不落盘），不走 r。
 15. **倍数形式由留存去向审出，不是选的**：定锚前 **MUST** 跑 `valuation-rules.md`「留存去向审计」Step 0–5 并把分桶结论写进 Assumptions；命中「禁止形态」任一条即停下回对话。
-16. **出带不许照印，也不许换带 / 拧 g 凑进去**：M 倍数低于自身带下沿时 **MUST** 走 `valuation-rules.md`「③ 出带处理流程」——先补 ②、带与分子同基、**带有效性核验**（带下沿月份的预期增速与 ROE 是否与现模型同量级；失真带 **MUST NOT** 用来降篮或反推，③ 判不可判定走对账门）、增长率按窗口 + 终值诚实写、逐档降篮到篮 4（仅限干净带）；仍出带 → BLOCKED：停下报告（篮 4 诚实结构下 L/M/H + 带边 r 并列 zone + 市价隐含 r）。**MUST NOT** 维持初分篮照印、改看另一条能过的带、把区间 CAGR 当永续、用期权救尺、用失真带降篮。
+16. **出带不许照印，也不许换带 / 拧 g 凑进去**：M 倍数低于自身带下沿时 **MUST** 走 `valuation-rules.md`「③ 出带处理流程」——先补 ②、带与分子同基、**带有效性核验**（带下沿月份的预期增速与 ROE 是否与现模型同量级；失真带 **MUST NOT** 用来降篮或反推，③ 判不可判定走对账门）、增长率按窗口 + 终值诚实写、逐档降篮到篮 4（仅限干净带）；仍出带 → BLOCKED：停下报告（篮 4 诚实结构下 L/M/H + 带边 r 并列价带；市价隐含 r 只在对话里报、不落盘）。**MUST NOT** 维持初分篮照印、改看另一条能过的带、把区间 CAGR 当永续、用期权救尺、用失真带降篮。
 
 ---
 
@@ -97,10 +97,10 @@ description: >
 6. **可证伪假设**
 7. **锚点** — **MUST** `Read references/construction.md` + `heuristics.md`（A2d）
    - 分腿先声明每腿 Gordon vs EV/EBIT（§5b）；分腿 **不合成 \(\bar r\)**，逐腿相加
-   - 先印证矩阵，再锁倍数，再算 \(L/M/H\)、切点、五档、zone；周期票两口径都算，主 zone 取轴声明语义
-   - 每锚一句「定价了什么」；**禁止现价倒推**
-   - 报隐含 r(P)；USD / HKD 票 eval 接 `rf_report.rf_block` 出 \(r_f\) 敏感带 + 共识列 + 反向压力列（`valuation-rules.md`「§利率轴」；CNY / TWD 段 **[待建]**）
-   - 两端 zone → **MUST** `Read references/zone-reflection.md` 跑完再进摘要
+   - 先印证矩阵，再锁倍数，再算 \(L/M/H\)、切点、五档价格区间；周期票两口径都算，主价带取轴声明语义
+   - 每锚一句「定价了什么」；**禁止现价倒推**，现价及其派生读数亦不落盘（`AGENTS.md`「现价 — 禁写契约」）
+   - 隐含 r(P) 只在对话里作诊断、不落盘；USD / HKD 票 eval 接 `rf_report.rf_block` 出 \(r_f\) 敏感带 + 共识列 + 反向压力列（`valuation-rules.md`「§利率轴」；CNY / TWD 段 **[待建]**）
+   - 用研究当日现价归 zone（只在对话里）；两端 zone → **MUST** `Read references/zone-reflection.md` 跑完再进摘要，A2f 结论不落盘
 
 **决定权边界**：仅**林奇主类**、**归篮**与**主尺骨架**列选项；其余构造给推荐+默认并推进，用户不反对即定。
 
@@ -121,7 +121,7 @@ description: >
 
 ### A3. 落盘（仅明确授权后）
 
-1. 写满框架：题头两行 + §0–§3（§0 含「这张表怎么读」）；§4 初建日留空。规则拦下但用户看过原因拍板落盘的票，按正常票写（底牌照常出 zone），未满足的规则写进 Outputs 披露行 + 复核条件（样板 `ORCL.US`「③ 出带」行、A21），**MUST NOT** 加 BLOCKED 状态行（`AGENTS.md`「BLOCKED 只在落盘前」）
+1. 写满框架：题头两行 + §0–§3（§0 含「这张表怎么读」——拆 M 和 H 成几层，不拆现价；旧文件里拿现价立论的散文在逐票迁移时改写成不含价格的表述）；全文（§4 除外）不写本票现价及其派生读数（`AGENTS.md`「现价 — 禁写契约」）；§4 初建日留空。规则拦下但用户看过原因拍板落盘的票，按正常票写（底牌照常出 zone），未满足的规则写进 Outputs 披露行 + 复核条件（样板 `ORCL.US`「③ 出带」行、A21），**MUST NOT** 加 BLOCKED 状态行（`AGENTS.md`「BLOCKED 只在落盘前」）
 2. 可选 `frameworks/eval/<TICKER>.py` 薄壳
 3. 新建/改题头/改轴挂载 → `python3 scripts/gen_index.py`
 4. 汇报路径、分类、主尺、假设条数、尚缺数据
@@ -132,11 +132,11 @@ description: >
 
 ## 步骤 B — 框架纠正（不写 Changelog）
 
-读现行 → 对话列拟改 → 涉倍数走 A2d、涉锚点 **MUST** 走 `construction.md`、两端 zone 走 A2f → **授权后**只改现行块 + 必要时 eval。过程不进 §4。
+读现行 → 对话列拟改 → 涉倍数走 A2d、涉锚点 **MUST** 走 `construction.md`、两端 zone 走 A2f（研究当日现价，不落盘） → **授权后**只改现行块 + 必要时 eval。过程不进 §4。
 
 ## 步骤 C — 事件增量（写 Changelog）
 
-读现行 → 逐条判定 confirmed / weakened / falsified → 若改 Inputs/锚点则重算 + 必要时 A2f → **授权后**改现行块，Changelog 按当日合并 + `touched: […]`。
+读现行 → 逐条判定 confirmed / weakened / falsified → 若改 Inputs/锚点则重算 + 必要时 A2f（研究当日现价，不落盘） → **授权后**改现行块，Changelog 按当日合并 + `touched: […]`。
 
 ## 步骤 D — 题头修补
 
