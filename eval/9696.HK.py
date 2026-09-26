@@ -23,6 +23,10 @@ a guardrail.
 V_opt: the SQM stake as k=1 × the realised 2026H1 investment income, run
 through the framework's own (1-t)(1-NCI) bridge and the M-tier multiple
 (A2e-7c).
+
+The framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily digest
+derives the zone from live quotes.
 """
 
 from __future__ import annotations
@@ -36,7 +40,6 @@ from lib.axes import AXIS_LI2CO3, check_li2co3_mount  # noqa: E402
 from lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, recovery_two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
-from lib.zones import zone_of  # noqa: E402
 
 # rf_report / bands_io import through the `eval.lib` package, so the repo root
 # must be importable too; appended so `lib.*` above still resolves first.
@@ -56,7 +59,7 @@ YI = 1e8
 LISTING_CCY = "HKD"
 
 REQUIRED = [
-    "price", "shares", "bps",
+    "shares", "bps",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "realization_conc", "realization_chem",
     "cost_conc", "cost_chem",
@@ -161,7 +164,6 @@ def main() -> int:
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
-    zone = zone_of(inp["price"], L, M, H)
     flat = (S["l"]["eps_hkd"] * pe_m, M, S["h"]["eps_hkd"] * pe_m)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
@@ -181,7 +183,7 @@ def main() -> int:
     else:
         p_tiers = tuple(float(pm.group(i)) for i in (1, 2, 3))
     corrected = (L + p_tiers[0] * v_opt, M + p_tiers[1] * v_opt, H + p_tiers[2] * v_opt)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = [^*\n]*\*\*([0-9.]+)\*\*"),
         ("V_opt", v_opt, r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*"),
@@ -229,11 +231,10 @@ def main() -> int:
     )
     for dg in (-0.01, 0.01):
         band = tuple(S[t]["eps_hkd"] * perpetual_pe(inp["g2"] + dg, S[t]["roe"], r) for t in ("l", "m", "h"))
-        print(f"  g2 {dg:+.0%} -> {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f} zone {zone_of(inp['price'], *band)}")
+        print(f"  g2 {dg:+.0%} -> {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
     g_lo, ok_lo = implied_g(inp["pe_own_min"], S["m"]["roe"], r)
     g_hi, ok_hi = implied_g(inp["pe_own_max"], S["m"]["roe"], r)
     print(f"guardrail band-edge g at ROE_M: {g_lo:+.2%} ({'ok' if ok_lo else 'ill-conditioned'}) / {g_hi:+.2%} ({'ok' if ok_hi else 'ill-conditioned'})")
-    print(f"implied r(P) at g2={inp['g2']:g}: {S['m']['eps_hkd'] / inp['price']:.1%} vs basket {r:.1%} (disclosure only)")
     # A9 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) the
     # measured n with the model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
@@ -246,8 +247,7 @@ def main() -> int:
               f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {S['l']['eps_hkd'] * pe_ii:.2f} (L/M {S['l']['eps_hkd'] * pe_ii / M:.3f}, collapsed)")
     print(f"谷底 x 1/r = {S['l']['eps_hkd'] / r:.2f}  (deep_discount pressure coordinate; = L at g2 0)")
     print(f"V_opt={v_opt:.2f} (SQM k=1 × H1 inv income {inp['sqm_inv_income_h1']:g}亿 ×2)  p={p_tiers}  "
-          f"zone+V: L′={corrected[0]:.2f} M′={corrected[1]:.2f} H′={corrected[2]:.2f} -> {zone_of(inp['price'], *corrected)}  V_opt/M={v_opt/M:.1%}")
-    print(f"price={inp['price']} zone={zone}")
+          f"zone+V: L′={corrected[0]:.2f} M′={corrected[1]:.2f} H′={corrected[2]:.2f}  V_opt/M={v_opt/M:.1%}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp sets
     # the multiple and r_disc discounts the ramp year inside the base numerator,
     # so both move 1:1.  The Li2CO3 rungs, realization, cost, volumes and g2 stay
@@ -256,7 +256,7 @@ def main() -> int:
         S_ = priced({**inp, "r_disc": inp["r_disc"] + dr}, r + dr)
         return tuple(S_[t]["eps_hkd"] * S_[t]["pe"] for t in ("l", "m", "h"))  # type: ignore[return-value]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_disc": inp["r_disc"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_disc": inp["r_disc"]}, band_rf)
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

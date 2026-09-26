@@ -2,7 +2,8 @@
 """603871.SH (Jiayou International Logistics) valuation eval.
 
 frameworks/603871.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: jiayou_mgl_afr_window_pv_parity_concession_vopt_kasa_v3
 
@@ -49,7 +50,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
 FRAMEWORK = HERE / "frameworks" / "603871.SH.md"
@@ -59,7 +60,7 @@ TIERS = ("l", "m", "h")
 R_ROWS = ("r_mgl", "r_afr")
 
 REQUIRED = [
-    "price", "shares", "bps", "r_mgl", "r_afr", "concession_years", "equity",
+    "shares", "bps", "r_mgl", "r_afr", "concession_years", "equity",
     "ni_group_l", "ni_group_m", "ni_group_h", "w_afr",
     "g2_mgl_l", "g2_mgl_m", "g2_mgl_h",
     "g_afr_l", "g_afr_m", "g_afr_h",
@@ -131,34 +132,6 @@ def kasa_v_opt(inp: dict[str, float]) -> float:
     """1 × Kasa run-rate as a 22-year zero-growth annuity at r_afr.  k=1 is the A2e-7c default."""
     f0 = annuity_factor(0.0, inp["r_afr"], inp["concession_years"])
     return kasa_ni(inp) * f0 * 1e8 / inp["shares"]
-
-
-def m_anchor_shifted(inp: dict[str, float], delta: float) -> float:
-    """M-tier SOTP with both basket r shifted by delta.
-
-    The Africa window is re-solved at the shifted r, which by PV parity
-    pins g_eq to the axis M rung (the framework's stated convention for the
-    δ reading) — so the leg is priced straight off that rung.
-    """
-    roe = forward_roe(inp, "m")
-    axis = load_africa_rungs()
-    pes = (
-        perpetual_pe(inp["g2_mgl_m"], roe, inp["r_mgl"] + delta),
-        perpetual_pe(axis["M"], roe, inp["r_afr"] + delta),
-    )
-    return anchor(inp, "m", pes)
-
-
-def implied_r_delta(inp: dict[str, float], price: float) -> float:
-    """Parallel shift δ of both basket r that makes the M-tier SOTP equal price (bisection)."""
-    lo, hi = -0.05, 0.05
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if m_anchor_shifted(inp, mid) > price:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
 
 
 def main() -> int:
@@ -259,7 +232,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     co_pe = {t: company_pe(inp, t, px) for t, px in zip(TIERS, (L, M, H))}
     if co_pe["h"] > inp["pe_own_hi"] + 1e-9:
@@ -300,7 +272,7 @@ def main() -> int:
     flat = {t: anchor(inp, t, pes["m"]) for t in TIERS}
     errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
     outs = md.split("### Outputs", 1)[-1]
     vm = re.search(
         r"V_\{?opt\}?\\?\)?\s*[≈=]\s*\*{0,2}\s*\+?([0-9]+(?:\.[0-9]+)?)",
@@ -380,12 +352,7 @@ def main() -> int:
           f"{L / inp['bps']:.2f} / {M / inp['bps']:.2f} / {H / inp['bps']:.2f}；"
           f"净现金 {inp['net_cash'] * 1e8 / inp['shares']:.2f} 元/股")
 
-    print(f"price={inp['price']} zone={zone}")
-    delta = implied_r_delta(inp, inp["price"])
-    print(f"  隐含 r(P)：两腿 r 同平移 δ={delta:+.2%} → 中蒙 {r_mgl + delta:.1%} / 非洲 {r_afr + delta:.1%}"
-          f"（|δ| {'≥' if abs(delta) >= 0.03 else '<'} 3pp）")
     for label, px in (
-        ("现价", inp["price"]),
         ("卖方 TP", inp["tp_street"]),
         ("M 底牌", M),
         ("H 底牌", H),
@@ -395,8 +362,7 @@ def main() -> int:
         gi, ok = implied_g(p, forward_roe(inp, "m"), r_afr)
         flag = "" if ok else "  ⚠ ROE≈r，反解只能当方向读"
         print(f"  {label:<10} 隐含 PE={p:6.2f} → 整公司永续 g={gi:+.2%}{flag}")
-    print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿 → 现价 PE(TTM)="
-          f"{inp['price'] * inp['shares'] / 1e8 / inp['ni_ttm']:.2f}")
+    print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿（对照，不入锚点）")
     print(
         f"  非洲窗口 g 由轴永续 {axis['L']:.0%}/{axis['M']:.0%}/{axis['H']:.0%} "
         f"在 r_afr {r_afr:.0%} 下 PV 反推（H 封顶 {h_cap:.0%}）→ "
@@ -412,8 +378,6 @@ def main() -> int:
           + "  ".join(
               f"{k}:{b:.2f}+{pk:.0f}xV={a:.2f}"
               for k, b, pk, a in zip("LMH", (L, M, H), p_k, adj_band)))
-    if v_opt > 0 and inp["price"] > H:
-        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
 
     return report(errors)
 

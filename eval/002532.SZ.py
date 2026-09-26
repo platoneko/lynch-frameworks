@@ -2,7 +2,8 @@
 """002532.SZ (Tianshan Aluminum) valuation eval.
 
 frameworks/002532.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: tianshan_al_spread_gm_bridge_gordon_v5
 
@@ -55,11 +56,11 @@ from lib.al_bridge import (  # noqa: E402
     multiples, pb_floor,
 )
 from lib.axes import check_al_mount, load_al_rungs  # noqa: E402
-from lib.gordon import implied_g, perpetual_pe  # noqa: E402
+from lib.gordon import perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002532.SZ.md"
 FORMULA_ID = "tianshan_al_spread_gm_bridge_gordon_v5"
@@ -119,16 +120,14 @@ def main() -> int:
     errors += floor_errors
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None
     )
 
     br = bridge(inp)
     r = inp["r_perp"]
     flat = [e * pes[1] for e in eps]
-    print(f"002532.SZ  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}  "
-          f"price={inp['price']:.2f} -> {zone}")
+    print(f"002532.SZ  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
     print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
           f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
           f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
@@ -144,15 +143,11 @@ def main() -> int:
           "(差额=铝箔坯料/高纯铝/电池箔的间接销售)")
     print(f"  地板（只披露）floor={floor:.2f} (5y low PB x 报表 bps) < L {L:.2f} "
           f"(L 对应 PB {L/inp['bps']:.2f}); not max()'d")
-    g_px, ok_px = implied_g(inp["price"] / eps[1], roes[1], r)
     print(f"  deep_discount 压力坐标: 印过的 2023H1 x 1/r = "
           f"{NP_TROUGH_2023H1 / inp['shares'] / r:.2f}; "
           f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1]:.2f} @PE_M; "
           f"IAI 3.3% 敏感性 L = {eps[0] * perpetual_pe(0.033, roes[0], r):.2f}")
-    print(f"  隐含 r(P) (g=0) = {eps[1] / inp['price']:.1%} vs 篮子 {r:.1%}; "
-          f"交叉尺 (A15): 现价 PB {inp['price']/inp['bps']:.2f} vs 锚点 PB "
-          f"{L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}; 现价 {inp['price']/eps[1]:.2f}x EPS_M → "
-          f"市价隐含永续 g {g_px:+.2%} ({'well-conditioned' if ok_px else 'ill-conditioned'})")
+    print(f"  交叉尺 (A15): 锚点 PB {L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}")
     return report(errors)
 
 

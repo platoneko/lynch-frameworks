@@ -2,7 +2,9 @@
 """2631.HK (SICC) valuation eval — asset-PB bottom + ASP-fullcap success option.
 
 frameworks/2631.HK.md is the source of truth; this script recomputes
-bottom L/M/H / A/B / zone / V_opt and exits 1 on mismatch.
+bottom L/M/H / A/B / V_opt and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied p — the digest and the app zone on live quotes.
 
 formula_id (bottom): sicc_asset_pb_bottom_v1
 formula_id (option): sicc_asp_fullcap_success_vopt_v3_ipo_anchor
@@ -53,7 +55,7 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "2631.HK.md"
 FORMULA_IDS = (
@@ -66,7 +68,7 @@ KPCS = 1e4
 YI = 1e8
 
 REQUIRED = [
-    "price", "shares", "fx_cny_hkd", "equity_cny",
+    "shares", "fx_cny_hkd", "equity_cny",
     "pb_l", "pb_m", "pb_h",
     "ipo_price_hkd", "close_own_min", "close_own_median",
     "cap_kpcs", "vol_unit_kpcs", "rev_basis_up", "asp_h", "m_h", "m_h_old",
@@ -128,14 +130,12 @@ def main() -> int:
     M = inp["pb_m"] * bps
     H = inp["pb_h"] * bps
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # --- option: IPO price as the success-world ceiling (A11) -----------------
     v_top = inp["ipo_price_hkd"]
     v_opt = max(0.0, v_top - H)
     adj = [x + p * v_opt for x, p in zip((L, M, H), P_K)]
     adj_a, adj_b = cut_points(*adj)
-    adj_zone = zone_of(inp["price"], *adj)
 
     # --- Gordon cross-check on realised units (A6): the ROE gate, not the value
     post = gordon_cross(inp, inp["cap_kpcs"], inp["m_h"], discount=True)
@@ -166,13 +166,12 @@ def main() -> int:
     print(f"decompose  L/M = num 1.000 x pb {inp['pb_l'] / inp['pb_m']:.3f} | H/M = num 1.000 x pb "
           f"{inp['pb_h'] / inp['pb_m']:.3f}  (asset ruler; flat ladder == base)")
     print(f"own PB band [{inp['pb_own_min']}, {inp['pb_own_max']}] (H-share realised) vs deck "
-          f"{inp['pb_l']}-{inp['pb_h']}: deck entirely below the band; price/BPS {inp['price'] / bps:.2f}x")
+          f"{inp['pb_l']}-{inp['pb_h']}: deck entirely below the band")
     print(f"option     ceiling = IPO price {v_top:.2f} HKD (2025-08-20) -> V_opt {v_opt:.2f}  "
           f"(own closes since IPO: min {inp['close_own_min']:g} / median {inp['close_own_median']:g})")
     print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  "
-          f"A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}")
-    print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}; P/(H+V) = {inp['price'] / adj[2] - 1:+.1%}; "
-          f"anchor -> own min close {inp['close_own_min']:g}: V_opt {max(0.0, inp['close_own_min'] - H):.2f}")
+          f"A'={adj_a:.2f} B'={adj_b:.2f}")
+    print(f"     anchor -> own min close {inp['close_own_min']:g}: V_opt {max(0.0, inp['close_own_min'] - H):.2f}")
     print(f"gordon x-check post-ramp {inp['cap_kpcs']:g} 万片 x ASP {inp['asp_h']:g} x {inp['rev_basis_up']} x margin {inp['m_h']:.3f}: "
           f"rev {post['rev'] / YI:.2f}亿 np {post['np'] / YI:.2f}亿 roe {post['roe']:.2%} pe {post['pe']:.2f} "
           f"disc {post['disc']:.3f} -> V^G_H {post['v']:.2f} HKD (< ceiling {v_top:.2f}: ROE gate, A6)")
@@ -189,9 +188,8 @@ def main() -> int:
           f">= {margin_gate:.1%} for ROE_H > r; g2 0 -> 1% at roe {post['roe']:.1%}: pe {g2_sens:.2f}")
     print(f"篮 {baskets.get('r_perp')} floor 1/r x E (disclosure, not max()-ed): "
           + " / ".join(f"{k} {x['v']:.2f}" for k, x in ref.items()) + f"  | L stays {L:.2f}")
-    print(f"表2  price {inp['price']} -> zone = {zone}   P/H {inp['price'] / H:.2f}x")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.05)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.05)
     errors += ladder("base", L, M, H)
     if v_opt < 0:
         errors.append(f"V_opt must be >= 0, got {v_opt:.2f}")
@@ -206,8 +204,8 @@ def main() -> int:
         errors.append("earnings-ruler reference exceeds L: the asset ruler is no longer the upper bound — back to dialogue")
     if v_opt > 0 and "表3" not in outputs_section(md):
         errors.append("V_opt > 0 but Outputs has no 表3")
-    if abs(v_top - inp["price"]) < 1e-9 or abs(v_top - inp["close_own_median"]) < 1e-9:
-        errors.append("ipo_price_hkd equals the current price / own median: the anchor must be the IPO print, not a price input (A11)")
+    if abs(v_top - inp["close_own_median"]) < 1e-9:
+        errors.append("ipo_price_hkd equals the own median close: the anchor must be the IPO print, not a price input (A11)")
 
     return report(errors)
 

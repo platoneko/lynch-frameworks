@@ -2,7 +2,9 @@
 """600096.SH (Yuntianhua) valuation eval.
 
 frameworks/600096.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: ytn_realized_earnings_regime_gordon_v4
 
@@ -56,7 +58,7 @@ from lib.gordon import BASKET_R, check_g_cap, check_r, perpetual_pe  # noqa: E40
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
@@ -66,7 +68,7 @@ YI = 1e8
 NP_PEAK_FY2022_YI = 60.21  # highest annual net profit the company has printed
 
 REQUIRED = [
-    "price", "shares", "np_l", "eps_m_consensus", "np_h",
+    "shares", "np_l", "eps_m_consensus", "np_h",
     "equity", "r_perp", "g2_l", "g2_m", "g2_h", "eps_fy27_single",
     "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map", "bps",
 ]
@@ -143,8 +145,7 @@ def main() -> int:
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # Candidate band (A17): single-house FY2027 EPS swapped into M only; disclosed, not judged.
     m_cand = inp["eps_fy27_single"] * pe["M"]
@@ -172,14 +173,10 @@ def main() -> int:
     print("retention-form cross-check (1-g/ROE)/(r-g): "
           + " / ".join(f"{ret[t]:.2f}x" for t in "LMH") + " -> "
           + " / ".join(f"{rows[i][2] * ret[t]:.2f}" for i, t in enumerate("LMH")))
-    eps_m = np_m * YI / inp["shares"]
-    px_pe = inp["price"] / eps_m
     print(f"deep_discount 压力坐标: 谷底 x 1/r = {inp['np_l'] * YI / inp['shares'] / r:.2f}; "
-          f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}; "
-          f"现价 {px_pe:.2f}x EPS_M → 隐含 r(P) = E/P + g = {eps_m / inp['price'] + inp['g2_m']:.2%} "
-          f"(δ {eps_m / inp['price'] + inp['g2_m'] - r:+.2%} vs 篮 {b}); flat-form implied g {r - 1.0 / px_pe:+.2%}")
+          f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}")
     print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}): L'={L:.2f} M'={m_cand:.2f} H'={H:.2f} "
-          f"zone {zone_of(inp['price'], L, m_cand, H)} (disclosed, not judged)")
+          f"(disclosed, not judged)")
     per_yi = YI / inp["shares"] * pe["M"]
     print(f"sensitivity: +1亿 net profit -> M anchor {per_yi:+.2f} CNY")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -188,7 +185,6 @@ def main() -> int:
         f"| 分子比 L={rows[0][2] / rows[1][2]:.4f} H={rows[2][2] / rows[1][2]:.4f} "
         f"| 倍数比 L={pe['L'] / pe['M']:.4f} H={pe['H'] / pe['M']:.4f} | V_opt/M 0"
     )
-    print(f"price={inp['price']} zone={zone}")
     return report(errors)
 
 

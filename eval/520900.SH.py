@@ -10,7 +10,11 @@ being read off a channel.  Each sleeve discounts at ITS basket r (energy /
 residual cyclical / industrial: 篮 6 周期商品 13%; annuity (telecom): 篮 2
 管制公用事业 7.5%) and the P-weighted look-through r̄ (~11.5%) is only the
 basis of the DDM / hurdle cross-reads.  The price-index channel from
-eval/lib/etf.py (regime from 2021) is the cross-check and gives a second zone.
+eval/lib/etf.py (regime from 2021) is the cross-check band (L/M/H only).
+NAV is `nav_ref` (a dated as-of close, the snapshot the constituents' PEs and
+the index PE are read on); the framework states no current price
+(AGENTS.md「现价 — 禁写契约」): no zone, no distance-to-anchor, no
+market-implied r / g — the digest and the app zone the live quote themselves.
 
 Current multiple MUST be the index rolling PE (CSI daily), not a top-holder
 PE average.  Every sleeve's numerator is its constituents' FY2027E consensus
@@ -51,7 +55,7 @@ on sign.
 
 The evidence interval for the shared energy g2 is [4.61% (930914 index payout
 64.2% x leg ROE), 6.00% (cap; 931722 index cross 6.13% and the 3-name subset
-6.44% both clip)]; the zone must hold at both ends (校验步骤 5).
+6.44% both clip)]; both ends are printed as bands (校验步骤 5).
 """
 from __future__ import annotations
 
@@ -67,7 +71,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "520900.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "513530.SH.md"
@@ -82,7 +86,7 @@ CCY = "HKD"                 # underlying holdings; the ETF itself is priced in C
 R_BASK = 0.115              # P-weighted look-through r̄ (能源 44.3 / 工业 19.6 / 残余 8.7 @13% + 年金 27.4 @7.5%); cross-reads only
 REGIME: tuple[str, str] = ("2021-01-01", "央企分红 / 市值管理新政；回填段 2016–20 指数 1000→749，全窗斜率 +2.2% vs 2021 起 +10.1%")
 CHAN_FIELDS = {  # Inputs row -> channel key, tolerance
-    "chan_slope": ("slope", 0.005), "chan_sigma": ("sigma", 0.005), "chan_z": ("z", 0.02),
+    "chan_slope": ("slope", 0.005), "chan_sigma": ("sigma", 0.005),
     "chan_l_idx": ("L", 5.0), "chan_m_idx": ("M", 5.0), "chan_h_idx": ("H", 5.0), "idx_cur": ("cur", 0.5),
 }
 
@@ -117,7 +121,7 @@ G2_TOL = 0.0005
 PE_TOL = 0.05
 
 REQUIRED = [
-    "price", "fee_drag", "pe_now", *LEG_R.values(), "g2_ann", "g2_ene", "g2_ind",
+    "nav_ref", "fee_drag", "pe_now", *LEG_R.values(), "g2_ann", "g2_ene", "g2_ind",
     "payout_ene", "roe_ene", "payout_ind", "roe_ind", "g_evid_min", "g_evid_max",
     "idx_dy", "etf_dps_ttm",
     "w_ene", "w_ind", "w_resc", "w_ann",
@@ -307,7 +311,7 @@ def main() -> int:
 
     # --- Step 3: anchors (the ruler: look-through SOTP at per-sleeve basket r) --
     def anchor(tag: str, **kw: float) -> float:
-        return scale(inp["price"], inp["fee_drag"], sum(legs(inp, tag, **kw).values()))
+        return scale(inp["nav_ref"], inp["fee_drag"], sum(legs(inp, tag, **kw).values()))
 
     def band(pe_ene: float, pe_ind: float, pe_ann: float | None = None) -> tuple[float, float, float]:
         return tuple(anchor(t, pe_ene=pe_ene, pe_ind=pe_ind, pe_ann=pe_ann) for t in "lmh")  # type: ignore[return-value]
@@ -317,13 +321,9 @@ def main() -> int:
         return report(["ladder collapsed"])
     A, B = cut_points(computed["L"], computed["M"], computed["H"])
     computed["A"], computed["B"] = A, B
-    zone = zone_of(inp["price"], computed["L"], computed["M"], computed["H"])
-    errors = check_against_stated(md, computed, zone, tol=0.01)
-    # 校验步骤 5: the zone must hold across the energy g2 evidence interval.
+    errors = check_against_stated(md, computed, None, tol=0.01)
+    # 校验步骤 5: the energy g2 evidence interval's two ends are printed as bands.
     evid = {g: band(perpetual_pe(g, inp["roe_ene"], r["ene"]), inp["pe_ind"]) for g in (inp["g_evid_min"], inp["g_evid_max"])}
-    for g, b in evid.items():
-        if zone_of(inp["price"], *b) != zone:
-            errors.append(f"zone flips to {zone_of(inp['price'], *b)} at g2_ene={g:+.2%} inside the evidence interval — BLOCKED (A2)")
 
     # --- Step 4: cross-check — price-index trend channel from the regime break ---
     s = history(INDEX_SRC, INDEX_CODE)
@@ -345,13 +345,12 @@ def main() -> int:
             errors.append(f"{key}={inp[key]} != slope since {w} {sub[w]:.4f}")
     if errors:
         return report(errors)
-    k = inp["price"] / ch["cur"]  # price ≡ NAV tracks the index; channel levels are index points
+    k = inp["nav_ref"] / ch["cur"]  # NAV tracks the index: map by NAV / index on the as-of date
     chan = tuple(ch[t] * k for t in "LMH")
-    chan_zone = zone_of(inp["price"], *chan)
 
     # --- report -----------------------------------------------------------------
     L, M, H = computed["L"], computed["M"], computed["H"]
-    nav = inp["price"] * inp["fee_drag"]
+    nav = inp["nav_ref"] * inp["fee_drag"]
     regime = tuple(
         anchor(t, ene=(energy_regime_ratio(inp, t) if t != "m" else 1.0),
                ind=inp[f"cosco_ni_{t}"] / inp["cosco_ni_m"], ann=(0.95, 1.0, 1.05)["lmh".index(t)])
@@ -403,69 +402,55 @@ def main() -> int:
     mkt = {k: v * nav for k, v in legs(inp, "m", ene=1.0, ind=1.0, ann=1.0, pe_ene=inp["pe_now"], pe_ind=inp["pe_now"], pe_ann=inp["pe_now"]).items()}
     print(
         f"L/M {L / M:.3f} = num {L / M:.3f} x pe 1.000 | H/M {H / M:.3f} = num {H / M:.3f} x pe 1.000 | "
-        f"width {(H - L) / (2 * M):.3f} | V_opt/M 0.000 | all-at-market ref {nav:.4f}: M 差 "
+        f"width {(H - L) / (2 * M):.3f} | V_opt/M 0.000 | M 腿间分解 (相对 nav_ref 成分快照, 各腿按指数 PE): "
         + " ".join(f"{k} {v * nav - mkt[k]:+.3f}" for k, v in legs(inp, "m").items())
     )
     # ③ 出带: generated multiples against the constituents' own current PE band.
     pe_band = [inp[f"{n}_pe"] for names in SLEEVES.values() for n in names]
     print(f"③ 出带: 三腿倍数 {inp['pe_ene']}/{inp['pe_ind']}/{inp['pe_ann']} vs 成份 09-11 现 PE 带 [{min(pe_band):.1f}, {max(pe_band):.1f}] → "
           f"{'不出带' if all(min(pe_band) <= p <= max(pe_band) for p in (inp['pe_ene'], inp['pe_ind'], inp['pe_ann'])) else '出带'}")
-    print(f"敏感区: 现价 {inp['price']} 距 B {B:.4f} {inp['price'] / B - 1:+.1%}" + ("  ⚠敏感区" if abs(inp["price"] / B - 1) < 0.02 else ""))
     for g, b in evid.items():
-        print(f"证据区间 g2_ene={g:+.2%} (PE {perpetual_pe(g, inp['roe_ene'], r['ene']):.2f}): {'/'.join(f'{x:.3f}' for x in b)} B {cut_points(*b)[1]:.4f} zone={zone_of(inp['price'], *b)}")
+        print(f"证据区间 g2_ene={g:+.2%} (PE {perpetual_pe(g, inp['roe_ene'], r['ene']):.2f}): {'/'.join(f'{x:.3f}' for x in b)} B {cut_points(*b)[1]:.4f}")
     for dg in (-0.01, 0.01):
         g = min(cap_ene, inp["g2_ene"] + dg)
         b = band(perpetual_pe(g, inp["roe_ene"], r["ene"]), inp["pe_ind"])
-        print(f"敏感性 g2_ene {dg:+.0%} ({g:+.2%}): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 g2_ene {dg:+.0%} ({g:+.2%}): {'/'.join(f'{x:.3f}' for x in b)}")
     g_floor = min((1 - inp[f"{n}_dps25"] / inp[f"{n}_eps25"]) * name_roe(inp, n, inp["g2_ene"]) for n in SLEEVES["ene"])
     b = band(perpetual_pe(g_floor, inp["roe_ene"], r["ene"]), inp["pe_ind"])
-    print(f"敏感性 单名下限 g2_ene {g_floor:+.2%} (中石化, 非腿读数): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"敏感性 单名下限 g2_ene {g_floor:+.2%} (中石化, 非腿读数): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(inp["pe_ene"], pe_ind_alt)
-    print(f"敏感性 工业腿改中远留存分支 {pe_ind_alt:.2f}x: {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"敏感性 工业腿改中远留存分支 {pe_ind_alt:.2f}x: {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(1 / r["ene"], 1 / r["ind"], 1 / r["ann"])
-    print(f"对照 g=0 全腿 1/r ({1 / r['ene']:.2f}/{1 / r['ind']:.2f}/{1 / r['ann']:.2f}x): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"对照 g=0 全腿 1/r ({1 / r['ene']:.2f}/{1 / r['ind']:.2f}/{1 / r['ann']:.2f}x): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(perpetual_pe(inp["g2_ene"], inp["roe_ene"], R_BASK), 1 / R_BASK, 1 / R_BASK)
-    print(f"对照 整篮 P 加权 r̄ {R_BASK:.1%} 同用一个 r (分腿前的近似): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"对照 整篮 P 加权 r̄ {R_BASK:.1%} 同用一个 r (分腿前的近似): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(perpetual_pe(inp["g2_ene"], inp["roe_ene"], 0.10), 10.0, 10.0)
-    print(f"对照 全腿 r 10% (篮 4): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"对照 全腿 r 10% (篮 4): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(inp["pe_ene"], 10.0)
-    print(f"对照 工业腿改 篮 4 10% (待裁的另一归篮口径): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    b = band(inp["pe_now"], inp["pe_now"])
-    print(f"对照 周期腿按市场滚动 {inp['pe_now']}x (年金不动): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"对照 工业腿改 篮 4 10% (待裁的另一归篮口径): {'/'.join(f'{x:.3f}' for x in b)}")
     # 属性 A: the forbidden top-holder denominator (11.53) on the cyclical legs only.
-    top = tuple(scale(inp["price"], inp["fee_drag"], sum(v * (inp["pe_now"] / 11.53 if k != "ann" else 1.0) for k, v in legs(inp, t).items())) for t in "lmh")
-    print(f"对照 周期三腿分母换前十大能源等权 11.53 (属性 A 禁用): {'/'.join(f'{x:.3f}' for x in top)} zone={zone_of(inp['price'], *top)}")
-    # 隐含 r(P): one shift δ on every sleeve's basket r so that the M deck equals the price (SOTP δ 反解).
-    def m_at(delta: float) -> float:
-        return band(perpetual_pe(inp["g2_ene"], inp["roe_ene"], r["ene"] + delta), 1 / (r["ind"] + delta), 1 / (r["ann"] + delta))[1]
-    lo, hi = -0.05, 0.05
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if m_at(mid) > inp["price"] else (lo, mid)
-    print(f"隐含 r(P): 各腿篮子 r 同平移 δ = {mid * 100:+.2f}pp 使 M = 现价 (r_ene {r['ene'] + mid:.2%} / r_ann {r['ann'] + mid:.2%}; P 加权 r̄ {r_bask + mid:.2%})")
+    top = tuple(scale(inp["nav_ref"], inp["fee_drag"], sum(v * (inp["pe_now"] / 11.53 if k != "ann" else 1.0) for k, v in legs(inp, t).items())) for t in "lmh")
+    print(f"对照 周期三腿分母换前十大能源等权 11.53 (属性 A 禁用): {'/'.join(f'{x:.3f}' for x in top)}")
     # DDM cross at the ETF level (single-r reading at the P-weighted r̄): D0 = TTM distributions per unit; g = weight-blended leg g2.
     g_blend = (inp["w_ene"] + inp["w_resc"]) * inp["g2_ene"] + inp["w_ind"] * inp["g2_ind"] + inp["w_ann"] * inp["g2_ann"]
-    for label, d0 in (("ETF TTM 实派", inp["etf_dps_ttm"]), ("指数股息率×NAV", inp["idx_dy"] * inp["price"])):
-        g_px = (inp["price"] * r_bask - d0) / (inp["price"] + d0)
-        r_px = g_blend + d0 * (1 + g_blend) / inp["price"]
-        print(f"DDM 对照 ({label} D0 {d0:.4f}, r̄ {r_bask:.2%}): g=0 → {d0 / r_bask:.3f}; g=腿加权 {g_blend:+.2%} → {d0 * (1 + g_blend) / (r_bask - g_blend):.3f}; "
-              f"现价 {inp['price']} 隐含股息增长 {g_px:+.2%} / 隐含 r {r_px:.2%}")
+    for label, d0 in (("ETF TTM 实派", inp["etf_dps_ttm"]), ("指数股息率×nav_ref", inp["idx_dy"] * inp["nav_ref"])):
+        print(f"DDM 对照 ({label} D0 {d0:.4f}, r̄ {r_bask:.2%}): g=0 → {d0 / r_bask:.3f}; g=腿加权 {g_blend:+.2%} → {d0 * (1 + g_blend) / (r_bask - g_blend):.3f}")
     pe_mkt_ene = 1 / sum(w_ene[n] / inp[f"{n}_pe"] for n in SLEEVES["ene"])
     g_mkt, ok = implied_g_retaining(pe_mkt_ene, inp["roe_ene"], r["ene"])
-    print(f"市价读数: 能源腿现 PE {pe_mkt_ene:.2f}x > 1/r {1 / r['ene']:.2f}x → 留存分支反解 g {g_mkt:+.2%} (conditioned={ok}) — 病态区峰顶之上任何 g 都到不了, 说的是 r ≈ {1 / pe_mkt_ene:.1%} 不是 g (循环: 反解对象是篮子自身)")
+    print(f"成份市价读数 (他股, 09-11): 能源腿四家 PE {pe_mkt_ene:.2f}x > 1/r {1 / r['ene']:.2f}x → 留存分支反解 g {g_mkt:+.2%} (conditioned={ok}) — 病态区峰顶之上任何 g 都到不了, 说的是 r 不是 g")
     print(f"通道 (对照) {INDEX_LABEL} ({INDEX_CODE}) {ch['start']}~{ch['end']}, regime {start} ({REGIME[1]}): 斜率 {ch['slope']:+.1%} "
           f"(全窗 {full['slope']:+.1%} / 2019 起 {sub['2019']:+.1%} / 2021 起 {sub['2021']:+.1%}, regime gap {abs(ch['slope'] - full['slope']):.1%} ≥ {REGIME_GAP:.0%}) · "
-          f"σ {ch['sigma']:.1%} · z {ch['z']:+.2f} · 现值 {ch['cur']:,.1f} vs M {ch['M']:,.0f} {ch['cur'] / ch['M'] - 1:+.1%} · L/M/H idx {ch['L']:,.0f}/{ch['M']:,.0f}/{ch['H']:,.0f}")
+          f"σ {ch['sigma']:.1%} · L/M/H idx {ch['L']:,.0f}/{ch['M']:,.0f}/{ch['H']:,.0f}")
     chan_a, chan_b = cut_points(*chan)
-    print(f"  折算 k = price {inp['price']} / idx {ch['cur']:,.1f} → 通道 L/M/H {chan[0]:.3f}/{chan[1]:.3f}/{chan[2]:.3f} (A {chan_a:.3f} B {chan_b:.3f}) → 第二 zone={chan_zone}; "
+    print(f"  折算 k = nav_ref {inp['nav_ref']} / idx {ch['cur']:,.1f} → 通道对照带 L/M/H {chan[0]:.3f}/{chan[1]:.3f}/{chan[2]:.3f} (A {chan_a:.3f} B {chan_b:.3f}); "
           f"价格指数含息约 +{inp['idx_dy']:.1%} → 全收益口径斜率约 {ch['slope'] + inp['idx_dy']:+.1%} vs P 加权 r̄ {r_bask:.1%}")
     for w in SUBWINDOWS[:1] + ("2015-12-01",):
         c2 = channel(s[s.index >= w])
-        b2 = tuple(v * inp["price"] / c2["cur"] for v in (c2["L"], c2["M"], c2["H"]))
-        print(f"  敏感性 通道窗改 {w[:4]} 起 (斜率 {c2['slope']:+.1%}, z {c2['z']:+.2f}): {'/'.join(f'{x:.3f}' for x in b2)} zone={zone_of(inp['price'], *b2)}")
+        b2 = tuple(v * k for v in (c2["L"], c2["M"], c2["H"]))
+        print(f"  敏感性 通道窗改 {w[:4]} 起 (斜率 {c2['slope']:+.1%}): {'/'.join(f'{x:.3f}' for x in b2)}")
     print(f"与 513530.SH 腿参数差异 (该票按其对账尺 r 生成倍数, 只披露): {'; '.join(peer_leg_diff) if peer_leg_diff else '无'}")
     print("地板: 不设 (只披露)")
-    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}  zone={zone}  通道 zone={chan_zone}  price={inp['price']}")
+    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}  (通道对照 {chan[0]:.3f}/{chan[1]:.3f}/{chan[2]:.3f})")
     return 0
 
 

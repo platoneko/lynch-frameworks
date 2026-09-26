@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """000792.SZ (Salt Lake) valuation eval.
 
-frameworks/000792.SZ.md is the source of truth.
+frameworks/000792.SZ.md is the source of truth; this script re-derives
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 formula_id: saltlake_li_axis_kcl_ladder_pe_v2_gordon_v2
 
 Lithium volume is the commissioned nameplate (9.8 万吨/年) discounted one year
@@ -61,7 +63,7 @@ H1_PARENT_X2 = 61.685e8 * 2
 GUARD_TOL = 0.01
 
 REQUIRED = [
-    "price", "shares", "bps",
+    "shares", "bps",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "realization_li", "vol_li_plan", "vol_li_h1", "cost_li",
     "r_disc", "n_disc",
@@ -80,19 +82,6 @@ def axis_g2(path: Path) -> float:
     if not m:
         raise ValueError(f"{path.name}: no 永续 g2 row")
     return float(m.group(1)) / 100.0
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A, B = (L + M) / 2, (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
 
 
 def scenario(inp: dict[str, float], tag: str, r_disc: float | None = None) -> dict[str, float]:
@@ -201,7 +190,6 @@ def main() -> int:
     M = S["m"]["px"]
     H = S["h"]["px"]
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
 
     if not (L < M < H):
         print(f"FAIL: L<M<H violated ({L:.2f}/{M:.2f}/{H:.2f})", file=sys.stderr)
@@ -211,7 +199,7 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = [^*\n]*\*\*([0-9.]+)\*\*"),
@@ -267,14 +255,13 @@ def main() -> int:
         f"{'<' if 1 / r0 < inp['pe_same_min'] else '>='} band floor {inp['pe_same_min']} -> "
         f"{band0[0]:.2f}/{band0[1]:.2f}/{band0[2]:.2f} (not a zone)"
     )
-    print(f"implied r(P) at g2={inp['g2']:g}: {S['m']['eps'] / inp['price']:.1%} vs basket {r:.1%} (disclosure only)")
     for dg in (-0.01, 0.01):
         alt = [S[t]["eps"] * perpetual_pe(inp["g2"] + dg, S[t]["roe"], r) for t in ("l", "m", "h")]
-        print(f"  g2 {dg:+.0%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone={zone_of(inp['price'], *alt)}")
+        print(f"  g2 {dg:+.0%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     for dr in (-0.005, 0.005):
         Sr = {t: scenario(inp, t, r_disc=r + dr) for t in ("l", "m", "h")}
         alt = [Sr[t]["eps"] * perpetual_pe(inp["g2"], Sr[t]["parent"] / equity, r + dr) for t in ("l", "m", "h")]
-        print(f"  r {dr:+.1%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone={zone_of(inp['price'], *alt)}")
+        print(f"  r {dr:+.1%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     # A9 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) measured
     # n with the model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
@@ -296,7 +283,6 @@ def main() -> int:
         f"numerator L/M={S['l']['eps']/S['m']['eps']:.2f} H/M={S['h']['eps']/S['m']['eps']:.2f} "
         f"| multiple ratio L/M={pe_l/pe_m:.2f} H/M={pe_h/pe_m:.2f}"
     )
-    print(f"price={inp['price']:g} → zone={zone}")
     print("OK")
     return 0
 

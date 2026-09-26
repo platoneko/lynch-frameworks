@@ -2,8 +2,11 @@
 """1898.HK (China Coal Energy) valuation eval.
 
 frameworks/1898.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone / the candidate band from its §3 Inputs table and exits 1
-on mismatch.
+L/M/H / A/B / the candidate band from its §3 Inputs table and exits 1 on
+mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
+nothing here computes a current zone or a market-implied reading — the digest
+and the app zone on live quotes.  Zones printed below place COORDINATES
+(peak / trough / floor ...) against the anchors, never the price.
 
 formula_id: chinacoal_selfmined_asp_ladder_flat_pe_hkd_v2_gordon_v4
 
@@ -32,8 +35,8 @@ against each other, and prints the four ratios.
 
 Multiple: r is the BASKET value (valuation-rules「r 篮子」) -- the whole company
 sits in basket 6 (周期商品, A16) at 13%: earnings are a function of the coal
-price, and 13% is the H-share China Coal's r (A 12.1x <-> ~10%, H 7.8x <-> 13%,
-the 35% A/H discount ~ 3pp).  The retention audit (valuation-rules「留存去向
+price, and 13% is the H-share China Coal's r (coal A-share peers ~10% plus a
+~3pp HK / SOE premium; own-year H PE 2019-25 never reached 10x).  The retention audit (valuation-rules「留存去向
 审计」, A9) puts 2023-27 retention in bucket D -- a NAMED build window (coal
 chemicals 2026-12, 苇子沟 2026, 里必 2027), not steady-state compounding -- so
 g2 = 0, the flat multiple is 1/r = 7.69x, and the projects are priced as a
@@ -108,7 +111,7 @@ ASP_YEARS = ("asp_fy19", "asp_fy20", "asp_fy21", "asp_fy22", "asp_fy23", "asp_fy
 NI_IFRS_YEARS = ("ni_ifrs_fy19", "ni_ifrs_fy20", "ni_ifrs_fy21", "ni_ifrs_fy22", "ni_ifrs_fy23", "ni_ifrs_fy24")
 
 REQUIRED = [
-    "price", "shares", "fx_cny_hkd", "np_h1", "op_h1", "vol_yr",
+    "shares", "fx_cny_hkd", "np_h1", "op_h1", "vol_yr",
     "px_base", "px_l", "px_m", "px_h", *ASP_YEARS, *NI_IFRS_YEARS,
     "conv", "r_perp", "g2", "equity",
     "capex_spent", "capex_remain_yr", "capex_remain_n", "roe_proj", "net_cash",
@@ -266,7 +269,7 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (guardrail)")
 
-    # --- Step 6: anchors, floor (disclosure), zone, candidate band -------------
+    # --- Step 6: anchors, floor (disclosure), candidate band -------------------
     def band(pe_: float, v: float, vol: float = inp["vol_yr"]) -> tuple[float, float, float]:
         return tuple(per_share_hkd(net_profit_yi(px[t], vol)) * pe_ + v for t in TIERS)  # type: ignore[return-value]
 
@@ -274,8 +277,7 @@ def main() -> int:
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # candidate band: exactly one line, L' = L, M' = M, H' recomputed (with V_proj)
     cand_h = eps["c"] * pe["m"] + v_proj
@@ -336,7 +338,7 @@ def main() -> int:
         b3 = band(pe["m"], per_share_hkd(v_yi))
         mark = " ← 底牌" if abs(roe_proj - inp["roe_proj"]) < 1e-9 else ""
         print(f"  三坐标 ROE_proj {roe_proj:.0%}: V_proj {per_share_hkd(v_yi):+.2f} (built {per_share_hkd(b_yi):+.2f} / unbuilt {per_share_hkd(u_yi):+.2f}) → "
-              f"{'/'.join(f'{x:.2f}' for x in b3)} zone={zone_of(inp['price'], *b3)} P/M={inp['price'] / b3[1]:.2f}{mark}")
+              f"{'/'.join(f'{x:.2f}' for x in b3)}{mark}")
     for remain in (0.0, 150.0):
         print(f"  capex_remain_yr {remain:g}: V_proj {per_share_hkd(project_value_yi(inp['roe_proj'], remain_yr=remain)[0]):+.2f} HKD/股")
     print(f"ROE_M < r 显式陈述: ROE_x − r = {roe['l'] - r:+.2%}/{roe['m'] - r:+.2%}/{roe['h'] - r:+.2%} (病态区 |ROE_M−r| = {abs(roe['m'] - r):.2%}); "
@@ -344,7 +346,7 @@ def main() -> int:
           f"→ 留存分支上每一元留存毁值, g 不是读数; 结论 M ≈ 1/r × 中枢 EPS + V_proj")
     print(f"倍数生成: r={r:.0%} 篮 {baskets['r_perp']}, cyclical flat PE_L=PE_M=PE_H = 1/r = {pe['m']:.4f} (分档 ROE 不进倍数); "
           f"护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓ (③ 出带不触发); Gordon PB ROE_M/r = {roe['m'] / r:.3f}")
-    for label, p in (("现价", inp["price"]), ("LB 一致 TP 15.49", 15.49), ("高盛 TP 17.5", 17.5)):
+    for label, p in (("LB 一致 TP 15.49", 15.49), ("高盛 TP 17.5", 17.5)):
         pe_px = p / eps["m"]
         rel = "≈" if abs(pe_px - pe["m"]) < 0.5 else ("高于" if pe_px > pe["m"] else "低于")
         print(f"  {label:<14} {pe_px:6.2f}× 中枢 EPS {rel} 1/r {pe['m']:.2f}× → 隐含 r (g=0) {eps['m'] / p:.1%} (篮 {baskets['r_perp']} {eps['m'] / p - r:+.1%}); "
@@ -376,31 +378,28 @@ def main() -> int:
         r_s = r + dr
         v_s = per_share_hkd(project_value_yi(inp["roe_proj"], r_=r_s)[0])
         b = band(1.0 / r_s, v_s)
-        print(f"敏感区 r_perp {dr:+.1%} ({r_s:.1%}, 篮外只作敏感区): PE {1 / r_s:.2f}, V_proj {v_s:+.2f} -> {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感区 r_perp {dr:+.1%} ({r_s:.1%}, 篮外只作敏感区): PE {1 / r_s:.2f}, V_proj {v_s:+.2f} -> {'/'.join(f'{x:.2f}' for x in b)}")
     for dg in (0.01, -0.01):
         g = g2 + dg
         b = band(perpetual_pe(g, roe["m"], r), v_proj)
-        print(f"敏感区 g2 {dg:+.0%} ({g:+.2%}): PE {perpetual_pe(g, roe['m'], r):.2f} -> {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感区 g2 {dg:+.0%} ({g:+.2%}): PE {perpetual_pe(g, roe['m'], r):.2f} -> {'/'.join(f'{x:.2f}' for x in b)}")
     bare = band(pe["m"], 0.0)
-    print(f"对照 项目按 0 (纯 1/r): {'/'.join(f'{x:.2f}' for x in bare)} zone={zone_of(inp['price'], *bare)}")
+    print(f"对照 项目按 0 (纯 1/r): {'/'.join(f'{x:.2f}' for x in bare)}")
     g_ret = min((1.0 - payout_fy25) * roe["m"], g_cap(r))
     pe_ret = perpetual_pe(g_ret, roe["m"], r)
     ret = band(pe_ret, 0.0)
-    print(f"对照 撤回的永续留存分支 g2 {g_ret:+.2%} @ r {r:.0%} → {pe_ret:.2f}×: {'/'.join(f'{x:.2f}' for x in ret)} zone={zone_of(inp['price'], *ret)} "
+    print(f"对照 撤回的永续留存分支 g2 {g_ret:+.2%} @ r {r:.0%} → {pe_ret:.2f}×: {'/'.join(f'{x:.2f}' for x in ret)} "
           f"(假设 {1 - payout_fy25:.0%} 留存永远按 ROE_M {roe['m']:.1%} 复投, 与命名建设窗口矛盾)")
     pe_v1 = perpetual_pe(V1_G2, roe["m"], V1_R)
     v1 = band(pe_v1, 0.0)
-    print(f"对照 旧口径 r {V1_R:.0%} + g {V1_G2:.0%} → {pe_v1:.2f}×: {'/'.join(f'{x:.2f}' for x in v1)} zone={zone_of(inp['price'], *v1)}")
+    print(f"对照 旧口径 r {V1_R:.0%} + g {V1_G2:.0%} → {pe_v1:.2f}×: {'/'.join(f'{x:.2f}' for x in v1)}")
     guide = band(pe["m"], v_proj, vol=1.31)
-    print(f"对照 vol_yr 1.31 (公司指引): {'/'.join(f'{x:.2f}' for x in guide)} zone={zone_of(inp['price'], *guide)}")
+    print(f"对照 vol_yr 1.31 (公司指引): {'/'.join(f'{x:.2f}' for x in guide)}")
     for label, years in (("六年 FY2020-25", ASP_YEARS[1:]), ("五年 FY2021-25", ASP_YEARS[2:])):
         px_w = sum(inp[k] for k in years) / len(years)
         m_w = per_share_hkd(net_profit_yi(px_w)) * pe["m"] + v_proj
         print(f"对照 中枢窗口 {label} {px_w:.0f} 元/吨 → M {m_w:.2f}{' (> H, 须同步改 H 轴)' if m_w > H else ''}")
-    implied_ni = (inp["price"] - v_proj) / pe["m"] / fx * inp["shares"] / YI
-    implied_asp = inp["px_base"] + (implied_ni - 2 * inp["np_h1"]) / inp["conv"] / inp["vol_yr"]
-    print(f"price={inp['price']} zone={zone}  implied self-mined ASP at price (net of V_proj): {implied_asp:.1f} 元/吨 ({implied_asp / px_mid:.3f}x 中枢; "
-          f"implied NI {implied_ni:.2f} 亿 vs FY2025 IFRS {inp['ni_fy25']}); zone-boundary ASP: "
+    print("zone-boundary ASP: "
           + ", ".join(f"{n} {inp['px_m'] + (v - M) / per_10 * 10:.0f}" for n, v in (("L", L), ("A", A), ("M", M), ("B", B), ("H", H))))
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is
     # the one r in the anchors — it sets the flat multiple AND discounts V_proj,
@@ -410,7 +409,7 @@ def main() -> int:
         r_s = r + dr
         return band(perpetual_pe(g2, roe["m"], r_s), per_share_hkd(project_value_yi(inp["roe_proj"], r_=r_s)[0]))
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

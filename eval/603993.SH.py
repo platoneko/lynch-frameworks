@@ -2,7 +2,8 @@
 """603993.SH (CMOC) valuation eval — recompute anchors from frameworks/603993.SH.md.
 
 frameworks/603993.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on any mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on any mismatch.  The doc
+states no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: cmoc_fed_path_fwd2028_two_stage_v1
 
@@ -44,14 +45,12 @@ from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
 from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
-from lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
 FORMULA_ID = "cmoc_fed_path_fwd2028_two_stage_v1"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
-DELTA_TOL = 0.0005
 YI = 1e8
 TIERS = ("l", "m", "h")
 
@@ -63,7 +62,7 @@ BASE_NP_PARENT_YI = 323.0437
 BASE_NP_TOL_YI = 0.5
 
 REQUIRED = [
-    "price", "shares", "fx_usd_cny", "vol_cu", "p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h",
+    "shares", "fx_usd_cny", "vol_cu", "p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_oz", "cost_au_oz", "price_au_m_oz",
     "realization_cu", "royalty_cu", "cogs_cu", "gp_cu_base", "gp_co_l", "gp_co_m", "gp_co_h",
     "gp_other", "gp_ixm", "gp_misc", "opex", "opex_vol", "tax_rate", "mi_rate", "mi_kfm",
@@ -116,7 +115,7 @@ def year(inp: dict[str, float], tag: str, v_cu: float, v_au: float, forward: boo
             "pretax": pretax, "vidx": vidx, "w": {k: legs[k] / gp for k in legs}}
 
 
-def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str, float] | None = None) -> dict:
+def tier(inp: dict[str, float], tag: str, r_over: dict[str, float] | None = None) -> dict:
     ach = {"cu": 1.0, "au": 1.0} if tag == "h" else {"cu": inp[f"ach_{tag}_cu"], "au": inp[f"ach_{tag}_au"]}
     v_cu, v_au = inp["vol_cu_2028"] * ach["cu"], inp["vol_au_2028_oz"] * ach["au"]
     cur, fwd = year(inp, tag, inp["vol_cu"], inp["vol_au_oz"], False), year(inp, tag, v_cu, v_au, True)
@@ -141,7 +140,7 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str
         if abs(roe_new - roe) < 1e-10:
             break
         roe = roe_new
-    r = {k: (r_over or {}).get(r_key, inp[r_key]) + r_shift for k, (r_key, _) in LEGS.items()}
+    r = {k: (r_over or {}).get(r_key, inp[r_key]) for k, (r_key, _) in LEGS.items()}
     pe = {k: two_stage_pe(g1[k], n, g2[k], roe, r[k]) for k in LEGS}
     contrib = {k: lc[k] * pe[k] for k in LEGS}
     anchor_pre_k = sum(contrib.values())
@@ -156,17 +155,6 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str
             "contrib": contrib, "anchor": anchor, "eq_pe": anchor_pre_k / cur["eps"],
             "cash_ps": cash_ps, "haircut": haircut, "anchor_pre_k": anchor_pre_k,
             "issue": b1 > (1 - inp["payout_actual"])}
-
-
-def implied_delta(inp: dict[str, float]) -> float:
-    lo, hi = -0.08, 0.15
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if tier(inp, "m", r_shift=mid)["anchor"] > inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
 
 
 def main() -> int:
@@ -250,15 +238,12 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append("flat-multiple ladder broken")
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
-    delta = implied_delta(inp)
     alt = [tier(inp, t, r_over={"r_perp": 0.11})["anchor"] for t in TIERS]
     kfm2_ret = {t: max((100_000 * (unit_rev_cu(inp, t) * (1 - inp["royalty_cu"]) - inp["cogs_cu"]) / YI) * (1 - inp["tax_rate"]), 0) / inp["capex_kfm2"] for t in TIERS}
     net_cash_ps = -inp["net_debt"] / inp["shares"]
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
-    for label, want, rx, tol in (("δ", delta * 100, r"δ = \*\*([+-]?[0-9.]+)%\*\*", DELTA_TOL * 100),
-                                 ("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
+    for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
                                  ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
@@ -286,8 +271,7 @@ def main() -> int:
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
-    print(f"implied r: δ={delta:+.2%}; alt 篮 5 铜金 11% -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
-    print(f"price={inp['price']} zone={zone}")
+    print(f"alt 篮 5 铜金 11% -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     return report(errors)
 
 

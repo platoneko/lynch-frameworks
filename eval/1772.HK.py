@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """1772.HK (Ganfeng Lithium H) valuation eval.
 
-frameworks/1772.HK.md is the source of truth.
+frameworks/1772.HK.md is the source of truth; this script re-derives the
+anchors, candidate band and V_opt from its §3 Inputs table and exits 1 on
+mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
+nothing here computes a zone for the price or a market-implied reading — the
+digest and the app zone on live quotes.
 formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v1
 
 Ganfeng does not disclose lithium sales volumes or its self-supplied feed
@@ -74,7 +78,7 @@ P_VOL = {"l": 0.0, "m": 0.29, "h": 1.0}
 RECOVERY_MEASURED = {"FY2025→2026H1×2": (17.63, 42.6 * 2 * 1.136, 1)}
 
 REQUIRED = [
-    "price", "shares", "bps", "fx_hkd_per_cny",
+    "shares", "bps", "fx_hkd_per_cny",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "cal_p0", "cal_li_pretax_0", "cal_p1", "cal_li_pretax_1",
     "vol_2026e", "vol_2027e", "vol_2024a", "vol_2025a", "r_disc", "n_disc",
@@ -195,7 +199,6 @@ def main() -> int:
     M = S["m"]["px"]
     H = S["h"]["px"]
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
 
     # Option components: solid-state (k=1 x today's battery leg) and one more
     # realised-sized volume step at the axis M rung (A12).  Both at the M-tier multiple.
@@ -217,7 +220,7 @@ def main() -> int:
     if not (Lc < Mc < Hc):
         errors.append(f"candidate band not ordered: {Lc:.2f}/{Mc:.2f}/{Hc:.2f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = outputs_section(md)
     for label, want_v, rx in (
         ("scenario_L", scenario_L, r"`scenario_L` = \*\*([0-9.]+)\*\*"),
@@ -309,7 +312,7 @@ def main() -> int:
         f"{k}={adj[k]:.2f}(p_ss={P_SS[t]:g},p_vol={P_VOL[t]:g})" for k, t in zip("LMH", "lmh")
     ) + f"  A′={(adj['L'] + adj['M']) / 2:.2f} B′={(adj['M'] + adj['H']) / 2:.2f}"
         f"  vol step @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], pe_m):.2f}/{v_opt_vol(inp, inp['li2co3_h'], pe_m):.2f}")
-    print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}  -> {zone_of(inp['price'], Lc, Mc, Hc)}")
+    print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}")
     print(f"gordon: r={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2={inp['g2']:g} flat [§13 commodity-leg tier default] "
           f"(axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "
           f"roe={S['l']['roe']:.3f}/{S['m']['roe']:.3f}/{S['h']['roe']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} "
@@ -320,13 +323,7 @@ def main() -> int:
     for dg in (-0.01, 0.01):
         alt = {t: scenario(inp, t, g2=inp["g2"] + dg) for t in ("l", "m", "h")}
         print(f"  g2 {dg:+.0%} -> PE {alt['l']['pe']:.2f}/{alt['m']['pe']:.2f}/{alt['h']['pe']:.2f}, "
-              f"band {alt['l']['px']:.2f}/{alt['m']['px']:.2f}/{alt['h']['px']:.2f} "
-              f"zone={zone_of(inp['price'], alt['l']['px'], alt['m']['px'], alt['h']['px'])}")
-    # Implied r(P): single-stage Gordon at g = 0 on the M-tier EPS (§7 rule 3 disclosure).
-    print(f"implied r(P) = E_M / P = {S['m']['eps']:.3f} / {inp['price']:g} = {S['m']['eps'] / inp['price']:.2%} "
-          f"(vs basket r {inp['r_perp']:.0%}: {S['m']['eps'] / inp['price'] - inp['r_perp']:+.1%})")
-    if inp["price"] > H:
-        print(f"market-implied p = (P − H) / V_opt = {(inp['price'] - H) / v_opt:.2f}")
+              f"band {alt['l']['px']:.2f}/{alt['m']['px']:.2f}/{alt['h']['px']:.2f}")
     # A13 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) the
     # measured n with the model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
@@ -346,7 +343,6 @@ def main() -> int:
         f"numerator L/M={S['l']['eps']/S['m']['eps']:.2f} H/M={S['h']['eps']/S['m']['eps']:.2f} "
         f"| multiple ratio L/M={pe_l/pe_m:.2f} H/M={pe_h/pe_m:.2f} (ROE term only, g flat)"
     )
-    print(f"price={inp['price']} zone={zone}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is
     # the only r in the base anchors; r_disc discounts only the candidate band
     # and V_opt, so it stays put.  The Li2CO3 rungs, g2 and bridge stay put too.
@@ -355,7 +351,7 @@ def main() -> int:
         shifted = {**inp, "r_perp": inp["r_perp"] + dr}
         return tuple(scenario(shifted, t)["px"] for t in ("l", "m", "h"))  # type: ignore[return-value]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

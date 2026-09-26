@@ -10,10 +10,15 @@ the index PE / PB / ROE are snapshots of the current basket (quarterly
 rebalance, ~104% turnover).  Only the total-return flow is continuous, so the
 deck is the log-linear trend channel of the underlying TR index 480081:
 M = trend (compound 中枢, slope = realised central return), L / H = residual
-p10 / p90, mapped to the ETF price by k = price / index level.  The ETF
-accumulates (cash DPS = 0, A1), so the TR series is used directly and no
-rate-neutral cross-read is run.  No r enters the deck; the basket rows exist
-so the index basket column is populated and the cross-check runs at basket r.
+p10 / p90, mapped to the ETF price by k = nav_ref / index level on the same
+as-of date.  The ETF accumulates (cash DPS = 0, A1), so the TR series is used
+directly and no rate-neutral cross-read is run.  No r enters the deck; the
+basket rows exist so the index basket column is populated and the
+cross-check runs at basket r.
+
+The framework states no current price (AGENTS.md「现价 — 禁写契约」): no zone,
+no distance-to-anchor, no market-implied r; the digest and the app zone the
+live quote themselves.  Sub-window channels are printed as L/M/H only.
 
 Cross-check (v1 look-through SOTP, kept as 对照尺 and E-side guardrail): white
 goods Gordon (FY2027E consensus three points; g2 from the 美的 / 海尔 retention
@@ -23,7 +28,7 @@ unbooked EPS at b1 = g2/ROE — g2 and ROE are a joint fixed point, A11) + CMB /
 Yuntianhua / Chalco look-through + Industrial Bank PB-ROE (篮 5, r 11%) + other
 financials × k_bank + residual Gordon (index ROE 10.8% ~ r: ill-conditioned,
 g2 from the payout policy, A6).  Its band is printed and compared with the
-Outputs 对照 line; its zone is never the deck zone.
+Outputs 对照 line (L/M/H only).
 """
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, outputs_section, parse_baskets, parse_inputs, report,
     stated_anchors,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "159263.SZ.md"
 FORMULA_ID = "etf_tr_trend_channel_v1"
@@ -58,7 +63,7 @@ INDEX_LABEL = "980081 价值100 全收益（480081）"
 # The framework's chan_* rows were read on this window end; later rows in the
 # cache must not move the deck without a framework update.
 CHANNEL_END = "2026-09-17"
-CHAN_TOL = {"slope": 0.0015, "sigma": 0.0015, "z": 0.01, "idx": 1.0}
+CHAN_TOL = {"slope": 0.0015, "sigma": 0.0015, "idx": 1.0}
 
 # Look-through sleeves copy their L/M/H from another framework; a copy that
 # drifts from its source is a stale input, so it is checked here (A2e-4).
@@ -72,13 +77,12 @@ G2_TOL = 0.0005
 PE_TOL = 0.05
 _ROE_MONOTONE = 0.03
 _STATED_SOTP = re.compile(r"对照（look-through SOTP[^）]*）\**：\*\*([0-9.]+) / ([0-9.]+) / ([0-9.]+)\*\*")
-_SENS_LINE = re.compile(r"^- \*\*敏感区\*\*：(.*)$", re.MULTILINE)
 
 REQUIRED = [
-    "price", "fee_drag", "r_perp", "r_bank",
-    "chan_slope", "chan_slope_2019", "chan_slope_2021", "chan_sigma", "chan_z",
+    "nav_ref", "fee_drag", "r_perp", "r_bank",
+    "chan_slope", "chan_slope_2019", "chan_slope_2021", "chan_sigma",
     "chan_l_idx", "chan_m_idx", "chan_h_idx", "idx_cur",
-    "r_lt_implied", "eps_pt_from_peak", "eps_pt_yoy", "beta_rate_prior",
+    "eps_pt_from_peak", "eps_pt_yoy", "beta_rate_prior",
     "w_white", "pe_white_now", "roe_white", "g2_white", "payout_white",
     "g_evid_white_min", "g_evid_white_max",
     "eps_white_l", "eps_white_m", "eps_white_h",
@@ -172,7 +176,7 @@ def main() -> int:
     ch = channel(s)
     sub = {w[:4]: slope_since(s, w) for w in SUBWINDOWS}
     got = {"chan_slope": ch["slope"], "chan_slope_2019": sub["2019"], "chan_slope_2021": sub["2021"],
-           "chan_sigma": ch["sigma"], "chan_z": ch["z"],
+           "chan_sigma": ch["sigma"],
            "chan_l_idx": ch["L"], "chan_m_idx": ch["M"], "chan_h_idx": ch["H"], "idx_cur": ch["cur"]}
     for key, val in got.items():
         tol = CHAN_TOL["idx"] if key.endswith("_idx") or key == "idx_cur" else CHAN_TOL[key.split("_")[1]]
@@ -187,26 +191,19 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (channel)")
 
-    # --- Step 2: map index points to the ETF price; zone ------------------------
-    k = inp["price"] / ch["cur"]  # price ≡ NAV tracks TR
+    # --- Step 2: map index points to the ETF price -----------------------------
+    k = inp["nav_ref"] / ch["cur"]  # NAV tracks TR: map by NAV / index on the as-of date
     L, M, H = ch["L"] * k, ch["M"] * k, ch["H"] * k
     A, B = cut_points(L, M, H)
     computed = {"L": L, "M": M, "H": H, "A": A, "B": B}
-    zone = zone_of(inp["price"], L, M, H)
-    errors = check_against_stated(md, computed, zone, tol=0.01)
-    # 敏感区: the window choice is the deck's only judgement input.  A sub-window
-    # that flips the zone does not move the deck (gap < REGIME_GAP keeps the full
-    # window) but the Outputs 敏感区 line must carry the ⚠ marker — and only then.
+    errors = check_against_stated(md, computed, None, tol=0.01)
+    # 敏感区: the window choice is the deck's only judgement input.  Sub-window
+    # channels do not move the deck (gap < REGIME_GAP keeps the full window);
+    # they are printed as disclosure only.
     win_bands = {}
     for w in SUBWINDOWS:
         cw = channel(s[s.index >= w])
         win_bands[w[:4]] = (cw["L"] * k, cw["M"] * k, cw["H"] * k)
-    flips = [w for w, b in win_bands.items() if zone_of(inp["price"], *b) != zone]
-    sens = _SENS_LINE.search(outputs_section(md))
-    if not sens:
-        errors.append("Outputs 敏感区 line not found")
-    elif bool(flips) != ("⚠" in sens.group(1)):
-        errors.append(f"敏感区 line {'lacks' if flips else 'carries'} ⚠ but sub-window zone flips = {flips or 'none'}")
     if errors:
         return report(errors)
 
@@ -311,7 +308,7 @@ def main() -> int:
         }
 
     def anchor(tag: str, g2w: float, pe_res: dict[str, float], flat: bool = False) -> float:
-        return scale(inp["price"], inp["fee_drag"], sum(legs(tag, g2w, pe_res, flat).values()))
+        return scale(inp["nav_ref"], inp["fee_drag"], sum(legs(tag, g2w, pe_res, flat).values()))
 
     def res_pe(g_m: float) -> dict[str, float]:
         """Residual multiples for one M/H g: L stays the named zero-growth 1/r."""
@@ -339,15 +336,15 @@ def main() -> int:
         return report(errors)
 
     # --- report -----------------------------------------------------------------
-    nav = inp["price"] * inp["fee_drag"]
+    nav = inp["nav_ref"] * inp["fee_drag"]
     print(f"formula_id={FORMULA_ID}  (对照 {SOTP_FORMULA_ID})")
     print(f"通道 {INDEX_LABEL} {ch['start']}..{ch['end']}: 斜率 {ch['slope']:+.1%} (2019 起 {sub['2019']:+.1%} / 2021 起 {sub['2021']:+.1%}, "
-          f"最大差 {gap:.1%} < {REGIME_GAP:.0%} 不触发 regime) · σ {ch['sigma']:.1%} · z {ch['z']:+.2f} · 现值 {ch['cur']:.2f} vs M {ch['M']:.0f} ({ch['cur'] / ch['M'] - 1:+.1%})")
-    print(f"折算 k = {inp['price']} / {ch['cur']:.2f} = {k:.4e}; 指数点 L/M/H {ch['L']:.0f}/{ch['M']:.0f}/{ch['H']:.0f} → {L:.4f}/{M:.4f}/{H:.4f}")
+          f"最大差 {gap:.1%} < {REGIME_GAP:.0%} 不触发 regime) · σ {ch['sigma']:.1%}")
+    print(f"折算 k = nav_ref {inp['nav_ref']} / 指数值 {ch['cur']:.2f} = {k:.4e}; 指数点 L/M/H {ch['L']:.0f}/{ch['M']:.0f}/{ch['H']:.0f} → {L:.4f}/{M:.4f}/{H:.4f}")
     for w, b in win_bands.items():
-        print(f"敏感性 通道窗 {w} 起: {'/'.join(f'{x:.4f}' for x in b)} (M {b[1] / M - 1:+.1%}) zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 通道窗 {w} 起: {'/'.join(f'{x:.4f}' for x in b)} (M {b[1] / M - 1:+.1%})（只披露，不改窗）")
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0.000 — 全部来自残差分位, 无分子 / 倍数分解")
-    print(f"E 侧护栏 (只披露): 指数 PE {inp['pe_res_now']} / ROE {inp['roe_idx']:.1%} ⇒ 成分层隐含 r {inp['r_lt_implied']:.1%} (k=1) · 透视派息率 {inp['idx_dy_lo'] * inp['pe_res_now']:.1%}–{inp['idx_dy_hi'] * inp['pe_res_now']:.1%} · "
+    print(f"E 侧护栏 (只披露): 指数 PE {inp['pe_res_now']} / ROE {inp['roe_idx']:.1%} · 透视派息率 {inp['idx_dy_lo'] * inp['pe_res_now']:.1%}–{inp['idx_dy_hi'] * inp['pe_res_now']:.1%} · "
           f"EPS/点 同比 {inp['eps_pt_yoy']:+.1%}, 自峰 {inp['eps_pt_from_peak']:+.1%} · 利率轴 β 先验 {inp['beta_rate_prior']:+.0f} (待 _AXIS.rates.md) · look-through 篮子 r: r_perp 篮 {baskets['r_perp']} {r:.1%} / r_bank 篮 {baskets['r_bank']} {r_bank:.1%}")
 
     print(f"--- 对照尺 {SOTP_FORMULA_ID} @ 篮子 r (白电 / 残余 {r:.0%}, 兴业 {r_bank:.0%}) ---")
@@ -379,19 +376,20 @@ def main() -> int:
     for tag, val in zip("lmh", sotp):
         d = legs(tag, inp["g2_white"], base_res)
         print(f"{tag.upper()}: " + "  ".join(f"{kk} {v * nav:.4f}" for kk, v in d.items()) + f"  = {val:.4f}")
-    print(f"对照 SOTP L/M/H {sotp[0]:.4f}/{sotp[1]:.4f}/{sotp[2]:.4f} A={cut_points(*sotp)[0]:.4f} zone={zone_of(inp['price'], *sotp)} (对照尺, 不出 zone); "
-          f"flat 阶梯 {flat[0]:.4f}/{flat[1]:.4f}/{flat[2]:.4f}; 全市价对照带 {nav:.4f}; vs 通道 M {sotp[1] / M - 1:+.1%}")
+    print(f"对照 SOTP L/M/H {sotp[0]:.4f}/{sotp[1]:.4f}/{sotp[2]:.4f} A={cut_points(*sotp)[0]:.4f} (对照尺); "
+          f"flat 阶梯 {flat[0]:.4f}/{flat[1]:.4f}/{flat[2]:.4f}; vs 通道 M {sotp[1] / M - 1:+.1%}")
     m_legs = legs("m", inp["g2_white"], base_res)
-    # Each leg's all-at-market value is w_k x NAV x fee, so the excess is (leg - w_k) x nav.
-    print("对照 SOTP M 高出全市价: " + "  ".join(f"{kk} {(v - inp[f'w_{kk}']) * nav:+.4f}" for kk, v in m_legs.items()))
+    # Each leg's value at its 2026-09-11 constituent snapshot is w_k x nav_ref x fee,
+    # so the look-through credit is (leg - w_k) x nav.
+    print("对照 SOTP M 相对成分快照 (nav_ref 同日) 的 look-through 上行: " + "  ".join(f"{kk} {(v - inp[f'w_{kk}']) * nav:+.4f}" for kk, v in m_legs.items()))
     evid_w = (inp["g_evid_white_min"], inp["g_evid_white_max"])
     evid_r = (inp["g_evid_res_min"], inp["g_evid_res_max"])
     for gw in evid_w:
         for gr in evid_r:
             b = band(gw, res_pe(gr))
-            print(f"对照 证据区间 白电 {gw:+.2%} × 残余 {gr:+.2%}: {'/'.join(f'{x:.4f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+            print(f"对照 证据区间 白电 {gw:+.2%} × 残余 {gr:+.2%}: {'/'.join(f'{x:.4f}' for x in b)}")
     print(f"对照 兴业冻结市价: SOTP M {sotp[1] - (m_legs['xyb'] - inp['w_xyb']) * nav:.4f}; 兴业 ROE 9%: SOTP M {sotp[1] + inp['w_xyb'] * (justified_pb(inp['g2_bank'], 0.09, r_bank) / inp['pb_xyb'] - k_xyb) * nav:.4f}")
-    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}  zone={zone}  price={inp['price']}")
+    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}")
     return 0
 
 

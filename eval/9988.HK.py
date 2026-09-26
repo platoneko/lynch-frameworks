@@ -7,7 +7,7 @@ enforcement layer that keeps its number chain honest:
     parse §3 Inputs table -> strip run-rate non-operating income from the FY2028E
                              consensus three points, generate the two operating
                              multiples with Gordon, recompute the legs, L/M/H,
-                             A/B, zone, the candidate band and V_opt
+                             A/B, the candidate band and V_opt
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
@@ -45,6 +45,10 @@ Checks beyond the anchor comparison:
   5. candidate band matches the one Outputs line and is ordered
   6. no p_* fields in Inputs; V_opt / p tiers as stated
 
+The framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily digest
+derives the zone from live quotes.
+
 Run after every edit of frameworks/9988.HK.md:  python3 frameworks/eval/9988.HK.py
 """
 
@@ -77,7 +81,7 @@ NONOP_PRETAX_BRIDGE_CNY = 3.378e9  # A9b: adj EBITA 27,329 + 3,378 - 9,992 tax =
 D_NAV_BAND = (0.10, 0.60)  # A9
 
 REQUIRED = (
-    "price", "shares", "fx_cny_hkd",
+    "shares", "fx_cny_hkd",
     "eps28_l_cny", "eps28_m_cny", "eps28_h_cny",
     "nonop_pretax_q_cny", "eq_method_q_cny", "tax_rate",
     "ebita_aeg_q_cny", "ebita_cloud_q_cny",
@@ -120,14 +124,13 @@ CELL = r"([−-]?[0-9]+(?:\.[0-9]+)?)(?:（[^）]*）)?"
 
 
 def parse_stated(md: str) -> dict:
-    """Parse anchors, cut-points, 表1 legs, zone-table boundaries, zone id, V_opt, candidate."""
+    """Parse anchors, cut-points, 表1 legs, zone-table boundaries, V_opt, candidate."""
     out = md.split("### Outputs", 1)[1].split("### 交叉校验", 1)[0]
     anchors = re.search(
         r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", out)
     cuts = re.search(r"切点 A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", out)
-    zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
-    if not (anchors and cuts and zone):
-        sys.exit("FATAL: cannot parse §3 Outputs (anchors / cut-points / zone line)")
+    if not (anchors and cuts):
+        sys.exit("FATAL: cannot parse §3 Outputs (anchors / cut-points)")
     legs: dict[str, list[float]] = {}
     row_re = re.compile(
         rf"\|\s*([LMH])\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|\s*{CELL}\s*\|"
@@ -155,7 +158,7 @@ def parse_stated(md: str) -> dict:
     return {
         "L": float(anchors.group(1)), "M": float(anchors.group(2)), "H": float(anchors.group(3)),
         "A": float(cuts.group(1)), "B": float(cuts.group(2)),
-        "zone": zone.group(1), "legs": legs,
+        "legs": legs,
         "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
         "V_opt": float(vopt_m.group(1)),
         "p_L": float(ptier_m.group(1)), "p_M": float(ptier_m.group(2)), "p_H": float(ptier_m.group(3)),
@@ -228,23 +231,6 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         "blend": {k: w_ecom * pe_ecom[k] + w_cloud * pe_cloud[k] for k in SCENARIOS},
         "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
     }
-
-
-def zone_of(price: float, c: dict) -> str:
-    if price < c["L"]:
-        return "deep_discount"
-    if price < c["A"]:
-        return "conservative"
-    if price < c["B"]:
-        return "neutral"
-    if price <= c["H"]:
-        return "optimistic"
-    return "stretched"
-
-
-def implied_ops_pe(v: dict, c: dict, tier: str) -> float:
-    """Operating-leg multiple the market pays with NAV / cash held at the tier's closure values."""
-    return (v["price"] - c["legs"][tier]["nav"] - c["legs"][tier]["cash"]) / c["e_ops"][tier]
 
 
 # ---------------------------------------------------------------- main
@@ -327,9 +313,7 @@ def main() -> int:
             checks.append((abs(stated_v - exp) <= TOL,
                            f"leg table {tag.upper()}/{name}: stated {stated_v} vs computed {exp:.4f}"))
 
-    # 5. zone, V_opt, candidate band, flat ladder, p-leak
-    z = zone_of(v["price"], c)
-    checks.append((z == stated["zone"], f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
+    # 5. V_opt, candidate band, flat ladder, p-leak
     checks.append((abs(stated["V_opt"] - c["V_opt"]) <= TOL,
                    f"stated V_opt={stated['V_opt']} matches computed {c['V_opt']:.4f}"))
     checks.append((stated["p_L"] == 0 and stated["p_H"] == 1, f"p_L/p_H endpoints ({stated['p_L']}/{stated['p_H']})"))
@@ -393,18 +377,12 @@ def main() -> int:
           f"  V_opt/M={c['V_opt'] / c['M']:.1%}")
     print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
           f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")
-    print(f"price     : {v['price']} -> zone `{z}`")
     if "eps27_m_cny" in v:
         e27 = v["eps27_m_cny"] * v["fx_cny_hkd"]
         print("implied PE: on FY28E mean " + " ".join(f"{n} {x / c['e_full']['m']:.2f}x" for n, x in
-              (("price", v["price"]), ("L", c["L"]), ("M", c["M"]), ("H", c["H"])))
+              (("L", c["L"]), ("M", c["M"]), ("H", c["H"])))
               + " | on FY27E mean " + " ".join(f"{n} {x / e27:.2f}x" for n, x in
-              (("price", v["price"]), ("L", c["L"]), ("M", c["M"]), ("H", c["H"]))))
-    for tier in ("m", "l"):
-        pe_mkt = implied_ops_pe(v, c, tier)
-        g_mkt, ok = implied_g(pe_mkt, c["roe"][tier], v["r_perp"])
-        print(f"market solves for (closure at {tier.upper()}): ops PE {pe_mkt:.2f}x -> blended g {g_mkt:+.2%}"
-              f"{'' if ok else ' (ill-conditioned: ROE near r)'}")
+              (("L", c["L"]), ("M", c["M"]), ("H", c["H"]))))
     if "eps_rr_cny" in v:
         e_rr = (v["eps_rr_cny"] - c["nonop_ps"]) * v["fx_cny_hkd"]
         print(f"pressure  : run-rate non-GAAP EPS {v['eps_rr_cny']} CNY -> ops {e_rr:.2f} HKD; "
@@ -433,7 +411,7 @@ def main() -> int:
         alt_rf = compute(dict(v, r_perp=v["r_perp"] + dr))
         return alt_rf["L"], alt_rf["M"], alt_rf["H"]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf, v["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (c["L"], c["M"], c["H"]))):
         checks.append((False, "r_f readings: the dr = 0 column does not reproduce L/M/H"))
     if gaps:

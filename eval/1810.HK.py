@@ -8,6 +8,10 @@ script is the enforcement layer that keeps its number chain honest:
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing here
+computes a zone for the price or a market-implied reading — the digest and the
+app zone on live quotes.
+
 formula_id: xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v2
 
 gordon_v2 (valuation-rules「构造规则冲突的裁决顺序」②): the operating numerator is
@@ -65,7 +69,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
@@ -79,7 +83,7 @@ YI = 1e8  # 亿 -> unit
 LISTING_CCY = "HKD"
 
 REQUIRED = (
-    "price", "shares", "fx_cny_hkd", "tax_rate",
+    "shares", "fx_cny_hkd", "tax_rate",
     "eps27_l_cny", "eps27_m_cny", "eps27_h_cny",
     "adj_np_h1", "gp_core_h1", "gp_phone_h1", "gp_ev_h1",
     "rev_core_q1", "rev_core_q2", "opex_ratio_q1", "opex_ratio_q2",
@@ -122,14 +126,13 @@ def parse_inputs(text: str) -> tuple[dict[str, float], list[str]]:
 
 
 def parse_stated(text: str) -> dict:
-    """Parse anchors, cut-points, per-leg table, zone boundaries, zone id, V_opt, candidate."""
+    """Parse anchors, cut-points, per-leg table, zone boundaries, V_opt, candidate."""
     out = text.split("### Outputs", 1)[1].split("### 交叉校验", 1)[0]
     anchors = re.search(
         r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", out)
     cuts = re.search(r"切点 A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", out)
-    zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
-    if not (anchors and cuts and zone):
-        sys.exit("FATAL: cannot parse Outputs (anchors / cut-points / zone line)")
+    if not (anchors and cuts):
+        sys.exit("FATAL: cannot parse Outputs (anchors / cut-points)")
 
     legs: dict[str, tuple[float, float, float, float, float]] = {}
     row_re = re.compile(
@@ -160,7 +163,7 @@ def parse_stated(text: str) -> dict:
     return {
         "L": float(anchors.group(1)), "M": float(anchors.group(2)), "H": float(anchors.group(3)),
         "A": float(cuts.group(1)), "B": float(cuts.group(2)),
-        "zone": zone.group(1), "legs": legs,
+        "legs": legs,
         "bounds": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", table)},
         "V_opt": float(vopt_m.group(1)),
         "p_L": float(ptier_m.group(1)), "p_M": float(ptier_m.group(2)), "p_H": float(ptier_m.group(3)),
@@ -270,18 +273,6 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     }
 
 
-def zone_of(price: float, c: dict) -> str:
-    if price < c["L"]:
-        return "deep_discount"
-    if price < c["A"]:
-        return "conservative"
-    if price < c["B"]:
-        return "neutral"
-    if price <= c["H"]:
-        return "optimistic"
-    return "stretched"
-
-
 # ---------------------------------------------------------------- main
 
 def main() -> int:
@@ -351,8 +342,6 @@ def main() -> int:
     checks.append((stated["bounds"] == expected_bounds,
                    f"zone boundaries {sorted(stated['bounds'])} == {sorted(expected_bounds)}"))
 
-    z = zone_of(v["price"], c)
-    checks.append((z == stated["zone"], f"zone at price {v['price']}: computed `{z}` == stated `{stated['zone']}`"))
     checks.append((abs(stated["V_opt"] - c["V_opt"]) <= TOL,
                    f"stated V_opt={stated['V_opt']} matches computed {c['V_opt']:.4f}"))
     checks.append((stated["p_L"] == 0 and stated["p_H"] == 1, f"p_L/p_H endpoints ({stated['p_L']}/{stated['p_H']})"))
@@ -411,17 +400,6 @@ def main() -> int:
           f"  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}  V_opt/M={c['V_opt'] / c['M']:.1%}")
     print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
           f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")
-    print(f"price     : {v['price']} -> zone {z}   (vs L {v['price'] / c['L'] - 1:+.1%}, vs M {v['price'] / c['M'] - 1:+.1%})")
-    # market-implied core multiple with the M-tier EV leg and closing held
-    m = T["m"]
-    core_mkt = (v["price"] - m["ev"] - m["closing"]) / (m["ni"] * c["per_share"])
-    g_mkt, ok = implied_g(core_mkt, m["roe_eco"], v["r_perp"])
-    print(f"market solves for (EV leg / closing at M): core PE {core_mkt:.2f}x on FY27E ops -> blended g {g_mkt:+.2%}"
-          f"{'' if ok else ' (ill-conditioned)'}")
-    # disclosure only: single-stage approximation g + (r - g) * M / P against the basket r
-    r_implied = v["g2_eco"] + (v["r_perp"] - v["g2_eco"]) * c["M"] / v["price"]
-    print(f"implied r(P): {r_implied:.2%} (single-stage approx on M) vs 篮 {baskets.get('r_perp')} r {v['r_perp']:.1%}"
-          f" -> {r_implied - v['r_perp']:+.1%}")
     # pressure coordinates (deep_discount): whole-company run-rate at the L-tier multiples / at 1/r
     lt = T["l"]
     ev_l = c["rev_ev"] * v["ps_ev_l"]
@@ -432,9 +410,7 @@ def main() -> int:
     print("sensitivity:")
     for g in (v["g2_eco"] - 0.01, v["g2_eco"] + 0.01, -0.0098):
         alt = compute(dict(v, g2_eco=g))
-        flip = zone_of(v["price"], alt)
-        print(f"  g2_eco={g:+.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}  zone {flip}"
-              f"{'  ⚠敏感区' if flip != z else ''}")
+        print(f"  g2_eco={g:+.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
     addback = -2.0 * c["op_ev_h1"] / (v["shares"] / YI)  # CNY/share equivalent of the run-rate EV loss
     alt = compute({**v, **{f"eps27_{b}_cny": v[f"eps27_{b}_cny"] + addback for b in BANDS}})
     print(f"  A4' upper bound (add back 1H26 annualized EV loss {-2 * c['op_ev_h1']:.1f} 亿): "
@@ -449,7 +425,7 @@ def main() -> int:
         alt_rf = compute(dict(v, r_perp=v["r_perp"] + dr))
         return alt_rf["L"], alt_rf["M"], alt_rf["H"]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf, v["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (c["L"], c["M"], c["H"]))):
         checks.append((False, "r_f readings: the dr = 0 column does not reproduce L/M/H"))
 

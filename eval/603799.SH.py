@@ -2,7 +2,8 @@
 """603799.SH (Huayou Cobalt) valuation eval — recompute anchors from frameworks/603799.SH.md.
 
 frameworks/603799.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on any mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on any mismatch.  The doc
+states no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: huayou_eight_leg_gp_bridge_conv_ladder_gordon_v2
 
@@ -28,8 +29,8 @@ counter-cyclical policy on top of the conv ladder (that would price the cycle
 twice).  The guardrail is NOT the own 5y PE band (printed at a far lower
 earnings level, A17) but the months whose market-visible TTM EPS matched the M
 tier (A18, valuation-rules ④): the M multiple is compared with that print band
-and the zone is re-read at g2 ±1pp and the print evidence range — both are
-DISCLOSURES at the basket r (③ 出带 / ⚠ 敏感区), printed, never asserted.
+and L/M/H are re-read at g2 ±1pp and across the print evidence range — both are
+DISCLOSURES at the basket r (③ 出带 / 敏感区), printed, never asserted.
 
 The L anchor is the earnings scenario; the measured PB floor of 1.0228 (printed
 at the 2024-06 low of 20.82) is disclosure only and is never max()-ed into L.
@@ -67,7 +68,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from eval.lib.axes import load_au_cu_rungs  # noqa: E402
-from eval.lib.gordon import basket_r, check_branch, check_g_cap, check_r, implied_g, payout_gap, perpetual_pe  # noqa: E402
+from eval.lib.gordon import basket_r, check_branch, check_g_cap, check_r, payout_gap, perpetual_pe  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
@@ -76,7 +77,6 @@ from eval.lib.inputs import (  # noqa: E402
     parse_baskets,
     parse_inputs,
 )
-from eval.lib.zones import zone_of  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FRAMEWORK = REPO / "frameworks" / "603799.SH.md"
@@ -102,7 +102,7 @@ ALT_BASKET = 7
 
 G2_TOL = 1e-4             # stated g2 must equal the cluster blend recomputed from its parts (A13)
 MIN_PRINT_MONTHS = 6      # A18: fewer EPS-matched months than this -> corroboration only, not a g2 source
-G2_LEVER_PP = 0.01        # valuation-rules: zone must hold at g2 ± this
+G2_LEVER_PP = 0.01        # valuation-rules: L/M/H re-read at g2 ± this (g2 lever, disclosure)
 TOL = 0.05
 # 表3 per-tier credit on the Pomalaa option (A11): 拍值, never an Input, never the base.
 P_K = (0.0, 0.25, 1.0)
@@ -111,7 +111,7 @@ P_K = (0.0, 0.25, 1.0)
 SHARED_LADDER = {"p_cu_l": "lme_cu_l", "p_cu_m": "lme_cu_m", "p_cu_h": "lme_cu_h"}
 
 REQUIRED = [
-    "price", "shares", "bps", "pb_floor",
+    "shares", "bps", "pb_floor",
     "gp_ni_prod_m", "gp_ni_prod_h",
     "gp_ni_mhp_m", "gp_ni_mhp_h",
     "gp_co_m", "gp_li_m", "gp_cam_m",
@@ -313,11 +313,10 @@ def main() -> int:
         errors += branch
 
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
     # The 「视同派出」 row and its haircut as stated in Outputs must match.
     import re
     out_sec = outputs_section(md)
@@ -327,19 +326,14 @@ def main() -> int:
         if got is None or abs(float(got.group(1)) - want) > TOL:
             errors.append(f"{label}: stated {got.group(1) if got else None} vs recomputed {want:.4f}")
 
-    # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): the zone is re-read
-    # at g2 ± 1pp and across the print evidence range.  A flip is ⚠ 敏感区 —
-    # disclosed (the price sits 0.6 CNY under B), not a blocker.
-    def zone_at(g: float, r_: float = r) -> tuple[str, float, float, float]:
-        l_, m_, h_ = (t[6] for t in tiers(g, r_))
-        return zone_of(inp["price"], l_, m_, h_), l_, m_, h_
+    # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): L/M/H are re-read
+    # at g2 ± 1pp and across the print evidence range — disclosed, not a blocker.
+    def band_at(g: float, r_: float = r) -> tuple[float, float, float]:
+        return tuple(t[6] for t in tiers(g, r_))
 
-    lever = {}
-    flips = []
-    for tag, g in (("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP), ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"])):
-        lever[tag] = zone_at(g)
-        if lever[tag][0] != zone:
-            flips.append(f"{tag} (g2 {g:+.2%}) -> {lever[tag][0]}")
+    lever = {tag: band_at(g) for tag, g in (
+        ("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP),
+        ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"]))}
 
     # --- Pomalaa option (A11): own realised MHP unit x 12 kt, conv_m, M multiple, one year,
     # x spent share — the unspent capex is the retention row, already priced at ROIC/r via k (A21) ---
@@ -349,7 +343,6 @@ def main() -> int:
     v_opt = v_opt_full * inp["pomalaa_spent_share"]
     adj = tuple(x + p * v_opt for x, p in zip((L, M, H), P_K))
     adj_a, adj_b = (adj[0] + adj[1]) / 2, (adj[1] + adj[2]) / 2
-    adj_zone = zone_of(inp["price"], *adj)
     vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
     if vo is None:
         errors.append("stated V_opt not found in Outputs")
@@ -412,15 +405,11 @@ def main() -> int:
     print(f"L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M) * 100:.2f}%  V_opt/M={v_opt / M:.4f}")
     # A2e-5 decomposition.
     print(f"分子比 L={eps_l / eps_m:.4f} H={eps_h / eps_m:.4f} | 倍数比 L={pe_l / pe_m:.4f} H={pe_h / pe_m:.4f} (ROE mechanics only, flat policy)")
-    for tag, (z, l_, m_, h_) in lever.items():
-        print(f"  g2 lever {tag:>8}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}  A {(l_ + m_) / 2:.2f} B {(m_ + h_) / 2:.2f}  zone {z}")
-    print(f"  {'⚠ 敏感区 (disclosure only): zone flips at ' + '; '.join(flips) if flips else 'zone holds across g2 ±1pp and the print range'}; price {inp['price']} sits {B - inp['price']:+.2f} under B")
-    # Implied r(P): single-stage Gordon at the shared g2, M as the fair value.
-    r_impl = g2 + (r - g2) * M / inp["price"]
-    print(f"  implied r(P) = g2 + (r - g2)·M/P = {r_impl:.1%} vs basket r {r:.0%} ({r_impl - r:+.1%}; disclosure only)")
+    for tag, (l_, m_, h_) in lever.items():
+        print(f"  g2 lever {tag:>8}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}  A {(l_ + m_) / 2:.2f} B {(m_ + h_) / 2:.2f}")
     for tag, r_ in ((f"alt 篮 {ALT_BASKET} (国别附加, disclosure)", basket_r(ALT_BASKET)), ("篮 4 coordinate", basket_r(4))):
-        z_, l_, m_, h_ = zone_at(g2, r_)
-        print(f"  r {r_:.0%} {tag}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f} zone {z_}")
+        l_, m_, h_ = band_at(g2, r_)
+        print(f"  r {r_:.0%} {tag}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}")
     # Sensitivities the doc quotes (conv / trade leg / copper / g2), Gordon-consistent.
     def m_at(pretax: float, conv: float, g: float = g2) -> float:
         return anchor(pretax, conv, g, r, K[1])[6]
@@ -430,17 +419,14 @@ def main() -> int:
     print(f"  sens trade leg -10亿 -> M {m_at(pretax_m - 10, inp['conv_m']):.2f} ({m_at(pretax_m - 10, inp['conv_m']) - M:+.2f}), H {anchor(pretax_h - 10, inp['conv_h'], g2, r, K[2])[6]:.2f}")
     d_cu = copper_leg(inp["p_cu_m"] + 1000) - copper_leg(inp["p_cu_m"])
     print(f"  sens LME Cu +1000 $/t -> gp {d_cu:+.2f}亿 -> M {m_at(pretax_m + d_cu, inp['conv_m']):.2f} ({m_at(pretax_m + d_cu, inp['conv_m']) - M:+.2f})")
-    print(f"  sens g2 -1pp/+1pp -> M {lever['-1pp'][2]:.2f}/{lever['+1pp'][2]:.2f} ({lever['-1pp'][2] - M:+.2f}/{lever['+1pp'][2] - M:+.2f})")
-    z43, l43, m43, h43 = zone_at(0.0043)
-    print(f"  sens g2 0.43% (peer-cluster blend, coordinate) -> {l43:.2f}/{m43:.2f}/{h43:.2f} zone {z43}")
+    print(f"  sens g2 -1pp/+1pp -> M {lever['-1pp'][1]:.2f}/{lever['+1pp'][1]:.2f} ({lever['-1pp'][1] - M:+.2f}/{lever['+1pp'][1] - M:+.2f})")
+    l43, m43, h43 = band_at(0.0043)
+    print(f"  sens g2 0.43% (peer-cluster blend, coordinate) -> {l43:.2f}/{m43:.2f}/{h43:.2f}")
     # A12: L with the 2025H1 gross profit but today's rigid opex.
     rigid_l = anchor(GP_2025H1_ANNUALISED - inp["opex"], inp["conv_l"], g2, r, K[0])[6]
     print(f"  sens L with rigid opex {inp['opex']:.2f} on 2025H1 gp {GP_2025H1_ANNUALISED:.2f} -> scenario_L {rigid_l:.2f}, ratio {rigid_l / M:.3f} (A2e-1 would trip; A12)")
-    g_px, ok = implied_g(inp["price"] / eps_m, roe_m, r)
-    print(f"  price {inp['price']} / EPS_M = {inp['price'] / eps_m:.2f}x -> implied g {g_px:+.2%} ({'well' if ok else 'ill'}-conditioned); implied conv at PE_M {inp['price'] / pe_m * inp['shares'] / YI / pretax_m:.1%}")
     print(f"option Pomalaa: {inp['pomalaa_kt']:g} 万吨 x {inp['mhp_unit_gp']:.4f} 亿/万吨 x conv_m {inp['conv_m']:.4f} x PE_M {pe_m:.2f} / shares / (1+r)^{inp['t_opt']:g} = {v_opt_full:.4f} (whole project) x spent share {inp['pomalaa_spent_share']:.3f} -> V_opt {v_opt:.4f} (unspent {1 - inp['pomalaa_spent_share']:.1%} sits in the k row, A21)")
-    print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}")
-    print(f"price={inp['price']} zone={zone}")
+    print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={adj_a:.2f} B'={adj_b:.2f}")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

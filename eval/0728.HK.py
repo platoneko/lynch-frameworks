@@ -2,7 +2,10 @@
 """0728.HK (China Telecom) valuation eval.
 
 frameworks/0728.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The
+framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily
+digest derives the zone from live quotes.
 
 formula_id: ct_hk_gordon_peak_flat_v1
 
@@ -48,7 +51,7 @@ from lib.inputs import (  # noqa: E402
     report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -63,7 +66,7 @@ YI = 1e8
 R_LEGS = ("r_perp", "r_perp_a")
 
 REQUIRED = [
-    "price", "price_a", "shares", "bps", "equity", "fx_hkdcny",
+    "shares", "bps", "equity", "fx_hkdcny",
     "eps_l", "eps_m", "eps_h",
     "r_perp", "r_perp_a", "cny_rf_gap", "payout_policy", "payout_obs",
     "eps26_m", "ni_1h26", "payout_3y",
@@ -161,17 +164,12 @@ def main() -> int:
     L, M, H = anchor["l"], anchor["m"], anchor["h"]
     errors += ladder("anchor", L, M, H)
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
-    # Evidence interval = payout policy 80% / 70% (A13).
-    for g_ev in (inp["g_evid_min"], inp["g_evid_max"]):
-        a_ev = {t: eps[t] * perpetual_pe(g_ev, roe[t], r) / fx for t in TIERS}
-        z_ev = zone_of(inp["price"], a_ev["l"], a_ev["m"], a_ev["h"])
-        if z_ev != zone:
-            errors.append(
-                f"zone flips at g_evid={g_ev}: {zone} → {z_ev} "
-                "(valuation-rules「g2 的杠杆」)"
-            )
+    # Evidence interval = payout policy 80% / 70% (A13): disclosed bands.
+    band_ev = {
+        g_ev: tuple(eps[t] * perpetual_pe(g_ev, roe[t], r) / fx for t in TIERS)
+        for g_ev in (inp["g_evid_min"], inp["g_evid_max"])
+    }
 
     if inp["v_opt"] != 0:
         errors.append("v_opt must be 0 until cloud contribution profit is sourced")
@@ -187,23 +185,16 @@ def main() -> int:
     # A-share cross band at the same basket r, same multiple (A4 / A9).
     pe_a = {t: perpetual_pe(g2[t], roe[t], r_a) for t in TIERS}
     band_a = {t: eps[t] * pe_a[t] for t in TIERS}
-    zone_a = zone_of(inp["price_a"], band_a["l"], band_a["m"], band_a["h"])
     # Currency-segment reading (r_f gap HKD → CNY) -- disclosure, not an anchor.
     r_ccy = r_a - inp["cny_rf_gap"]
     band_ccy = {t: eps[t] * perpetual_pe(g2[t], roe[t], r_ccy) for t in TIERS}
-    zone_ccy = zone_of(inp["price_a"], band_ccy["l"], band_ccy["m"], band_ccy["h"])
 
-    # Disclosure-only readings: implied r at market (full form, M tier),
-    # book floor in HKD, net cash per share.
-    pe_mkt = inp["price"] * fx / eps["m"]
-    r_implied = g2["m"] + (1.0 - g2["m"] / roe["m"]) / pe_mkt
-    pe_mkt_a = inp["price_a"] / eps["m"]
-    r_implied_a = g2["m"] + (1.0 - g2["m"] / roe["m"]) / pe_mkt_a
+    # Disclosure-only readings: book floor in HKD, net cash per share.
     floor_hkd = inp["bps"] / fx
     net_cash_ps_hkd = inp["net_cash"] * YI / inp["shares"] / fx
 
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.02
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.02
     )
 
     print(f"formula_id={FORMULA_ID}")
@@ -218,8 +209,8 @@ def main() -> int:
           f"actually retained (disclosure only; not a leg, not in BPS)")
     print(f"PE_l/m/h={[round(pe[t], 4) for t in TIERS]}")
     print(f"L/M/H={[round(anchor[t], 4) for t in TIERS]} A={A:.4f} B={B:.4f}")
-    print(f"zone={zone} price={inp['price']}")
-    print(f"implied_r(P) H={r_implied:.4f} A={r_implied_a:.4f} (disclosure only)")
+    for g_ev, band in band_ev.items():
+        print(f"g_evid={g_ev} L/M/H={[round(x, 2) for x in band]} (A13 evidence interval, disclosure only)")
     print(f"floor BPS HKD={floor_hkd:.4f} (disclosure only, not max()-ed)")
     print(f"net_cash HKD/share={net_cash_ps_hkd:.4f} (disclosure only)")
     print(f"flat_multiple HKD={[round(x, 4) for x in flat_hkd]}")
@@ -228,14 +219,13 @@ def main() -> int:
         f"H/M={dec['hm']:.3f} (pe {dec['pe_hm']:.3f} x num {dec['num_hm']:.3f})"
     )
     print(f"neutral_width/M={(H - L) / (2 * M):.3f}")
-    print(f"H/A={inp['price'] * fx / inp['price_a']:.3f}")
     print(
         f"A-share PE={[round(pe_a[t], 2) for t in TIERS]} "
-        f"band CNY={[round(band_a[t], 2) for t in TIERS]} zone_a={zone_a}"
+        f"band CNY={[round(band_a[t], 2) for t in TIERS]}"
     )
     print(
         f"A-share currency-segment r={r_ccy:.3f} band CNY="
-        f"{[round(band_ccy[t], 2) for t in TIERS]} zone={zone_ccy} (disclosure only)"
+        f"{[round(band_ccy[t], 2) for t in TIERS]} (disclosure only)"
     )
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # the H-share r_perp 1:1; EPS, g2, ROE and fx stay put.  r_perp_a prices only
@@ -243,7 +233,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return tuple(eps[t] * perpetual_pe(g2[t], roe[t], r + dr) / fx for t in TIERS)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 0.02 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

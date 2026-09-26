@@ -30,6 +30,10 @@ cluster prices 篮 4 names (cross-basket, §13 rule 7) and the own band never
 priced "13% + no ramp".  Ruling on the basket is a §13 research step, not this
 script.  No floor enters L; book value per share is printed as disclosure.
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing here
+computes a zone or a market-implied reading — the digest and the app zone on
+live quotes.
+
 Run:  python3 frameworks/eval/002897.SZ.py
 """
 
@@ -58,7 +62,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import decompose  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "002897.SZ.md"
 FORMULA_ID_BASE = "yihua_base_sotp_gordon_v2"
@@ -66,12 +70,11 @@ FORMULA_ID_OPT = "yihua_ascend_option_v1"
 TOL = 0.05
 DERIVED_TOL = 5e-4
 MIN_R_MINUS_G = 0.02
-G2_STEPS = (0.03, 0.0)  # base-deck zone must survive the g2 evidence range (A13)
+G2_STEPS = (0.03, 0.0)  # base deck across the g2 evidence range, printed (A13)
 K_CROSS_BAND = (0.9, 1.3)  # reading B / V_opt: consensus should price ≈ one 华丰 unit (A15)
 P_H = 1.0  # H world: the ramp reproduces the realised unit in full
 
 REQUIRED = [
-    "price",
     "shares",
     "equity_total",
     "equity_solar",
@@ -177,8 +180,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
 
     # A2e-2c flat ladder on the connector leg (all tiers at PE_M), solar as is.
     flat = tuple((conn[t] * pe_a["M"] + solar[t] * pe_b[t]) / sh for t in TIERS)
@@ -186,14 +188,8 @@ def main() -> int:
         errors.append(f"flat-multiple ladder broken: {flat}")
     dec = decompose((L, M, H), (pe_a["L"], pe_a["M"], pe_a["H"]))
 
-    # g2 leverage (A13): the base-deck zone must not move inside the evidence range.
-    g2_rows = []
-    for g2_ in G2_STEPS:
-        px_, _, _ = deck(g2_)
-        z_ = zone_of(inp["price"], px_["L"], px_["M"], px_["H"])
-        g2_rows.append((g2_, px_, z_))
-        if z_ != zone:
-            errors.append(f"zone moves within g2 evidence range: {zone} at {inp['g2']:.0%} vs {z_} at {g2_:.0%} — BLOCKED")
+    # g2 leverage (A13): the base deck across the evidence range, L/M/H only.
+    g2_rows = [(g2_, deck(g2_)[0]) for g2_ in G2_STEPS]
 
     # ---- Step 3: option, reading A = realised 华丰 unit, k = 1 (A15) ----
     roe_opt = (conn["M"] + inp["unit_hf"]) / eq_conn
@@ -213,7 +209,6 @@ def main() -> int:
     adj = tuple(px[t] + p * v_opt for t, p in zip(TIERS, p_k))
     if abs(adj[0] - L) > 1e-9:
         errors.append("table 3 L row must equal base L (p_L = 0, check_no_p_leak)")
-    zone_adj = zone_of(inp["price"], *adj)
     a_adj, b_adj = cut_points(*adj)
 
     # ---- Step 4: guardrails (A12) — ③ out-of-band is disclosed, not asserted (A17 / §13 rule 7) ----
@@ -243,22 +238,21 @@ def main() -> int:
             f"{t}: conn {conn[t] / 1e8:.2f}亿 x {pe_a[t]:.2f}x (ROE {roe_conn[t]:.1%}) + "
             f"solar {solar[t] / 1e8:.2f}亿 x {pe_b[t]:.2f}x = {px[t]:.2f}"
         )
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  price={inp['price']:.2f} zone={zone}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder @ PE_A_M {pe_a['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
         f"H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | "
         f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.1%}"
     )
-    for g2_, px_, z_ in g2_rows:
-        print(f"g2 {g2_:.0%} -> {px_['L']:.2f}/{px_['M']:.2f}/{px_['H']:.2f} zone={z_}")
+    for g2_, px_ in g2_rows:
+        print(f"g2 {g2_:.0%} -> {px_['L']:.2f}/{px_['M']:.2f}/{px_['H']:.2f}")
     print(
         f"V_opt (A, 华丰 unit k=1) = {inp['unit_hf'] / 1e8:.2f}亿 x {pe_opt:.2f}x (ROE {roe_opt:.1%}) = {v_opt:.2f}  "
         f"p_k = {p_k[0]:.2f}/{p_k[1]:.3f}/{p_k[2]:.2f}"
     )
-    print(f"表3: {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={a_adj:.2f} B'={b_adj:.2f}  zone+V={zone_adj}")
+    print(f"表3: {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={a_adj:.2f} B'={b_adj:.2f}")
     print(
-        f"市价隐含 p = {(inp['price'] - H) / v_opt:.2f}; P/(H+V) = {inp['price'] / adj[2] - 1:+.1%}; "
         f"(H+V)/TTM {hv_ttm:.1f}x vs own band [{inp['pe_own_lo']}, {inp['pe_own_hi']}]; "
         f"option PE {pe_opt:.2f}x vs peer cluster [{inp['pe_peer_lo']}, {inp['pe_peer_hi']}]"
     )

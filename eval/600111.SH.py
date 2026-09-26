@@ -25,6 +25,10 @@ agree, and never lowers the basket or twists g.
 The NdPr-price → EPS bridge (A2) never enters the anchors; it names the three
 worlds in price terms, must reproduce the measured years within ±20%, and
 prints the mid-cycle / trough coordinates that the `deep_discount` row reads.
+
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
+here computes a zone or a market-implied reading — the digest and the app zone
+on live quotes.
 """
 
 from __future__ import annotations
@@ -73,12 +77,12 @@ BRIDGE_TOL = 0.20
 # at the phase-2 run-rate (31 万吨 vs ~20 → ×1.55); printed, not anchors.
 PHASE2_VOLUME_X = 1.55
 # Pre-control market centre (2023-11 → 2025H1, 属性 E) and the regime mid-cycle
-# NdPr price (A8) — implied-r / coordinate disclosures only.
+# NdPr price (A8) — coordinate disclosures only.
 PRE_CONTROL_PRICE = 21.0
 NDPR_REGIME_MID = 70.0
 
 REQUIRED = [
-    "price", "shares", "bps", "bps_fwd",
+    "shares", "bps", "bps_fwd",
     "eps28_l", "eps28_m", "eps28_h",
     "r_disc", "n_disc", "r_perp",
     "g1_window", "n_window", "g2",
@@ -104,17 +108,6 @@ def window_pe(g1: float, n: int, g2: float, roe: float, r: float) -> float:
     stage1 = sum(p1 * (1.0 + g1) ** (t - 1) / (1.0 + r) ** t for t in range(1, n + 1))
     tail = p2 * (1.0 + g1) ** (n - 1) * (1.0 + g2) / ((r - g2) * (1.0 + r) ** n)
     return stage1 + tail
-
-
-def solve_r(target_pe_fn, lo: float = 0.02, hi: float = 0.30, iters: int = 80) -> float:
-    """Bisect r on a monotone-decreasing function f(r) = value(r) - target."""
-    for _ in range(iters):
-        mid = (lo + hi) / 2.0
-        if target_pe_fn(mid) > 0:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2.0
 
 
 def main() -> int:
@@ -175,7 +168,6 @@ def main() -> int:
     scenario_L = L
     floor = inp["pb_floor"] * inp["bps"]   # disclosure only, never max()-ed into L (A5)
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
     if not (L < M < H):
         errors.append(f"L<M<H violated ({L:.2f}/{M:.2f}/{H:.2f})")
     flat_err, flat = flat_multiple_ladder(eps_d, pes[1])
@@ -194,7 +186,7 @@ def main() -> int:
         if abs(fit / e - 1.0) > BRIDGE_TOL:
             errors.append(f"bridge {year}: fit {fit:.3f} vs reported {e} (>{BRIDGE_TOL:.0%})")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*"),
@@ -235,7 +227,7 @@ def main() -> int:
         ("r_perp 篮 5 11%", band(r_=basket_r(5))), ("r_perp 篮 4 10%", band(r_=basket_r(4))),
         ("r_disc 13%", band(disc_=(1 + r) ** (-inp["n_disc"]))), ("undiscounted", band(disc_=1.0)),
     ):
-        print(f"  {tag:>18}: {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}  zone {zone_of(inp['price'], *alt)}")
+        print(f"  {tag:>18}: {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     for year, (p, e) in BRIDGE_GATE.items():
         print(f"bridge {year}: fit {a + b * p:.3f} vs reported {e} ({(a + b * p) / e - 1:+.1%})")
     for tag, e in zip("LMH", eps28):
@@ -251,11 +243,9 @@ def main() -> int:
     print(f"对照坐标（A8）: trough × 1/r = {inp['eps_trough'] / r:.2f}; spot {inp['ndpr_now']:g} 万")
     ths = inp["eps28_ths"] * disc * window_pe(g1, n_win, g2, inp["eps28_ths"] / inp["bps_fwd"], r)
     print(f"numerator upgrade (同花顺 2028E {inp['eps28_ths']:g}): {ths:.2f} -> zone {zone_of(ths, L, M, H)}")
-    r_imp = solve_r(lambda rr: eps_d[1] * window_pe(g1, n_win, g2, roe[1], rr) - inp["price"])
     eps_mid = a + b * inp["ndpr_mid"]
-    print(f"market-implied r (M = price {inp['price']:g}, same numerator & growth structure) ≈ {r_imp:.2%} "
-          f"({r_imp - r:+.1%} vs 篮 {baskets['r_perp']}); EPS needed at r={r:g}: {inp['price'] / (disc * pes[1]):.2f}; "
-          f"pre-control centre {PRE_CONTROL_PRICE:g} on mid-cycle EPS {eps_mid:.3f}: E/P (g=0 single-stage) ≈ {eps_mid / PRE_CONTROL_PRICE:.1%}")
+    print(f"pre-control centre {PRE_CONTROL_PRICE:g} (2023-11 → 2025H1) on mid-cycle EPS {eps_mid:.3f}: "
+          f"E/P (g=0 single-stage) ≈ {eps_mid / PRE_CONTROL_PRICE:.1%}")
     for line in tier_report((scenario_L, M, H), pes, eps_d):
         print(line)
     print(
@@ -263,7 +253,6 @@ def main() -> int:
         f"numerator L/M={eps_d[0] / eps_d[1]:.2f} H/M={eps_d[2] / eps_d[1]:.2f} "
         f"| multiple ratio L/M={pes[0] / pes[1]:.3f} H/M={pes[2] / pes[1]:.3f}"
     )
-    print(f"price={inp['price']:g} → zone={zone}")
     print("OK")
     return 0
 

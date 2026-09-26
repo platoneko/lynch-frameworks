@@ -2,7 +2,10 @@
 """0189.HK (Dongyue Group) valuation eval — recompute anchors from frameworks/0189.HK.md.
 
 frameworks/0189.HK.md is the source of truth; this script re-parses its §3 Inputs
-table, recomputes L/M/H / A/B / zone and exits 1 on mismatch.
+table, recomputes L/M/H / A/B and exits 1 on mismatch.  The framework carries
+no current price (AGENTS.md「现价 — 禁写契约」): this script neither reads a
+price nor derives or checks a zone -- the daily digest derives the zone from
+live quotes.
 
 formula_id: dongyue_quota_sotp_actual_year_flat_v2
 
@@ -130,7 +133,7 @@ LEGWISE_MIN_SUM = 55421.0  # sum of each leg's own historical low — never happ
 OWN_PE_BAND_MIN = 10.71
 
 REQUIRED = [
-    "price", "shares", "fx_cny_hkd", "bvps_cny", "tax",
+    "shares", "fx_cny_hkd", "bvps_cny", "tax",
     "own_poly", "own_sil", "own_oth",
     "quota_t", "q_r32", "q_r125", "q_r134a", "q_hfc_oth", "q_r22",
     "upt_l", "upt_m", "upt_h",
@@ -317,7 +320,6 @@ def main() -> int:
     tiers = {x: scenario(x, inp[f"upt_{x}"], gen) for x in "lmh"}
     L, M, H = (tiers[x]["value"] for x in "lmh")
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
 
@@ -357,7 +359,7 @@ def main() -> int:
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
 
     # --- report -------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -399,10 +401,7 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"ratios: L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}"
           "   [cyclical cohort L/M median 0.71, repo H/M median 1.25]")
-    print(f"price={inp['price']} zone={zone}")
-    # Disclosure rows (Outputs): implied r, ③ 出带, sensitivity, candidate, option.
-    print(f"implied r(P): E_M/P = {eps['m'] / inp['price']:.1%} incl cash, "
-          f"{eps['m'] / (inp['price'] - cash_ps):.1%} ex cash  (basket r {r:.1%})")
+    # Disclosure rows (Outputs): ③ 出带, sensitivity, candidate, option.
     print("implied PE incl cash: " + "/".join(f"{tiers[x]['value'] / eps[x]:.2f}x" for x in "lmh")
           + "  ex cash: " + "/".join(f"{(tiers[x]['value'] - cash_ps) / eps[x]:.2f}x" for x in "lmh")
           + f"  vs own post-quota band min {OWN_PE_BAND_MIN} -> "
@@ -410,7 +409,7 @@ def main() -> int:
     for label, r_alt in (("r +50bp", r + 0.005), ("r -50bp", r - 0.005), ("篮 7 15%", 0.15), ("篮 4 10%", 0.10)):
         pe_alt = gordon(r_alt)
         band = [scenario(x, inp[f"upt_{x}"], pe_alt)["value"] for x in "lmh"]
-        print(f"  sens {label}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f} -> {zone_of(inp['price'], *band)}")
+        print(f"  sens {label}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
     print(f"candidate (A4, consensus-2027E prices R32 {px_c['r32']:,.0f} -> H' only): "
           f"upt {upt_c:,.0f} 元/吨, L'/M'/H' = {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
     fy24_px, fy24_unit = BRIDGE_REGIME_BREAK["FY2024"]
@@ -426,7 +425,7 @@ def main() -> int:
         pe_rf = gordon(r + dr)
         return tuple(scenario(x, inp[f"upt_{x}"], pe_rf)["value"] for x in "lmh")
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

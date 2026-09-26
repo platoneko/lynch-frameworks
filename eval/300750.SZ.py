@@ -2,7 +2,10 @@
 """300750.SZ (CATL / Contemporary Amperex Technology) valuation eval.
 
 frameworks/300750.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price, A or H (AGENTS.md「现价 — 禁写契约」), so nothing here
+computes a zone, an A/H ratio or a market-implied reading — the digest and the
+app zone on live quotes.
 
 formula_id: catl_group_ni_fy27_consensus_perpetual_gordon_v2
 
@@ -60,7 +63,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300750.SZ.md"
 FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v2"
@@ -79,11 +82,11 @@ FORMULA_FIELDS = frozenset({
 })
 
 REQUIRED = sorted(FORMULA_FIELDS | {
-    "price", "bps", "consensus_n_fy27", "payout_3y",
+    "bps", "consensus_n_fy27", "payout_3y",
     "eps_fy26_lo", "eps_fy26_hi", "eps_fy26_lb",
     "pe_own_hi_recent", "pe_own_hi", "pe_own_lo",
     "eps_ttm", "eps_fy2025", "eps_freeze", "eps_freeze_tax",
-    "tp_street", "tp_consensus", "price_h", "fx_hkdcny",
+    "tp_street", "tp_consensus", "fx_hkdcny",
     "net_cash", "unit_profit_h1", "unit_profit_fy2025",
     "px_low_2026", "px_low_2025", "gp_other_rate",
     "buyback_lo", "buyback_hi", "treasury_shares", "opt_outstanding",
@@ -229,7 +232,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # Step 6: a flat multiple must still leave a ladder (A2e-2c).
     eps3 = (inp["eps_l"], inp["eps_m"], inp["eps_h"])
@@ -237,7 +239,7 @@ def main() -> int:
     errors += flat_errs
     errors += ladder("flat-multiple", *flat)
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, "
@@ -310,20 +312,13 @@ def main() -> int:
         alt = [same_ruler(inp, inp[f"eps_{t}"], inp[f"g2_{t}"] + dg) for t in TIERS]
         print(f"敏感性 g2 三档 {dg:+.0%}：{alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f}")
 
-    # Disclosure lines (A20): implied r at the market price on the M-tier
-    # world, and the floor references that are never max()'d into L.
-    pe_px = inp["price"] / inp["eps_m"]
-    print(f"隐含 r(P) = g2_m + payout_m / PE(P) = {inp['g2_m']:.0%} + "
-          f"{payout(inp['g2_m'], roe['m']):.3f} / {pe_px:.2f} = "
-          f"{inp['g2_m'] + payout(inp['g2_m'], roe['m']) / pe_px:.1%} vs 篮 {baskets['r_perp']} {r:.0%}")
+    # Disclosure line (A20): the floor references that are never max()'d into L.
     print(f"地板（只披露）：PB=1.0 → BPS {inp['bps']:.2f} < L {L:.2f}（比值 {inp['bps'] / L:.3f}）；"
           f"净现金 {inp['net_cash']:.2f} 亿 = {inp['net_cash'] * 1e8 / inp['shares']:.1f} 元/股（财务性桶，A9 不另加）；not max()'d")
-    print(f"price={inp['price']} zone={zone}")
+    # 交叉备注: the anchors and the street's targets in FY2027E-PE / implied-g terms.
     for label, px in (
-        ("A 股现价", inp["price"]),
         ("本框架 M", M),
         ("本框架 H", H),
-        ("H 股折 CNY*", inp["price_h"] * inp["fx_hkdcny"]),
         ("高盛 TP", inp["tp_street"]),
         ("一致 TP", inp["tp_consensus"]),
     ):
@@ -331,16 +326,8 @@ def main() -> int:
         flag = "" if gi <= g_cap(r) else f"  （越 {g_cap(r):.0%} 上限）"
         print(f"  {label:<12} {px:7.2f}  隐含 FY2027E PE={px / inp['eps_m']:6.2f}"
               f"  隐含永续 g={gi:+.1%} well_conditioned={ok}{flag}")
-    ha = inp["price_h"] * inp["fx_hkdcny"] / inp["price"]
-    print(f"  * H 股那一行只作**机制读数**：3750.HK 自由流通仅占总股本 4.72%，"
-          f"按 A12 判定为流通盘定价机制，非基本面；MUST NOT 当作市场对增长的看法引用")
-    print(f"  A/H（A12，不进主公式、不作上行解释）：H/A={ha:.3f}；"
-          f"PE(TTM) A={inp['price'] / inp['eps_ttm']:.2f} H={inp['price_h'] * inp['fx_hkdcny'] / inp['eps_ttm']:.2f}；"
-          f"FY2026E 均值 A={inp['price'] / inp['eps_fy26_mean']:.2f}")
     print(f"  股本口径（A17，不进锚点）：回购 {inp['buyback_lo']:.0f}–"
-          f"{inp['buyback_hi']:.0f} 亿注销 = "
-          f"−{inp['buyback_lo'] * 1e8 / inp['price'] / inp['shares']:.3%}~"
-          f"−{inp['buyback_hi'] * 1e8 / inp['price'] / inp['shares']:.3%}；"
+          f"{inp['buyback_hi']:.0f} 亿注销（股数按 A17 所记日期的收盘折算）；"
           f"激励 +{inp['opt_outstanding'] / inp['shares']:.3%}；"
           f"库存股 {inp['treasury_shares'] / inp['shares']:.3%}")
     print(f"  单位净利 FY2025 {inp['unit_profit_fy2025']:.1f} → "

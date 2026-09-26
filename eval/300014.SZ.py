@@ -2,7 +2,11 @@
 """300014.SZ (EVE Energy) valuation eval.
 
 frameworks/300014.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.  The
+one own-price row left, `px_low_2026`, is a dated historical coordinate (the
+2026 low close) and never reaches the anchor path.
 
 formula_id: eve_core_excl_smoore_perpetual_g_plus_listed_stake_v1
 
@@ -16,7 +20,7 @@ Main ruler: an asymmetric SOTP.
           (`equity_core_fwd`), so ROE and numerator sit on the same date.
   B leg   30.25% of Smoore International (6969.HK) at market, discounted:
           L = EVE's own carrying value, M = 70% of market, H = 90%
-  anchor  (V_A + V_B) * 1e8 / shares          <- the base band; zone reads this
+  anchor  (V_A + V_B) * 1e8 / shares          <- the base band
   V_opt   power-cell unit gross margin converging on CATL's — NOT in the base
 
 The other half of the turnaround does not fit in H.  H's ROE of 15.87% buys
@@ -67,12 +71,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import check_g_cap, check_r, g_cap, implied_g, payout, perpetual_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, g_cap, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300014.SZ.md"
 FORMULA_ID = "eve_core_excl_smoore_perpetual_g_plus_listed_stake_v1"
@@ -96,7 +100,7 @@ VOPT_FIELDS = frozenset({
 P_K = (0.0, 0.10, 1.0)
 
 REQUIRED = sorted(FORMULA_FIELDS | VOPT_FIELDS | {
-    "price", "bps",
+    "px_low_2026", "bps",
     "pe_own_hi", "pe_own_lo", "pe_own_ttm_lo", "pe_own_ttm_hi", "eps_fy2027e",
     "ni_group_fy2025", "ni_excl_fy2025",
     "smoore_equity_fy2025", "smoore_equity_h1", "eps_fy2026e",
@@ -237,7 +241,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     nic3 = (inp["nic_l"], inp["nic_m"], inp["nic_h"])
     flat_errs, flat_va = flat_multiple_ladder(nic3, pe["m"])
@@ -269,14 +272,13 @@ def main() -> int:
             f"p leaked into the base: 表3 L row {band3[0]:.4f} != base L {L:.4f}"
         )
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report -------------------------------------------------------------
     cap = g_cap(r)
     print(f"formula_id={FORMULA_ID}  (r={r:.0%} 篮 {baskets['r_perp']}, 零增长={1 / r:.1f}x, g2 cap={cap:.1%})")
     print(f"思摩尔 30.25%：账面 {inp['smoore_book']:.2f} 亿 / 市值口径 "
-          f"{inp['smoore_mv']:.2f} 亿（{inp['smoore_mv'] * 1e8 / inp['shares']:.2f} 元/股，"
-          f"占现价 {inp['smoore_mv'] * 1e8 / inp['shares'] / inp['price']:.1%}）")
+          f"{inp['smoore_mv']:.2f} 亿（{inp['smoore_mv'] * 1e8 / inp['shares']:.2f} 元/股）")
     print(f"{'档':<3}{'核心扣非':>10}{'权益':>9}{'ROEcore':>10}{'g':>7}{'派息':>8}{'PE':>8}"
           f"{'V_A':>9}{'V_B':>9}{'合计':>10}{'锚点CNY':>10}")
     for t in TIERS:
@@ -298,14 +300,12 @@ def main() -> int:
     print(f"倍数从 L 到 H 走 {pe['h'] / pe['l'] - 1:+.1%}，分子走 "
           f"{inp['nic_h'] / inp['nic_l'] - 1:+.1%} —— 价带主要由分子决定")
 
-    print(f"price={inp['price']} zone={zone}（底牌）")
-
     # 表3 · zone+V（B15 / A2e-7d）——不参与任何判定
     a3, b3 = cut_points(*band3)
     print(f"表3 V_opt={opt['v_opt']:.2f}（V_opt/M={opt['v_opt'] / M:.1%}）"
           f"  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}"
           f"  → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}"
-          f"  A'={a3:.2f} B'={b3:.2f}  修正带 zone={zone_of(inp['price'], *band3)}")
+          f"  A'={a3:.2f} B'={b3:.2f}")
     print(f"  推导：动力 {inp['vol_power_fy2025']:.2f} GWh × 单位毛利差 "
           f"{opt['gap']:.1f} 元/kWh（宁德 {inp['ugm_catl_power']:.1f} − 亿纬 "
           f"{inp['ugm_eve_power']:.1f}）= {opt['delta_gp']:.2f} 亿，税后 "
@@ -314,46 +314,27 @@ def main() -> int:
           f"{opt['nic_conv']:.2f} 亿，ROEcore {opt['roe_conv']:.2%}、PE "
           f"{opt['pe_conv']:.2f} → 兑现后锚点 {opt['anchor_conv']:.2f}"
           f"（含 ROE 抬升带来的倍数重估）")
-    p_mkt = (inp["price"] - H) / opt["v_opt"]
-    print(f"      市价隐含 p = ({inp['price']:.2f} − {H:.2f}) / {opt['v_opt']:.2f} = {p_mkt:.2f}"
-          + ("（< 0：现价不要求收敛兑现）" if p_mkt < 0 else " —— 与「市场用更低的 r」互斥，MUST NOT 叠加"))
     print(f"  p_M={P_K[1]:.2f} 的锚是**反向**的：2026H1 动力单位毛利 "
           f"{inp['ugm_eve_power_h1']:.2f} vs FY2025 {inp['ugm_eve_power']:.1f} 元/kWh"
           f"（{inp['ugm_eve_power_h1'] / inp['ugm_eve_power'] - 1:+.1%}）"
           f" —— 收敛证据当前为负（B15）")
     print(f"  储能腿未计入（B6 无口径拆分比例，A2e-7c-1）")
 
-    # 显式歧义（valuation-rules「ROE≈r」条）：两个读数 MUST 都报
-    core_mv = inp["price"] * inp["shares"] / 1e8 - vb["m"]
-    pe_imp = core_mv / inp["nic_m"]
-    gi, ok = implied_g(pe_imp, roe["m"], r)
-    r_alt = payout(inp["g2_m"], roe["m"]) / pe_imp + inp["g2_m"]
-    print(f"  现价核心业务隐含 PE={pe_imp:.2f}×（市值 "
-          f"{inp['price'] * inp['shares'] / 1e8:.1f} 亿 − 思摩尔 M 腿 {vb['m']:.1f} 亿）")
-    print(f"  ⚠ 显式歧义，两个读数等价，MUST 都报：")
-    print(f"      读数一 固定 r={r:.0%}      → g={gi:+.2%}")
-    print(f"      读数二 固定 g={inp['g2_m']:.0%}       → 隐含 r(P)={r_alt:+.2%}"
-          f"（对篮 {baskets['r_perp']} {r:.0%} 偏 {r_alt - r:+.2%}）")
-    print(f"      well_conditioned={ok}；|ROE−r|={abs(roe['m'] - r):.2%}、"
-          f"r−g={r - gi:.2%} —— 只作市价参照，不进任何一档")
     # 校验步骤 12 (B16): 裁决顺序 ③ 状态.  Printed, not enforced — the realised
     # trailing bands sit on a shrunken trailing EPS while the numerator is
     # FY2027E; they are not on the same basis, so ③ does not apply.
     at_cap = {t: perpetual_pe(cap, roe[t], r) for t in ("m", "h")}
-    fwd_now = inp["price"] / inp["eps_fy2027e"]
+    fwd_low = inp["px_low_2026"] / inp["eps_fy2027e"]
     print(f"  裁决顺序 ③ (B16): trailing 带 own-year [{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}] / "
           f"5y 月频 TTM [{inp['pe_own_ttm_lo']}, {inp['pe_own_ttm_hi']}] 与 FY2027E 分子不同基 → 只披露，不构成 ③；"
           f"g=cap {cap:.0%} 时 PE M {at_cap['m']:.2f} / H {at_cap['h']:.2f}")
-    print(f"      同基点：现价 ÷ FY2027E {inp['eps_fy2027e']:.3f} = {fwd_now:.2f}×（= 当前成交，带下沿退化，不反推）；"
+    print(f"      同基坐标：2026 年内最低收盘 {inp['px_low_2026']:.2f} ÷ FY2027E {inp['eps_fy2027e']:.3f} = {fwd_low:.2f}×（序列最新月份，带下沿退化，不反推）；"
           f"整公司 M {M / inp['eps_fy2027e']:.2f}× / H {H / inp['eps_fy2027e']:.2f}× ÷ FY2027E")
     print(f"  卖方一致 TP {inp['tp_street']:.2f} 高于 H {inp['tp_street'] / H - 1:+.1%}"
           f"、高于表3 H 行 {inp['tp_street'] / band3[2] - 1:+.1%}（B11）")
-    print(f"  整公司 FY2026E PE（归母口径）="
-          f"{inp['price'] / inp['eps_fy2026e']:.2f}×")
     print(f"  稀释开关（B13，不进锚点）：激励 {inp['opt_outstanding'] / inp['shares']:.3%}"
           f"，行权价 {inp['opt_strike']:.2f} > H {H:.2f} "
-          f"({inp['opt_strike'] / H - 1:+.1%}) 且 > 现价 "
-          f"({inp['opt_strike'] / inp['price'] - 1:+.1%}) → 三档内全部价外 ✓")
+          f"({inp['opt_strike'] / H - 1:+.1%}) → 三档内全部价外 ✓")
     print(f"  SBC H1 {inp['sbc_h1']:.2f} 亿已含在扣非分子内，不重复扣（B14）；"
           f"经营现金流 {inp['ocf_h1']:+.2f} 亿、净债务 {inp['net_debt']:.2f} 亿（B8）")
 

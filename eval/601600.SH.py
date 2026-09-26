@@ -2,7 +2,8 @@
 """601600.SH (Chalco) valuation eval.
 
 frameworks/601600.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: chalco_al_spread_gm_bridge_gordon_v5
 
@@ -54,11 +55,11 @@ from lib.al_bridge import (  # noqa: E402
     multiples, pb_floor,
 )
 from lib.axes import check_al_mount  # noqa: E402
-from lib.gordon import basket_r, implied_g  # noqa: E402
+from lib.gordon import basket_r  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601600.SH.md"
 FORMULA_ID = "chalco_al_spread_gm_bridge_gordon_v5"
@@ -126,15 +127,13 @@ def main() -> int:
     errors += floor_errors
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None
     )
 
     r = inp["r_perp"]
     flat = [e * pes[1] for e in eps]
-    print(f"601600.SH  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}  "
-          f"price={inp['price']:.2f} -> {zone}")
+    print(f"601600.SH  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
     print(f"  r_perp {r:.1%} = 篮 {baskets.get('r_perp')} (初分篮 {BASKET_INITIAL} 1/r {pe_initial:.2f}x < 带下沿 "
           f"{inp['pe_own_min']} → 降篮门, A15)  "
           f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
@@ -147,14 +146,10 @@ def main() -> int:
           f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
     print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"  地板（只披露）floor={floor:.2f} = pb_low x 报表 bps < L {L:.2f}; not max()'d  "
-          f"锚点对应 PB {pb[0]:.2f}/{pb[1]:.2f}/{pb[2]:.2f} (现价 PB {inp['price']/inp['bps']:.2f})")
-    g_px, ok_px = implied_g(inp["price"] / eps[1], roes[1], r)
+          f"锚点对应 PB {pb[0]:.2f}/{pb[1]:.2f}/{pb[2]:.2f}")
     print(f"  deep_discount 压力坐标: 印过的 2023H1 x 1/r = "
           f"{NP_TROUGH_2023H1 / inp['shares'] / r:.2f}; "
           f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1]:.2f} @PE_M (conservative 带内坐标)")
-    print(f"  隐含 r(P) (g=0) = {eps[1] / inp['price']:.1%} vs 篮子 {r:.1%} (δ {eps[1] / inp['price'] - r:+.1%}); "
-          f"交叉尺 (A14): 现价 {inp['price']/eps[1]:.2f}x EPS_M → 市价隐含永续 g {g_px:+.2%} "
-          f"({'well-conditioned' if ok_px else 'ill-conditioned'})")
     return report(errors)
 
 

@@ -2,7 +2,10 @@
 """6655.HK (Huaxin Cement / Huaxin Building Materials) valuation eval.
 
 frameworks/6655.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied r — the digest and the app zone on live quotes.  The δ
+readings printed below are for price-free coordinates only (sell-side TP, book).
 
 formula_id: huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4
 
@@ -56,7 +59,6 @@ Run:  python3 frameworks/eval/6655.HK.py
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -66,7 +68,7 @@ from lib.gordon import basket_r, check_g_cap, check_r, payout, perpetual_pe  # n
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report / bands_io import through the `eval.lib` package, so the repo root
 # must be importable too; appended so `lib.*` above still resolves first.
@@ -88,7 +90,7 @@ MONOTONIC_GAP = 0.03        # |ROE - r| threshold of the domain table (gordon._R
 LISTING_CCY = "HKD"
 
 REQUIRED = [
-    "price", "price_a", "shares", "bps", "fx_hkdcny",
+    "shares", "bps", "fx_hkdcny",
     "equity_group", "equity_ovs", "equity_dom", "equity_unalloc",
     "nci_equity", "nci_equity_ovs", "nci_profit", "nci_profit_ovs",
     "pretax_ovs", "pretax_dom", "tax_eff", "da_ovs",
@@ -184,10 +186,10 @@ class Model:
         return [self.anchor(t, pes_by_tier[t] if pes_by_tier else None) for t in TIERS]
 
     def implied_r_shift(self, price_cny: float) -> float:
-        """δ such that the M-tier SOTP with every leg at r_leg + δ equals the price.
+        """δ such that the M-tier SOTP with every leg at r_leg + δ equals a price coordinate.
 
         Both legs' basket r move together; the answer is the parallel shift the
-        market is applying to the basket table, not a per-leg r.  Bisection on
+        coordinate (sell-side TP, book) applies to the basket table, not a per-leg r.  Bisection on
         δ ∈ [-8%, +20%]: the SOTP is monotone decreasing in δ over that range.
         """
         lo, hi = -0.08, 0.20
@@ -208,12 +210,14 @@ class Model:
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports the A-share companion band and live H/A.
+    """Axis §3 rule 3: a mounted ticker reports both the H and the A-share bands.
 
     The southbound axis locks no numerator and, since valuation-rules.md
     「永续增长口径」took multiples away from historical quantiles, no multiple
-    either (A16: it acts on the implied-r convergence).  What it still locks
-    is the reporting contract its own §4 direction check depends on.
+    either (A16: it acts on the required-return convergence).  What it still
+    locks is the reporting contract its own §4 direction check depends on.  The
+    live H/A is a function of today's two prices and no longer lives in the
+    doc; the axis's direction check reads its own dated series (§1).
     """
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
@@ -223,8 +227,6 @@ def check_southbound_mount(md: str) -> list[str]:
                       "a mount has to exist on both sides")
     if "A 股对照带" not in md:
         errors.append("framework lacks the A-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -348,13 +350,12 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # flat-multiple: each leg held at its own PE_M across the three tiers.
     flat = m.band({t: m.pe["m"] for t in TIERS})
     errors += ladder("flat-multiple", *flat)
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]
@@ -404,7 +405,7 @@ def main() -> int:
           f"锚点隐含 PB {L * fx / inp['bps']:.2f} / {M * fx / inp['bps']:.2f} / {H * fx / inp['bps']:.2f}")
     one_over_r = {t: {"dom": m.pe[t]["dom"], "ovs": 1 / r["ovs"]} for t in TIERS}
     alt = m.band(one_over_r)
-    print(f"海外腿按 1/r（不给轴 credit）: {alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f} zone={zone_of(inp['price'], *alt)}")
+    print(f"海外腿按 1/r（不给轴 credit）: {alt[0]:.2f} / {alt[1]:.2f} / {alt[2]:.2f}")
     naive = m.band({t: {leg: 1 / (r[leg] - inp[f"g2_{leg}_{t}"]) for leg in LEGS} for t in TIERS})
     print(f"若按 100% 派息的 1/(r-g)：{naive[0]:.2f} / {naive[1]:.2f} / {naive[2]:.2f}"
           f" — H 档高估 {naive[2] / H - 1:.0%}（留存成本，A12）")
@@ -412,22 +413,19 @@ def main() -> int:
         band = m.band({t: {"dom": m.pe[t]["dom"],
                            "ovs": leg_pe(inp, "ovs", t, m.roe[t]["ovs"], g_override=inp[f"g2_ovs_{t}"] + dg)}
                        for t in TIERS})
-        print(f"敏感区 g2_ovs_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
-              f"zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 g2_ovs_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
         band = m.band({t: {"ovs": m.pe[t]["ovs"],
                            "dom": leg_pe(inp, "dom", t, m.roe[t]["dom"], g_override=inp[f"g2_dom_{t}"] + dg)}
                        for t in TIERS})
-        print(f"敏感区 g2_dom_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
-              f"zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 g2_dom_* {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     for dr, label in ((-0.005, "12.5%"), (0.005, "13.5%"), (-0.02, "11%（篮 5 读数，仅示）")):
         band = m.band({t: {leg: leg_pe(inp, leg, t, m.roe[t][leg], r_shift=dr) for leg in LEGS} for t in TIERS})
-        print(f"敏感区 两腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
-              f"zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 两腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     # A18: the NCI allocation is the largest construction-side degree of
     # freedom left.  The base subtracts only the disclosed Lafarge Africa NCI
     # from the overseas segment; the alternatives move the rest across.
-    print("敏感区 NCI 分配（A18；海外 NCI 权益 → 海外归母净资产 / 份额 → L/M/H zone）:")
+    print("敏感区 NCI 分配（A18；海外 NCI 权益 → 海外归母净资产 / 份额 → L/M/H）:")
     for label, nci_ovs in (("基准：仅 Lafarge 7.06", inp["nci_equity_ovs"]),
                            ("一半在海外", inp["nci_equity"] / 2),
                            ("全在海外", inp["nci_equity"]),
@@ -436,15 +434,13 @@ def main() -> int:
         band = alt_m.band()
         s = alt_m.ni_l["ovs"] / (alt_m.ni_l["ovs"] + alt_m.ni_l["dom"])
         print(f"  {label:<16} 海外净资产 {alt_m.equity['ovs']:7.2f} 份额 {s:5.1%} "
-              f"ROE_ovs M {alt_m.roe['m']['ovs']:5.1%} → {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} "
-              f"zone={zone_of(inp['price'], *band)}")
+              f"ROE_ovs M {alt_m.roe['m']['ovs']:5.1%} → {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
 
-    # What the market, the street and book value each require in r terms:
-    # a parallel shift δ of both baskets that makes the M-tier SOTP equal the
-    # price, plus the single-segment g=0 approximation E_M / P.
+    # What the street and book value each require in r terms (属性 B): a
+    # parallel shift δ of both baskets that makes the M-tier SOTP equal the
+    # coordinate, plus the single-segment g=0 approximation E_M / P.
     eps_m_cny = inp["ni_group_m"] * 1e8 / inp["shares"]
-    print(f"price(H)={inp['price']} zone={zone}")
-    coords = [("H 股现价", inp["price"] * fx), ("账面 PB=1.0", inp["bps"]), ("A 股现价", inp["price_a"])]
+    coords = [("账面 PB=1.0", inp["bps"])]
     if "tp_sellside_h" in inp:   # disclosure-only row; absent is fine
         coords.append(("卖方 H 股 TP", inp["tp_sellside_h"] * fx))
     for label, price_cny in coords:
@@ -452,9 +448,7 @@ def main() -> int:
         print(f"  {label:<10} 隐含 PE={price_cny / eps_m_cny:5.2f} → δ={delta:+.2%} "
               f"(两腿 r {r['dom'] + delta:.1%}) | g=0 近似 E_M/P={eps_m_cny / price_cny:.1%}")
     la, ma, ha = L * fx, M * fx, H * fx
-    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} A={(la + ma) / 2:.2f} B={(ma + ha) / 2:.2f} "
-          f"| price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)}")
-    print(f"H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} A={(la + ma) / 2:.2f} B={(ma + ha) / 2:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): both legs'
     # basket r (r_dom, r_ovs) move 1:1; per-leg g, ROE and numerators stay put.
@@ -463,7 +457,7 @@ def main() -> int:
         return tuple(m.band({t: {leg: leg_pe(inp, leg, t, m.roe[t][leg], r_shift=dr) for leg in LEGS}  # type: ignore[return-value]
                              for t in TIERS}))
 
-    rf = rf_block(LISTING_CCY, {R_ROWS[leg]: r[leg] for leg in LEGS}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {R_ROWS[leg]: r[leg] for leg in LEGS}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

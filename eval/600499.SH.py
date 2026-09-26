@@ -2,7 +2,8 @@
 """600499.SH (Keda Industrial Group) valuation eval.
 
 frameworks/600499.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: keda_lanke_axis_afr_mac_perpetual_g_v3
 
@@ -72,7 +73,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600499.SH.md"
 FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_v3"
@@ -93,7 +94,7 @@ R_ROWS = {"lk": "r_li", "afr": "r_afr", "mac": "r_mac"}
 YI = 1e8
 
 REQUIRED = [
-    "price", "shares", "bps", "equity",
+    "shares", "bps", "equity",
     "r_li", "r_afr", "r_mac",
     "ni_exli",
     "li2co3_l", "li2co3_m", "li2co3_h",
@@ -151,18 +152,19 @@ def anchor(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None)
     return value(inp, tag, pes) * YI / inp["shares"]
 
 
-def implied_r_shift(inp: dict[str, float], price: float) -> float:
-    """δ such that the M-tier SOTP with every leg at r_leg + δ equals the price.
+def implied_r_shift(inp: dict[str, float], target: float) -> float:
+    """δ such that the M-tier SOTP with every leg at r_leg + δ equals `target`
+    (the street target or book value — never the current quote).
 
     All three basket r move together (the volume discount r_disc stays put); the
-    answer is the parallel shift the market applies to the basket table, not a
+    answer is the parallel shift the target implies for the basket table, not a
     per-leg r.  Bisection on δ ∈ [-8%, +20%]: the SOTP is monotone decreasing in δ.
     """
     lo, hi = -0.08, 0.20
 
     def f(delta: float) -> float:
         pes = {leg: leg_pe(inp, leg, "m", r_shift=delta) for leg in LEGS}
-        return anchor(inp, "m", pes) - price
+        return anchor(inp, "m", pes) - target
 
     if f(lo) < 0 or f(hi) > 0:
         raise ValueError("implied r shift outside bisection bracket")
@@ -292,14 +294,13 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # flat-multiple: each leg held at its own PE_M across the three tiers — the
     # ladder must survive on the Lanke leg's axis price alone.
     flat = {t: anchor(inp, t, pe["m"]) for t in TIERS}
     errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report --------------------------------------------------------------
     disc = (1.0 + inp["r_disc"]) ** (-inp["n_disc"])
@@ -361,7 +362,7 @@ def main() -> int:
     for label, roics in (("单值 M 档 ROIC", (inp["roic_anode_m"],) * 3), ("2026H1 价格战读数", ANODE_ROIC_STRESS)):
         alt = {**inp, **{f"roic_anode_{t}": x for t, x in zip(TIERS, roics)}}
         band = [anchor(alt, t) for t in TIERS]
-        print(f"敏感区 负极 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 负极 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"分子比（两腿合计 {total['l']:.2f}/{total['m']:.2f}/{total['h']:.2f} 亿）"
@@ -373,30 +374,29 @@ def main() -> int:
           f"锚点隐含 PB {L / inp['bps']:.2f} / {M / inp['bps']:.2f} / {H / inp['bps']:.2f}")
     for label, g_li in (("g2_li +1pp", inp["g2_li"] + 0.01), (f"g2_li 同业反解 {G2_LI_PEER:.2%}", G2_LI_PEER)):
         band = [anchor(inp, t, {**pe[t], "lk": leg_pe(inp, "lk", t, g_override=g_li)}) for t in TIERS]
-        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     # Basket-table shift: every r row moves, r_disc (= r_li) included.
     for dr, label in ((-0.005, "−50bp"), (0.005, "+50bp")):
         shifted = {**inp, **{k: inp[k] + dr for k in ("r_li", "r_afr", "r_mac", "r_disc")}}
         band = [anchor(shifted, t) for t in TIERS]
-        print(f"敏感区 三腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} zone={zone_of(inp['price'], *band)}")
+        print(f"敏感区 三腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
         pes = dict(pe["m"]); pes["afr"] = leg_pe(inp, "afr", "m", g_override=inp["g2_afr_m"] + dg)
         print(f"敏感区 g2_afr_m {label}: M={anchor(inp, 'm', pes):.2f}")
     no_axis = [anchor(inp, t, {**pe[t], "afr": leg_pe(inp, "afr", t, g_override=0.0)}) for t in TIERS]
     print(f"非洲腿三档 g=0（不给轴 credit）: {no_axis[0]:.2f} / {no_axis[1]:.2f} / {no_axis[2]:.2f}")
 
-    # What the market, the street and book value each require in r terms: a
-    # parallel shift δ of all three baskets that makes the M-tier SOTP equal the
-    # price, plus the single-segment g=0 approximation E_M / P.
+    # What the street and book value each require in r terms: a parallel shift δ
+    # of all three baskets that makes the M-tier SOTP equal the target, plus the
+    # single-segment g=0 approximation E_M / P.
     eps_m = total["m"] * YI / inp["shares"]
-    print(f"price={inp['price']} zone={zone}")
-    for label, px in (("现价", inp["price"]), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
+    for label, px in (("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
         delta = implied_r_shift(inp, px)
         print(f"  {label:<10} 隐含公司 PE={px / eps_m:5.2f} → δ={delta:+.2%} "
               f"(蓝科/非洲 {r['lk'] + delta:.1%}, 机械 {r['mac'] + delta:.1%}) | g=0 近似 E_M/P={eps_m / px:.1%}")
     # 属性 D: strip the M-tier Lanke and machinery legs, read the residual on the
     # Africa numerator, invert for the Africa-leg g at its basket r.
-    for label, px in (("现价", inp["price"]), ("本框架 M", M), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
+    for label, px in (("本框架 M", M), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
         # The market cap is net of the anode charge, so the Africa residual adds it back.
         resid = px * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"] + anode_penalty(inp, "m")
         p = resid / ni["m"]["afr"]
@@ -404,8 +404,7 @@ def main() -> int:
         flag = "" if ok else "  ⚠ 反解只能当方向读"
         print(f"  {label:<10} 扣 M 档蓝科腿 {v['m']['lk']:.1f} + 机械腿 {v['m']['mac']:.1f} 亿后 残差 {resid:6.1f} 亿 → "
               f"隐含 PE非洲={p:6.2f} → g={gi:+.2%}{flag}")
-    print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿 → 现价 PE(TTM)="
-          f"{inp['price'] * inp['shares'] / YI / inp['ni_ttm']:.2f}"
+    print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿"
           f" | FY2024 锂谷底归母 {inp['ni_fy2024']:.2f} 亿 | FY2025 ex-蓝科 {inp['ni_exli_fy2025']:.2f} 亿")
     print(f"  国金 2026E 归母 {inp['ni_2026e_street']:.2f} 亿（锂价按 2026 平台）"
           f" vs 本框架 H 档两腿合计 {total['h']:.2f} 亿 — 仅交叉")

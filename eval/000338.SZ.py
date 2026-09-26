@@ -2,7 +2,9 @@
 """000338.SZ (Weichai Power) valuation eval — recompute anchors from frameworks/000338.SZ.md.
 
 frameworks/000338.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: weichai_asymmetric_sotp_runrate_gordon_v4
 
@@ -74,7 +76,6 @@ Run:  python3 frameworks/eval/000338.SZ.py
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -86,7 +87,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000338.SZ.md"
 BE_FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BE.US.md"
@@ -104,7 +105,7 @@ GUARDRAIL_SLACK = 0.01    # band-edge multiples sit on the edge by construction
 SHAPE_TOL = 0.03          # 校验步骤 5: M->H same-direction only by ROE mechanics
 
 REQUIRED = [
-    "price", "price_h", "shares", "bps", "fx_hkdcny", "fx_eurcny",
+    "shares", "bps", "fx_hkdcny", "fx_eurcny",
     "np_l", "np_m", "np_h",
     "kion_np_h1_eur", "kion_stake", "kion_l_factor", "pe_kion",
     "ms_units_l", "ms_units_m", "ms_units_h", "ms_price", "ms_npm",
@@ -193,11 +194,13 @@ def bloom_crosscheck(inp: dict[str, float], r: float) -> tuple[list[str], dict[s
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports the H-share companion band and live H/A.
+    """Axis §3 rule 3: a mounted ticker reports both the A and the H-share bands.
 
     The southbound axis locks no numerator and no g here (A11: the Gordon
     mechanism overrides its tier hint); what it still locks is the reporting
-    contract its own §4 direction check depends on.
+    contract its own §4 direction check depends on.  The live H/A is a function
+    of today's two prices and no longer lives in the doc; the axis's
+    cross-ticker direction check reads its own dated series (§1).
     """
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
@@ -207,8 +210,6 @@ def check_southbound_mount(md: str) -> list[str]:
                       "a mount has to exist on both sides")
     if "H 股对照带" not in md:
         errors.append("framework lacks the H-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -327,7 +328,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     v_ms = ms_increment_v_opt(inp, pe_core["m"])
     v_sofc = sofc_v_opt(inp)
     v_aft = aftermarket_v_opt(inp, pe_core["m"])
@@ -355,7 +355,7 @@ def main() -> int:
     if missing_ref:
         errors.append(f"reference rows missing from Inputs: {missing_ref}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -401,20 +401,13 @@ def main() -> int:
           + "  ".join(
               f"{n}:{S[t]['anchor']:.2f}+{pk:.2f}xV={a:.2f}"
               for n, t, pk, a in zip("LMH", TIERS, p_k, adj_band)))
-    if v_opt > 0 and inp["price"] > H:
-        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}; H+V={H + v_opt:.2f} "
-              f"+V zone={zone_of(inp['price'], L, M, H + v_opt)}"
-              + (f"; 溢价 (P-H-V)/(H+V) = {(inp['price'] - H - v_opt) / (H + v_opt):+.1%}" if inp["price"] > H + v_opt else ""))
     print(f"分子比 L/M={num_l:.2f} H/M={num_h:.2f} | "
           f"倍数比 L/M={(L / M) / num_l:.2f} H/M={(H / M) / num_h:.2f}")
-    g_px, g_px_ok = implied_g(inp["price"] / (inp["np_m"] / inp["shares"]), roe["m"], r)
-    print(f"price={inp['price']} zone={zone} | 现价 = {inp['price'] / (inp['np_m'] / inp['shares']):.2f}x TTM, "
-          f"隐含永续 g {g_px:+.2%} (conditioned={g_px_ok}{', > cap' if g_px > cap else ''})")
 
     # 校验步骤 11: cross-rulers, printed and never anchored.
     own = {t: legs(inp, t, inp[f"pe_ownyear_{t}"], inp["pe_ownyear_m"])["anchor"] for t in TIERS}
     print(f"交叉尺① own-year 反向带 {inp['pe_ownyear_l']}/{inp['pe_ownyear_m']}/{inp['pe_ownyear_h']} (A2): "
-          f"{own['l']:.2f}/{own['m']:.2f}/{own['h']:.2f}, 现价 zone={zone_of(inp['price'], own['l'], own['m'], own['h'])}")
+          f"{own['l']:.2f}/{own['m']:.2f}/{own['h']:.2f}")
     zero = {t: legs(inp, t, 1.0 / r, 1.0 / r)["anchor"] for t in TIERS}
     print(f"交叉尺② 零增长 1/r={1 / r:.0f}x (L = 谷底永续): {zero['l']:.2f}/{zero['m']:.2f}/{zero['h']:.2f}")
     sens = {}
@@ -430,22 +423,17 @@ def main() -> int:
     print("敏感性: g2 ±1pp -> "
           + " | ".join(f"{dg:+.0%}: {b[0]:.2f}/{b[1]:.2f}/{b[2]:.2f} (H+V {hv:.2f})" for dg, (b, hv) in sens.items()))
     fx = inp["fx_hkdcny"]
-    print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f} "
-          f"| price_h={inp['price_h']} zone_h={zone_of(inp['price_h'], L / fx, M / fx, H / fx)}")
-    print(f"H/A = {inp['price_h'] * fx / inp['price']:.3f}")
+    print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f}")
 
-    # Disclosure lines (never anchors): implied r at the price on the M-tier
-    # single-stage Gordon, the PB floor (disclosed, not max()'d into L), and
-    # the SOFC option re-read at BE.US's own 篮 7 rate.
-    r_implied = inp["g2_m"] + (r - inp["g2_m"]) * M / inp["price"]
-    print(f"隐含 r(P) = g2_m + (r - g2_m) x M/P = {r_implied:.1%} (篮 {baskets['r_perp']} r {r:.0%})")
+    # Disclosure lines (never anchors): the PB floor (disclosed, not max()'d
+    # into L) and the SOFC option re-read at BE.US's own 篮 7 rate.
     print(f"地板 (只披露, 不 max): PB 1.0 x BPS = {inp['bps']:.2f} vs L {L:.2f}")
     if be:
         pe_sofc_be = perpetual_pe(be["g2"], be["roe_m"], be["r_perp"])
         v_sofc_be = v_sofc * pe_sofc_be / inp["pe_sofc"]
         v_opt_be = v_ms + v_sofc_be + v_aft
         print(f"对照 BE.US 篮 r {be['r_perp']:.0%}: pe_sofc {pe_sofc_be:.2f}x -> SOFC {v_sofc_be:.2f}, V_opt {v_opt_be:.2f}, "
-              f"H+V {H + v_opt_be:.2f}, 市价隐含 p {(inp['price'] - H) / v_opt_be:.2f} (只披露, 表3 按 pe_sofc {inp['pe_sofc']:g}x)")
+              f"H+V {H + v_opt_be:.2f} (只披露, 表3 按 pe_sofc {inp['pe_sofc']:g}x)")
 
     return report(errors)
 

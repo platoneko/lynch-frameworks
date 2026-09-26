@@ -2,7 +2,10 @@
 """0883.HK (CNOOC) valuation eval.
 
 frameworks/0883.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The
+framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily
+digest derives the zone from live quotes.
 
 formula_id: cnooc_hk_brent_axis_gordon_retention_v2
 
@@ -35,10 +38,9 @@ guardrail.  Why Gordon and not the DDM exception this ticker used to be the
 worked example of: at the basket r, 1/r = 6.67x <= band top 9.89x, so the
 retention branch IS reachable and precondition (a) of「DDM 主尺例外」fails
 (A6).  The DDM band (45% x EPS / (r - g_d)), the 1/r zero-growth band, the
-fallback basket 6 band (制裁折价消失) and the FCF-yield ruler are printed as cross-checks;
-the price is only used to read the implied r (A10) -- never to fit anchors.
-The g2 +/-1pp sensitivity is printed, and a zone flip there is a disclosure
-(⚠敏感区), not a failure.
+fallback basket 6 band (制裁折价消失) and P/FCF 10x are printed as cross-checks.
+The g2 +/-1pp sensitivity bands are printed as a disclosure (⚠敏感区), not
+asserted.
 
 Run:  python3 frameworks/eval/0883.HK.py
 """
@@ -87,7 +89,7 @@ CYCLE_YEARS = ("2020", "2021", "2022", "2023", "2024")
 PAYOUT_FLOOR_QUOTE = "不低于 45%"
 
 REQUIRED = [
-    "price", "price_a", "shares", "equity", "fx_hkdcny",
+    "shares", "equity", "fx_hkdcny",
     "ni_fy25", "eps_fy25", "ni_h1_25", "ni_h1_26",
     "liq_fy25", "real_fy25", "liq_h1_26", "real_h1_26",
     "prod_2026_mid", "liq_share", "sales_ratio",
@@ -300,7 +302,7 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (growth 口径)")
 
-    # --- Step 5: anchors, zone, ②-b, flat ladder ----------------------------------
+    # --- Step 5: anchors, ②-b, flat ladder ----------------------------------------
     def band_at(pe_x: float) -> tuple[float, float, float]:
         return tuple(eps[t] * pe_x / fx for t in TIERS)  # type: ignore[return-value]
 
@@ -308,7 +310,6 @@ def main() -> int:
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     cons_mean = inp["eps_cons_fy27_mean"]
     cons_dev = eps["m"] / cons_mean - 1.0
@@ -331,18 +332,14 @@ def main() -> int:
     if leaked:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
-    # --- Cross bands and disclosures (never asserted against the price) -----------
+    # --- Cross bands and disclosures (printed, never asserted) ---------------------
     ddm = tuple(pay * eps[t] / (r - g_d) / fx for t in TIERS)
     zero_g = band_at(1.0 / r)
     fallback = band_at(retention_pe(b_g, g2, basket_r(FALLBACK_BASKET)))
     own_med = band_at(inp["pe_own_med"])
     cash_ps_hkd = inp["cash_fy25"] * MN / inp["shares"] / fx
-    pe_px = inp["price"] * fx / eps["m"]
-    implied_r = (1.0 - b_g) / pe_px + g2
-    eps_px = inp["price"] * fx / pe
-    brent_px = (inp["real_fy25"] + (eps_px * inp["shares"] / MN / liq_2027 - nib_fy25) / k) / rho
     g_edge, well = implied_g_retaining(inp["pe_own_max"], roe["m"], r)
 
     print(f"弹性: NI/bbl FY25 {nib_fy25:.2f} → 2026H1 {nib_h1:.2f} RMB; k {k:.3f} RMB/bbl per US$1; ρ {rho:.4f}; liq_2027 {liq_2027:.1f} mmbbl")
@@ -363,40 +360,35 @@ def main() -> int:
     print(f"flat-multiple @PE={pe:.2f}: {fmt_band(flat)} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.1%}")
     print(f"②-b: 共识 FY27 {inp['eps_cons_fy27_lo']}/{cons_mean}/{inp['eps_cons_fy27_hi']} vs EPS {eps['l']:.4f}/{eps['m']:.4f}/{eps['h']:.4f}; "
           f"均值 {'in [M,H]' if eps['m'] <= cons_mean <= eps['h'] else ('below M' if cons_mean < eps['m'] else 'above H')}, M dev {cons_dev:+.1%}, 均值 ↔ Brent {brent_cons:.1f}")
-    print(f"price(H)={inp['price']} zone={zone} | 现价 = {pe_px:.2f}x M 档 EPS → 隐含 r(P) {implied_r:.1%} (A10; "
-          f"共识 FY27 {inp['price'] * fx / cons_mean:.2f}x → {(1.0 - b_g) / (inp['price'] * fx / cons_mean) + g2:.1%}, TTM {inp['price'] * fx / eps_ttm:.2f}x → {(1.0 - b_g) / (inp['price'] * fx / eps_ttm) + g2:.1%}); "
-          f"市价反推 EPS {eps_px:.2f} ↔ Brent {brent_px:.1f}")
     for g in (g2 - 0.01, g2 + 0.01):
         pe_g = retention_pe(b_g, g, r)
         b = band_at(pe_g)
         in_band = inp["pe_own_min"] <= pe_g <= inp["pe_own_max"]
-        flag = " ⚠敏感区" if zone_of(inp["price"], *b) != zone else ""
-        print(f"敏感性 g2 {g:+.2%}: PE {pe_g:.2f}x {'in band' if in_band else 'OUT of band (不可用)'} → {fmt_band(b)} zone={zone_of(inp['price'], *b)}{flag}")
+        print(f"敏感性 g2 {g:+.2%} ⚠敏感区: PE {pe_g:.2f}x {'in band' if in_band else 'OUT of band (不可用)'} → {fmt_band(b)}")
     for b2 in (0.20, 0.30):
         b = band_at(retention_pe(b2, g2, r))
-        print(f"敏感性 b_growth {b2:.0%}: {fmt_band(b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 b_growth {b2:.0%}: {fmt_band(b)}")
     for r2 in (r - 0.005, r + 0.005):
         b = band_at(retention_pe(b_g, g2, r2))
-        print(f"敏感性 r {r2:.1%}: {fmt_band(b)} zone={zone_of(inp['price'], *b)}")
-    print(f"敏感性 篮 {FALLBACK_BASKET} r {basket_r(FALLBACK_BASKET):.0%}: {fmt_band(fallback)} zone={zone_of(inp['price'], *fallback)}; "
-          f"g=0 全派息 1/r {1.0 / r:.2f}x: {fmt_band(zero_g)} zone={zone_of(inp['price'], *zero_g)}")
+        print(f"敏感性 r {r2:.1%}: {fmt_band(b)}")
+    print(f"敏感性 篮 {FALLBACK_BASKET} r {basket_r(FALLBACK_BASKET):.0%}: {fmt_band(fallback)}; "
+          f"g=0 全派息 1/r {1.0 / r:.2f}x: {fmt_band(zero_g)}")
     print(f"每 US$1 Brent ≈ {liq_2027 * k * rho * MN / inp['shares'] * pe / fx:+.2f} HKD; 2026H1 annualised NI {2 * inp['ni_h1_26']:,.0f} ↔ 本尺 Brent {(inp['real_fy25'] + (2 * inp['ni_h1_26'] / liq_2027 - nib_fy25) / k) / rho:.1f}")
-    print(f"对照带 (不入盘): DDM 45%×EPS/({r:.0%}−{g_d:.2%}) = {pay / (r - g_d):.2f}x → {fmt_band(ddm)} (zone {zone_of(inp['price'], *ddm)}); "
-          f"own 中位 {inp['pe_own_med']}x flat → {fmt_band(own_med)} (zone {zone_of(inp['price'], *own_med)}); "
-          f"现金 {inp['cash_fy25']:,.0f} mn = {inp['cash_fy25'] * MN / inp['shares']:.2f} CNY = {cash_ps_hkd:.2f} HKD/股 ({cash_ps_hkd / inp['price']:.0%} of price, 只披露不加); "
+    print(f"对照带 (不入盘): DDM 45%×EPS/({r:.0%}−{g_d:.2%}) = {pay / (r - g_d):.2f}x → {fmt_band(ddm)}; "
+          f"own 中位 {inp['pe_own_med']}x flat → {fmt_band(own_med)}; "
+          f"现金 {inp['cash_fy25']:,.0f} mn = {inp['cash_fy25'] * MN / inp['shares']:.2f} CNY = {cash_ps_hkd:.2f} HKD/股 ({cash_ps_hkd / M:.0%} of M, 只披露不加); "
           f"capex {inp['capex_fy25']:,.0f} vs D&A {inp['da_fy25']:,.0f} → growth capex {inp['capex_fy25'] - inp['da_fy25']:,.0f} = {(inp['capex_fy25'] - inp['da_fy25']) / inp['ni_fy25']:.0%} of NI (b_growth {b_g:.0%})")
     bps = inp["equity"] * MN / inp["shares"]
-    print(f"交叉尺: FCF 收益率 {inp['fcf_fy25'] * MN / (inp['price'] * fx * inp['shares']):.2%}, P/FCF 10x = {inp['fcf_fy25'] * MN / inp['shares'] * 10 / fx:.2f} HKD; "
-          f"BPS {bps:.2f} CNY = {bps / fx:.2f} HKD (地板只披露), PB at price {inp['price'] * fx / bps:.2f}, at L/M/H {L * fx / bps:.2f}/{M * fx / bps:.2f}/{H * fx / bps:.2f}, "
+    print(f"交叉尺: P/FCF 10x = {inp['fcf_fy25'] * MN / inp['shares'] * 10 / fx:.2f} HKD; "
+          f"BPS {bps:.2f} CNY = {bps / fx:.2f} HKD (地板只披露), PB at L/M/H {L * fx / bps:.2f}/{M * fx / bps:.2f}/{H * fx / bps:.2f}, "
           f"Gordon PB (ROE−g)/(r−g) {'/'.join(f'{justified_pb(g2, roe[t], r):.2f}' for t in TIERS)}; "
-          f"TP 均值 {inp['tp_cons_h']} = {inp['tp_cons_h'] * fx / eps['m']:.2f}x M EPS (zone {zone_of(inp['tp_cons_h'], L, M, H)}); H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}")
+          f"TP 均值 {inp['tp_cons_h']} = {inp['tp_cons_h'] * fx / eps['m']:.2f}x M EPS ↔ 同尺 r {(1.0 - b_g) / (inp['tp_cons_h'] * fx / eps['m']) + g2:.1%} (A10; TP 落 {zone_of(inp['tp_cons_h'], L, M, H)}); H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}")
     g1 = (inp["eps_fy2022"] / inp["eps_fy2020"]) ** 0.5 - 1.0
     pe_rec = recovery_two_stage_pe(g1, 2, g2, roe["m"], r)
     print(f"谷底坐标 (A3): 回归段 2020->2022 g1 {g1:.1%} n=2 -> {pe_rec:.1f}x on FY2020 EPS {inp['eps_fy2020']} = {inp['eps_fy2020'] * pe_rec / fx:.2f} HKD (坐标, 不作锚); "
           f"谷底 x 1/r = {inp['eps_fy2020'] / r / fx:.2f} HKD (deep_discount 压力坐标)")
     la, ma, ha = L * fx, M * fx, H * fx
-    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} | price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} "
-          f"(A 股 = {inp['price_a'] / eps['m']:.2f}x M EPS ↔ 隐含 r {(1.0 - b_g) / (inp['price_a'] / eps['m']) + g2:.1%}) | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 in the retention multiple; the Brent rungs, EPS, b_growth and g2
     # stay put.  The DDM band discounts at the same r_perp but is a cross band,
@@ -404,7 +396,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return band_at(retention_pe(b_g, g2, r + dr))
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

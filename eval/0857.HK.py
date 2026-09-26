@@ -2,7 +2,10 @@
 """0857.HK (PetroChina) valuation eval.
 
 frameworks/0857.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The
+framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily
+digest derives the zone from live quotes.
 
 formula_id: petrochina_hk_brent_axis_owner_earnings_flat_pe_v2
 
@@ -34,7 +37,7 @@ marketing 篮 4) only enter the leg-sum cross-check (表1′).  Net debt is disc
 per share, never subtracted (§4.0 bucket 3).  The realised 5y monthly PE band is
 a guardrail: an out-of-band multiple is DISCLOSED (裁决顺序 ③), not forced back.
 
-g's leverage is disclosed (敏感区): +1pp of g2 flips the zone to deep_discount.
+g's leverage is disclosed (敏感区): +1pp of g2 lifts the whole band by ~15%.
 
 The shared axis is parsed here rather than through eval/lib/axes.py: that
 module is not part of this ticker's task.  Same row shape as the other
@@ -53,7 +56,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_BRENT  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    FULL_PAYOUT, basket_r, check_g_cap, check_r, implied_g_retaining, recovery_two_stage_pe,
+    FULL_PAYOUT, basket_r, check_g_cap, check_r, recovery_two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
@@ -87,7 +90,7 @@ MAINT_ALL = 59000.0         # A9: the whole capex-above-D&A gap read as maintena
 LEGS = ("r_perp", "r_ng", "r_rc", "r_mk")   # E&P / gas / refining / marketing
 
 REQUIRED = [
-    "price", "price_a", "shares", "equity", "fx_hkdcny",
+    "shares", "equity", "fx_hkdcny",
     "ni_fy25", "eps_fy25", "div_fy25", "dps_fy25",
     "brent_2025", "brent_l", "brent_m", "brent_h",
     "ep_op_fy25", "ep_op_h1_26", "real_2025", "real_h1_26", "cit", "crude_fy25",
@@ -216,7 +219,7 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (baskets / growth 口径)")
 
-    # --- Step 3: flat multiple, guardrail (③ disclosed), anchors, zone -------
+    # --- Step 3: flat multiple, guardrail (③ disclosed), anchors -------------
     pe = flat_pe(inp["b_growth"], r, inp["g2_m"])
     in_band = inp["pe_own_min"] - 1e-9 <= pe <= inp["pe_own_max"] + 1e-9
     band_note = (f"③ 不触发: {pe:.2f}x ∈ [{inp['pe_own_min']}, {inp['pe_own_max']}]" if in_band
@@ -225,7 +228,6 @@ def main() -> int:
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     cons_mean = inp["eps_cons_fy27_mean"]
     cons_dev = eps["m"] / cons_mean - 1.0
@@ -269,7 +271,7 @@ def main() -> int:
     if leaked:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report ----------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -299,48 +301,42 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | 分子比 L={d['num_lm']:.3f} H={d['num_hm']:.3f} | 倍数比 L={d['pe_lm']:.3f} H={d['pe_hm']:.3f}")
     print(f"flat-multiple @PE={pe:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.1%}")
-    pe_px = inp["price"] * fx / e_owner["m"]
-    r_px = (1.0 - inp["b_growth"]) / pe_px + inp["g2_m"]
-    pe_a = inp["price_a"] / e_owner["m"]
-    r_a = (1.0 - inp["b_growth"]) / pe_a + inp["g2_m"]
     pe_tp = inp["tp_cons_h"] * fx / e_owner["m"]
-    g_px, ok_px = implied_g_retaining(inp["price"] * fx / eps["m"], roe["m"], r)
-    print(f"price(H)={inp['price']} zone={zone} | 现价 = {pe_px:.2f}x E_owner_M → 隐含 r(P) {r_px:.1%} (篮 {baskets['r_perp']} {r:.0%} {r_px - r:+.1%}pp); "
-          f"A 股 {inp['price_a']} = {pe_a:.2f}x → {r_a:.1%}, H 折价 ≈ {r_px - r_a:+.1%}pp; "
-          f"TP 均值 {inp['tp_cons_h']} = {pe_tp:.2f}x ↔ r {(1 - inp['b_growth']) / pe_tp + inp['g2_m']:.1%} (zone {zone_of(inp['tp_cons_h'], L, M, H)}); H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}; "
-          f"留存×账面 ROE 反解 g {g_px:+.1%} (conditioned={ok_px}, 病态区不是读数)")
+    r_tp = (1.0 - inp["b_growth"]) / pe_tp + inp["g2_m"]
+    print(f"卖方 TP 均值 {inp['tp_cons_h']} = {pe_tp:.2f}x E_owner_M ↔ r {r_tp:.1%} (篮 {baskets['r_perp']} {r:.0%} {r_tp - r:+.1%}pp, A10; "
+          f"TP 落 {zone_of(inp['tp_cons_h'], L, M, H)}); H/TP {H / inp['tp_cons_h']:.2f} M/TP {M / inp['tp_cons_h']:.2f}")
     print(f"净负债 (只披露): {inp['net_debt']:,.0f} mn = {inp['net_debt'] * MN / inp['shares']:.2f} CNY = {inp['net_debt'] * MN / inp['shares'] / fx:.2f} HKD/股 "
-          f"({inp['net_debt'] * MN / inp['shares'] / fx / inp['price']:.1%} 市值)")
+          f"({inp['net_debt'] * MN / inp['shares'] / fx / M:.1%} of M)")
     bps = inp["equity"] * MN / inp["shares"]
-    print(f"地板 (只披露): BPS {bps:.2f} CNY = {bps / fx:.2f} HKD; 现价 PB {inp['price'] * fx / bps:.2f}; 锚点 PB {'/'.join(f'{e_owner[t] * pe / bps:.2f}' for t in TIERS)}")
+    print(f"地板 (只披露): BPS {bps:.2f} CNY = {bps / fx:.2f} HKD; 锚点 PB {'/'.join(f'{e_owner[t] * pe / bps:.2f}' for t in TIERS)}")
     for label, g in (("g2 −1pp", inp["g2_m"] - 0.01), ("g2 +1pp (⚠敏感区)", inp["g2_m"] + 0.01)):
         b = band_at(e_owner, flat_pe(inp["b_growth"], r, g), fx)
-        print(f"敏感区 {label} {g:+.2%}: PE {flat_pe(inp['b_growth'], r, g):.2f} → {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感区 {label} {g:+.2%}: PE {flat_pe(inp['b_growth'], r, g):.2f} → {'/'.join(f'{x:.2f}' for x in b)}")
     zg = band_at(e_owner, 1.0 / r, fx)
-    print(f"敏感性 g=0 全派息 1/r: {'/'.join(f'{x:.2f}' for x in zg)} zone={zone_of(inp['price'], *zg)}")
+    print(f"敏感性 g=0 全派息 1/r: {'/'.join(f'{x:.2f}' for x in zg)}")
     for label, r_alt in (("篮 5 11%", 0.11), ("篮 6 13%", 0.13)):
         b = band_at(e_owner, flat_pe(inp["b_growth"], r_alt, inp["g2_m"]), fx)
-        print(f"敏感性 r_perp {label}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 r_perp {label}: {'/'.join(f'{x:.2f}' for x in b)}")
     for label, maint in (("0 (全增长)", 0.0), (f"{MAINT_ALL:,.0f} (全维持)", MAINT_ALL)):
         eo = {t: (ni[t] - maint) * MN / inp["shares"] for t in TIERS}
         b = band_at(eo, pe, fx)
-        print(f"敏感性 capex_maint_excess {label}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 capex_maint_excess {label}: {'/'.join(f'{x:.2f}' for x in b)}")
     eo_t = {t: (inp["ni_fy25"] + beta_theory * (brent[t] - inp["brent_2025"]) - inp["capex_maint_excess"]) * MN / inp["shares"] for t in TIERS}
     b_t = band_at(eo_t, pe, fx)
-    print(f"敏感性 β 理论交叉 {beta_theory:,.0f}: {'/'.join(f'{x:.2f}' for x in b_t)} zone={zone_of(inp['price'], *b_t)}; 每 US$1 Brent ≈ {beta * MN / inp['shares'] * pe / fx:+.2f} HKD")
+    print(f"敏感性 β 理论交叉 {beta_theory:,.0f}: {'/'.join(f'{x:.2f}' for x in b_t)}; 每 US$1 Brent ≈ {beta * MN / inp['shares'] * pe / fx:+.2f} HKD")
     med = band_at(e_owner, inp["pe_own_med"], fx)
     d0 = inp["dps_fy25"] / fx
     ddm = d0 * (1 + inp["g2_m"]) / (r - inp["g2_m"])
-    print(f"交叉尺: own 中位 {inp['pe_own_med']}x flat → {'/'.join(f'{x:.2f}' for x in med)} (zone {zone_of(inp['price'], *med)}); "
-          f"DDM D0 {d0:.4f} HKD → {ddm:.2f} (现价隐含股息增长 {(inp['price'] * r - d0) / (inp['price'] + d0):+.2%}); "
-          f"FCF 收益率 {inp['fcf_fy25'] * MN / (inp['price'] * fx * inp['shares']):.1%}, P/FCF 10x → {inp['fcf_fy25'] * MN / inp['shares'] * 10 / fx:.2f}")
+    print(f"交叉尺: own 中位 {inp['pe_own_med']}x flat → {'/'.join(f'{x:.2f}' for x in med)}; "
+          f"DDM D0 {d0:.4f} HKD → {ddm:.2f}; "
+          f"P/FCF 10x → {inp['fcf_fy25'] * MN / inp['shares'] * 10 / fx:.2f}")
     g1 = (inp["eps_fy2022"] / inp["eps_trough_fy2020"]) ** 0.5 - 1.0
     pe_rec = recovery_two_stage_pe(g1, 2, inp["g2_m"], roe["m"], r)
     print(f"谷底坐标 (A3): 回归段 2020->2022 g1 {g1:.1%} n=2 -> {pe_rec:.1f}x on FY2020 EPS {inp['eps_trough_fy2020']} = {inp['eps_trough_fy2020'] * pe_rec / fx:.2f} HKD (坐标, 不作锚); "
           f"谷底 x 1/r = {inp['eps_trough_fy2020'] / r / fx:.2f} HKD (deep_discount 压力坐标)")
     print(f"属性 D: 2026H1 归母 {inp['ni_h1_26']:,.0f} x2 = {2 * inp['ni_h1_26']:,.0f} ↔ 本尺 Brent {inp['brent_2025'] + (2 * inp['ni_h1_26'] - inp['ni_fy25']) / beta:.1f}")
     la, ma, ha = L * fx, M * fx, H * fx
-    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} | price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+    print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 in the flat multiple; the Brent rungs, E_owner, b_growth and g2
     # stay put.  r_ng / r_rc / r_mk only price the 表1′ leg-sum cross-check, not
@@ -348,7 +344,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return band_at(e_owner, flat_pe(inp["b_growth"], r + dr, inp["g2_m"]), fx)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

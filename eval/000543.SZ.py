@@ -2,7 +2,9 @@
 """000543.SZ (Anhui Wenergy) valuation eval.
 
 frameworks/000543.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: wanneng_coal_axis_midcycle_pe_v5
 
@@ -34,7 +36,7 @@ year is a squeeze (2026H1 0.36).  Hence
   * M = the mid-cycle EPS: five cross-cycle readings (one lag-wave average,
     the bridge steady state at the caught-up tariff 437 / 430, the post-reform
     realised mean with and without 2026E) averaged; their min/max is the
-    evidence interval and the zone must hold at both ends.
+    evidence interval, re-priced and printed at both ends.
   * H = the bridge at axis M coal 830 + the up-signed 2027 tariff 440 +
     capacity 165 — the fat-lag world, not a coal-703 world (that is `stretched`).
 
@@ -44,8 +46,8 @@ tariff-lag fit reproduces tariff_m, capacity uplift and squeeze re-derived,
 E_H and the five-reading mid-cycle re-derived, r == its basket's value and
 pe_m == 1/r, g2 and the policy g at or below g_cap(r) (`capped_payout_pe` must
 equal `perpetual_pe` on the retention branch),
-floor logic, ladder, zone stable across the E_M evidence interval and the axis
-M window, and the 纠正对账门 table (valuation-rules 2026-09-15).
+floor logic, ladder, and the 纠正对账门 table (valuation-rules 2026-09-15).
+The E_M evidence interval and the axis M window are re-priced and printed.
 
 Run:  python3 frameworks/eval/000543.SZ.py
 """
@@ -66,7 +68,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000543.SZ.md"
 FORMULA_ID = "wanneng_coal_axis_midcycle_pe_v5"
@@ -82,7 +84,7 @@ EPS_TOL = 0.005              # stated tier EPS vs re-derived (2-dp inputs)
 M_V3_TTM, M_V4_FROZEN = 8.50, 3.78
 
 REQUIRED = [
-    "price", "shares", "bps", "equity", "r_perp", "g2", "pe_m",
+    "shares", "bps", "equity", "r_perp", "g2", "pe_m",
     "eps_l", "eps_m", "eps_h", "eps_m_lo", "eps_m_hi",
     "eps_h1_26", "eps_h2_26_bridge", "eps_ttm", "eps_fy26e",
     "eps_fy25", "eps_fy24", "eps_fy23", "eps_fy22",
@@ -352,7 +354,7 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (multiple)")
 
-    # --- Step 5: anchors, floor, zone, stability ---------------------------
+    # --- Step 5: anchors, floor, interval re-pricing -------------------------
     floor = inp["pb_lo"] * inp["bps"]
     scenario_l = eps["l"] * inp["pe_m"]
     if abs(floor - inp["floor_l"]) > 0.01 or abs(scenario_l - inp["scenario_l"]) > 0.05:
@@ -364,54 +366,46 @@ def main() -> int:
     if scenario_l / M <= FLOOR_RECHECK_RATIO:
         errors.append(f"scenario_L/M = {scenario_l / M:.3f} <= {FLOOR_RECHECK_RATIO} — earnings ruler failed at L, A2e-1 回问")
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     winner = "地板胜出" if floor > scenario_l else "情景胜出"
     print(f"地板（A2e-1）：scenario_L = {eps['l']} × {inp['pe_m']:g} = {scenario_l:.2f} vs PB 地板 {inp['pb_lo']} × BPS {inp['bps']} = {floor:.2f} → {winner}，L = {L:.2f}；scenario_L/M = {scenario_l / M:.2f} > {FLOOR_RECHECK_RATIO} ✓（不触发回问）")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  price={inp['price']} zone={zone}")
-    # Zone must hold across the E_M evidence interval (valuation-rules「g2 的杠杆」same rule
-    # applied to the numerator) and across the axis M window (axis 4c-5).
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    # The E_M evidence interval and the axis M window (axis 4c-5), re-priced
+    # and printed (disclosure — the doc states no zone to hold them to).
     for tag, em in (("eps_m_lo", inp["eps_m_lo"]), ("eps_m_hi", inp["eps_m_hi"])):
         b = anchors_of(inp, eps["l"], em, eps["h"])
-        z = zone_of(inp["price"], *b)
         a_, b_ = cut_points(*b)
-        print(f"  稳定性 E_M = {em}（{tag}）: {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f} zone={z}")
-        if z != zone:
-            errors.append(f"zone flips to {z} at E_M = {em} inside the evidence interval — BLOCKED")
+        print(f"  区间 E_M = {em}（{tag}）: {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f}")
     for cm in (inp["coal_m_lo"], inp["coal_m_hi"]):
         em = statistics.mean(midcycle_readings(inp, cm, inp["cap_tariff_2026"], squeeze).values())
         eh = world_eps(inp, cm, inp["tariff_h"], inp["cap_tariff_2026"])
         b = anchors_of(inp, eps["l"], em, eh)
-        z = zone_of(inp["price"], *b)
         a_, b_ = cut_points(*b)
-        print(f"  稳定性 轴 M 窗口 煤 {cm:g}: E_M {em:.4f} E_H {eh:.4f} → {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f} zone={z}")
-        if z != zone:
-            errors.append(f"zone flips to {z} at axis M = {cm:g} — record and go back to the conversation (axis 4c-5)")
+        print(f"  区间 轴 M 窗口 煤 {cm:g}: E_M {em:.4f} E_H {eh:.4f} → {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f}")
     # Sensitivities (printed, not asserted): tariff, capacity, TTM as numerator.
     for t in (inp["tariff_fy26_impl"], inp["tariff_m"], inp["tariff_h"]):
         em = world_eps(inp, inp["coal_m"], t, inp["cap_tariff_2026"])
         m_t = em * inp["pe_m"]
-        z = "M=H 塌" if m_t >= H - 1e-9 else zone_of(inp["price"], L, m_t, H)
-        print(f"  敏感性 中枢单取桥稳态 电价 {t:g}: E_M {em:.4f} → M {m_t:.2f}（H {H:.2f} 不动）zone={z}")
+        print(f"  敏感性 中枢单取桥稳态 电价 {t:g}: E_M {em:.4f} → M {m_t:.2f}（H {H:.2f} 不动）"
+              + (" M=H 塌" if m_t >= H - 1e-9 else ""))
     sq100 = inp["eps_h1_26"] + world_eps(inp, inp["coal_h2_26"], inp["tariff_fy25"], inp["cap_tariff_2025"], frac=0.5)
     em100 = statistics.mean(midcycle_readings(inp, inp["coal_m"], inp["cap_tariff_2025"], sq100).values())
     eh100 = world_eps(inp, inp["coal_m"], inp["tariff_h"], inp["cap_tariff_2025"])
     b100 = anchors_of(inp, sq100, em100, eh100)
-    print(f"  敏感性 容量电价停在 {inp['cap_tariff_2025']:g}（政策已锁 165，仅对照）: E {sq100:.4f}/{em100:.4f}/{eh100:.4f} → {'/'.join(f'{x:.2f}' for x in b100)} zone={zone_of(inp['price'], *b100)}")
+    print(f"  敏感性 容量电价停在 {inp['cap_tariff_2025']:g}（政策已锁 165，仅对照）: E {sq100:.4f}/{em100:.4f}/{eh100:.4f} → {'/'.join(f'{x:.2f}' for x in b100)}")
     m_ttm = inp["eps_ttm"] * inp["pe_m"]
-    print(f"  敏感性 TTM {inp['eps_ttm']} 作分子（v3 口径, flat 10×）: M {m_ttm:.2f} zone={zone_of(inp['price'], L, m_ttm, H)}（TTM ÷ 中枢 {inp['eps_ttm'] / eps['m']:.2f}，且 FY2026 滚动到 ~{squeeze:.2f}）")
-    # Basket-r disclosures (printed, not asserted): implied r at the price, g2 ±1pp,
-    # r ±50bp and the alternative baskets the framework rejected (A17).
-    print(f"  隐含 r(P)：g2 = 0 → E_M/P = {eps['m']} / {inp['price']} = {eps['m'] / inp['price']:.1%}（篮 {baskets['r_perp']} {r:.1%} {eps['m'] / inp['price'] - r:+.1%}）")
+    print(f"  敏感性 TTM {inp['eps_ttm']} 作分子（v3 口径, flat 10×）: M {m_ttm:.2f}（TTM ÷ 中枢 {inp['eps_ttm'] / eps['m']:.2f}，且 FY2026 滚动到 ~{squeeze:.2f}）")
+    # Basket-r disclosures (printed, not asserted): g2 ±1pp, r ±50bp and the
+    # alternative baskets the framework rejected (A17).
     for tag, rr, gg in (("g2 +1pp", r, 0.01), ("g2 −1pp", r, -0.01), ("r −50bp", r - 0.005, 0.0), ("r +50bp", r + 0.005, 0.0),
                         ("篮 2 7.5%", 0.075, 0.0), ("篮 6 13%", 0.13, 0.0)):
         pe_x = 1.0 / (rr - gg)
         b = (max(eps["l"] * pe_x, floor), eps["m"] * pe_x, eps["h"] * pe_x)
-        print(f"  敏感区 {tag}: PE {pe_x:.2f}× → {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"  敏感区 {tag}: PE {pe_x:.2f}× → {'/'.join(f'{x:.2f}' for x in b)}")
     flat_errs, flat = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), inp["pe_m"])
     errors += flat_errs
     print(f"flat-multiple @{inp['pe_m']:g}×: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}（L 地板前 {scenario_l:.2f}）— 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")
     if errors:
-        return report(errors, "FAIL (zone stability)")
+        return report(errors, "FAIL (flat ladder)")
 
     # --- Step 6: 纠正对账门 (valuation-rules 2026-09-15) ---------------------
     g_zjn = (inp["peer_zjn_px"] * r - inp["peer_zjn_dps"]) / (inp["peer_zjn_px"] + inp["peer_zjn_dps"])
@@ -428,7 +422,7 @@ def main() -> int:
         (f"⑤ 同业同尺同日：浙能 / 华电 D0 尺反解 g_d {g_zjn:.2%} / {g_hd:.2%} 中位 {g_peer:.2%} → 皖能 D0 {inp['dps_fy25']}", peer_d0, True),
         (f"⑤' 同上配中枢股息 D_M {d_m:.3f}（跨口径：同业 g_d 从当期股息反解，只报不计）", peer_dm, False),
     ]
-    print(f"纠正对账门：新 M {M:.2f} vs v3 {M_V3_TTM}（{M / M_V3_TTM - 1:+.0%}）· v4 {M_V4_FROZEN}（{M / M_V4_FROZEN - 1:+.0%}）；zone v3 conservative → {zone}")
+    print(f"纠正对账门：新 M {M:.2f} vs v3 {M_V3_TTM}（{M / M_V3_TTM - 1:+.0%}）· v4 {M_V4_FROZEN}（{M / M_V4_FROZEN - 1:+.0%}）")
     outside = counted = 0
     for label, v, counts in rows:
         dev = M / v - 1.0
@@ -463,9 +457,9 @@ def main() -> int:
           f"谷底 × 1/r = {inp['eps_fy22'] / r:.2f}；2022 式尖峰在新 regime（FY2022 {inp['eps_fy22']} + 165 容量全额 {spike_new - inp['eps_fy22']:.2f}）= {spike_new:.2f} → {spike_new * inp['pe_m']:.2f}（仍在 L 之上）")
     bull = world_eps(inp, inp["coal_h"], inp["tariff_h"], inp["cap_tariff_2026"])
     print(f"坐标 · stretched（> {H:.2f}）：牛顶世界 煤 {inp['coal_h']:g} + 电价 {inp['tariff_h']:g} + 容量 165 = {bull:.4f} → {bull * inp['pe_m']:.2f}；FY2025 式肥年 + 165 = {inp['eps_fy25'] + uplift_eps:.4f} → {(inp['eps_fy25'] + uplift_eps) * inp['pe_m']:.2f}；"
-          f"现价 = {inp['price'] / inp['eps_ttm']:.2f}× TTM / {inp['price'] / eps['m']:.2f}× 中枢 / PB {inp['price'] / inp['bps']:.2f}；D0 尺现价隐含 g_d {(inp['price'] * r - inp['dps_fy25']) / (inp['price'] + inp['dps_fy25']):.2%}；股息率 @L {inp['dps_fy25'] / L:.2%} @现价 {inp['dps_fy25'] / inp['price']:.2%}")
+          f"股息率 @L {inp['dps_fy25'] / L:.2%}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
     return report(errors)
 
 

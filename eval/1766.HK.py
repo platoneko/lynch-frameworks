@@ -2,7 +2,9 @@
 """1766.HK (CRRC Corporation) valuation eval.
 
 frameworks/1766.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: crrc_hk_anchored_consensus_pe_gordon_v3
 
@@ -49,15 +51,15 @@ Two things this script deliberately does NOT do, both recorded as `待补`:
     sums to 778.6亿 against 1,316.8亿 of revenue — a 41% gap.  The guard
     prints the gap.
   * It does not give 新产业 a growth multiple.  Times Electric (3898.HK), the
-    listed crown jewel of that segment, trades at PE 8.48 — below CRRC's own
-    9.28.  There is no market evidence for a segment premium.
+    listed crown jewel of that segment, traded at PE 8.48 (2026-09-11) — below
+    CRRC's own 5y monthly TTM median 9.21.  There is no market evidence for a
+    segment premium.
 
 Run:  python3 frameworks/eval/1766.HK.py
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -71,7 +73,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report / bands_io import through the `eval.lib` package, so the repo root
 # must be importable too; appended so `lib.*` above still resolves first.
@@ -94,7 +96,7 @@ YI = 1e8
 LISTING_CCY = "HKD"
 
 REQUIRED = [
-    "price", "price_a", "shares", "bps", "equity", "fx_hkdcny",
+    "shares", "bps", "equity", "fx_hkdcny",
     "eps_l", "eps_m", "eps_h",
     "r_perp", "r_perp_a", "cny_rf_gap", "net_cash", "nppe_fy25",
     "dps_fy25", "ni_fy25", "g2_l", "g2_m", "g2_h",
@@ -109,11 +111,13 @@ NOT_FORMULA = ("pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "pe_a_mi
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports the A-share companion band and live H/A.
+    """Axis §3 rule 3: a mounted ticker reports both the H and the A-share bands.
 
     The southbound axis locks no numerator and, now that the multiple is
     Gordon-generated (A8/A11), no multiple either; what it still locks is the
-    reporting contract its own §4 direction check depends on.
+    reporting contract its own §4 direction check depends on.  The live H/A is
+    a function of today's two prices and no longer lives in the doc; the axis's
+    cross-ticker direction check reads its own dated series (§1).
     """
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
@@ -123,8 +127,6 @@ def check_southbound_mount(md: str) -> list[str]:
                       "a mount has to exist on both sides")
     if "A 股对照带" not in md:
         errors.append("framework lacks the A-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -238,19 +240,11 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
-    # 校验步骤 4a (A18): a zone flip inside the g2 evidence interval means the
-    # price sits on a cut point — the base deck reads the interval's lower end
-    # (first-tier source) and the Outputs must carry a ⚠敏感区 line naming the
-    # other zone.  It is not a reason to pick a g inside the interval.
+    # 校验步骤 4a (A18): the base deck reads the evidence interval's lower end
+    # (first-tier source); both ends are printed as disclosure, never a reason
+    # to pick a g inside the interval.
     evid = {g: band_at(g, eps, roe, r, fx) for g in (inp["g_evid_min"], inp["g_evid_max"])}
-    flipped = {g: zone_of(inp["price"], *b) for g, b in evid.items() if zone_of(inp["price"], *b) != zone}
-    if flipped and "⚠敏感区" not in md:
-        errors.append(f"zone flips to {flipped} inside the evidence interval — Outputs must state ⚠敏感区 (A18)")
-    for g, z in flipped.items():
-        if f"`{z}`" not in md.split("⚠敏感区", 1)[-1][:400]:
-            errors.append(f"⚠敏感区 line must name the flipped zone `{z}` at g2={g:+.2%} (A18)")
 
     flat_errs, flat_cny = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), pe["m"])
     errors += flat_errs
@@ -259,7 +253,7 @@ def main() -> int:
 
     # 校验步骤 4c (A9): candidate band swaps only the M-tier EPS for the UBS
     # FY2027 single point; L'/H' copy the base.  Compared to the Outputs line
-    # the digest reads; never a zone input.
+    # the digest reads.
     cand = (L, inp["eps_fy27_ubs"] * pe["m"] / fx, H)
     errors += ladder("候选带", *cand)
     stated_cand = load_framework(FRAMEWORK).candidate
@@ -270,7 +264,7 @@ def main() -> int:
             if abs(said - got) > CANDIDATE_TOL:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # A-share companion band: same CNY earnings, same basket r, same multiple
     # (A14).  The CNY r_f segment band is a disclosure line only.
@@ -304,31 +298,22 @@ def main() -> int:
     print(f"ROE < r 显式歧义 (A13): ROE−r = {roe['l'] - r:+.2%}/{roe['m'] - r:+.2%}/{roe['h'] - r:+.2%}; "
           f"零增长全派息 1/r {top:.2f}x 对照带 {eps['l'] * top / fx:.2f}/{eps['m'] * top / fx:.2f}/{eps['h'] * top / fx:.2f}; "
           f"M 档 {pe['m']:.2f}x 亦可读作 g=0、全派息、r≈{1 / pe['m']:.1%}")
-    for label, px in (("H 股现价", inp["price"] * fx), ("A 股现价", inp["price_a"]), ("H 股 TP 6.47", 6.47 * fx)):
+    for label, px in (("H 股 TP 6.47", 6.47 * fx),):
         pe_px = px / eps["m"]
         if pe_px > top:
             print(f"  {label:<10} 隐含 PE={pe_px:6.2f}x → 高于顶 {top:.2f}x, 任何分支无解")
             continue
         g_px, ok = implied_g_retaining(pe_px, roe["m"], r)
         print(f"  {label:<10} 隐含 PE={pe_px:6.2f}x → 留存分支 g={g_px:+.2%} (well_conditioned={ok})")
-    # Implied r at the market price, honest form, M tier (A14 / Outputs 披露行).
-    pe_h_mkt = inp["price"] * fx / eps["m"]
-    pe_a_mkt = inp["price_a"] / eps["m"]
-    r_h = inp["g2_m"] + (1 - inp["g2_m"] / roe["m"]) / pe_h_mkt
-    r_a_mkt = inp["g2_m"] + (1 - inp["g2_m"] / roe["m"]) / pe_a_mkt
-    print(f"隐含 r(P) 诚实式 M 档: H {inp['price']} = {pe_h_mkt:.2f}x → {r_h:.2%} (篮 4 {r_h - r:+.2%}); "
-          f"A {inp['price_a']} = {pe_a_mkt:.2f}x → {r_a_mkt:.2%} (篮 4 {r_a_mkt - r_a:+.2%}; CNY 段披露 {r_a_mkt - r_ccy:+.2%}); "
-          f"A/H 差 {r_h - r_a_mkt:+.2%} vs r_f 段差 {inp['cny_rf_gap']:+.2%}")
     # DDM cross on the FY2025 dividend actually paid (D0), same r / g2.
     d0_hkd = inp["dps_fy25"] / fx
     ddm = d0_hkd * (1 + inp["g2_m"]) / (r - inp["g2_m"])
-    g_div_px = (inp["price"] * r - d0_hkd) / (inp["price"] + d0_hkd)
-    print(f"DDM 对照: D0 {d0_hkd:.4f} HKD × (1+g2) ÷ (r−g2) = {ddm:.2f}; 现价 {inp['price']} 隐含股息增长 {g_div_px:+.2%}; "
+    print(f"DDM 对照: D0 {d0_hkd:.4f} HKD × (1+g2) ÷ (r−g2) = {ddm:.2f}; "
           f"M 上 FY26E 股息率 {eps['m'] * payout(inp['g2_m'], roe['m']) / fx / M:.1%}")
     net_cash_ps = inp["net_cash"] * YI / inp["shares"] / fx
     print(f"地板 (只披露): BPS {inp['bps']} CNY = {inp['bps'] / fx:.2f} HKD (> H); 锚点隐含 PB "
-          f"{L * fx / inp['bps']:.2f}/{M * fx / inp['bps']:.2f}/{H * fx / inp['bps']:.2f}, 现价 PB {inp['price'] * fx / inp['bps']:.2f}; "
-          f"净现金 {inp['net_cash']:.0f}亿 CNY = {net_cash_ps:.2f} HKD/股 ({net_cash_ps / inp['price']:.0%} 市值) 不加 "
+          f"{L * fx / inp['bps']:.2f}/{M * fx / inp['bps']:.2f}/{H * fx / inp['bps']:.2f}; "
+          f"净现金 {inp['net_cash']:.0f}亿 CNY = {net_cash_ps:.2f} HKD/股 不加 "
           f"(加回 → {L + net_cash_ps:.2f}/{M + net_cash_ps:.2f}/{H + net_cash_ps:.2f}); 净 PP&E FY25 {inp['nppe_fy25']:.0f}亿 (A16)")
     marker = "⚠" if gap > SEGMENT_GAP_WARN else " "
     print(f"{marker} 分部缺口 {gap:.0%} (分部合计 {inp['seg_total_h1'] / 1e8:.0f}亿 vs "
@@ -342,31 +327,26 @@ def main() -> int:
     print(f"flat-multiple @PE_M={pe['m']:.2f}: L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f} — 带宽 {flat_width:.1%}")
     own = tuple(eps[t] * inp[f"pe_hk_ownyear_{t}"] / fx for t in TIERS)
     print(f"交叉尺 own-year 分位 {inp['pe_hk_ownyear_l']}/{inp['pe_hk_ownyear_m']}/{inp['pe_hk_ownyear_h']} (A2): "
-          f"{own[0]:.2f}/{own[1]:.2f}/{own[2]:.2f}, 现价 zone={zone_of(inp['price'], *own)}")
+          f"{own[0]:.2f}/{own[1]:.2f}/{own[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%}")
-    print(f"price(H)={inp['price']} zone={zone} P/M={inp['price'] / M:.2f}"
-          + (f" | 溢价 (P-H)/H = {(inp['price'] - H) / H:+.1%}" if inp["price"] > H else ""))
-    print(f"候选带 (A9, UBS FY2027 单家 {inp['eps_fy27_ubs']} 换入 M′): L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
-          f"候选 zone={zone_of(inp['price'], *cand)}")
+    print(f"候选带 (A9, UBS FY2027 单家 {inp['eps_fy27_ubs']} 换入 M′): L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}")
     for g, b in evid.items():
-        print(f"证据区间 g2={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"证据区间 g2={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)}")
     for dg in (-0.01, 0.01):
         b = band_at(inp["g2_m"] + dg, eps, roe, r, fx)
-        print(f"敏感性 g2 {dg:+.0%} ({inp['g2_m'] + dg:+.2%}): {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 g2 {dg:+.0%} ({inp['g2_m'] + dg:+.2%}): {'/'.join(f'{x:.2f}' for x in b)}")
     for kk in (0.93, 1.07):
         eps_k = {t: eps[t] * kk for t in TIERS}
         roe_k = {t: eps_k[t] * inp["shares"] / (inp["equity"] * YI) for t in TIERS}
         b = band_at(inp["g2_m"], eps_k, roe_k, r, fx)
-        print(f"敏感性 eps ×{kk}: {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"敏感性 eps ×{kk}: {'/'.join(f'{x:.2f}' for x in b)}")
     old = tuple(eps[t] / (r + 0.0367) / fx for t in TIERS)
-    print(f"对照 同业负分支 g2 −3.67% flat 7.32x (税前): {'/'.join(f'{x:.2f}' for x in old)} zone={zone_of(inp['price'], *old)} (分支错误的坐标)")
+    print(f"对照 同业负分支 g2 −3.67% flat 7.32x (税前): {'/'.join(f'{x:.2f}' for x in old)} (分支错误的坐标)")
     print(f"A股对照(CNY, 篮 {baskets['r_perp_a']} r={r_a:.1%} 跨市场固定, 同倍数): PE {pe_a['l']:.2f}/{pe_a['m']:.2f}/{pe_a['h']:.2f} → "
-          f"L={la:.2f} M={ma:.2f} H={ha:.2f} A={(la + ma) / 2:.2f} B={(ma + ha) / 2:.2f} "
-          f"| price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} P/M={inp['price_a'] / ma:.2f}")
+          f"L={la:.2f} M={ma:.2f} H={ha:.2f} A={(la + ma) / 2:.2f} B={(ma + ha) / 2:.2f}")
     print(f"  CNY 段披露 (r {r_ccy:.1%} = r_perp_a − cny_rf_gap, 待 _AXIS.rates 建成后复核): PE {pe_ccy['l']:.2f}/{pe_ccy['m']:.2f}/{pe_ccy['h']:.2f} → "
-          f"{lc:.2f}/{mc:.2f}/{hc:.2f} A={(lc + mc) / 2:.2f} B={(mc + hc) / 2:.2f} zone={zone_of(inp['price_a'], lc, mc, hc)} P/M={inp['price_a'] / mc:.2f}")
-    print(f"H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+          f"{lc:.2f}/{mc:.2f}/{hc:.2f} A={(lc + mc) / 2:.2f} B={(mc + hc) / 2:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): only
     # r_perp prices the HK anchors; r_perp_a and the CNY 段 r feed the A-share
@@ -375,7 +355,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return band_at(inp["g2_m"], eps, roe, r + dr, fx)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

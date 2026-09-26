@@ -6,16 +6,23 @@ formula_id: etf_tr_trend_channel_v1  (cross-check: huatai_hk_hdy_qdi_sotp_index_
 Ruler (valuation-rules「§ETF 例外」): a passive basket has no fair value apart
 from its NAV, so L/M/H come from the total-return trend channel of the
 underlying index (930914 港股通高股息 全收益, H20914): M = log-linear trend,
-L / H = residual p10 / p90, mapped to the ETF price by k = price / index now.
-No r and no g2 enter the ruler; the look-through basket r (A13) is only the
-hurdle the realised slope is read against, and `r_perp` is declared for the
-index basket column (篮 4, the r the SOTP cross-check runs at).
+L / H = residual p10 / p90, mapped to the ETF price by k = nav_ref / index
+level on the same as-of date.  No r and no g2 enter the ruler; the look-through
+basket r (A13) is only the hurdle the realised slope is read against, and
+`r_perp` is declared for the index basket column (篮 4, the r the SOTP
+cross-check runs at).
+
+The framework states no current price (AGENTS.md「现价 — 禁写契约」): no zone,
+no distance-to-anchor, no market-implied r / g; the digest and the app zone
+the live quote themselves.  Sub-window, evidence-interval and 对照 bands are
+printed as L/M/H only.
 
 Cross-check: the former look-through SOTP (HSBC / BOCHK Gordon PB-ROE, China
 Coal via 1898.HK, cyclical sleeves = constituents' FY2027E consensus over TTM
 x flat Gordon multiples generated from the leg's payout policy — energy on the
 retention branch, industrial BLOCKED and resolved at the named zero-growth
-reference) is recomputed at r_perp and must reproduce the Outputs「对账」row.
+reference) is recomputed at r_perp (NAV = nav_ref) and must reproduce the
+Outputs「对账」row.
 The energy ROE is E_{2027}/B_{2026 末} (A14; valuation-rules 裁决表 ② as of
 2026-09-21): per name FY27E EPS over the 2Q26 BPS rolled over the
 2H26 unbooked EPS (FY26E − 1H26 actual) at b1 = g2_ene/ROE, closed form
@@ -43,7 +50,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report, stated_anchors,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "513530.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "520900.SH.md"
@@ -59,7 +66,7 @@ DIVIDEND_CROSS = False      # rate-neutral cross-read needs the listing-currency
 CCY = "HKD"
 REGIME: tuple[str, str] | None = None   # sub-window slopes stay within REGIME_GAP of the full window (A13 / Outputs 通道)
 CHAN_FIELDS = {  # Inputs row -> channel key, tolerance
-    "chan_slope": ("slope", 0.005), "chan_sigma": ("sigma", 0.005), "chan_z": ("z", 0.02),
+    "chan_slope": ("slope", 0.005), "chan_sigma": ("sigma", 0.005),
     "chan_l_idx": ("L", 5.0), "chan_m_idx": ("M", 5.0), "chan_h_idx": ("H", 5.0), "idx_cur": ("cur", 0.5),
 }
 
@@ -92,7 +99,7 @@ PE_TOL = 0.05
 _SOTP_ROW = re.compile(r"对账（袖套 look-through SOTP[^）]*）\*\*：([0-9.]+) / ([0-9.]+) / ([0-9.]+)")
 
 REQUIRED = [
-    "price", "fee_drag", "pe_now", "r_perp", "g2_bank", "g2_ind", "g2_ene", "g2_res",
+    "nav_ref", "fee_drag", "pe_now", "r_perp", "g2_bank", "g2_ind", "g2_ene", "g2_res",
     "payout_ene", "roe_ene", "payout_ind", "roe_ind", "g_evid_min", "g_evid_max",
     "idx_dy", "etf_dps_ttm",
     "w_hsbc", "pb_hsbc", "roe_hsbc",
@@ -111,7 +118,7 @@ REQUIRED = [
     *(f"{n}_{f}" for n in SLEEVES["ene"] for f in ROLL_FIELDS),
     *(f"{k}_{t}" for k in ENERGY_NI for t in "lmh"),
     *CHAN_FIELDS, "chan_slope_2019", "chan_slope_2021",
-    "pe_1y_lo", "pe_1y_hi", "dy_10y_p25", "dy_10y_med", "dy_10y_p75", "ey_implied", "beta_rate_prior",
+    "pe_1y_lo", "pe_1y_hi", "dy_10y_p25", "dy_10y_med", "dy_10y_p75", "beta_rate_prior",
 ]
 
 
@@ -212,11 +219,10 @@ def main() -> int:
     for key, w in (("chan_slope_2019", "2019"), ("chan_slope_2021", "2021")):
         if abs(inp[key] - sub[w]) > 0.005:
             errors.append(f"{key}={inp[key]} != slope since {w} {sub[w]:.4f}")
-    k = inp["price"] / ch["cur"]  # price ≡ NAV tracks the TR index; channel levels are index points
+    k = inp["nav_ref"] / ch["cur"]  # NAV tracks the TR index: map by NAV / index on the as-of date
     computed = {"L": ch["L"] * k, "M": ch["M"] * k, "H": ch["H"] * k}
     computed["A"], computed["B"] = cut_points(computed["L"], computed["M"], computed["H"])
-    zone = zone_of(inp["price"], computed["L"], computed["M"], computed["H"])
-    errors += check_against_stated(md, computed, zone, tol=0.01)
+    errors += check_against_stated(md, computed, None, tol=0.01)
     if errors:
         return report(errors)
 
@@ -316,26 +322,22 @@ def main() -> int:
         }
 
     def anchor(tag: str, **kw: float) -> float:
-        return scale(inp["price"], inp["fee_drag"], sum(legs(tag, **kw).values()))
+        return scale(inp["nav_ref"], inp["fee_drag"], sum(legs(tag, **kw).values()))
 
     def band(pe_ene: float, pe_ind: float) -> tuple[float, float, float]:
         return tuple(anchor(t, pe_ene=pe_ene, pe_ind=pe_ind) for t in "lmh")  # type: ignore[return-value]
 
-    nav = inp["price"] * inp["fee_drag"]
+    nav = inp["nav_ref"] * inp["fee_drag"]
     sotp = tuple(anchor(t) for t in "lmh")
     if not (sotp[0] < sotp[1] < sotp[2]):
         return report(["SOTP ladder collapsed"])
-    sotp_zone = zone_of(inp["price"], *sotp)
     said = stated_sotp(md)
     if said is None:
         errors.append("Outputs「对账（袖套 look-through SOTP…）」row missing")
     else:
         errors += [f"对账 {lab}: stated {s_} vs recomputed {g_:.4f}" for lab, g_, s_ in zip("LMH", sotp, said) if abs(g_ - s_) > SOTP_TOL]
-    # The energy g2 evidence interval must not move the SOTP zone (A2, 校验步骤 5).
+    # The energy g2 evidence interval's two ends are printed as bands (A2, 校验步骤 5).
     evid = {g: band(perpetual_pe(g, inp["roe_ene"], r), inp["pe_ind"]) for g in (inp["g_evid_min"], inp["g_evid_max"])}
-    for g, b in evid.items():
-        if zone_of(inp["price"], *b) != sotp_zone:
-            errors.append(f"SOTP zone flips to {zone_of(inp['price'], *b)} at g2_ene={g:+.2%} inside the evidence interval (A2)")
     if errors:
         return report(errors)
 
@@ -343,21 +345,20 @@ def main() -> int:
     L, M, H = computed["L"], computed["M"], computed["H"]
     print(f"formula_id={FORMULA_ID}  (对账 {SOTP_FORMULA_ID})")
     print(f"通道 {INDEX_LABEL} ({INDEX_CODE}) {ch['start']}~{ch['end']}: 斜率 {ch['slope']:+.1%} (2019 起 {sub['2019']:+.1%} / 2021 起 {sub['2021']:+.1%}, "
-          f"regime gap {max(abs(v - full['slope']) for v in sub.values()):.1%} < {REGIME_GAP:.0%}) · σ {ch['sigma']:.1%} · z {ch['z']:+.2f} · "
-          f"现值 {ch['cur']:,.1f} vs M {ch['M']:,.0f} {ch['cur'] / ch['M'] - 1:+.1%} · L/M/H idx {ch['L']:,.0f}/{ch['M']:,.0f}/{ch['H']:,.0f}")
-    print(f"折算 k = price {inp['price']} / idx {ch['cur']:,.1f} = {k:.4e} → L/M/H {L:.4f}/{M:.4f}/{H:.4f}  A {computed['A']:.4f} B {computed['B']:.4f}")
-    print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f} | 距 B {inp['price'] / computed['B'] - 1:+.1%}"
-          + ("  ⚠敏感区" if abs(inp['price'] / computed['B'] - 1) < 0.01 else ""))
+          f"regime gap {max(abs(v - full['slope']) for v in sub.values()):.1%} < {REGIME_GAP:.0%}) · σ {ch['sigma']:.1%} · "
+          f"L/M/H idx {ch['L']:,.0f}/{ch['M']:,.0f}/{ch['H']:,.0f}")
+    print(f"折算 k = nav_ref {inp['nav_ref']} / idx {ch['cur']:,.1f} = {k:.4e} → L/M/H {L:.4f}/{M:.4f}/{H:.4f}  A {computed['A']:.4f} B {computed['B']:.4f}")
+    print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
     for start in SUBWINDOWS:
         c2 = channel(s[s.index >= start])
-        b2 = tuple(v * inp["price"] / c2["cur"] for v in (c2["L"], c2["M"], c2["H"]))
-        print(f"敏感性 通道窗改 {start[:4]} 起 (斜率 {c2['slope']:+.1%}): {'/'.join(f'{x:.3f}' for x in b2)} zone={zone_of(inp['price'], *b2)}")
+        b2 = tuple(v * k for v in (c2["L"], c2["M"], c2["H"]))
+        print(f"敏感性 通道窗改 {start[:4]} 起 (斜率 {c2['slope']:+.1%}): {'/'.join(f'{x:.3f}' for x in b2)} (M {b2[1] / M - 1:+.1%}; 只披露, 不改窗)")
     print(f"E 侧护栏 (只披露): PE {inp['pe_now']} in 1y [{inp['pe_1y_lo']}, {inp['pe_1y_hi']}] · 指数派息率 {inp['idx_dy'] * inp['pe_now']:.1%} (DY {inp['idx_dy']:.1%}) · "
-          f"DY 10y p25/med/p75 {inp['dy_10y_p25']:.1%}/{inp['dy_10y_med']:.1%}/{inp['dy_10y_p75']:.1%} · 盈利收益率 {1 / inp['pe_now']:.1%} (ey_implied {inp['ey_implied']:.1%}) · "
+          f"DY 10y p25/med/p75 {inp['dy_10y_p25']:.1%}/{inp['dy_10y_med']:.1%}/{inp['dy_10y_p75']:.1%} · "
           f"look-through 篮 {baskets['r_perp']} r_perp {r:.1%} (P 加权 ≈11.7%, A13) vs 斜率 {ch['slope']:+.1%} · β 先验 {inp['beta_rate_prior']:.0f} ({CCY} 轴待 _AXIS.rates.md)")
     print("地板: 不设 (只披露)")
 
-    print(f"--- 对账 SOTP @ r_perp {r:.0%} (篮 {baskets['r_perp']}): {sotp[0]:.4f}/{sotp[1]:.4f}/{sotp[2]:.4f} zone={sotp_zone}")
+    print(f"--- 对账 SOTP @ r_perp {r:.0%} (篮 {baskets['r_perp']}): {sotp[0]:.4f}/{sotp[1]:.4f}/{sotp[2]:.4f}")
     print("sleeve FY27E/TTM: ind " + "/".join(f"{sleeve_ratio(inp, SLEEVES['ind'], t):.3f}" for t in "lmh")
           + " | ene " + "/".join(f"{sleeve_ratio(inp, SLEEVES['ene'], t):.3f}" for t in "lmh")
           + f" | HSBC k {k_hsbc:.3f}  BOCHK k {k_bochk:.3f} | flat PE ind/ene/res {inp['pe_ind']}/{inp['pe_ene']}/{inp['pe_res']} vs index {inp['pe_now']}")
@@ -403,40 +404,36 @@ def main() -> int:
     regime_l = anchor("l", ind=inp["cosco_ni_l"] / inp["cosco_ni_m"], ene=energy_regime_ratio(inp, "l"))
     print(f"SOTP 候选带 (cc_h → {inp['cc_h_cand']}, 不进主行): {cand[0]:.4f}/{cand[1]:.4f}/{cand[2]:.4f} | "
           f"deep_discount 压力坐标 (报表年 regime: ene {energy_regime_ratio(inp, 'l'):.3f}, ind {inp['cosco_ni_l'] / inp['cosco_ni_m']:.3f}) = {regime_l:.4f} | "
-          f"all-at-market ref {nav:.4f} | ex-fee H {sotp[2] / inp['fee_drag']:.4f}")
+          f"ex-fee H {sotp[2] / inp['fee_drag']:.4f} (对账 H 去掉 QDII 费层, A12)")
     for g, b in evid.items():
-        print(f"SOTP 证据区间 g2_ene={g:+.2%} (PE {perpetual_pe(g, inp['roe_ene'], r):.2f}): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"SOTP 证据区间 g2_ene={g:+.2%} (PE {perpetual_pe(g, inp['roe_ene'], r):.2f}): {'/'.join(f'{x:.3f}' for x in b)}")
     for dg in (-0.01, 0.01):
         g = min(cap, inp["g2_ene"] + dg)
         b = band(perpetual_pe(g, inp["roe_ene"], r), inp["pe_ind"])
-        print(f"SOTP 敏感性 g2_ene {dg:+.0%} ({g:+.2%}): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+        print(f"SOTP 敏感性 g2_ene {dg:+.0%} ({g:+.2%}): {'/'.join(f'{x:.3f}' for x in b)}")
     g_floor = min((1 - inp[f"{n}_dps25"] / inp[f"{n}_eps25"]) * name_roe(inp, n, inp["g2_ene"]) for n in SLEEVES["ene"])
     b = band(perpetual_pe(g_floor, inp["roe_ene"], r), inp["pe_ind"])
-    print(f"SOTP 敏感性 单名下限 g2_ene {g_floor:+.2%} (神华, 非腿读数): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"SOTP 敏感性 单名下限 g2_ene {g_floor:+.2%} (神华, 非腿读数): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(perpetual_pe(inp["g2_ene"], roe_own, r), inp["pe_ind"])
-    print(f"SOTP 敏感性 能源腿改用子集 ROE {roe_own:.1%} ({perpetual_pe(inp['g2_ene'], roe_own, r):.2f}x): {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"SOTP 敏感性 能源腿改用子集 ROE {roe_own:.1%} ({perpetual_pe(inp['g2_ene'], roe_own, r):.2f}x): {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(inp["pe_ene"], pe_ind_alt)
-    print(f"SOTP 敏感性 工业腿改留存分支 {pe_ind_alt:.2f}x: {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"SOTP 敏感性 工业腿改留存分支 {pe_ind_alt:.2f}x: {'/'.join(f'{x:.3f}' for x in b)}")
     b = band(1 / r, 1 / r)
-    print(f"SOTP 对照 g=0 全腿 {1 / r:.0f}x: {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
-    b = band(inp["pe_now"], inp["pe_now"])
-    print(f"SOTP 对照 周期腿按市场滚动 {inp['pe_now']}x: {'/'.join(f'{x:.3f}' for x in b)} zone={zone_of(inp['price'], *b)}")
+    print(f"SOTP 对照 g=0 全腿 {1 / r:.0f}x: {'/'.join(f'{x:.3f}' for x in b)}")
     # 属性 A: the top-ten earnings-weighted denominator (10.4) on the three pe_now legs.
-    top = tuple(scale(inp["price"], inp["fee_drag"], sum(v * (inp["pe_now"] / 10.4 if kk in ("ind", "ene", "res") else 1.0) for kk, v in legs(t).items())) for t in "lmh")
-    print(f"SOTP 对照 pe_now 换前十大盈利加权 10.4 (属性 A 禁用): {'/'.join(f'{x:.3f}' for x in top)} zone={zone_of(inp['price'], *top)}")
+    top = tuple(scale(inp["nav_ref"], inp["fee_drag"], sum(v * (inp["pe_now"] / 10.4 if kk in ("ind", "ene", "res") else 1.0) for kk, v in legs(t).items())) for t in "lmh")
+    print(f"SOTP 对照 pe_now 换前十大盈利加权 10.4 (属性 A 禁用): {'/'.join(f'{x:.3f}' for x in top)}")
     # DDM cross at the ETF level: D0 = TTM distributions per unit; g = weight-blended leg g2.
     g_blend = ((inp["w_hsbc"] + inp["w_bochk"]) * inp["g2_bank"] + inp["w_ene_rest"] * inp["g2_ene"]
                + inp["w_ind"] * inp["g2_ind"] + inp["w_res"] * inp["g2_res"])
-    for label, d0 in (("ETF TTM 实派", inp["etf_dps_ttm"]), ("指数股息率×NAV", inp["idx_dy"] * inp["price"])):
-        g_px = (inp["price"] * r - d0) / (inp["price"] + d0)
-        print(f"DDM 对照 ({label} D0 {d0:.4f}): g=0 → {d0 / r:.3f}; g=腿加权 {g_blend:+.2%} (中煤/市价冻结腿计 0) → {d0 * (1 + g_blend) / (r - g_blend):.3f}; "
-              f"现价 {inp['price']} 隐含股息增长 {g_px:+.2%}")
+    for label, d0 in (("ETF TTM 实派", inp["etf_dps_ttm"]), ("指数股息率×nav_ref", inp["idx_dy"] * inp["nav_ref"])):
+        print(f"DDM 对照 ({label} D0 {d0:.4f}): g=0 → {d0 / r:.3f}; g=腿加权 {g_blend:+.2%} (中煤/市价冻结腿计 0) → {d0 * (1 + g_blend) / (r - g_blend):.3f}")
     w_e = sleeve_weights(inp, SLEEVES["ene"])
     pe_leg_now = 1 / sum(w_e[n] / inp[f"{n}_pe"] for n in SLEEVES["ene"])
     g_mkt, ok = implied_g_retaining(pe_leg_now, roe_own, r)
-    print(f"市价读数: 能源子集现 PE {pe_leg_now:.2f}x → 留存分支反解 g {g_mkt:+.2%} (conditioned={ok}) — 低于 1/r 顶, 单调区不可达, 说的是 r 不是 g")
-    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={computed['A']:.4f} B={computed['B']:.4f}  zone={zone}  price={inp['price']}"
-          f"  (对账 SOTP {sotp[0]:.3f}/{sotp[1]:.3f}/{sotp[2]:.3f} {sotp_zone})")
+    print(f"成份市价读数 (他股, 09-11): 能源子集 PE {pe_leg_now:.2f}x → 留存分支反解 g {g_mkt:+.2%} (conditioned={ok}) — 低于 1/r 顶, 单调区不可达, 说的是 r 不是 g")
+    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={computed['A']:.4f} B={computed['B']:.4f}"
+          f"  (对账 SOTP {sotp[0]:.3f}/{sotp[1]:.3f}/{sotp[2]:.3f})")
     return 0
 
 

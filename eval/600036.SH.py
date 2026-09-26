@@ -2,7 +2,9 @@
 """600036.SH (China Merchants Bank) valuation eval — recompute anchors from frameworks/600036.SH.md.
 
 frameworks/600036.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: cmb_gordon_pb_roe_v2
 
@@ -23,7 +25,6 @@ Run:  python3 frameworks/eval/600036.SH.py
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ _ROE_NEAR_R = 0.03
 # `g2` / `r_op` (not `g` / `r`) so scripts/calibration.py picks the perpetual g
 # and the r tier up in its cross-ticker table (AGENTS.md「永续增长口径」).
 REQUIRED = [
-    "price", "price_h", "shares", "bps", "bps_prev", "fx_hkdcny",
+    "shares", "bps", "bps_prev", "fx_hkdcny",
     "roe_m", "roe_h", "g2", "r_op", "pb_hist_hi",
     "npl", "cov_now", "cov_l", "tax_rate",
 ]
@@ -75,10 +76,12 @@ def anchor(inp: dict[str, float], roe: float, clip: bool) -> float:
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports the H-share companion band and live H/A.
+    """Axis §3 rule 3: a mounted ticker reports the H-share companion band.
 
     The southbound axis only supplies the AH-premium context here (A9); what it
     still locks is the reporting contract its own §4 direction check depends on.
+    The live H/A is a function of today's two prices and no longer lives in the
+    doc; the axis's cross-ticker direction check reads its own dated series.
     """
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
@@ -88,8 +91,6 @@ def check_southbound_mount(md: str) -> list[str]:
                       "a mount has to exist on both sides")
     if "H 股对照带" not in md:
         errors.append("framework lacks the H-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}[01]\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -150,9 +151,8 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # A2e-2c flat-multiple ladder in PE space: every tier on PE_M = PB_M / ROE_M,
     # so the ladder that remains is the ROE (numerator) ladder alone.
@@ -160,9 +160,6 @@ def main() -> int:
     flat = tuple(roe * inp["bps"] * pe_m for roe in (roe_l, roe_m, roe_h))
     errors += ladder("flat-multiple", *flat)
 
-    # Market-implied ROE (reference only)
-    pb_mkt = inp["price"] / inp["bps"]
-    roe_mkt = pb_mkt * (inp["r_op"] - g) + g
     near_r = abs(roe_m - inp["r_op"]) <= _ROE_NEAR_R
 
     # Seller mapping sanity (non-fatal prints)
@@ -199,9 +196,6 @@ def main() -> int:
           f"L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
-    print(f"price={inp['price']} zone={zone}  隐含ROE={roe_mkt:.2%} @ g={g:.0%}")
-    r_implied = g + (roe_m - g) * inp["bps"] / inp["price"]
-    print(f"隐含 r(P)={r_implied:.2%} vs 篮 {baskets.get('r_op')} r={inp['r_op']:.0%}")
     print(
         f"A11 |ROE_M-r|={abs(roe_m - inp['r_op']):.2%} "
         f"well_conditioned_for_implied_g={not near_r}"
@@ -213,11 +207,8 @@ def main() -> int:
         )
     fx = inp["fx_hkdcny"]
     print(
-        f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f} "
-        f"| price_h={inp['price_h']} "
-        f"zone_h={zone_of(inp['price_h'], L / fx, M / fx, H / fx)}"
+        f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f}"
     )
-    print(f"H/A = {inp['price_h'] * fx / inp['price']:.3f}")
 
     return report(errors)
 

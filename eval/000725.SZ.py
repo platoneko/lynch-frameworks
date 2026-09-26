@@ -12,6 +12,10 @@ disclosure-only `r_perp` row: the script checks the basket tag and value agree
 (`check_r`), prints the 篮 6 peak-zone contrast band at 1/r and the PB floor
 (never max()-ed into L).
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
+here computes a zone or a market-implied r / p — the digest and the app zone
+on live quotes.
+
 Known Class B debt (the ticker is queued for a rebuild, not patched here):
 the §3 Inputs table still carries p_l / p_m / p_h rows, which A2e-7a forbids.
 That is reported as a warning below rather than a failure so the anchor
@@ -32,11 +36,11 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000725.SZ.md"
 FORMULA_ID = "boe_midcycle_eps_flat_pe_v1"
-REQUIRED = ["price", "shares", "bps", "ni_l", "ni_m", "ni_h", "pe", "v_opt", "pb_floor", "r_perp"]
+REQUIRED = ["shares", "bps", "ni_l", "ni_m", "ni_h", "pe", "v_opt", "pb_floor", "r_perp"]
 TIERS = ("l", "m", "h")
 
 
@@ -78,8 +82,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), inp["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     floor = inp["pb_floor"] * inp["bps"]
     p = stated_p_tiers(md)
@@ -99,8 +102,7 @@ def main() -> int:
         f"r_perp {r:g} (篮 {baskets.get('r_perp')}), disclosure only; g_cap={g_cap(r):.2f} (no g2 row); "
         f"1/r={peak_pe:.2f}x contrast band "
         f"{eps['l'] * peak_pe:.2f}/{eps['m'] * peak_pe:.2f}/{eps['h'] * peak_pe:.2f} "
-        f"ROE {roe['l']:.1%}/{roe['m']:.1%}/{roe['h']:.1%} -> "
-        f"implied r(P) @g=0 = {eps['m'] / inp['price']:.1%}"
+        f"ROE {roe['l']:.1%}/{roe['m']:.1%}/{roe['h']:.1%}"
     )
     print(
         f"L/M={L / M:.2f} (分子比 {eps['l'] / eps['m']:.2f} x 倍数比 1.00) "
@@ -108,16 +110,12 @@ def main() -> int:
         f"width={(H - L) / (2 * M):.2f} V_opt/M={inp['v_opt'] / M:.2f}"
     )
     print(f"flat-multiple ladder @ {inp['pe']:g}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"price={inp['price']} zone={zone}")
     if p:
         band = tuple(a + pk * inp["v_opt"] for a, pk in zip((L, M, H), p))
         a2, b2 = cut_points(*band)
         print(
-            f"zone+V: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f} A'={a2:.2f} B'={b2:.2f} "
-            f"zone+V={zone_of(inp['price'], *band)}"
+            f"zone+V: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f} A'={a2:.2f} B'={b2:.2f}"
         )
-    if inp["price"] > H:
-        print(f"implied p=(P-H)/V_opt={(inp['price'] - H) / inp['v_opt']:.2f}")
     if leaked:
         print(f"WARN: probability fields in §3 Inputs {leaked} — A2e-7a, pending Class B rebuild")
     return report(errors)

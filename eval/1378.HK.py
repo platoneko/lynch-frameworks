@@ -2,7 +2,9 @@
 """1378.HK (China Hongqiao) valuation eval.
 
 frameworks/1378.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: hongqiao_al_spread_gm_bridge_gordon_v5
 
@@ -48,11 +50,10 @@ from lib.al_bridge import (  # noqa: E402
     multiples, pb_floor,
 )
 from lib.axes import check_al_mount  # noqa: E402
-from lib.gordon import implied_g  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -124,17 +125,15 @@ def main() -> int:
     errors += floor_errors
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None
     )
 
     br = bridge(inp)
     fx = inp["fx_hkd_cny"]
     r = inp["r_perp"]
     flat = [e * pes[1] / fx for e in eps]
-    print(f"1378.HK  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}  "
-          f"price={inp['price']:.2f} -> {zone}")
+    print(f"1378.HK  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
     print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
           f"EPS(CNY) {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
           f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
@@ -146,21 +145,16 @@ def main() -> int:
           f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
     print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"  地板（只披露）floor={floor:.2f} (5y low PB x 报表 bps) < L {L:.2f} (L 对应 PB {L/inp['bps']:.2f}); not max()'d")
-    eps_m_hkd = eps[1] / fx
-    g_px, ok_px = implied_g(inp["price"] / eps_m_hkd, roes[1], r)
     print(f"  deep_discount 压力坐标: L = 低位 regime x 1/r = {eps[0] / r / fx:.2f} (flat@1/r, =底牌L); "
           f"印过的 2023H1 x 1/r = {NP_TROUGH_2023H1 / inp['shares'] / r / fx:.2f}; "
           f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1] / fx:.2f} @PE_M (conservative 带内坐标)")
-    print(f"  隐含 r(P) (g=0) = {eps_m_hkd / inp['price']:.1%} vs 篮子 {r:.1%}; "
-          f"交叉尺 (A17): 现价 PB {inp['price']/inp['bps']:.2f} vs 锚点 PB "
-          f"{L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}; 现价 {inp['price']/eps_m_hkd:.2f}x EPS_M → "
-          f"市价隐含永续 g {g_px:+.2%} ({'well-conditioned' if ok_px else 'ill-conditioned'})")
+    print(f"  交叉尺 (A17): 锚点 PB {L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1; the spread ladder, g rows, k and fx stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
         return tuple(anchors(dict(inp, r_perp=r + dr), fx=fx)[0])
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # Only a clean run feeds the daily digest.

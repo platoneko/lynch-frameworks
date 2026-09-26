@@ -2,7 +2,9 @@
 """600309.SH (Wanhua Chemical) valuation eval.
 
 frameworks/600309.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: wanhua_segment_margin_ladder_gp_bridge_gordon_v3
 
@@ -52,8 +54,8 @@ the multiple is ROE-gated and only has to clear the guardrail floor.
 
 g's leverage is disclosed rather than hidden (valuation-rules「g2 的杠杆 MUST
 显式」): the script re-runs the band at both ends of the evidence range for
-g2_m — g_print_h below, the largest g keeping M < H above — and refuses the
-framework if the zone changes inside that range.
+g2_m — g_print_h below, the largest g keeping M < H above — and prints the
+band at both ends.
 
 Why freezing revenue matters enough to guard: nine years of this company's
 history say volume growth did not reach the bottom line (revenue +283%, net
@@ -86,7 +88,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600309.SH.md"
 FORMULA_ID = "wanhua_segment_margin_ladder_gp_bridge_gordon_v4_print"
@@ -115,7 +117,7 @@ MIN_PRINT_MONTHS = 6      # A15: an EPS-matched median needs at least this many 
 PEER_G_H_STEP = -0.01     # tier-1 cross-print: H pairs the post-peak g (A15 / v1 §A7)
 
 REQUIRED = [
-    "price", "shares", "rev_h1", "gm_rate_h1", "op_h1", "np_h1",
+    "shares", "rev_h1", "gm_rate_h1", "op_h1", "np_h1",
     "rev_pu", "rev_pc", "rev_nm",
     "gm_m_pu", "gm_m_pc", "gm_m_nm",
     "gm_l_pu", "gm_l_pc", "gm_l_nm",
@@ -308,8 +310,7 @@ def main() -> int:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # 裁决顺序 ②-b (valuation-rules): the margin ladder may stand in for the
     # consensus three points only while the FY2027 consensus mean sits inside
@@ -321,7 +322,7 @@ def main() -> int:
         errors.append(f"②-b: M deviates {cons_dev:+.1%} from consensus with no ②-b named-variable row")
     print(f"②-b: consensus FY27 {inp['eps_cons_fy27_lo']}/{inp['eps_cons_fy27_mean']}/{inp['eps_cons_fy27_hi']} vs EPS {eps['L']:.3f}/{eps['M']:.3f}/{eps['H']:.3f}; M dev {cons_dev:+.1%}")
 
-    # 校验步骤 7b: g's leverage is disclosed and the zone must survive it.
+    # 校验步骤 7b: g's leverage is disclosed (band printed at both ends).
     # Evidence range for g2_m: the H print median below, the largest g that
     # still keeps M < H above (past it the ladder collapses, A15).
     lo_g, hi_g = inp["g_print_h"], 0.0
@@ -338,13 +339,7 @@ def main() -> int:
         m_g = eps["M"] * perpetual_pe(g, roe["M"], r)
         l_g = eps["L"] * perpetual_pe(g, roe["L"], r)
         a_g, b_g = cut_points(l_g, m_g, H)
-        lever.append((g, l_g, m_g, a_g, b_g, zone_of(inp["price"], l_g, m_g, H)))
-    if any(z != zone for *_, z in lever):
-        errors.append(
-            "zone not stable across the g2_m evidence range "
-            + ", ".join(f"g {g:+.2%} -> {z}" for g, *_, z in lever)
-            + " — BLOCKED, back to dialogue (valuation-rules「g2 的杠杆 MUST 显式」)"
-        )
+        lever.append((g, l_g, m_g, a_g, b_g))
 
     # --- report --------------------------------------------------------------
     pu_h_implied = (
@@ -394,26 +389,20 @@ def main() -> int:
         f"| 分子比 L={d['num_lm']:.4f} H={d['num_hm']:.4f} "
         f"| 倍数比 L={d['pe_lm']:.4f} H={d['pe_hm']:.4f}"
     )
-    print("g 杠杆 (7b, zone 须不变): " + " | ".join(
-        f"g_M {g:+.2%}: {l_g:.1f}/{m_g:.1f}/{H:.1f} A {a_g:.1f} B {b_g:.1f} -> {z}" for g, l_g, m_g, a_g, b_g, z in lever
+    print("g 杠杆 (7b): " + " | ".join(
+        f"g_M {g:+.2%}: {l_g:.1f}/{m_g:.1f}/{H:.1f} A {a_g:.1f} B {b_g:.1f}" for g, l_g, m_g, a_g, b_g in lever
     ))
     print(f"H 两侧越顶: EPS_H {eps['H']:.4f} <= {EPS_PEAK_FY2021} ✓; H {H:.2f} <= {h_cap:.2f} ✓")
-    g_px, g_px_ok = implied_g(inp["price"] / eps["M"], roe["M"], r)
-    print(
-        f"price={inp['price']} zone={zone} | 现价 = {inp['price'] / eps['M']:.2f}x M 档 EPS, "
-        f"隐含永续 g {g_px:+.2%} (conditioned={g_px_ok}); P/H={inp['price'] / H:.3f}"
-    )
 
     # 校验步骤 10: cross-rulers, printed and never anchored.
     own = (eps["L"] * inp["pe_own_p75"], eps["M"] * inp["pe_own_med"], eps["H"] * inp["pe_own_p25"])
     print(
         f"交叉尺① 反向 own-year p75/med/p25 {inp['pe_own_p75']}/{inp['pe_own_med']}/{inp['pe_own_p25']} "
-        f"(A6, 实测 gamma {inp['gamma_pe']:+.3f}): {own[0]:.2f}/{own[1]:.2f}/{own[2]:.2f}, 现价 zone={zone_of(inp['price'], *own)}"
+        f"(A6, 实测 gamma {inp['gamma_pe']:+.3f}): {own[0]:.2f}/{own[1]:.2f}/{own[2]:.2f}"
     )
     flat_med = tuple(eps[t] * inp["pe_own_med"] for t in TIERS)
     print(
-        f"交叉尺② flat own-year med {inp['pe_own_med']}: {flat_med[0]:.2f}/{flat_med[1]:.2f}/{flat_med[2]:.2f}, "
-        f"现价 zone={zone_of(inp['price'], *flat_med)}"
+        f"交叉尺② flat own-year med {inp['pe_own_med']}: {flat_med[0]:.2f}/{flat_med[1]:.2f}/{flat_med[2]:.2f}"
     )
     print(
         f"谷底压力坐标 (deep_discount 行): FY2020 EPS {inp['eps_trough_fy2020']} x 1/r = "

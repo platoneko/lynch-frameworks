@@ -2,7 +2,10 @@
 """600011.SH (Huaneng Power International) valuation eval.
 
 frameworks/600011.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price, A or H (AGENTS.md「现价 — 禁写契约」), so nothing here
+computes a zone, a live H/A or a market-implied reading — the digest and the
+app zone on live quotes.
 
 formula_id: huaneng_forward_consensus_mid_pe_v6
 
@@ -51,8 +54,7 @@ anything.  The skill's dividend-ruler exception is checked and reported as
 Guards: numerator ladder + consensus pin, coal-axis cross-check, basket r,
 g cap, shared g2, marginal-return source rule, payout consistency, ROE domain
 window (A22), own-band guardrail, flat-multiple ladder, dividend-ruler g under
-the book bound + 3pp, floor recheck ratio, live H/A, southbound mount
-contract, perp leverage and TTM anchoring on the run-rate cross band,
+the book bound + 3pp, floor recheck ratio, southbound mount contract, perp leverage and TTM anchoring on the run-rate cross band,
 reference rows kept out of the formula, band-edge reverse-solve, A20 bridge
 reproduction, stated-vs-recomputed anchors.
 
@@ -77,7 +79,7 @@ from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report, reverse_ladder,
 )
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600011.SH.md"
 FORMULA_ID = "huaneng_forward_consensus_mid_pe_v6"
@@ -125,7 +127,7 @@ H1_ORDINARY_NI = (78.48, 54.74)       # 亿, attributable to ordinary shareholde
 RENEWABLE_H1_PBT = (57.33, 43.87)     # 亿, wind + solar PBT 2025H1 / 2026H1
 
 REQUIRED = [
-    "price", "price_h", "hkdcny", "shares", "bps", "equity",
+    "hkdcny", "shares", "bps", "equity",
     "eps_l", "eps_m", "eps_h", "eps_fy23", "eps_fy24", "eps_fy25", "eps_ttm", "eps_fy26_q",
     *[f"fuel_fy{y % 100}" for y in LADDER_YEARS], "fuel_mid", "fuel_axis_m",
     "qhd_fy25", "qhd_deck26", "lt_contract_mean",
@@ -139,7 +141,7 @@ REQUIRED = [
     "g_peer_min", "g_peer_max", "g_peer_cross",
     "pe_own_min", "pe_own_max", "pe_hk_own_mid",
     "payout", "req_yield_a", "req_yield_h", "bond10y",
-    "dps", "perp_balance", "pb_lo", "ha_ratio", "pbt_h1x2",
+    "dps", "perp_balance", "pb_lo", "pbt_h1x2",
     "cons_fy26_mean", "cons_fy26_lo", "cons_fy26_hi",
     "cons_fy27_lo", "cons_fy27_mean", "cons_fy27_hi",
     "eps_hk_fy27_lo", "eps_hk_fy27_hi",
@@ -180,9 +182,11 @@ def window_pe_v5(g1: float, n: int, pe_tail: float, r: float) -> float:
 
 def check_southbound_mount(md: str) -> list[str]:
     """Axis §3 rule 3: a mounted ticker is declared on the axis and reports
-    both bands plus the live H/A.  The southbound axis locks no numerator and
-    no multiple for this ticker (Gordon generates it, A13), so the reporting
-    contract is the only thing left to enforce."""
+    both the A-share band and the H-share companion band.  The southbound axis
+    locks no numerator and no multiple for this ticker (Gordon generates it,
+    A13), so the reporting contract is the only thing left to enforce.  The
+    live H/A is a function of today's two prices and no longer lives in the
+    doc; the axis's cross-ticker direction check reads its own dated series."""
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
     errors: list[str] = []
@@ -193,8 +197,6 @@ def check_southbound_mount(md: str) -> list[str]:
         )
     if "H 股平行价带" not in md:
         errors.append("framework lacks the H-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}0\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -343,21 +345,12 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # H 股 companion band: same basket r, dividend-tax discount k on the numerator,
     # floor disclosure only, quoted HKD.
     (hk_l_cny, hk_m_cny, hk_h_cny), _ = band_at(g2, k=k_hk, floored=False)
     hk = {"l": hk_l_cny / inp["hkdcny"], "m": hk_m_cny / inp["hkdcny"], "h": hk_h_cny / inp["hkdcny"]}
     A_h, B_h = cut_points(hk["l"], hk["m"], hk["h"])
-    zone_h = zone_of(inp["price_h"], hk["l"], hk["m"], hk["h"])
-    px_h_cny = inp["price_h"] * inp["hkdcny"]
-
-    def zone_or_na(price: float, b: tuple[float, float, float]) -> str:
-        try:
-            return zone_of(price, *b)
-        except ValueError:
-            return "n/a (M < 地板, 不出 zone)"
 
     # --- Step 3: the 口径 decisions, re-derived ------------------------------
     # A2e-2c — flat-multiple ladder on the three numerators.
@@ -386,13 +379,6 @@ def main() -> int:
             "has failed at L; A2e-1 requires going back to the conversation"
         )
 
-    # A13 — the axis reads H/A off the two live prices; a stale input shows here.
-    ha_live = px_h_cny / inp["price"]
-    if abs(ha_live - inp["ha_ratio"]) > 0.005:
-        errors.append(
-            f"ha_ratio stated {inp['ha_ratio']} vs live {ha_live:.3f} — "
-            "_AXIS.southbound-repricing cross-check would use a stale value"
-        )
     errors += check_southbound_mount(md)
 
     # 校验步骤 6: the perp leverage on the cross band is a calibrated fact.
@@ -449,7 +435,7 @@ def main() -> int:
     if abs(eps_bridge_24 / inp["eps_fy24"] - 1) > CHAIN_TOL:
         errors.append(f"A20 bridge at (fuel_fy24, tariff_fy24) gives {eps_bridge_24:.4f}, >{CHAIN_TOL:.0%} from eps_fy24 {inp['eps_fy24']}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -511,13 +497,13 @@ def main() -> int:
           f"ROE_proj 边际 {marginal_return:.2%} / 资产平均 {roe_fleet:.2%} ({inp['re_pbt_fy25']} ÷ 估算净资产 {inp['re_assets_est']:.0f}) → 等式 NPV {npv['边际']:+.2f} ～ {npv['资产平均']:+.2f} 元/股 ≈ 0 (披露, 不进底牌); "
           f"规则原文权益出资罚项 {penalty['边际']:+.2f} ～ {penalty['资产平均']:+.2f} 元/股 (与债务融资不符, 规则缺口)")
     print(f"倍数生成: r={r:.0%} 篮 4, g2 = 0 → PE = 1/r = {pe_flat:.3f} 三档 flat (A8); 各档 ROE 各自生成 = {pe_tier['l']:.2f}/{pe_tier['m']:.2f}/{pe_tier['h']:.2f} (同值); "
-          f"护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓ (③ 不出带); M 档 Gordon PB {roe['m'] / r:.2f} vs 现价 PB {inp['price'] / inp['bps']:.2f} / H 股 PB {px_h_cny / inp['bps']:.2f}")
+          f"护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓ (③ 不出带); M 档 Gordon PB {roe['m'] / r:.2f}")
     print(f"地板 (A4): scenario_L {scenario_l:.2f} vs floor {inp['pb_lo']} × BPS {inp['bps']} = {floor:.2f} → "
           f"{'地板胜出, L 读资产口径' if floor > scenario_l else '情景值胜出'}; scenario_L/M = {scenario_l / M:.3f} > {FLOOR_RECHECK_RATIO} ✓; "
           f"H 股带地板只披露 ({floor / inp['hkdcny']:.2f} HKD, 在 H 股 L 与 M 之间)")
     print(f"实测运行率交叉带 (A18, 不判定): 六腿 {inp['pbt_l']:.2f}/{inp['pbt_m']:.2f}/{inp['pbt_h']:.2f} -> "
           f"EPS {eps_run['l']:.4f}/{eps_run['m']:.4f}/{eps_run['h']:.4f} x {pe['m']:.3f} = "
-          f"{cross[0]:.2f}/{cross[1]:.2f}/{cross[2]:.2f}, 现价 zone={zone_of(inp['price'], *cross)}")
+          f"{cross[0]:.2f}/{cross[1]:.2f}/{cross[2]:.2f}")
     print(f"六腿链坐标 (今日 k_retain/perp): FY2023 {chain[2023]:.4f} (实测 0.35 的 {chain[2023] / eps['l']:.0%}, 失真) / "
           f"FY2024 {chain[2024]:.4f} ({chain[2024] / inp['eps_fy24'] - 1:+.1%} vs 实测, 互证) / FY2025 {chain[2025]:.4f} → "
           f"{chain[2023] * pe['m']:.2f}/{chain[2024] * pe['m']:.2f}/{chain[2025] * pe['m']:.2f}")
@@ -528,7 +514,7 @@ def main() -> int:
           f"TTM {inp['eps_ttm'] * pe['m']:.2f}; H 股线 FY2027 {inp['eps_hk_fy27_lo'] * pe['m']:.2f}/{inp['eps_hk_fy27_hi'] * pe['m']:.2f}; "
           f"归母读法 (三档扣 perp) -> " + "/".join(f"{(eps[t] * inp['shares'] - inp['perp']) / inp['shares'] * pe[t]:.2f}" for t in TIERS))
     print(f"永续债杠杆 (交叉带): 归母/普通股 = {leverage:.3f} (框架称 {PERP_LEVERAGE}); "
-          f"余额 {inp['perp_balance']:.0f} 亿 = A股市值的 {inp['perp_balance'] / (inp['price'] * inp['shares']):.0%}; "
+          f"余额 {inp['perp_balance']:.0f} 亿; "
           f"盈亏平衡: 六腿跌至 {inp['perp'] / inp['k_retain']:.2f} 亿时普通股股东归零")
     dps_l = eps["l"] * inp["payout"]
     print(f"L 档分红: DPS {dps_l:.4f} vs 当前 {inp['dps']} ({dps_l / inp['dps'] - 1:+.1%}); L 隐含股息率 {dps_l / L:.2%}; "
@@ -538,8 +524,7 @@ def main() -> int:
           + " / ".join(f"{(div[t] - a) / a:+.1%}" for t, a in zip(TIERS, (scenario_l, M, H)))
           + f"; yield 分解 = 国债 {inp['bond10y']:.3%} + 风险溢价 {inp['req_yield_a'] - inp['bond10y']:.3%}")
     print(f"股息尺压力行 (A14/A15, 不入底牌): D_M / r = {dps_m:.4f} / {r:.0%} = {ddm_pressure:.2f} CNY = {ddm_pressure / inp['hkdcny']:.2f} HKD (税后 {k_hk * ddm_pressure / inp['hkdcny']:.2f}); "
-          f"峰值 D0 {inp['dps']} / r = {inp['dps'] / r:.2f}; 现价隐含永续股息增长 (中枢 D0 / 峰值 D0): A {(inp['price'] * r - dps_m) / (inp['price'] + dps_m):+.2%} / {(inp['price'] * r - inp['dps']) / (inp['price'] + inp['dps']):+.2%}, "
-          f"H {(px_h_cny * r - dps_m) / (px_h_cny + dps_m):+.2%} / {(px_h_cny * r - inp['dps']) / (px_h_cny + inp['dps']):+.2%}")
+          f"峰值 D0 {inp['dps']} / r = {inp['dps'] / r:.2f}")
     roe_mark = "✓" if roe["m"] <= r + DDM_EXCEPTION_MARGIN else f"✗ (差 {roe['m'] - r - DDM_EXCEPTION_MARGIN:+.2%})"
     print(f"  skill 股息尺例外 (b): 派息 {inp['payout']:.0%} ≥ {DDM_EXCEPTION_PAYOUT:.0%} {'✓' if inp['payout'] >= DDM_EXCEPTION_PAYOUT else '✗'}; "
           f"中枢 ROE {roe['m']:.2%} ≤ r + {DDM_EXCEPTION_MARGIN:.0%} = {r + DDM_EXCEPTION_MARGIN:.0%} {roe_mark} → "
@@ -550,27 +535,11 @@ def main() -> int:
     print(f"L/M={L / M:.2f} (情景口径 {scenario_l / M:.2f}) H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} (情景口径 {(H - scenario_l) / (2 * M):.1%})")
     print(f"分子比 L/M=n/a (地板胜出; 情景口径 {d['num_lm']:.3f}) H/M={d['num_hm']:.3f} | 倍数比 L/M={d['pe_lm']:.3f} H/M={d['pe_hm']:.3f} (flat 1/r)")
     print(f"flat-multiple ladder (A2e-2c, 三个分子 × PE={pe['m']:.3f}): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    pe_px_a = inp["price"] / eps["m"]
-    g_px, g_px_ok = implied_g_retaining(pe_px_a, roe["m"], r)
-    r_impl_a = eps["m"] / inp["price"] + g2
-    print(f"A股 price={inp['price']} zone={zone} | 现价 = {pe_px_a:.2f}x 中枢 EPS ({inp['price'] / inp['eps_ttm']:.2f}x TTM, {inp['price'] / inp['cons_fy27_mean']:.2f}x FY27 均值, {inp['price'] / eps['h']:.2f}x FY2025); "
-          f"PE 下隐含 EPS {inp['price'] / pe['m']:.4f} = 中枢 × {inp['price'] / pe['m'] / eps['m']:.2f}; "
-          f"留存分支反解 g {g_px:+.2%} ({'越 cap, 不可达' if g_px > g_cap(r) else 'conditioned=' + str(g_px_ok)} — 市场按留存以账面 ROE 复投定价, 年报边际回报 {marginal_return:.2%} 否定)"
-          + (f"; 溢价 (P-H)/H = {(inp['price'] - H) / H:+.1%}" if inp["price"] > H else f"; P/H {inp['price'] / H:.2f}"))
-    r_impl_h = k_hk * eps["m"] / px_h_cny + g2
-    pe_px_h = px_h_cny / eps["m"]
-    g_hk, g_hk_ok = implied_g_retaining(pe_px_h, roe["m"], r)
-    print(f"隐含 r(P) (g = 0, E/P): A {r_impl_a:.2%} (篮 4 {r_impl_a - r:+.1%}; 对 CNY 段披露 {r_ccy:.1%} {r_impl_a - r_ccy:+.1%}); "
-          f"H 税后 {r_impl_h:.2%} (篮 4 {r_impl_h - r:+.1%}; 税前 {eps['m'] / px_h_cny + g2:.2%}); "
-          f"A/H 税后差 {r_impl_h - r_impl_a:+.2%} vs r_f 段差 {inp['cny_rf_gap']:+.2%} (余 = 残差)")
     print(f"H股 (k = 1 − {inp['hk_div_tax']:.0%} × {inp['payout']} = {k_hk:.3f}; PE {k_hk * pe_flat:.2f}) "
-          f"L={hk['l']:.2f} M={hk['m']:.2f} H={hk['h']:.2f} A={A_h:.2f} B={B_h:.2f} price={inp['price_h']} zone={zone_h} | "
-          f"H 股现价 = {pe_px_h:.2f}x 中枢 ({px_h_cny / inp['eps_ttm']:.2f}x TTM, {px_h_cny / inp['cons_fy27_mean']:.2f}x FY27 均值); "
-          f"税后 PE 下隐含 EPS {px_h_cny / (k_hk * pe['m']):.4f} = 中枢 × {px_h_cny / (k_hk * pe['m']) / eps['m']:.2f}; 留存分支反解 g {g_hk:+.2%} (conditioned={g_hk_ok}) "
-          f"(H 股 own-year 近两年中位 {inp['pe_hk_own_mid']} 仅参照); 不扣税 → {hk['l'] / k_hk:.2f}/{hk['m'] / k_hk:.2f}/{hk['h'] / k_hk:.2f} zone={zone_of(inp['price_h'], hk['l'] / k_hk, hk['m'] / k_hk, hk['h'] / k_hk)}")
+          f"L={hk['l']:.2f} M={hk['m']:.2f} H={hk['h']:.2f} A={A_h:.2f} B={B_h:.2f} | "
+          f"(H 股 own-year 近两年中位 {inp['pe_hk_own_mid']} 仅参照); 不扣税 → {hk['l'] / k_hk:.2f}/{hk['m'] / k_hk:.2f}/{hk['h'] / k_hk:.2f}")
     div_h_m = eps["m"] * inp["payout"] / inp["req_yield_h"] / inp["hkdcny"]
-    print(f"_AXIS.southbound-repricing: H/A={ha_live:.3f} (0.433 -> {ha_live:.3f}); 双报契约 ✓; "
-          f"两地 M 档倍数比 {k_hk:.3f} (= k) vs 实测 H/A {ha_live:.3f} (差 = A 股多付的 {inp['price'] / M - 1:+.0%}); 红利尺 H {div_h_m:.2f} HKD 交叉")
+    print(f"_AXIS.southbound-repricing: 双报契约 ✓; 两地 M 档倍数比 {k_hk:.3f} (= k); 红利尺 H {div_h_m:.2f} HKD 交叉")
     print(f"带边反解 g (裁决顺序 ③, 留存分支, 中枢 ROE {roe['m']:.1%}): 下沿 {inp['pe_own_min']}x → 留存 {g_edge_lo:+.2%} (负, 不可达; 全派息读法 {g_edge_lo_full:+.2%}); "
           f"上沿 {inp['pe_own_max']}x ↔ {g_edge_hi_raw:+.2%} → 截 {g_edge_hi:+.2%}; g2 {g2:+.2%} ∈ [0, {g_edge_hi:+.2%}] ✓")
     # 敏感区 (disclosure, not an assertion): g2 alternatives, r ±50bp, alternative baskets.
@@ -579,28 +548,27 @@ def main() -> int:
         hb, _ = band_at(g, k=k_hk, floored=False)
         hb = tuple(v / inp["hkdcny"] for v in hb)
         print(f"敏感区 {lab} g2={g:+.2%} (PE {perpetual_pe(g, roe['m'], r):.2f}): A {'/'.join(f'{x:.2f}' for x in b)} A/B {cut_points(*b)[0]:.2f}/{cut_points(*b)[1]:.2f} "
-              f"zone={zone_of(inp['price'], *b)} | H {'/'.join(f'{x:.2f}' for x in hb)} zone={zone_of(inp['price_h'], *hb)}")
+              f"| H {'/'.join(f'{x:.2f}' for x in hb)}")
     for dr in (-0.005, 0.005):
         b, _ = band_at(g2, r_=r + dr)
         hb, _ = band_at(g2, r_=r + dr, k=k_hk, floored=False)
         hb = tuple(v / inp["hkdcny"] for v in hb)
-        print(f"敏感区 r {dr:+.1%} ({r + dr:.1%}): A {'/'.join(f'{x:.2f}' for x in b)} zone={zone_of(inp['price'], *b)} | "
-              f"H {'/'.join(f'{x:.2f}' for x in hb)} zone={zone_of(inp['price_h'], *hb)}")
+        print(f"敏感区 r {dr:+.1%} ({r + dr:.1%}): A {'/'.join(f'{x:.2f}' for x in b)} | "
+              f"H {'/'.join(f'{x:.2f}' for x in hb)}")
     # CNY r_f segment reading (方案 B): disclosure only, driven by cny_rf_gap, never an r row.
     b_ccy, scen_ccy = band_at(g2, r_=r_ccy)
     print(f"货币段披露 (r_perp − cny_rf_gap = {r_ccy:.1%}, 不进底牌, 待 _AXIS.rates): PE {perpetual_pe(g2, roe['m'], r_ccy):.2f} → "
-          f"A {'/'.join(f'{x:.2f}' for x in b_ccy)} (情景 L {scen_ccy:.2f}) A/B {cut_points(*b_ccy)[0]:.2f}/{cut_points(*b_ccy)[1]:.2f} zone={zone_of(inp['price'], *b_ccy)} (P/M {inp['price'] / b_ccy[1]:.2f}); "
-          f"隐含 r A {r_impl_a:.2%} 对段 {r_impl_a - r_ccy:+.1%}")
+          f"A {'/'.join(f'{x:.2f}' for x in b_ccy)} (情景 L {scen_ccy:.2f}) A/B {cut_points(*b_ccy)[0]:.2f}/{cut_points(*b_ccy)[1]:.2f}")
     # A7: L / H keep their year's own perpetual coupon; re-basing to today's is a coordinate (M is consensus already).
     perp_by_year = {"l": 29.52, "h": 27.74}
     rebased = {t: eps[t] + (perp_by_year[t] - inp["perp"]) / inp["shares"] for t in ("l", "h")}
     reb_band = (max(rebased["l"] * pe_flat, floor), M, rebased["h"] * pe_flat)
     print(f"敏感性: 永续债利息重设至 {inp['perp']} (A7) -> L/H EPS {rebased['l']:.4f}/{rebased['h']:.4f} -> "
-          f"{'/'.join(f'{x:.2f}' for x in reb_band)} zone={zone_of(inp['price'], *reb_band)}; "
-          f"不兜底 -> {scenario_l:.2f}/{M:.2f}/{H:.2f} zone={zone_of(inp['price'], scenario_l, M, H)}")
+          f"{'/'.join(f'{x:.2f}' for x in reb_band)}; "
+          f"不兜底 -> {scenario_l:.2f}/{M:.2f}/{H:.2f} (切点 {'/'.join(f'{x:.2f}' for x in cut_points(scenario_l, M, H))})")
     gm_band = tuple((eps[t] - GUIMU_GAP) * pe_flat for t in TIERS)
     gm_band = (max(gm_band[0], floor), gm_band[1], gm_band[2])
-    print(f"敏感性: 归母读法 (三档各减 {GUIMU_GAP}, 属性 C) -> {'/'.join(f'{x:.2f}' for x in gm_band)} zone={zone_or_na(inp['price'], gm_band)}")
+    print(f"敏感性: 归母读法 (三档各减 {GUIMU_GAP}, 属性 C) -> {'/'.join(f'{x:.2f}' for x in gm_band)}")
     # 校验步骤 17 (A20): the tariff is the residual; these are pressure coordinates, not tiers.
     for lab, f, tf in (("FY2024 煤 + FY2024 电价 [复现 FY2024 印数]", inp["fuel_fy24"], inp["tariff_fy24"]),
                        ("FY2024 煤 + 2026H1 电价 463.02 [压力坐标]", inp["fuel_fy24"], inp["tariff_now"]),
@@ -614,17 +582,16 @@ def main() -> int:
     # 校验步骤 18: coordinates that are NOT the deck, each named for why not.
     v5 = (max(eps["l"] * PE_M_V5, floor), EPS_M_V5 * PE_M_V5, EPS_M_V5 * PE_H_V5)
     print(f"对照 v5 中枢带 (FY2024 印数 {EPS_M_V5} × {PE_M_V5}, g2 {G2_V5:+.0%}, 共识窗口 {PE_H_V5}): A {'/'.join(f'{x:.2f}' for x in v5)} "
-          f"zone={zone_of(inp['price'], *v5)} — 中枢落在低谷侧 + g2 无来源 (Changelog 2026-09-20 v6)")
+          f"— 中枢落在低谷侧 + g2 无来源 (Changelog 2026-09-20 v6)")
     for lab, basket in (("备选篮 2 管制公用", 2), ("备选篮 6 周期商品", 6)):
         b, scen = band_at(g2, r_=basket_r(basket))
-        print(f"对照 {lab} r={basket_r(basket):.1%}: A 情景 {scen:.2f}/{b[1]:.2f}/{b[2]:.2f} (L 兜底 {b[0]:.2f}) zone={zone_or_na(inp['price'], b)}")
+        print(f"对照 {lab} r={basket_r(basket):.1%}: A 情景 {scen:.2f}/{b[1]:.2f}/{b[2]:.2f} (L 兜底 {b[0]:.2f})")
     v4 = tuple(inp[k] * PE_V4 for k in ("cons_fy27_lo", "cons_fy27_mean", "cons_fy27_hi"))
-    print(f"对照 v4 峰值分子带 (FY2027 共识三点 × {PE_V4}): A {'/'.join(f'{x:.2f}' for x in v4)} zone={zone_of(inp['price'], *v4)} | "
-          f"H zone={zone_of(inp['price_h'], *(x / inp['hkdcny'] for x in v4))} — 峰值分子的坐标 (A16)")
+    print(f"对照 v4 峰值分子带 (FY2027 共识三点 × {PE_V4}): A {'/'.join(f'{x:.2f}' for x in v4)} — 峰值分子的坐标 (A16)")
     pe_v3 = 1.0 / (r - G2_OLD_BRANCH)  # full-payout branch: payout capped at 100%
     v3 = tuple(inp[k] * pe_v3 for k in ("cons_fy27_lo", "cons_fy27_mean", "cons_fy27_hi"))
     print(f"对照 v3 全派息分支 {G2_OLD_BRANCH:+.2%} flat {pe_v3:.2f}x 于共识三点: A {'/'.join(f'{x:.2f}' for x in v3)} "
-          f"zone={zone_of(inp['price'], *v3)} — 分支错误的坐标 (A15/A16)")
+          f"— 分支错误的坐标 (A15/A16)")
 
     return report(errors)
 

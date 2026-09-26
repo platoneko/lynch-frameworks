@@ -2,7 +2,8 @@
 """002895.SZ (Chuanheng) valuation eval.
 
 frameworks/002895.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: chuanheng_map_ladder_margin_bridge_flat_pe_v1
 
@@ -26,8 +27,7 @@ best thing: it asserts the H scenario stays under the FY2022 peak margin of
 
 The basket r (篮 6, 13%) does not enter the flat-PE deck (A14).  It is a
 disclosure-only `r_perp` row: the script checks the basket tag and value agree
-(`check_r`), prints the 篮 6 contrast band at 1/r, the implied r(P) and the
-PB=1 floor (disclosed, never max()-ed into L).
+(`check_r`), prints the 篮 6 contrast band at 1/r and the PB=1 floor (disclosed, never max()-ed into L).
 
 Run:  python3 frameworks/eval/002895.SZ.py
 """
@@ -43,7 +43,7 @@ from lib.gordon import check_r, g_cap  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
@@ -55,7 +55,7 @@ NP_M_TOL_YI = 0.05
 GM_PEAK_FY2022 = 0.4444  # FY2022 gross margin — the ceiling for H
 
 REQUIRED = [
-    "price", "shares", "rev_h1", "gm_rate_h1", "op_h1", "eps_h1",
+    "shares", "rev_h1", "gm_rate_h1", "op_h1", "eps_h1",
     "h1_share_fy", "map_l", "map_m", "map_h",
     "expo", "pass_through", "conv", "pe_l", "pe_m", "pe_h",
     "bps", "r_perp",
@@ -133,8 +133,7 @@ def main() -> int:
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- report ----------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -164,8 +163,7 @@ def main() -> int:
         f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} "
         f"| 分子比 L={sc_l[5] / sc_m[5]:.4f} H={sc_h[5] / sc_m[5]:.4f}"
     )
-    print(f"price={inp['price']} zone={zone}")
-    # A14: 篮 6 contrast band at 1/r, ROE per tier vs r, implied r(P); floor disclosed only.
+    # A14: 篮 6 contrast band at 1/r, ROE per tier vs r; floor disclosed only.
     peak_pe = 1 / r
     eps_l, eps_m, eps_h = sc_l[5], sc_m[5], sc_h[5]
     roe_m = eps_m / inp["bps"]
@@ -173,9 +171,7 @@ def main() -> int:
         f"r_perp {r:g} (篮 {baskets.get('r_perp')}), disclosure only; g_cap={g_cap(r):.2f} (no g2 row); "
         f"1/r={peak_pe:.2f}x contrast band "
         f"{eps_l * peak_pe:.2f}/{eps_m * peak_pe:.2f}/{eps_h * peak_pe:.2f} "
-        f"ROE {eps_l / inp['bps']:.1%}/{roe_m:.1%}/{eps_h / inp['bps']:.1%} -> "
-        f"implied r(P) @g=0 = {eps_m / inp['price']:.1%}, "
-        f"@g=3% = {0.03 + (1 - 0.03 / roe_m) * eps_m / inp['price']:.1%}"
+        f"ROE {eps_l / inp['bps']:.1%}/{roe_m:.1%}/{eps_h / inp['bps']:.1%}"
     )
     print(f"floor(PB=1.0)={inp['bps']:.2f} (disclosure only, L stays {L:.2f})")
     return report(errors)
