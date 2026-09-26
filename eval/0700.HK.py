@@ -25,6 +25,9 @@ only (A1b).  r is the basket rate: the Inputs `r_perp` row names 篮 4 龙头制
 (A14) and `check_r` requires r to equal that basket's value; g2 is capped at
 `g_cap(r)` = min(6%, r - 4%).  The realised 5-year monthly PE band [pe_own_min, pe_own_max]
 (IFRS-basis series, denominator `eps_ttm_ifrs`) is a guardrail, never an input.
+The framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
+script neither reads a price nor derives or checks a zone -- the daily digest
+derives the zone from live quotes.
 
 Run:  python3 frameworks/eval/0700.HK.py
 """
@@ -41,7 +44,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
 from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -56,7 +59,7 @@ LEGS = ("dom", "intl", "ads", "fbs")
 TIERS = ("l", "m", "h")
 
 REQUIRED = [
-    "price", "shares", "fx",
+    "shares", "fx",
     "eps27_l_cny", "eps27_m_cny", "eps27_h_cny", "bps_hkd", "eps26_m_cny", "ni_1h26_cny", "payout_3y",
     "r_perp", "g2", "g1_fy28_hsbc", "n_fy28_cand", "pe_own_min", "pe_own_max", "eps_ttm_ifrs",
     "w_dom", "w_intl", "w_ads", "w_fbs",
@@ -180,7 +183,6 @@ def main() -> int:
     if not (L < M < H):
         return report([f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # --- valuation-rules guardrail (裁决顺序 ③): whole-ticker multiple on the
     # IFRS TTM EPS that Longbridge's PE series uses, inside the realised band
@@ -203,7 +205,7 @@ def main() -> int:
     if not (cand["l"] < cand["m"] < cand["h"]):
         errors.append(f"candidate band not ordered: {cand}")
 
-    # --- stated anchors / cut points / zone ---------------------------------
+    # --- stated anchors / cut points ----------------------------------------
     out_sec = md.split("### Outputs", 1)[-1]
     cm = re.findall(r"候选带（[^）]+）[^\n]*?L′ = \*\*([0-9.]+)\*\*[^\n]*?M′ = \*\*([0-9.]+)\*\*[^\n]*?H′ = \*\*([0-9.]+)\*\*", out_sec)
     if len(cm) != 1:
@@ -218,9 +220,6 @@ def main() -> int:
             errors.append(f"stated {key} not found")
         elif abs(float(m.group(1)) - val) > TOL:
             errors.append(f"{key}: stated {m.group(1)} vs recomputed {val:.4f}")
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    if not zm or zm.group(1) != zone:
-        errors.append(f"zone: stated {zm.group(1) if zm else None} vs recomputed {zone}")
 
     stated_legs = stated_leg_table(out_sec)
     names = ("国内", "国际", "广告", "FBS", "经营合计", "NAV", "净现金", "合计")
@@ -281,7 +280,6 @@ def main() -> int:
         g_edge, ok = implied_g(pe_edge, S["m"]["roe"], inp["r_perp"])
         print(f"  band edge {edge}x -> ops PE {pe_edge:.2f} -> g {g_edge:+.2%}{'' if ok else ' (ill-conditioned)'}")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
-    print(f"price={inp['price']} zone={zone}")
     for g in (inp["g2"] - 0.01, inp["g2"] + 0.01):
         alt = {t: scenario(dict(inp, g2=g), t)["anchor"] for t in TIERS}
         print(f"  sens g2={g:.4f}: {alt['l']:.1f}/{alt['m']:.1f}/{alt['h']:.1f}")
@@ -292,7 +290,7 @@ def main() -> int:
         shifted = dict(inp, r_perp=inp["r_perp"] + dr)
         return tuple(scenario(shifted, t)["anchor"] for t in TIERS)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

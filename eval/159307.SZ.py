@@ -9,9 +9,13 @@ retains nothing, allocates nothing), and index PE / PB / ROE are snapshots of
 the current basket.  So the ruler is the underlying index's total-return trend
 channel (valuation-rules.md「§ETF 例外」, eval/lib/etf.py): M = log-linear
 trend (outliers > 2σ dropped and refit), L / H = residual p10 / p90, mapped to
-the ETF price by k = price / index level.  Dividend ETF → the rate-neutral
-cross-read (joint fit on the CNY 10Y) is mandatory; its zone′ is printed next
-to the main zone, never replaces it.
+the ETF price by k = nav_ref / index level on the same as-of date.  Dividend
+ETF → the rate-neutral cross-read (joint fit on the CNY 10Y) is mandatory; its
+L′/M′/H′ are printed next to the deck, never replace it.
+
+The framework states no current price (AGENTS.md「现价 — 禁写契约」): no zone,
+no distance-to-anchor, no market-implied r / g; the digest and the app zone
+the live quote themselves.
 
 The basket r (look-through → 篮 4, A11) does not enter the channel.  It is a
 disclosure-only `r_perp` row, checked against the basket table, and it drives
@@ -35,13 +39,12 @@ from lib.etf import (  # noqa: E402
 )
 from lib.etf_lookthrough import scale  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    NEAR_FULL_PAYOUT, check_branch, check_g_cap, check_r, implied_g, implied_g_retaining,
-    perpetual_pe,
+    NEAR_FULL_PAYOUT, check_branch, check_g_cap, check_r, implied_g_retaining, perpetual_pe,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "159307.SZ.md"
 FORMULA_ID = "etf_tr_trend_channel_v1"
@@ -56,15 +59,15 @@ DY_PRIOR = 0.048      # prior β = −1/DY (ETF TTM yield)
 REGIME = None         # no nameable break: sub-window slopes within REGIME_GAP of the full window
 
 REQUIRED = [
-    "price", "pe_now", "r_perp", "roe_idx", "roe_l", "roe_h",
+    "nav_ref", "pe_now", "r_perp", "roe_idx", "roe_l", "roe_h",
     "dps_ttm", "dps_ttm_prev", "payout_etf", "payout_evid_min", "payout_evid_max",
     "g2_l", "g2_m", "g2_h", "pe_l", "pe_m", "pe_h", "pe_own_min", "pe_own_max", "g_edge_full",
     "pe_v4", "pe_same_min", "pe_same_med", "pe_same_max", "idx_dy", "fee_drag",
     "idx_eps_2023", "idx_eps_2025", "idx_eps_now", "eps_k_l", "eps_k_m",
     "g_cov_fwd", "cov_w", "eps_k_h",
-    "chan_slope", "chan_slope_2019", "chan_slope_2021", "chan_sigma", "chan_z",
+    "chan_slope", "chan_slope_2019", "chan_slope_2021", "chan_sigma",
     "chan_l_idx", "chan_m_idx", "chan_h_idx", "idx_cur",
-    "r_lt_implied", "beta_rate_prior", "rf_ccy_mid", "rf_start", "rf_now",
+    "beta_rate_prior", "rf_ccy_mid", "rf_start", "rf_now",
     "beta_rate_level", "beta_rate_diff", "chan_slope_rn", "chan_m_rn_idx",
     "pe_band_2018_23_lo", "pe_band_2018_23_hi", "eps_pt_from_peak", "dps_pt_2025_yoy",
 ]
@@ -75,7 +78,6 @@ PE_TOL = 0.05
 K_TOL = 0.005
 SLOPE_TOL = 0.0015     # channel slopes stated to 0.1pp
 SIGMA_TOL = 0.0015
-Z_TOL = 0.02
 IDX_TOL = 0.002        # channel levels in index points, stated to the point
 BETA_TOL = 0.1
 RF_TOL = 0.0001
@@ -95,7 +97,7 @@ def main() -> int:
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
-    price, fee = inp["price"], inp["fee_drag"]
+    nav_ref, fee = inp["nav_ref"], inp["fee_drag"]
 
     # --- Step 1: basket r (disclosure only; the channel has no r) -------------
     baskets = parse_baskets(md)
@@ -126,21 +128,19 @@ def main() -> int:
     if abs(ch["cur"] - inp["idx_cur"]) > IDX_TOL * inp["idx_cur"]:
         errors.append(f"idx_cur {inp['idx_cur']} != cached index last close {ch['cur']:.2f} ({ch['end']})")
     for key, val, tol in (("chan_slope", ch["slope"], SLOPE_TOL), ("chan_slope_2019", subs["2019"], SLOPE_TOL),
-                          ("chan_slope_2021", subs["2021"], SLOPE_TOL), ("chan_sigma", ch["sigma"], SIGMA_TOL),
-                          ("chan_z", ch["z"], Z_TOL)):
+                          ("chan_slope_2021", subs["2021"], SLOPE_TOL), ("chan_sigma", ch["sigma"], SIGMA_TOL)):
         if abs(val - inp[key]) > tol:
             errors.append(f"{key} {inp[key]} != recomputed {val:.4f}")
     for key, val in (("chan_l_idx", ch["L"]), ("chan_m_idx", ch["M"]), ("chan_h_idx", ch["H"])):
         if abs(val - inp[key]) > IDX_TOL * inp[key]:
             errors.append(f"{key} {inp[key]} != recomputed {val:.0f}")
-    # channel levels are index points; price ≡ NAV tracks TR, so map by the current ratio
-    k = price / ch["cur"]
+    # channel levels are index points; NAV tracks TR, so map by NAV / index on the as-of date
+    k = nav_ref / ch["cur"]
     L, M, H = ch["L"] * k, ch["M"] * k, ch["H"] * k
     errors += ladder("channel", L, M, H)
     if errors:
         return report(errors, "FAIL (channel)")
     A, B = cut_points(L, M, H)
-    zone = zone_of(price, L, M, H)
 
     # --- Step 3: rate-neutral cross-read (dividend ETF → mandatory) -----------
     rn = None
@@ -156,19 +156,18 @@ def main() -> int:
         if abs(rn["M"] - inp["chan_m_rn_idx"]) > IDX_TOL * inp["chan_m_rn_idx"]:
             errors.append(f"chan_m_rn_idx {inp['chan_m_rn_idx']} != recomputed {rn['M']:.0f}")
         rn["chan"] = tuple(v * k for v in (rn["L"], rn["M"], rn["H"]))
-        rn["zone"] = zone_of(price, *rn["chan"])
         if errors:
             return report(errors, "FAIL (rate-neutral)")
 
     # --- Step 4: company-ruler cross-check (guards stay hard; band is 对照) ----
     roe = inp["roe_idx"]
-    eps = price / inp["pe_now"]
+    eps = nav_ref / inp["pe_now"]
     ks = (inp["eps_k_l"], inp["eps_k_m"], inp["eps_k_h"])
 
     # Branch facts: payout (A4) + dividend trend (A10)
     payout_etf = inp["dps_ttm"] / eps
     if abs(payout_etf - inp["payout_etf"]) > PAYOUT_TOL:
-        errors.append(f"payout_etf {inp['payout_etf']} != dps_ttm / (price / pe_now) = {payout_etf:.4f}")
+        errors.append(f"payout_etf {inp['payout_etf']} != dps_ttm / (nav_ref / pe_now) = {payout_etf:.4f}")
     if payout_etf >= NEAR_FULL_PAYOUT:
         errors.append(f"payout {payout_etf:.0%} >= {NEAR_FULL_PAYOUT:.0%} — basket no longer retains; re-decide (A8)")
     if payout_etf > PAYOUT_TRIGGER:
@@ -249,7 +248,7 @@ def main() -> int:
         return report(errors, "FAIL (cross-check band)")
 
     # --- Step 5: deck must equal the Outputs line -----------------------------
-    errors = check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.002)
+    errors = check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.002)
     if errors:
         return report(errors)
 
@@ -258,42 +257,38 @@ def main() -> int:
     print(f"篮子: r_perp={r:.1%} 篮 {baskets['r_perp']}（look-through 加权粗算 10.3–10.8%，只披露；通道无 r）; "
           f"g2 cap = min(6%, r−4%) = {min(0.06, r - 0.04):.1%}, 公司尺具名 g2=0")
     print(f"通道: 斜率 {ch['slope']:+.1%}（全窗）· 子窗 2019 起 {subs['2019']:+.1%} / 2021 起 {subs['2021']:+.1%} "
-          f"(gap {max(abs(v - full['slope']) for v in subs.values()):.1%} < {REGIME_GAP:.0%}, regime 不触发) · σ {ch['sigma']:.1%} · z {ch['z']:+.2f} · "
-          f"现值 {ch['cur']:,.2f} vs M {ch['M']:,.0f} = {ch['cur'] / ch['M'] - 1:+.1%}")
-    print(f"指数点 L/M/H = {ch['L']:,.0f} / {ch['M']:,.0f} / {ch['H']:,.0f}; k = price {price} / {ch['cur']:,.2f} = {k:.3e}")
+          f"(gap {max(abs(v - full['slope']) for v in subs.values()):.1%} < {REGIME_GAP:.0%}, regime 不触发) · σ {ch['sigma']:.1%}")
+    print(f"指数点 L/M/H = {ch['L']:,.0f} / {ch['M']:,.0f} / {ch['H']:,.0f}; k = nav_ref {nav_ref} / {ch['cur']:,.2f} = {k:.3e}")
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0.000 (残差 p10 {L / M - 1:+.1%} / p90 {H / M - 1:+.1%})")
     print(f"L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}")
-    print(f"price={price} zone={zone} | (P−M)/M = {(price - M) / M:+.2%}, (P−A)/P = {(price - A) / price:+.2%}")
     if rn:
         Lr, Mr, Hr = rn["chan"]
         print(f"去利率化对照版: CNY 10Y {rn['rf_start']:.2%} → {rn['rf_now']:.2%} / 中枢 {rn['rf_mid']:.1%}; 去利率化斜率 {rn['slope']:+.1%} "
               f"(利率顺风 {rn['rate_drift']:+.2%}/yr); β level {rn['beta']:+.1f} / 差分 {rn['beta_diff']:+.1f} (ρ {rn['rho_diff']:+.2f}) / 先验 {rn['beta_prior']:+.0f}; "
-              f"z′ {rn['z']:+.2f}; L′/M′/H′ {Lr:.4f} / {Mr:.4f} / {Hr:.4f}; 现价 vs M′ {price / Mr - 1:+.1%} → zone′={rn['zone']}（主 {zone}）")
-        print(f"先验 β 压力行: 斜率 {rn['prior']['slope']:+.1%}, 现价 vs M′ {rn['prior']['vsM']:+.1%}（纯永续世界，不出 zone）")
+              f"L′/M′/H′ {Lr:.4f} / {Mr:.4f} / {Hr:.4f}; 利率中枢化使 M 移动 {Mr / M - 1:+.1%}")
+        print(f"先验 β 压力行: 斜率 {rn['prior']['slope']:+.1%}, M′ {rn['prior']['M'] * k:.4f}（纯永续世界，不出带）")
     c19 = channel(s[s.index >= SUBWINDOWS[0]])
     b19 = tuple(c19[key] * k for key in ("L", "M", "H"))
-    print(f"敏感性 通道窗 2019 起 (斜率 {c19['slope']:+.1%}): {'/'.join(f'{x:.4f}' for x in b19)} zone={zone_of(price, *b19)}（只披露，不改窗）")
+    print(f"敏感性 通道窗 2019 起 (斜率 {c19['slope']:+.1%}): {'/'.join(f'{x:.4f}' for x in b19)}（只披露，不改窗）")
     print(f"E 侧护栏（只打印）: PE {inp['pe_now']} vs 自身带 [{inp['pe_own_min']}, {inp['pe_own_max']}] / 2018–23 带 [{inp['pe_band_2018_23_lo']}, {inp['pe_band_2018_23_hi']}]; "
-          f"EPS/点 自 2023 顶 {inp['eps_pt_from_peak']:+.0%}; 每点分红 2025 {inp['dps_pt_2025_yoy']:+.0%}; 派息率 {payout_etf:.1%} (TTM DPS YoY {dps_yoy:+.1%}); "
-          f"成分层 PB-ROE 隐含 r {inp['r_lt_implied']:.1%} vs 篮 {baskets['r_perp']} {r:.1%} ({(inp['r_lt_implied'] - r) * 100:+.1f}pp)")
+          f"EPS/点 自 2023 顶 {inp['eps_pt_from_peak']:+.0%}; 每点分红 2025 {inp['dps_pt_2025_yoy']:+.0%}; 派息率 {payout_etf:.1%} (TTM DPS YoY {dps_yoy:+.1%})")
     print(f"地板: 不设（被动篮子无独立于净值的公允价）; 不 max()")
 
     # company-ruler cross-check (was the v1 primary) — printed, compared with the Outputs 对照 line
-    print(f"对照 {CROSS_FORMULA_ID}: 透视 EPS = {price} / {inp['pe_now']} = {eps:.5f}; 派息率 {payout_etf:.2%} (< {NEAR_FULL_PAYOUT:.0%} 仍留存; "
+    print(f"对照 {CROSS_FORMULA_ID}: 透视 EPS = nav_ref {nav_ref} / {inp['pe_now']} = {eps:.5f}; 派息率 {payout_etf:.2%} (< {NEAR_FULL_PAYOUT:.0%} 仍留存; "
           f"证据区间 [{ev_lo:.1%}, {ev_hi:.1%}])")
     print(f"  同世界门: 3y 透视 EPS 因子 {k_3y:.4f} ({k_3y - 1:+.1%}/yr), 1y {k_1y:.4f} ({k_1y - 1:+.1%}) DOWN; "
           f"覆盖共识 {inp['g_cov_fwd']:+.2%} on {inp['cov_w']:.1%} weight → DOWN 赢 → 留存正 g 不可用")
     print(f"  反事实留存分支 g=(1−{payout_etf:.1%})×ROE {roe:.1%} = {g_retention_m:+.2%} → PE {perpetual_pe(g_retention_m, roe, r):.2f}x (v4); "
           f"check_branch: {branch_msgs[0] if branch_msgs else '符号/幅度通过（挡住的是同世界门）'}")
     print(f"  具名 g2=0 → 1/r = {pe_zero:.2f}x; 自身带顶 {inp['pe_own_max']} 截断 → {pe_edge:.2f}x flat "
-          f"(边缘残余 g 全派息 {g_edge_full:+.2%} / 留存 {implied_g_retaining(pe_edge, roe, r)[0]:+.2%}，只披露); "
-          f"市价 {inp['pe_now']}x 反解 留存 {implied_g_retaining(inp['pe_now'], roe, r)[0]:+.2%} / 全派息 {implied_g(inp['pe_now'], roe, r)[0]:+.2%}")
-    print(f"  对照带 L/M/H = {Lc:.4f} / {Mc:.4f} / {Hc:.4f} zone={zone_of(price, Lc, Mc, Hc)}; 通道 vs 公司尺 M {M / Mc - 1:+.1%}, H {H / Hc - 1:+.1%}")
-    for lab, pe in (("v5 具名零不截断", pe_zero), ("v4 留存分支", inp["pe_v4"]), ("fair=市场", inp["pe_now"]),
+          f"(边缘残余 g 全派息 {g_edge_full:+.2%} / 留存 {implied_g_retaining(pe_edge, roe, r)[0]:+.2%}，只披露)")
+    print(f"  对照带 L/M/H = {Lc:.4f} / {Mc:.4f} / {Hc:.4f}; 通道 vs 公司尺 M {M / Mc - 1:+.1%}, H {H / Hc - 1:+.1%}")
+    for lab, pe in (("v5 具名零不截断", pe_zero), ("v4 留存分支", inp["pe_v4"]),
                     ("同等盈利实测 med", inp["pe_same_med"])):
         b = band(pe)
-        print(f"  对照 {lab} {pe:.2f}x: {'/'.join(f'{x:.4f}' for x in b)} zone={zone_of(price, *b)}")
-    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}  zone={zone}  price={price}")
+        print(f"  对照 {lab} {pe:.2f}x: {'/'.join(f'{x:.4f}' for x in b)}")
+    print(f"OK  L={L:.4f} M={M:.4f} H={H:.4f} A={A:.4f} B={B:.4f}")
     return 0
 
 

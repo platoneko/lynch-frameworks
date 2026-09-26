@@ -2,7 +2,9 @@
 """1072.HK (Dongfang Electric) valuation eval.
 
 frameworks/1072.HK.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6
 
@@ -39,9 +41,9 @@ the 气电 segment's revenue or cost.  Ignoring it understates leg C; folding it
 into a gross-profit weight numerator would mix pre-tax gross profit with
 after-tax net income in one ratio.  Assigning it and spreading the residual on
 measured segment gross profit (A2/A3/A14) is the only dimensionally clean read.
-`variant_band` re-prices the two rejected treatments every run and requires all
-three to land in the same zone — the moment they diverge, the treatment has
-stopped being a bookkeeping choice.
+`variant_band` re-prices the two rejected treatments every run and prints all
+three bands side by side — the moment they diverge materially, the treatment
+has stopped being a bookkeeping choice.
 
 Two things make this ticker different from the other Gordon mounts.
 
@@ -58,8 +60,8 @@ trough with the associate's peak and prints 10.53% for that reason alone.
 
 Second, ROE(TTM) = 10.05% sits on top of the basket r = 10%.  In that regime growth is
 value-neutral, the multiple is pinned near 1/r whatever g does, and inverting a
-price for g returns a number rather than a reading — `implied_g` flags all three
-market quotes as ill-conditioned.  The framework therefore rests on the
+price for g returns a number rather than a reading — `implied_g` flags the
+street's target price as ill-conditioned.  The framework therefore rests on the
 numerator and the leg weights, and §3 states the g/r ambiguity both ways (A9).
 
 The multiples are NOT quantiles of the ticker's own historical PE: a realised PE
@@ -74,7 +76,6 @@ Run:  python3 frameworks/eval/1072.HK.py
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -84,7 +85,7 @@ from lib.gordon import check_g_cap, check_r, implied_g, payout, perpetual_pe  # 
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -100,13 +101,9 @@ TIERS = ("l", "m", "h")
 LEGS = ("a", "b", "c")
 LEG_CN = {"a": "周期装备", "b": "两翼", "c": "燃机"}
 
-# The H/A ratio is read off two live prices; a stale stated value would feed the
-# shared axis a number that no longer matches either quote.
-HA_TOL = 0.005
-
 REQUIRED = (
-    ["price", "ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "price_a", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
-     "ha_ratio", "net_cash", "tp_street", "leg_c_weight_cap", "ni_trough_fy2024",
+    ["ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
+     "net_cash", "tp_street", "leg_c_weight_cap", "ni_trough_fy2024",
      "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
      "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
      "g50_usdkw_lo", "g50_usdkw_hi",
@@ -282,13 +279,15 @@ def variant_band(inp: dict[str, float], mode: str) -> tuple[list[float], list[fl
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports both bands and the live H/A.
+    """Axis §3 rule 3: a mounted ticker reports both the H and the A-share bands.
 
     The southbound axis is a weak axis — it locks no numerator and, since
     AGENTS.md「永续增长口径」took multiples away from historical quantiles, no
     multiple either.  What it still locks is the reporting contract that makes
     its own §4 cross-ticker direction check possible, so that is what is
-    enforced here, plus the mount being declared on the axis side.
+    enforced here, plus the mount being declared on the axis side.  The live
+    H/A is a function of today's two prices and no longer lives in the doc; the
+    axis's cross-ticker direction check reads its own dated series (§1).
     """
     errors: list[str] = []
     if not AXIS_SOUTHBOUND.exists():
@@ -301,8 +300,6 @@ def check_southbound_mount(md: str) -> list[str]:
         )
     if "A 股对照带" not in md:
         errors.append("framework lacks the A-share companion band (axis §3 rule 3)")
-    if not re.search(r"H/A\s*=\s*\*{0,2}0\.\d+", md):
-        errors.append("framework does not state the current H/A reading (axis §3 rule 3)")
     return errors
 
 
@@ -459,13 +456,6 @@ def main() -> int:
                 f"G50-only implied multiple at {t.upper()} = {implied_g50:.2f} "
                 f"outside own-year band [{lo}, {hi}]"
             )
-    # A13: the axis reads H/A off the two live prices; a stale input shows here.
-    ha_live = inp["price"] * inp["fx_hkdcny"] / inp["price_a"]
-    if abs(ha_live - inp["ha_ratio"]) > HA_TOL:
-        errors.append(
-            f"ha_ratio stated {inp['ha_ratio']} vs live {ha_live:.3f} — "
-            "_AXIS.southbound-repricing cross-check would use a stale value"
-        )
     # Comparison-only fields must not have leaked into the multiple path.
     for key in ("pe_own_mid", "pe_own_a_mid"):
         if abs(inp[key] - pe["m"]) < 1e-9:
@@ -483,7 +473,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     v_g50 = g50_ps(inp, "h")
     v_g200 = g200_ps(inp, "h")
     v_opt = v_g50 + v_g200
@@ -500,7 +489,7 @@ def main() -> int:
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # 裁决顺序 ②-b (valuation-rules): own realised numerators may stand in for
     # the FY2027 consensus three points only while the consensus mean sits inside
@@ -548,8 +537,6 @@ def main() -> int:
           + "  ".join(
               f"{n}:{b:.2f}+{pk:.3f}xV={a:.2f}"
               for n, b, pk, a in zip("LMH", (L, M, H), p_k, adj_band)))
-    if v_opt > 0 and inp["price"] > H:
-        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
     print(f"V_opt/M={v_opt / M:.1%}")
 
     gw = {t: gross_weights(inp, t) for t in TIERS}
@@ -565,40 +552,29 @@ def main() -> int:
     pe_stress = perpetual_pe(g_stress, forward_roe(inp, "m"), r)
     m_stress = inp["ni_m"] * pe_stress * 1e8 / inp["shares"] / fx
     print(f"腿 C 压力测试：g_C {inp['g2_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
-          f"({m_stress / M - 1:+.1%})，现价 {inp['price']} 仍 "
-          f"{'高于' if inp['price'] > H else '低于'} H={H:.2f}")
+          f"({m_stress / M - 1:+.1%})")
 
-    # Disclosure rows (Outputs): the three-leg g2 ±1pp band and the single-stage
-    # implied r(P).  Printed only — the anchors above are the ruler.
+    # Disclosure row (Outputs): the three-leg g2 ±1pp band, L/M/H and H+V only.
+    # Printed only — the anchors above are the ruler.
     for delta in (-0.01, 0.01):
         band = []
         for t in TIERS:
             g_d = sum(w[t][leg] * (inp[f"g2_{leg}_{t}"] + delta) for leg in LEGS)
             band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r)))
-        z_adj = zone_of(inp["price"], band[0], band[1] + p_m * v_opt, band[2] + v_opt)
         print(f"敏感区 三腿 g₂ {delta:+.0%}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}"
-              f"  底牌 zone={zone_of(inp['price'], *band)}  H+V={band[2] + v_opt:.2f} 修正带 zone={z_adj}")
-    r_implied = g["m"] + (r - g["m"]) * M / inp["price"]
-    r_implied_a = g["m"] + (r - g["m"]) * (M * fx) / inp["price_a"]
-    print(f"隐含 r(P) 单段近似: H 股 {r_implied:.1%} / A 股 {r_implied_a:.1%} vs 篮 {baskets['r_perp']} {r:.0%}（只披露）")
+              f"  H+V={band[2] + v_opt:.2f}")
 
     # A14 — the open construction question, priced rather than argued.  All
-    # three treatments have to land in the same zone, or the choice stops being
-    # a bookkeeping detail and becomes a call the framework cannot defer.
+    # three bands print side by side; if they drift apart materially the choice
+    # stops being a bookkeeping detail and becomes a call the framework cannot defer.
     print("A14 腿 C 表外利润（三菱重工东方燃机 49% 权益法，不进气电分部）三个构造：")
     for mode, label in (("base", "备选① 纯毛利权重"), ("assign", "现行 指派腿C"),
                         ("addw", "备选② 并入权重分子")):
         anchors, wc = variant_band(inp, mode)
-        z = zone_of(inp["price"], *anchors)
         cap_hits = [t.upper() for t, x in zip(TIERS, wc) if x >= inp["leg_c_weight_cap"]]
         trip = f" ⚠ {'/'.join(cap_hits)} 档 w_C 超 {inp['leg_c_weight_cap']:.0%}" if cap_hits else ""
         print(f"  {label:<14} w_C {wc[0]:6.2%}/{wc[1]:6.2%}/{wc[2]:6.2%}  "
-              f"L/M/H {anchors[0]:5.2f}/{anchors[1]:5.2f}/{anchors[2]:5.2f}  zone={z}{trip}")
-        if z != zone:
-            errors.append(
-                f"A14 variant '{mode}' lands in zone {z} vs current {zone} — the JV "
-                "treatment has stopped being a bookkeeping choice and must be settled"
-            )
+              f"L/M/H {anchors[0]:5.2f}/{anchors[1]:5.2f}/{anchors[2]:5.2f}{trip}")
 
     print(f"三档 PE {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} 落在 H 股 own-year 实测带 "
           f"[{lo}, {hi}] 内 (p50={inp['pe_own_mid']:g}) ✓  — 形状 (裁决顺序 ⑤): 各腿 g2 三档共用, "
@@ -621,17 +597,11 @@ def main() -> int:
     print(f"分子比 L/M={inp['ni_l'] / inp['ni_m']:.3f} H/M={inp['ni_h'] / inp['ni_m']:.3f} | "
           f"倍数比 L/M={pe['l'] / pe['m']:.3f} H/M={pe['h'] / pe['m']:.3f}")
 
-    # What the market, the street and book are each paying for, in g terms.
-    # ROE sits on r here, so every one of these comes back ill-conditioned — the
-    # flag is the point, not the number (A9).
-    mcap_h = inp["price"] * fx * inp["shares"] / 1e8
-    mcap_a = inp["price_a"] * inp["shares"] / 1e8
+    # What the street and book are each paying for, in g terms.  ROE sits on r
+    # here, so a price well above 1/r comes back ill-conditioned — the flag is
+    # the point, not the number (A9).
     roe_m = forward_roe(inp, "m")
-    print(f"price(H)={inp['price']} zone={zone} | "
-          f"price(A)={inp['price_a']} zone_a="
-          f"{zone_of(inp['price_a'], L * fx, M * fx, H * fx)}")
-    for label, cny in (("H 股现价", mcap_h), ("A 股现价", mcap_a),
-                       ("卖方 TP", inp["tp_street"] * fx * inp["shares"] / 1e8),
+    for label, cny in (("卖方 TP", inp["tp_street"] * fx * inp["shares"] / 1e8),
                        ("账面 PB=1.0", inp["bps"] * inp["shares"] / 1e8)):
         p = cny / inp["ni_m"]
         gi, ok = implied_g(p, roe_m, r)
@@ -643,18 +613,13 @@ def main() -> int:
     print(f"A12 未解释项：卖方 TP {inp['tp_street']} HKD 对 TTM 隐含 {tp_pe:.2f}x = "
           f"own-year 带顶 {hi} 的 {tp_pe / hi:.1f} 倍 — 分歧在倍数，不在盈利年份；逐机构口径仍 待补")
 
-    # Market-implied value of the option leg, backed out rather than assumed.
+    # What the framework itself gives the gas-turbine business at M (交叉备注).
     ni_ab = inp["ni_m"] * (w_m["a"] + w_m["b"])
     gas_framework = inp["ni_m"] * w_m["c"] * pe["m"] + option_mv(inp, "m")
-    for label, cny in (("H 股", mcap_h), ("A 股", mcap_a)):
-        implied_gas = cny - ni_ab * pe["m"]
-        print(f"  市价倒算燃机业务 腿C+腿D（{label}）：{cny:.1f} − 腿AB@{pe['m']:.2f}x "
-              f"{ni_ab * pe['m']:.1f} = {implied_gas:.1f} 亿，而框架给 {gas_framework:.1f} 亿 "
-              f"= {implied_gas / gas_framework:.2f}x")
+    print(f"  M 档 腿AB@{pe['m']:.2f}x {ni_ab * pe['m']:.1f} 亿；燃机业务 腿C+腿D {gas_framework:.1f} 亿")
     print(f"净现金 {inp['net_cash']:.2f} 亿 = 每股 {inp['net_cash'] * 1e8 / inp['shares']:.2f} CNY "
-          f"/ {inp['net_cash'] * 1e8 / inp['shares'] / fx:.2f} HKD = H 口径市值的 "
-          f"{inp['net_cash'] / mcap_h:.1%}（不进主公式，A11）")
-    print(f"H/A = {ha_live:.3f} | BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD")
+          f"/ {inp['net_cash'] * 1e8 / inp['shares'] / fx:.2f} HKD（不进主公式，A11）")
+    print(f"BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 in the three incumbent legs' multiple; NI, leg weights, g2 and
     # ROE stay put.  r_disc only discounts the G50/G200 V_opt legs, which are
@@ -663,7 +628,7 @@ def main() -> int:
         shifted = dict(inp, r_perp=r + dr)
         return tuple(anchor(shifted, t) for t in TIERS)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

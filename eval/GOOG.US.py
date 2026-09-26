@@ -2,7 +2,9 @@
 """GOOG.US (Alphabet) valuation eval — recompute anchors from frameworks/GOOG.US.md.
 
 frameworks/GOOG.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: goog_fwd_numerator_gordon_services_cloud_assets_v3
 
@@ -44,8 +46,7 @@ equity-securities gains (SpaceX and a private company), so trailing EPS - and
 every screen PE built on it - is meaningless for this name.
 
 Disclosures (printed, never errors): the band with g2_svc shifted -1pp / -0.5pp
-and the zone it lands in (敏感区, valuation-rules「g₂ 的杠杆 MUST 显式」), and the
-single-stage implied r(P) against the basket r.
+(敏感区, valuation-rules「g₂ 的杠杆 MUST 显式」), L/M/H only.
 
 Run:  python3 frameworks/eval/GOOG.US.py
 """
@@ -76,7 +77,6 @@ from eval.lib.gordon import (  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
-from eval.lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GOOG.US.md"
 FORMULA_ID = "goog_fwd_numerator_gordon_services_cloud_assets_v3"
@@ -128,18 +128,12 @@ def parse_inputs(md: str) -> dict[str, float]:
     return out
 
 
-# zone_of lives in eval/lib/zones.py — the daily digest maps every ticker with
-# that same function, so a local copy here would be a second source of truth for
-# the one thing that must stay comparable across the whole repo.
-
-
 def first_float(pattern: str, md: str) -> float | None:
     m = re.search(pattern, md)
     return float(m.group(1)) if m else None
 
 
 REQUIRED = [
-    "price",
     "shares_diluted",
     "tax_rate",
     "oi_services_h1",
@@ -462,9 +456,6 @@ def main() -> int:
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
-    # V_opt deliberately does NOT enter zone_of: `stretched` stays P > H, and the
-    # option delta is reported alongside the band rather than moving its edges.
-    zone = zone_of(inp["price"], L, M, H)
 
     # Guardrail, not an input (AGENTS.md:74): the historical PE band no longer
     # generates the multiples, but a generated multiple that leaves the band the
@@ -526,11 +517,6 @@ def main() -> int:
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
 
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
-
     print(f"formula_id={FORMULA_ID}")
     print(
         f"run-rate OI($B) services={nopat_services / keep / BN:.1f}"
@@ -541,7 +527,6 @@ def main() -> int:
     )
     print(
         f"trailing core EPS={core_eps:.2f} (guardrail denominator only)"
-        f"  price/core={inp['price'] / core_eps:.2f}x"
         f"  net_cash/sh={net_cash / inp['shares_diluted']:.2f}"
         f"  portfolio/sh(gross)={portfolio_gross / inp['shares_diluted']:.2f}"
         f"  waymo/sh(gross)={waymo_gross / inp['shares_diluted']:.2f}"
@@ -632,22 +617,19 @@ def main() -> int:
         ("cloud marginal ROIC 20%", dict(roic_marg=0.20)),
     ):
         sL, sM, sH, _ = band_at(inp["g2_svc"], inp["g2_cld"], **kw)
-        sz = zone_of(inp["price"], sL, sM, sH)
-        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f}")
     for label, k_alt, r_alt in (("k_lab = 0 (no arrival haircut)", 0.0, None),
                                 ("single-basket lab (篮 7 15%, no k — the pre-pair ruler)", 0.0, inp["r_cld_lab"])):
         k_saved, k_lab = k_lab, k_alt
         sL, sM, sH, _ = band_at(inp["g2_svc"], inp["g2_cld"], r_lab_=r_alt)
         k_lab = k_saved
-        sz = zone_of(inp["price"], sL, sM, sH)
-        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f}")
     for sl in (0.15, 0.50):
         share_lab_saved = share_lab
         share_lab = sl
         sL, sM, sH = anchor_from(tm, "l"), anchor_from(tm, "m"), anchor_from(tm, "h")
         share_lab = share_lab_saved
-        sz = zone_of(inp["price"], sL, sM, sH)
-        print(f"敏感区 lab share {sl:.0%}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+        print(f"敏感区 lab share {sl:.0%}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f}")
     print(
         f"flat-multiple ladder (A2e-2c, every tier at the M multiples):"
         f" {flat_l:.2f}/{M:.2f}/{flat_h:.2f}  width {(flat_h - flat_l) / M:.1%}"
@@ -675,14 +657,12 @@ def main() -> int:
         f" = {_lo:.1%}-{_hi:.1%} of the axis 2026 base"
     )
     # 敏感区 (valuation-rules「g₂ 的杠杆 MUST 显式」): the band with g2_svc shifted
-    # down, disclosed not asserted -- a zone flip is a warning line for the digest.
-    # +1pp would breach g_cap(r) and is not a legal state, so only the downside.
+    # down, disclosed not asserted.  +1pp would breach g_cap(r) and is not a legal
+    # state, so only the downside.
     for delta in (-0.01, -0.005):
         sL, sM, sH, t_ = band_at(inp["g2_svc"] + delta, inp["g2_cld"])
-        sz = zone_of(inp["price"], sL, sM, sH)
         print(
             f"敏感区 g2_svc {delta:+.1%} -> svc M {t_['pe_svc']['m']:.2f}x -> L={sL:.2f} M={sM:.2f} H={sH:.2f}"
-            f" zone={sz}" + ("  ⚠敏感区 (zone flips, disclosure only)" if sz != zone else "")
         )
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # every priced r 1:1 — r_perp and the lab sub-leg's terminal basket — while
@@ -697,18 +677,11 @@ def main() -> int:
         finally:
             r, r_lab = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_cld_lab_t": r_lab}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_cld_lab_t": r_lab}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # The daily digest cannot re-price a model, so the two reading bands go to
     # output/rates/ for it; only a clean run writes, so a FAIL never feeds it.
-    # Implied r(P), single-stage approximation g + (r - g) * M / P on the services
-    # leg's g (the structural read is the market-implied g_svc in §3 交叉校验).
-    implied_r = inp["g2_svc"] + (r - inp["g2_svc"]) * M / inp["price"]
-    print(
-        f"implied r(P) ≈ {implied_r:.1%} (single-stage approx) vs basket r {r:.1%}"
-        f" ({implied_r - r:+.1%}, disclosure only)"
-    )
     # V_opt: parallel to the band, never inside it.  Reported so the region
     # above H stops being unbounded — it splits into "paying for a named
     # option" and "beyond every option we can name".
@@ -733,7 +706,6 @@ def main() -> int:
         print(f"V_opt = +{v_opt:.2f}/sh on H {H:.2f} -> {H + v_opt:.2f} ({v_opt / M:.1%} of M)")
     else:
         print("V_opt = 0 (A28): no consensus-referenced option anchor; the region above H is narrative, not option")
-    print(f"price={inp['price']} zone={zone}")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)

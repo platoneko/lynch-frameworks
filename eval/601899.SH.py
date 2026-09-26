@@ -2,7 +2,8 @@
 """601899.SH (Zijin Mining) valuation eval — recompute anchors from frameworks/601899.SH.md.
 
 frameworks/601899.SH.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: zijin_fed_li_dual_axis_fwd2028_two_stage_v1
 
@@ -34,7 +35,7 @@ with growth switched off (g1 := g2 on 篮 4 legs, 0 on 篮 6 legs).
 
 Disclosure rows: 「模型视同派出、实际留存的现金/股」 = (actual retention − b1)
 × window cumulative EPS (a premise of the anchor, never added), today's net
-cash per share (cross-note), implied-r δ, alt 篮 5, PB floor.
+cash per share (cross-note), alt 篮 5, PB floor.
 
 Run:  python3 frameworks/eval/601899.SH.py
 """
@@ -50,14 +51,12 @@ from lib.axes import AXIS_AU_CU, AXIS_LI2CO3, check_au_cu_mount, check_li2co3_mo
 from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
-from lib.zones import zone_of  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
 FORMULA_ID = "zijin_fed_li_dual_axis_fwd2028_two_stage_v1"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
-DELTA_TOL = 0.0005
 YI = 1e8
 OZ_TO_G = 31.1035
 TIERS = ("l", "m", "h")
@@ -89,7 +88,7 @@ LI_ASP_H1 = LI_REV_H1 / LI_VOL_H1
 LI_COST_H1 = (LI_REV_H1 - LI_GP_H1) / LI_VOL_H1
 
 REQUIRED = [
-    "price", "shares", "bps", "fx_usd_cny", "realization_au", "realization_cu",
+    "shares", "bps", "fx_usd_cny", "realization_au", "realization_cu",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_g", "cost_au",
     "lme_cu_l", "lme_cu_m", "lme_cu_h", "vol_cu_t", "cost_cu",
     "vol_ag_g", "price_ag_m", "cost_ag",
@@ -168,7 +167,7 @@ def leg_eps(s: dict[str, float]) -> dict[str, float]:
     return {"metal": s["eps"] * s["w_metal"], "li": s["eps"] * s["w_li"], "rest": s["eps"] * s["w_rest"]}
 
 
-def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str, float] | None = None) -> dict:
+def tier(inp: dict[str, float], tag: str, r_over: dict[str, float] | None = None) -> dict:
     """Forward two-stage tier: g1 per leg, ROIC gate, ROE28 on B27, anchor."""
     cur, fwd = scenario(inp, tag, False), scenario(inp, tag, True)
     lc, l28 = leg_eps(cur), leg_eps(fwd)
@@ -191,7 +190,7 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str
         if abs(roe_new - roe) < 1e-10:
             break
         roe = roe_new
-    r = {k: (r_over or {}).get(r_key, inp[r_key]) + r_shift for k, (r_key, _) in LEGS.items()}
+    r = {k: (r_over or {}).get(r_key, inp[r_key]) for k, (r_key, _) in LEGS.items()}
     pe = {k: two_stage_pe(g1[k], n, g2[k], roe, r[k]) for k in LEGS}
     contrib = {k: lc[k] * pe[k] for k in LEGS}
     anchor_pre_k = sum(contrib.values())
@@ -209,17 +208,6 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0, r_over: dict[str
         "cash_ps": cash_ps, "haircut": haircut, "anchor_pre_k": anchor_pre_k,
         "issue": b1 > (1 - inp["payout_actual"]),
     }
-
-
-def implied_delta(inp: dict[str, float]) -> float:
-    lo, hi = -0.08, 0.15
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if tier(inp, "m", r_shift=mid)["anchor"] > inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
 
 
 def main() -> int:
@@ -325,16 +313,13 @@ def main() -> int:
 
     floor = inp["pb_floor"] * inp["bps"]
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
-    delta = implied_delta(inp)
     alt = [tier(inp, t, r_over={"r_perp": ALT_METAL_BASKET_R})["anchor"] for t in TIERS]
     net_cash_ps = -inp["net_debt"] / inp["shares"]
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (
         ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*", TOL),
-        ("δ", delta * 100, r"δ = \*\*([+-]?[0-9.]+)%\*\*", DELTA_TOL * 100),
         ("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
         ("haircut_M", T["m"]["haircut"], r"k 后[^|]*?M 档 −\*\*([0-9.]+)\*\*", TOL),
     ):
@@ -366,9 +351,7 @@ def main() -> int:
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
-    print(f"implied r: δ={delta:+.2%} (metal {inp['r_perp'] + delta:.1%} / li·rest {inp['r_li'] + delta:.1%}); "
-          f"alt 篮 5 metal r {ALT_METAL_BASKET_R:g} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} zone {zone_of(inp['price'], *alt)}")
-    print(f"price={inp['price']} zone={zone}")
+    print(f"alt 篮 5 metal r {ALT_METAL_BASKET_R:g} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
