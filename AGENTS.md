@@ -11,7 +11,7 @@
 | 资产 | 路径 |
 |------|------|
 | 单票估值框架 | `frameworks/<TICKER>.md` |
-| 标的池 | 扫 `frameworks/*.md`（排除 `_TEMPLATE.md` 及 `_` 前缀） |
+| 标的池 | 扫 `frameworks/*.md`（排除 `_TEMPLATE.md` 及 `_` 前缀，以及本仓文档 `AGENTS.md` / `README.md`） |
 | 模板 | `frameworks/_TEMPLATE.md` |
 | 共享情景轴 | `frameworks/axes/<轴名>.md`（逻辑 id 仍写 `_AXIS.<轴名>`；不进标的池） |
 | 演算（后置） | `frameworks/eval/<TICKER>.py`（本仓）；库 `eval/lib/`（代码仓库） |
