@@ -34,7 +34,7 @@ Main ruler (four legs, summed — no hand-written total is ever consumed):
                   growth-required retention b1 = g/ROE -- the leg's g2 in the
                   deck, the MS g1 in the candidate band -- closed form
                   B = B0 / (1 - g N / E) (valuation-rules 裁决表 ② as of
-                  62c72a2, 2026-09-21; A24).  Phone g2 = 0 so its book never rolls.
+                  2026-09-21; A24).  Phone g2 = 0 so its book never rolls.
   3. EV leg     : FY26E segment revenue x realised peer PS cluster p25/p50/p75 (A9).
   4. closing    : net cash (never discounted) + investment portfolio x (1 - d).
   Overlay (NOT in L/M/H):
@@ -197,7 +197,7 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
 
     # ROE = E_{n+1} / B_n: each leg's FY27E numerator over its operating net
     # assets at the OPENING of FY2027 (= end-2026), not the 1H26 figure and not
-    # the end-2027 one (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A24).
+    # the end-2027 one (valuation-rules 裁决表 ② as of 2026-09-21; A24).
     # The 1H26 operating net assets are rolled over the 2H26 earnings not yet
     # booked -- FY2026E consensus on the same SBC / net-financial strip, minus
     # the 1H26 actual -- split by the same gross-profit weight, at the

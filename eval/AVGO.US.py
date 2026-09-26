@@ -243,7 +243,7 @@ def main() -> int:
 
     # ---- Step 4: tier ROE on the FY27 OPENING book; company ROE for every leg (A3 SOTP rule) ----
     # ROE = E_{n+1} / B_n: FY27 EPS over the FY27 opening book (= end-FY26), not
-    # today's FY26Q3 book (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A24).
+    # today's FY26Q3 book (valuation-rules 裁决表 ② as of 2026-09-21; A24).
     # The FY26Q3 book is rolled over the Q4 FY26 earnings not yet booked (FY26
     # consensus minus 9M actual, non-GAAP) at the GROWTH-REQUIRED retention
     # b1 = g/ROE -- the same b two_stage_pe charges in stage 1 -- not at the

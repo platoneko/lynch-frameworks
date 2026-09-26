@@ -15,7 +15,7 @@ every tier prices off `perpetual_pe` (no `two_stage_pe`, so
 `check_transition_years` does not apply).  Perpetual g2 is the peer
 cross-section reverse-solve truncated at the repo cap; `cyclical` primary
 means g is FLAT across tiers, so the only tier-to-tier multiple difference is
-the mechanical ROE effect.  ROE is E_{n+1}/B_n (valuation-rules 62c72a2): the
+the mechanical ROE effect.  ROE is E_{n+1}/B_n (valuation-rules 2026-09-21): the
 FY28 numerator over the FY28 OPENING book = FY26 reported equity rolled over
 the not-yet-booked FY27 EPS at the growth-required retention b1 = g2/ROE, i.e.
 BPS_open = BPS0 / (1 - g2 * N / EPS_x) with N = FY27 consensus EPS after the

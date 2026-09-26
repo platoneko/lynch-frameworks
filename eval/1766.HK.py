@@ -178,7 +178,7 @@ def main() -> int:
 
     # --- Step 2: tier ROE, then g2 on the retention branch (A11) --------------
     # `equity` is the FY2026 OPENING book (end-2025, reported): E_{n+1}/B_n per
-    # valuation-rules 62c72a2 (A18).  Nothing to roll — the year has started.
+    # valuation-rules 2026-09-21 (A18).  Nothing to roll — the year has started.
     roe = {t: eps[t] * inp["shares"] / (inp["equity"] * YI) for t in TIERS}
     payout_fy25 = inp["dps_fy25"] * inp["shares"] / (inp["ni_fy25"] * YI)
     g2_derived = (1.0 - payout_fy25) * roe["m"]

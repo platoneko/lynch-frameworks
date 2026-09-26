@@ -27,7 +27,7 @@ earnings not yet booked (consensus minus the June quarter) at the
 growth-required retention b1 = g/ROE, g = the EBITA-weighted company g2 (no
 g1 window in the deck; the candidate band rolls at its own company g with
 the cloud leg on g1) -- closed form BPS = BPS0 / (1 - g N / EPS)
-(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A21).  Company ROE: no
+(valuation-rules 裁决表 ② as of 2026-09-21; A21).  Company ROE: no
 leg equity is disclosed (A4).  r is the basket rate: the Inputs `r_perp` row names 篮 4
 龙头制造 (A20, both operating legs) and `check_r` requires r to equal that
 basket's value.  There is no transition stage in the deck — FY2029E cloud
@@ -182,7 +182,7 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     e_ops = {k: (v[f"eps28_{k}_cny"] - nonop_ps) * fx for k in SCENARIOS}
     # ROE = E_{n+1} / B_n: FY28E EPS over the book at the OPENING of FY2028
     # (= end-FY2027), not the June-2026 book and not the FY2028 year-end book
-    # (valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A21).  The June-2026
+    # (valuation-rules 裁决表 ② as of 2026-09-21; A21).  The June-2026
     # book (end of 1Q FY27) is rolled over the FY2027E earnings not yet booked
     # (consensus minus the June quarter) at the GROWTH-REQUIRED retention
     # b1 = g/ROE, g = the company-level g the multiples charge next: the

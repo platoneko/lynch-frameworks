@@ -28,7 +28,7 @@ its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
 ROE (v9): tier EPS ÷ the numerator year's OPENING BPS (end-2026), the 2Q26
 book rolled over 2H26 unbooked earnings at the growth-required retention
 b1 = g/ROE (company g1 for M/H, g2 for L; valuation-rules 裁决表 ② as of
-62c72a2, 2026-09-21), solved in closed form.  v8 divided 2027 earnings by the
+2026-09-21), solved in closed form.  v8 divided 2027 earnings by the
 mid-2026 book; year-end-book and actual-payout rolls are both wrong and kept
 only as cross-check rows in the framework.
 
@@ -241,7 +241,7 @@ def main() -> int:
     # ROE = E_{n+1} / B_n: the numerator year's earnings over its OPENING book
     # (= end-2026), not today's 2Q26 book and not the year-end book (that would
     # put retention the year has not yet earned into the denominator;
-    # valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The 2Q26 book is
+    # valuation-rules 裁决表 ② as of 2026-09-21).  The 2Q26 book is
     # rolled over the 2H26 earnings not yet booked (2026E consensus minus 1H26
     # actual) at the GROWTH-REQUIRED retention b1 = g/ROE -- the same b
     # two_stage_pe charges in stage 1 -- not at the actual payout complement.

@@ -17,7 +17,7 @@ x flat Gordon multiples generated from the leg's payout policy — energy on the
 retention branch, industrial BLOCKED and resolved at the named zero-growth
 reference) is recomputed at r_perp and must reproduce the Outputs「对账」row.
 The energy ROE is E_{2027}/B_{2026 末} (A14; valuation-rules 裁决表 ② as of
-62c72a2, 2026-09-21): per name FY27E EPS over the 2Q26 BPS rolled over the
+2026-09-21): per name FY27E EPS over the 2Q26 BPS rolled over the
 2H26 unbooked EPS (FY26E − 1H26 actual) at b1 = g2_ene/ROE, closed form
 ROE = (EPS27 − g2·N)/BPS_2Q26; the 4-name leg values (roe_ene / g2_ene) are
 the joint fixed point solved in 520900.SH and copied here, this file rolls

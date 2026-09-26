@@ -16,7 +16,7 @@ all tiers, and the multiple is the full form (1 - g2/ROE_x)/(r - g2).
 ROE_x = FY27E EPS / BPS at the OPENING of 2027 (= end-2026, E_{n+1}/B_n):
 the H1'26 book rolled over the 2H26 earnings not yet booked (FY2026E
 consensus minus 1H26 actual) at the growth-required retention b1 = g2/ROE
-(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21; A17).  g2 itself is
+(valuation-rules 裁决表 ② as of 2026-09-21; A17).  g2 itself is
 (1 - payout) x ROE_M, so the M tier's b1 is exactly 1 - payout and the
 joint fixed point (ROE_M, BPS_M, g2) is closed-form: BPS_M = BPS0 +
 (1 - payout) N, ROE_M = EPS_M / BPS_M, g2 = (1 - payout) ROE_M; L / H
@@ -116,7 +116,7 @@ def main() -> int:
 
     # ROE = E_{n+1} / B_n: FY27E EPS over the OPENING-2027 book (= end-2026),
     # not the H1'26 book and not the end-2027 book (valuation-rules 裁决表 ②
-    # as of 62c72a2, 2026-09-21; A17).  The H1'26 book is rolled over the 2H26
+    # as of 2026-09-21; A17).  The H1'26 book is rolled over the 2H26
     # earnings not yet booked at the GROWTH-REQUIRED retention b1 = g2/ROE, never
     # at the actual payout complement.  Because g2 = (1 - payout) x ROE_M, the M
     # tier's b1 is exactly 1 - payout, so the joint fixed point (ROE_M, BPS_M,

@@ -135,7 +135,7 @@ def main() -> int:
         eps_by_tier_map.append(eps)
         eps_by_tier.append(total_eps)
     # ROE_M = E_{n+1} / B_n: the FY27 M-tier EPS over the FY27 OPENING book (= end
-    # FY26), not today's FY26Q3 book (valuation-rules 裁决表 ② as of 62c72a2,
+    # FY26), not today's FY26Q3 book (valuation-rules 裁决表 ② as of
     # 2026-09-21; A16).  The FY26Q3 book is rolled over the Q4 FY26 earnings not
     # yet booked (FY26 consensus minus 9M actual, non-GAAP) at the GROWTH-REQUIRED
     # retention b1 = g/ROE, not the actual payout complement.  No g1 window, so

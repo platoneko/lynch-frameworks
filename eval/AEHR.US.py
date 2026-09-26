@@ -17,7 +17,7 @@ named alternative, its single-customer threshold unmet, A12) — and tier ROE = 
 *operating* book: book equity less net cash at FY26 year-end (2026-05-29, the
 latest balance sheet), rolled over the whole FY27 consensus not yet booked (no
 FY27 quarter reported yet) at the growth-required retention b1 = g2/ROE — no
-g1 window, so every tier rolls at g2 (valuation-rules 62c72a2, A18).  The
+g1 window, so every tier rolls at g2 (valuation-rules 2026-09-21, A18).  The
 after-tax interest the consensus EPS earns on that cash is stripped from the
 numerator and the net cash added back per share as a closing item (A15, the
 1810.HK A15 treatment).  FY29 has no >=2-house consensus anywhere, so there is

@@ -35,7 +35,7 @@ on sign.
     (below the 6% cap), PE = 7.52x flat.  Shared with 513530.SH as one leg
     (its 3-name subset reads 6.27% -> clipped 6%, the evidence upper end).
     ROE = E_{2027}/B_{2026 末} per name (A11; valuation-rules 裁决表 ② as of
-    62c72a2, 2026-09-21): FY27E EPS over the 2Q26 BPS rolled over the 2H26
+    2026-09-21): FY27E EPS over the 2Q26 BPS rolled over the 2H26
     unbooked EPS (FY26E − 1H26 actual) at b1 = g2/ROE, closed form
     ROE = (EPS27 − g2·N)/BPS_2Q26; because g2 = (1 − payout) × ROE the two are
     a joint fixed point, solved by iteration (leg-level b1 ≡ 1 − payout, so

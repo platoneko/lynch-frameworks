@@ -22,7 +22,7 @@ FY28 OPENING BPS (E_{n+1}/B_n): the Q2'26 book is rolled over the earnings not
 yet booked before FY28 opens (2H26 = FY26 consensus − 1H26 actual, plus the
 whole FY27 consensus) at the growth-required retention b1 = g/ROE, g = the
 NI-weighted company g2 the three Gordon legs charge (no g1 window), closed form
-BPS = BPS0 / (1 - g·N/EPS) (valuation-rules 裁决表 ② as of 62c72a2,
+BPS = BPS0 / (1 - g·N/EPS) (valuation-rules 裁决表 ② as of
 2026-09-21).  FY28's own retention is NOT rolled; the actual retention above
 b1 is the B-bucket disclosure only.
 The perpetual g is flat across tiers — `cyclical` primary, A2e-5 — so the only

@@ -12,7 +12,7 @@ one scalar per tier — priced at ONE growth rate per leg.  Every multiple is
 GENERATED from a named growth rate rather than lifted off a historical PE
 percentile (AGENTS.md「永续增长口径」), and each leg carries its own invested
 capital, so its ROE — and therefore the retention its growth costs — is
-derived, not chosen.  ROE is E_{n+1}/B_n (valuation-rules 62c72a2, A25): the
+derived, not chosen.  ROE is E_{n+1}/B_n (valuation-rules 2026-09-21, A25): the
 tier's FY2027E leg NOPAT over the leg's FY2027 OPENING invested capital = the
 2026-06-30 capital rolled over the unbooked 2H26 run-rate NOPAT at the
 growth-required retention b1 = g/ROE, closed form IC_open = IC0 / (1 - g*N/E).  r comes from the basket each leg is assigned

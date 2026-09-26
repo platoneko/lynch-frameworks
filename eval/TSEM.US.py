@@ -18,7 +18,7 @@ the FY2027 OPENING *operating* book (book less net cash, A6): the 2Q26
 operating book rolled over the 2H26 earnings not yet booked (FY26 consensus
 minus 1H26 actual, on the same economic basis) at the growth-required
 retention b1 = g/ROE — g1 for M/H (the FY2028 window), g2 for L (no window);
-valuation-rules 62c72a2, A16.  b1 > 1 on M/H is the cash-pool funding the
+valuation-rules 2026-09-21, A16.  b1 > 1 on M/H is the cash-pool funding the
 negative stage-1 payout already prices, so it is printed, not failed; only a
 diverging roll stops.  r = basket 4 龙头制造 10% (A15; the Inputs row names the
 basket and `check_r` holds the value to it), M/H carry the FY2028 consensus

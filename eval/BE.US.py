@@ -18,7 +18,7 @@ charging moves to an explicit numerator haircut k (A21), and tier
 ROE = EPS_x ÷ the FY27 OPENING book per share (A8/A9/A19): the 2Q26
 if-converted book rolled over the 2H26 earnings not yet booked (FY26 consensus
 minus 1H26 actual) at the growth-required retention b1 = g1/ROE — the same b
-`two_stage_pe` charges in stage 1 (valuation-rules 62c72a2, 2026-09-21).  b1 >
+`two_stage_pe` charges in stage 1 (valuation-rules 2026-09-21).  b1 >
 1 here is the issuance the framework already prices as a negative stage-1
 payout, so it is allowed and printed, not failed.  The L tier carries the
 same transition: its world is "delay", not "deterioration" (A14); the
@@ -209,7 +209,7 @@ def main() -> int:
         errors.append(f"g1: stated {inp['g1']:.4f} vs recomputed {g1:.4f}")
 
     # ROE = E_{n+1} / B_n: FY27 EPS over the FY27 OPENING book (= end-2026), not
-    # the 2Q26 book (A19; valuation-rules 62c72a2).  The 2Q26 if-converted book
+    # the 2Q26 book (A19; valuation-rules 2026-09-21).  The 2Q26 if-converted book
     # is rolled over the 2H26 earnings not yet booked (FY26 consensus minus 1H26
     # actual) at the growth-required retention b1 = g1/ROE — all three tiers
     # carry the FY28 window, so all three roll at g1.  ROE and BPS depend on

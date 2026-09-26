@@ -38,7 +38,7 @@ reverse-solve from (300014.SZ ROE 12.9% ill-conditioned; the rest ROE ~ r or
 printed so ③ can be read off directly.
 
 ROE (A21): tier EPS ÷ the numerator year's OPENING BPS (end-2026 = E_{n+1}/B_n,
-valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The 2Q26 book is rolled
+valuation-rules 裁决表 ② as of 2026-09-21).  The 2Q26 book is rolled
 over the 2H26 earnings not yet booked (FY2026E consensus minus 1H26 actual) at
 the growth-required retention b1 = g2/ROE (no g1 window, so each tier rolls at
 its own g2), closed form BPS = BPS_2Q26 / (1 - g2·N/eps).  Actual retention

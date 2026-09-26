@@ -17,7 +17,7 @@ balance sheet, 2026-06-30) is rolled over the FY27 consensus EPS -- the whole
 year not yet booked before FY28 opens -- at the growth-required retention
 b1 = g/ROE, g = the EPS-weighted company g2 the two legs charge (no g1 window),
 closed form BPS = BPS0 / (1 - g·N/EPS) (valuation-rules 裁决表 ② as of
-62c72a2, 2026-09-21).  FY28's own retention is NOT rolled (year-end error);
+2026-09-21).  FY28's own retention is NOT rolled (year-end error);
 the actual retention above b1 is printed as the B-bucket disclosure only.  Datacom g2 is the AI-optical peer cross-section reverse-solved
 and truncated at the repo cap; Industrial g2 = 0 (flat revenue, 无同业锚).  One g2
 per leg is shared across tiers (`fast_grower` primary), so the tier ladder lives

@@ -19,7 +19,7 @@ H1'26 book rolled over the 2H26 earnings not yet booked (FY2026E consensus
 minus 1H26 actual non-IFRS NI) at the growth-required retention b1 = g/ROE
 -- g2 in the deck (no g1 window), the HSBC g1 in the candidate band --
 closed form BPS = BPS0 / (1 - g N / EPS) (valuation-rules 裁决表 ② as of
-62c72a2, 2026-09-21; A6b).  So the multiple only drifts with the numerator.  The four
+2026-09-21; A6b).  So the multiple only drifts with the numerator.  The four
 business legs share that multiple and are split by revenue weight for display
 only (A1b).  r is the basket rate: the Inputs `r_perp` row names 篮 4 龙头制造
 (A14) and `check_r` requires r to equal that basket's value; g2 is capped at
@@ -80,7 +80,7 @@ def scenario(inp: dict[str, float], tag: str, pe_override: float | None = None,
     # ROE = E_{n+1} / B_n: FY27 EPS over the OPENING-2027 book (= end-2026), not
     # the H1'26 book and not the end-2027 book (that would put retention the
     # year has not yet earned into the denominator; valuation-rules 裁决表 ②
-    # as of 62c72a2, 2026-09-21; A6b).  The H1'26 book is rolled over the 2H26
+    # as of 2026-09-21; A6b).  The H1'26 book is rolled over the 2H26
     # earnings not yet booked at the GROWTH-REQUIRED retention b1 = g/ROE --
     # g2 in the deck (no g1 window), the HSBC g1 in the candidate band (the
     # growth its stage 1 charges next) -- never at the actual payout

@@ -20,7 +20,7 @@ consensus minus the 1H actual) at the growth-required retention b1 = g1/ROE
 -- every tier carries the g1 window, so every tier rolls at g1; b1 > 1 here
 because the framework already prices stage-1 payout below zero
 (issuance-funded growth) -- closed form BPS = BPS0 / (1 - g1·N/EPS)
-(valuation-rules 裁决表 ② as of 62c72a2, 2026-09-21).  The L multiple falls
+(valuation-rules 裁决表 ② as of 2026-09-21).  The L multiple falls
 out lower mechanically, not by policy.
 
 Numerator year (valuation-rules 裁决顺序 ②, A3): FY28 is the furthest year with a

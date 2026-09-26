@@ -14,7 +14,7 @@ The multiple is generated, not borrowed: one perpetual g2 shared by all three
 tiers (peer cross-section reverse-solve, capped at g_cap(r)), tier ROE on the
 FY2028 OPENING book: the FY27Q2 equity rolled over the 2H FY27 earnings not
 yet booked at the growth-required retention b1 = g2/ROE (closed form
-BPS = BPS0 / (1 - g2·N/eps); valuation-rules 裁决表 ② as of 62c72a2).  With ROE far above r the payout is ~1 and the three multiples
+BPS = BPS0 / (1 - g2·N/eps); valuation-rules 裁决表 ② as of 2026-09-21).  With ROE far above r the payout is ~1 and the three multiples
 differ by well under a turn, so the tiers are still told apart by the numerator
 alone (A2e-2c; the cyclical secondary's flat policy survives mechanically).
 Revenue for all three comes from the same analyst range:
@@ -224,7 +224,7 @@ def main() -> int:
 
     # --- Step 2b: multiples generated from g2 and tier ROE (AGENTS.md 永续增长口径) ---
     # ROE = E_{n+1} / B_n: FY2028 EPS over the FY2028 OPENING book (= end of
-    # FY2027), not today's FY27Q2 book (valuation-rules 裁决表 ② as of 62c72a2,
+    # FY2027), not today's FY27Q2 book (valuation-rules 裁决表 ② as of
     # 2026-09-21; A24).  The FY27Q2 book is rolled over the 2H FY27 earnings not
     # yet booked (FY27 consensus minus 1H FY27 actual, non-GAAP) at the
     # GROWTH-REQUIRED retention b1 = g/ROE -- not the actual payout complement.

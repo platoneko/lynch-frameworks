@@ -98,7 +98,7 @@ def white_roe(inp: dict[str, float], n: str, g2: float) -> float:
     """E_{2027}/B_{2026 末}: FY27E EPS over the 2Q26 book rolled over the 2H26
     unbooked EPS (FY26E − 1H26 actual) at b1 = g2/ROE.  With ROE = eps/BPS and
     BPS = BPS0 + b1·N the fixed point is BPS = BPS0 / (1 − g2·N/eps), i.e.
-    ROE = (eps − g2·N) / BPS0 (A11; valuation-rules 裁决表 ② as of 62c72a2)."""
+    ROE = (eps − g2·N) / BPS0 (A11; valuation-rules 裁决表 ② as of 2026-09-21)."""
     n_unbooked = inp[f"{n}_fy26"] - inp[f"{n}_h1_26"]
     return (inp[f"{n}_fy27"] - g2 * n_unbooked) / inp[f"{n}_bps_2q26"]
 

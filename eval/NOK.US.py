@@ -191,7 +191,7 @@ def bridge(v: dict) -> dict:
 
 
 def roe_open(nopat27: float, b: dict, g_roll: float) -> float:
-    """ROE = E_{n+1}/B_n (valuation-rules 62c72a2, A7e): FY2027 NI NOPAT over the
+    """ROE = E_{n+1}/B_n (valuation-rules 2026-09-21, A7e): FY2027 NI NOPAT over the
     proxy equity rolled to the FY2027 opening at b1 = g/ROE over the unbooked
     2H26 NOPAT, closed form B_open = B0 / (1 - g*N/E)."""
     share = g_roll * b["unbooked_ni"] / nopat27
