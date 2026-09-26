@@ -68,6 +68,12 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import through the `eval.lib` package, so the repo root
+# must be importable too; appended so `lib.*` above still resolves first.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "6655.HK.md"
 FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4"
 
@@ -78,6 +84,8 @@ TIERS = ("l", "m", "h")
 LEGS = ("dom", "ovs")
 R_ROWS = {"dom": "r_dom", "ovs": "r_ovs"}
 MONOTONIC_GAP = 0.03        # |ROE - r| threshold of the domain table (gordon._ROE_NEAR_R)
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 
 REQUIRED = [
     "price", "price_a", "shares", "bps", "fx_hkdcny",
@@ -448,6 +456,20 @@ def main() -> int:
           f"| price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)}")
     print(f"H/A = {inp['price'] * fx / inp['price_a']:.3f}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): both legs'
+    # basket r (r_dom, r_ovs) move 1:1; per-leg g, ROE and numerators stay put.
+    # Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return tuple(m.band({t: {leg: leg_pe(inp, leg, t, m.roe[t][leg], r_shift=dr) for leg in LEGS}  # type: ignore[return-value]
+                             for t in TIERS}))
+
+    rf = rf_block(LISTING_CCY, {R_ROWS[leg]: r[leg] for leg in LEGS}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("6655.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

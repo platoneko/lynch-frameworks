@@ -7,25 +7,31 @@
 
 - [AEHR.US](./AEHR.US.md) — 篮子：篮 6 13%
 - [ALB.US](./ALB.US.md) — 篮子：r_perp 篮 6 13% · r_spec 篮 4 10%
-- [AMZN.US](./AMZN.US.md) — 篮子：r_perp 篮 4 10% · r_aws_lab 篮 7 15%
-- [AVGO.US](./AVGO.US.md) — 篮子：r_perp 篮 4 10% · r_lab 篮 7 15%
-- [BE.US](./BE.US.md) — 篮子：篮 7 15%
+- [AMZN.US](./AMZN.US.md) — 篮子：r_perp 篮 4 10% · r_aws_lab 篮 7 15% · r_aws_lab_t 篮 4 10%
+- [AVGO.US](./AVGO.US.md) — 篮子：r_perp 篮 4 10% · r_lab 篮 7 15% · r_lab_t 篮 4 10%
+- [BA.US](./BA.US.md) — 篮子：篮 4 10%
+- [BE.US](./BE.US.md) — 篮子：r_journey 篮 7 15% · r_terminal 篮 4 10%
 - [COHR.US](./COHR.US.md) — 篮子：篮 4 10%
+- [COIN.US](./COIN.US.md) — 篮子：篮 4 10%
 - [GFS.US](./GFS.US.md) — 篮子：篮 4 10%
 - [GLW.US](./GLW.US.md) — 篮子：篮 4 10%
-- [GOOG.US](./GOOG.US.md) — 篮子：r_perp 篮 4 10% · r_cld_lab 篮 7 15%
+- [GOOG.US](./GOOG.US.md) — 篮子：r_perp 篮 4 10% · r_cld_lab 篮 7 15% · r_cld_lab_t 篮 4 10%
+- [HIMS.US](./HIMS.US.md) — 篮子：篮 7 15%
+- [HOOD.US](./HOOD.US.md) — 篮子：篮 4 10%
 - [INTC.US](./INTC.US.md) — 篮子：篮 4 10%
 - [LITE.US](./LITE.US.md) — 篮子：篮 4 10%
+- [LLY.US](./LLY.US.md) — 篮子：篮 4 10%
 - [META.US](./META.US.md) — 篮子：篮 4 10%
 - [MRVL.US](./MRVL.US.md) — 篮子：篮 4 10%
-- [MSFT.US](./MSFT.US.md) — 篮子：r_perp 篮 4 10% · r_az_lab 篮 7 15%
+- [MSFT.US](./MSFT.US.md) — 篮子：r_perp 篮 4 10% · r_az_lab 篮 7 15% · r_az_lab_t 篮 4 10%
 - [NEM.US](./NEM.US.md) — 篮子：r_perp 篮 4 10% · r_pbzn 篮 6 13%
 - [NOK.US](./NOK.US.md) — 篮子：篮 4 10%
 - [NVDA.US](./NVDA.US.md) — 篮子：篮 4 10%
 - [NVO.US](./NVO.US.md) — 篮子：篮 4 10%
-- [ORCL.US](./ORCL.US.md) — 篮子：r_perp 篮 4 10% · r_oci_non 篮 4 10% · r_oci_open 篮 7 15% · **BLOCKED**
+- [ORCL.US](./ORCL.US.md) — 篮子：r_perp 篮 4 10% · r_oci_non 篮 4 10% · r_oci_open 篮 7 15% · r_oci_open_t 篮 4 10% · **BLOCKED**
 - [QCOM.US](./QCOM.US.md) — 篮子：篮 4 10%
 - [SOFI.US](./SOFI.US.md) — 篮子：篮 6 13%
+- [SPCX.US](./SPCX.US.md) — 篮子：r_starlink 篮 4 10% · r_space 篮 4 10% · r_compute 篮 7 15%
 - [TSEM.US](./TSEM.US.md) — 篮子：篮 4 10%
 - [TSM.US](./TSM.US.md) — 篮子：篮 4 10%
 - [WOLF.US](./WOLF.US.md) — 篮子：篮 7 15%
@@ -36,7 +42,7 @@
 - [0700.HK](./0700.HK.md) — 腾讯控股 · 篮子：篮 4 10%
 - [0728.HK](./0728.HK.md) — 中国电信 · 篮子：篮 2 7.5%
 - [0857.HK](./0857.HK.md) — 中国石油股份 · 篮子：r_perp 篮 4 10% · r_ng 篮 4 10% · r_rc 篮 6 13% · r_mk 篮 4 10%
-- [0883.HK](./0883.HK.md) — 中国海洋石油 · 篮子：篮 6 13%
+- [0883.HK](./0883.HK.md) — 中国海洋石油 · 篮子：篮 7 15%
 - [1072.HK](./1072.HK.md) — 东方电气 · 篮子：篮 4 10%
 - [1378.HK](./1378.HK.md) — 中国宏桥 · 篮子：篮 6 13%
 - [1766.HK](./1766.HK.md) — 中国中车 · 篮子：篮 4 10%
@@ -84,9 +90,12 @@
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
 - [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：1（`000543.SZ` 皖能电力，电厂侧；候选：`1898.HK` 中煤能源 · `600011.SH` 华能国际；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
 - [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US · TSM.US
+- [`_AXIS.crypto-cycle`](./axes/crypto-cycle.md) — 加密活跃度情景轴 · 挂载票（全档）：COIN.US ｜ 挂载票（**仅 L 档**）：HOOD.US
 - [`_AXIS.fed-path-aluminium`](./axes/fed-path-aluminium.md) — 电解铝价差情景轴（利率路径 × 铝供应潮） · 挂载票：1378.HK · 601600.SH · 002532.SZ · 000933.SZ
 - [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH · 603799.SH（仅铜腿）
+- [`_AXIS.frontier-lab-funding`](./axes/frontier-lab-funding.md) — 前沿实验室付款能力情景轴 · 挂载票（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
 - [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：601899.SH · 9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US
 - [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ · 600096.SH
+- [`_AXIS.rates`](./axes/rates.md) — 无风险利率轴（按上市货币分段） · 挂载票：全部 USD 段票（美股；港股经联系汇率跟 USD 段）——只出 \(r_f\) 敏感性读数，不进锚点
 - [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`

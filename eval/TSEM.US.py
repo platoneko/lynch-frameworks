@@ -73,10 +73,13 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSEM.US.md"
 MIRROR = REPO_ROOT / "frameworks" / "GFS.US.md"
 FORMULA_ID = "tsem_gordon_two_stage_2027_opeq_v2"
+LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 P_TIERS = (0.0, 0.25, 1.0)  # A9 — table 3 only, never an input
@@ -305,9 +308,27 @@ def main() -> int:
     # Disclosure only (A15): single-stage Gordon approximation of the r the market pays for the M deck.
     implied_r = g2 + (r - g2) * M / inp["price"]
     print(f"implied r(P) ~ {implied_r:.4f} (single-stage approx g2 + (r - g2) * M / P; basket 4 r {r:g}, gap {implied_r - r:+.4f})")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves r_perp
+    # 1:1 (L Gordon, M/H two-stage); numerators, ROE, g1/g2 and the cash add-back stay
+    # put.  Disclosure only: the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r
+        saved = r
+        r = r + dr
+        try:
+            return deck_at(g2)
+        finally:
+            r = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
     print(f"V_opt={v_opt:.2f} (Track 2 = 1 x own SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f} zone+V={zone_of(inp['price'], *opt)}; at g2-1pp H+V={lo_h + v_opt:.2f}")
+    # Only a clean run feeds the daily digest (output/rates/).
+    if not errors:
+        write_rf_readings("TSEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

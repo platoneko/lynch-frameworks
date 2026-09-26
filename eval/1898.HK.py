@@ -79,6 +79,12 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import through the `eval.lib` package, so the repo root
+# must be importable too; appended so `lib.*` above still resolves first.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1898.HK.md"
 FORMULA_ID = "chinacoal_selfmined_asp_ladder_flat_pe_hkd_v2_gordon_v4"
 YI = 1e8
@@ -95,6 +101,8 @@ TOL = 0.05
 YEAR_END_OFFSET = 0.3  # years from the 2026-09 as-of to end-2026: capex and full-production PV points sit on year ends
 ROE_PROJ_COORDS = (0.08, 0.10, 0.13)  # A9: ROE_proj is 待补; the deck takes the middle case
 V1_R, V1_G2 = 0.10, 0.06  # the pre-basket reading, printed as 对照带
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 TIERS = ("l", "m", "h")
 ASP_YEARS = ("asp_fy19", "asp_fy20", "asp_fy21", "asp_fy22", "asp_fy23", "asp_fy24", "asp_fy25")
 NI_IFRS_YEARS = ("ni_ifrs_fy19", "ni_ifrs_fy20", "ni_ifrs_fy21", "ni_ifrs_fy22", "ni_ifrs_fy23", "ni_ifrs_fy24")
@@ -394,6 +402,21 @@ def main() -> int:
     print(f"price={inp['price']} zone={zone}  implied self-mined ASP at price (net of V_proj): {implied_asp:.1f} 元/吨 ({implied_asp / px_mid:.3f}x 中枢; "
           f"implied NI {implied_ni:.2f} 亿 vs FY2025 IFRS {inp['ni_fy25']}); zone-boundary ASP: "
           + ", ".join(f"{n} {inp['px_m'] + (v - M) / per_10 * 10:.0f}" for n, v in (("L", L), ("A", A), ("M", M), ("B", B), ("H", H))))
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is
+    # the one r in the anchors — it sets the flat multiple AND discounts V_proj,
+    # so both move.  The ASP ladder, g2, ROE_proj and capex stay put.
+    # Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        r_s = r + dr
+        return band(perpetual_pe(g2, roe["m"], r_s), per_share_hkd(project_value_yi(inp["roe_proj"], r_=r_s)[0]))
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("1898.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

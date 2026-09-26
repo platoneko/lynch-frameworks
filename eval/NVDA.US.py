@@ -65,6 +65,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_cowos_mount  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
@@ -74,10 +75,12 @@ from eval.lib.gordon import (  # noqa: E402
     perpetual_pe,
 )
 from eval.lib.inputs import parse_baskets  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NVDA.US.md"
 FORMULA_ID = "nvda_fy28_scenario_rev_gm_gordon_v2"
+LISTING_CCY = "USD"
 TOL = 0.05  # outputs are stated to 2 decimals
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A17: max allowed deviation from consensus EPS
@@ -450,11 +453,22 @@ def main() -> int:
         f"pe={pe_c[0]:.2f}/{pe_c[1]:.2f}/{pe_c[2]:.2f}  "
         f"候选 zone={zone_of(inp['price'], *cand)}"
     )
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is the only
+    # priced r; Δr_f moves it 1:1 in each tier's Gordon multiple while the FY28 EPS
+    # bridge, tier ROE and g2 stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return tuple(e * perpetual_pe(g2, roe, r + dr) for e, roe in ((eps_l, roe_l), (eps_m, roe_m), (eps_h, roe_h)))
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("NVDA.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

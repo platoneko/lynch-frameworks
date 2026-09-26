@@ -42,9 +42,12 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
 from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "0700.HK.md"
 FORMULA_ID = "0700_sotp_dom_intl_ads_fbs_nav_v4_gordon_v2"
+LISTING_CCY = "HKD"
 TOL = 0.05  # anchors stated to 1 decimal
 LEG_TOL = 0.1  # per-leg table is rounded to 1 decimal
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
@@ -282,9 +285,21 @@ def main() -> int:
     for g in (inp["g2"] - 0.01, inp["g2"] + 0.01):
         alt = {t: scenario(dict(inp, g2=g), t)["anchor"] for t in TIERS}
         print(f"  sens g2={g:.4f}: {alt['l']:.1f}/{alt['m']:.1f}/{alt['h']:.1f}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 on the operating leg; g2, EPS, NAV discounts and net cash stay
+    # put.  Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        shifted = dict(inp, r_perp=inp["r_perp"] + dr)
+        return tuple(scenario(shifted, t)["anchor"] for t in TIERS)
+
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 
     if errors:
         return report(errors)
+    # Only a clean run feeds the daily digest.
+    write_rf_readings("0700.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

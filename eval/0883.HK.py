@@ -7,7 +7,9 @@ L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
 formula_id: cnooc_hk_brent_axis_gordon_retention_v2
 
 Main ruler: Gordon retention branch at the basket r (valuation-rules「§r 篮子」,
-whole company in 篮 6 周期商品, 13%).  The numerator is the shared Brent axis
+whole company in 篮 7 国别重, 15% -- the NS-CMIC investment ban is a
+nameable country-risk item, A17; 篮 6 13% is the "sanction discount fades"
+cross band).  The numerator is the shared Brent axis
 (_AXIS.brent-oil.md, 68 / 75 / 85) pushed through the company's OWN measured
 per-barrel earnings elasticity,
 
@@ -26,14 +28,14 @@ above D&A funds named production growth (+5-8%/yr) -> g2 = 4.5% with a growth
 retention ratio b_g = 25%; the rest of retention piles up as cash and earns no
 credit (disclosed per share, never added).  Hence
 
-    PE = (1 - b_g) / (r - g2) = 0.75 / (13% - 4.5%) = 8.82x, flat across tiers
+    PE = (1 - b_g) / (r - g2) = 0.75 / (15% - 4.5%) = 7.14x, flat across tiers
 
 which must sit inside the realised 5y monthly TTM PE band [2.90, 9.89] -- the
 guardrail.  Why Gordon and not the DDM exception this ticker used to be the
-worked example of: at the basket r, 1/r = 7.69x <= band top 9.89x, so the
+worked example of: at the basket r, 1/r = 6.67x <= band top 9.89x, so the
 retention branch IS reachable and precondition (a) of「DDM 主尺例外」fails
 (A6).  The DDM band (45% x EPS / (r - g_d)), the 1/r zero-growth band, the
-fallback basket 7 band and the FCF-yield ruler are printed as cross-checks;
+fallback basket 6 band (制裁折价消失) and the FCF-yield ruler are printed as cross-checks;
 the price is only used to read the implied r (A10) -- never to fit anchors.
 The g2 +/-1pp sensitivity is printed, and a zone flip there is a disclosure
 (⚠敏感区), not a failure.
@@ -51,7 +53,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.axes import AXIS_BRENT  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    basket_r, check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, justified_pb,
+    NEAR_FULL_PAYOUT, basket_r, check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, justified_pb,
+    payout_gap,
     recovery_two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
@@ -60,10 +63,16 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 FRAMEWORK = REPO / "frameworks" / "0883.HK.md"
 FORMULA_ID = "cnooc_hk_brent_axis_gordon_retention_v2"
 TICKER = "0883.HK"
+LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")
 MN = 1e6                    # Inputs money fields are RMB million
@@ -73,7 +82,7 @@ CONS_DEV_MAX = 0.20         # ②-b: M within 20% of the consensus mean
 MID_CYCLE_MAX = 1.15        # 中枢: current / mid-cycle above this makes the current print an upper-side coordinate
 CYCLE_MEAN_DEV_MAX = 0.20   # 中枢: axis-bridged M vs own full-cycle (production-normalised) EPS mean
 MONOTONIC_GAP = 0.03        # ROE - r >= this is the monotonic regime (gordon._ROE_NEAR_R)
-FALLBACK_BASKET = 7         # A17: the alternative basket, printed as a cross band
+FALLBACK_BASKET = 6         # A17: 篮 6 13% = 制裁折价消失 world, printed as a cross band
 CYCLE_YEARS = ("2020", "2021", "2022", "2023", "2024")
 PAYOUT_FLOOR_QUOTE = "不低于 45%"
 
@@ -259,7 +268,14 @@ def main() -> int:
     g_sustain = (1.0 - payout_fy25) * roe["m"]
     if g2 > g_sustain + 1e-9:
         errors.append(f"g2 {g2:.2%} exceeds the sustainable ceiling (1−payout)×ROE_M = {g_sustain:.2%} — growth would eat the dividend (A7)")
-    errors += check_branch(g2, roe["m"], r, payout_fy25, "g2")
+    # Branch guard on the "视同派出" payout 1 - b_growth, not the paid 44.6%: A18 classes the
+    # extra ~30pp of retention as the financial bucket (cash pile, no g credit), so the
+    # payout the retention branch implies at g2 must reconcile with 1 - b_g; the gap to the
+    # paid ratio IS the third bucket and is printed, not failed.  Sign test on the paid ratio.
+    if payout_fy25 >= NEAR_FULL_PAYOUT and g2 > 0.0:
+        errors.append(f"g2 {g2:+.2%} is the retention branch but the company pays out {payout_fy25:.0%} (反解分支)")
+    errors += check_branch(g2, roe["m"], r, 1.0 - b_g, "g2 (vs 视同派出 1−b_growth)")
+    payout_modelled, fin_bucket_gap = payout_gap(g2, roe["m"], payout_fy25)
     if not (0.0 < b_g < 1.0):
         errors.append(f"b_growth {b_g} outside (0, 1)")
     if not (inp["g_evid_min"] - 1e-9 <= g2 <= inp["g_evid_max"] + 1e-9):
@@ -339,7 +355,7 @@ def main() -> int:
     print(f"ruler form (A6): 1/r = {1.0 / r:.2f}x ≤ band top {inp['pe_own_max']} → retention-branch Gordon reachable, DDM exception (a) fails; "
           f"band-top implied g (ROE_M) {g_edge:+.2%} well_conditioned={well}")
     print(f"篮子: r_perp {r:.0%} = 篮 {baskets.get('r_perp')} (check_r ✓); g2 {g2:.2%} ≤ cap {g_cap(r):.2%} ✓; r−g2 {r - g2:.2%}; "
-          f"sustainable (1−payout {payout_fy25:.1%})×ROE_M = {g_sustain:.2%} ≥ g2 ✓; check_branch ✓; DPS CAGR FY19→25 {dps_cagr:+.2%} (gate ✓)")
+          f"sustainable (1−payout {payout_fy25:.1%})×ROE_M = {g_sustain:.2%} ≥ g2 ✓; check_branch ✓ vs 视同派出 {1.0 - b_g:.0%} (modelled {payout_modelled:.1%}; gap to paid {fin_bucket_gap:+.1%} = 财务性留存桶, A18); DPS CAGR FY19→25 {dps_cagr:+.2%} (gate ✓)")
     print(f"倍数: PE = (1−{b_g:.0%})/({r:.0%}−{g2:.1%}) = {pe:.3f}x ∈ [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓ (guardrail A9)")
     d = decompose((L, M, H), (pe, pe, pe))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -381,7 +397,20 @@ def main() -> int:
     la, ma, ha = L * fx, M * fx, H * fx
     print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} | price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} "
           f"(A 股 = {inp['price_a'] / eps['m']:.2f}x M EPS ↔ 隐含 r {(1.0 - b_g) / (inp['price_a'] / eps['m']) + g2:.1%}) | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 in the retention multiple; the Brent rungs, EPS, b_growth and g2
+    # stay put.  The DDM band discounts at the same r_perp but is a cross band,
+    # not L/M/H.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return band_at(retention_pe(b_g, g2, r + dr))
 
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings(TICKER, rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

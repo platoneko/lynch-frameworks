@@ -43,6 +43,10 @@ from lib.inputs import check_against_stated, check_missing, ladder, parse_basket
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NVO.US.md"
 FORMULA_ID = "nvo_fy27_consensus_two_stage_gordon_v1"
 TIERS = ("l", "m", "h")
@@ -56,6 +60,8 @@ REQUIRED = [
 CONSENSUS_YEARS = 4     # FY2027 band + FY2028–2030 company target / GS consensus CAGR (A5)
 ROE_CAP = 0.60          # valuation-rules「腿归篮」: ROE > 60% → back to dialogue
 FIXED_POINT_ITERS = 60
+LISTING_CCY = "USD"
+RF_TOL = 1e-9
 
 
 def tier_roe(inp: dict[str, float], eps: float, g1: float) -> tuple[float, float, float]:
@@ -167,7 +173,24 @@ def main() -> int:
         print(f"  sens {label:20s} PE {pe:.2f} → M {m_alt:.2f} USD")
     print(f"  sens k = 0 / 0.4           → M {rows['m']['gross'] / fx:.2f} / {(rows['m']['gross'] - 0.4 * rows['m']['deemed']) / fx:.2f} USD")
     print(f"  篮 7 contrast (1/r, r 15%): {eps['l'] / 0.15 / fx:.2f} / {eps['m'] / 0.15 / fx:.2f} / {eps['h'] / 0.15 / fx:.2f} USD (disclosure only)")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 — the only r in the anchors — while EPS, ROE, b1 and the k row stay
+    # put.  Disclosure only: the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        out = []
+        for t in TIERS:
+            x = rows[t]
+            pe = two_stage_pe(tier_g1[t], n, g2, x["roe"], r + dr) if tier_g1[t] > 0 else perpetual_pe(g2, x["roe"], r + dr)
+            out.append((eps[t] * pe - x["k"] * x["deemed"]) / fx)
+        return out[0], out[1], out[2]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > RF_TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     print(f"price={inp['price']} zone={zone}")
+    # Only a clean run feeds the daily digest (output/rates/).
+    if not errors:
+        write_rf_readings("NVO.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

@@ -49,6 +49,12 @@ from lib.inputs import check_against_stated, outputs_section, parse_baskets, par
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
+# rf_report / bands_io import through the `eval.lib` package, so the repo root
+# must be importable too; appended so `lib.*` above still resolves first.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1772.HK.md"
 FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v1"
 TOL = 0.05
@@ -56,6 +62,8 @@ MIN_R_MINUS_G = 0.02
 # The single perpetual r leg (both business legs share the basket, A14); r_disc
 # is the same number by construction but is a discount input, not a leg.
 LEG_R = ("r_perp",)
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 
 # Per-tier option credits (A9): solid-state is a judgement call, the volume step
 # is anchored on Dongwu's 2028E/2027E (+12.5% / one realised 42.5% step ~ 0.29).
@@ -339,10 +347,23 @@ def main() -> int:
         f"| multiple ratio L/M={pe_l/pe_m:.2f} H/M={pe_h/pe_m:.2f} (ROE term only, g flat)"
     )
     print(f"price={inp['price']} zone={zone}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is
+    # the only r in the base anchors; r_disc discounts only the candidate band
+    # and V_opt, so it stays put.  The Li2CO3 rungs, g2 and bridge stay put too.
+    # Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        shifted = {**inp, "r_perp": inp["r_perp"] + dr}
+        return tuple(scenario(shifted, t)["px"] for t in ("l", "m", "h"))  # type: ignore[return-value]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"]}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("1772.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

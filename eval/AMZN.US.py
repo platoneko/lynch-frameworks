@@ -11,7 +11,9 @@ onto the segment legs by one scalar per tier — priced at ONE growth rate per
 leg.  Three Gordon legs + two asset legs:
 
     AWS · non-lab   篮 4 r 10%   retention at the MARGINAL steady-state ROIC
-    AWS · lab       篮 7 r 15%   (OpenAI + Anthropic revenue: circular financing)
+    AWS · lab       篮 7→4 pair  (OpenAI + Anthropic revenue: circular financing today;
+                                 a paying customer once the lab makes it — capitalised
+                                 at 10%, arrival risk in the shared k_lab)
     Retail (NA+Intl) 篮 4 r 10%  retention at its own average ROE (net capital)
     portfolio (Anthropic / OpenAI stakes) net of DTL, discount band
     net cash (cash + debt securities − long-term debt)
@@ -41,12 +43,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.gordon import check_g_cap, check_r, perpetual_pe  # noqa: E402
+from eval.lib.axes import check_lab_mount  # noqa: E402
+from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, perpetual_pe  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "AMZN.US.md"
 FORMULA_ID = "amzn_fwd_numerator_gordon_aws_retail_portfolio_v1"
+LISTING_CCY = "USD"
 TOL = 0.05
 BN = 1e3
 # 10-Q 2026-06-30 Note 8: H1 consolidated operating income ($M)
@@ -91,7 +97,7 @@ def first_float(pattern: str, md: str) -> float | None:
 REQUIRED = [
     "price", "shares_diluted", "tax_rate",
     "oi_na_h1", "oi_intl_h1", "oi_aws_h1", "rev_aws_h1", "net_interest_h1",
-    "r_perp", "r_aws_lab",
+    "r_perp", "r_aws_lab", "r_aws_lab_t", "k_lab",
     "ic_group", "ic_aws", "roic_marg_aws", "share_lab_aws",
     "g2_aws", "g2_ret",
     "k_eps_l", "k_eps_m", "k_eps_h",
@@ -122,11 +128,19 @@ def main() -> int:
     errors: list[str] = []
 
     # --- r is a basket, not a dial (valuation-rules「§r 篮子」)
-    r4, r7 = inp["r_perp"], inp["r_aws_lab"]
-    for field, r in (("r_perp", r4), ("r_aws_lab", r7)):
+    r4, r7, r7t = inp["r_perp"], inp["r_aws_lab"], inp["r_aws_lab_t"]
+    for field, r in (("r_perp", r4), ("r_aws_lab", r7), ("r_aws_lab_t", r7t)):
         if field not in baskets:
             errors.append(f"{field}: Inputs source cell names no 篮 N")
         errors += check_r(r, field, baskets.get(field))
+    # The lab sub-leg is a basket PAIR (valuation-rules「篮子对」): 篮 7 is what the
+    # customer is today, 篮 4 what it is if it makes it.  Every leg here is
+    # single-stage, so the journey rate has no exponent to act in -- the steady
+    # state capitalises at the terminal rate and the shared k_lab carries all of
+    # the arrival risk (_AXIS.frontier-lab-funding §3).
+    errors += check_basket_pair(r7, r7t, "lab", baskets.get("r_aws_lab"), baskets.get("r_aws_lab_t"))
+    errors += check_k_declared(r7, r7t, (inp["k_lab"],) * 3, "k_lab")
+    errors += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
     for field, g, r in (("g2_aws", inp["g2_aws"], r4), ("g2_ret", inp["g2_ret"], r4), ("g2_aws@lab", inp["g2_aws"], r7)):
         errors += check_g_cap(g, r, field)
         if r - g < MIN_R_MINUS_G:
@@ -171,12 +185,13 @@ def main() -> int:
         return e / (ic0 / (1.0 - g * unbooked / e))
 
     def tier(t: str, k: float, ic_scale: float = 1.0, roic_marg: float | None = None,
-             share_lab: float | None = None, r_lab: float | None = None,
+             share_lab: float | None = None, r_lab: float | None = None, k_lab: float | None = None,
              g_aws: float | None = None, g_ret: float | None = None, flat: dict | None = None,
              retreat: bool = True) -> dict:
         roic_marg = inp["roic_marg_aws"] if roic_marg is None else roic_marg
         share_lab = inp["share_lab_aws"] if share_lab is None else share_lab
-        r_lab = r7 if r_lab is None else r_lab
+        r_lab = r7t if r_lab is None else r_lab
+        k_lab = inp["k_lab"] if k_lab is None else k_lab
         g_aws = inp["g2_aws"] if g_aws is None else g_aws
         g_ret = inp["g2_ret"] if g_ret is None else g_ret
         scale = aws_retreat if (t == "l" and retreat) else 1.0
@@ -192,7 +207,10 @@ def main() -> int:
             roe_avg = roe_open(e, ic, g, unb)
             roe_ret = roe_avg if rm is None else rm      # A4: cloud retains at the marginal ROIC
             pe = perpetual_pe(g, roe_ret, r) if flat is None else flat[name]
-            out[name] = dict(e=e, roe=roe_avg, roe_ret=roe_ret, pe=pe, b1=g / roe_ret, unb=unb, val=e * pe / sh)
+            # k_lab leaves the lab sub-leg's value only, never its multiple (axis §3b).
+            haircut = (1.0 - k_lab) if name == "lab" else 1.0
+            out[name] = dict(e=e, roe=roe_avg, roe_ret=roe_ret, pe=pe, b1=g / roe_ret, unb=unb,
+                             val=e * pe * haircut / sh)
         d = inp[f"d_port_{t}"]
         out["port"] = dict(val=port_net * (1 - d) / sh, d=d)
         out["cash"] = dict(val=net_cash / sh)
@@ -220,8 +238,10 @@ def main() -> int:
                 errors.append(f"{name} {t}: b1 = g/ROE = {b1:.3f} outside (0,1)")
         if base[t]["ret"]["roe"] > MAX_LEG_ROE:
             errors.append(f"retail {t}: derived ROE {base[t]['ret']['roe']:.1%} > {MAX_LEG_ROE:.0%} — capital allocation artefact")
-        if base[t]["lab"]["pe"] >= base[t]["aws"]["pe"]:
-            errors.append(f"tier {t}: lab sub-leg (篮 7) must not out-multiple the non-lab sub-leg")
+        # Per dollar of earnings the lab sub-leg must never be worth more than the
+        # non-lab one: same terminal basket, so the haircut is what keeps it below.
+        if base[t]["lab"]["pe"] * (1.0 - inp["k_lab"]) > base[t]["aws"]["pe"] + 1e-9:
+            errors.append(f"tier {t}: lab sub-leg after k_lab out-values the non-lab sub-leg per unit of earnings")
 
     # A2e-2c: every tier at the M multiples — the ladder must still stand
     flat = {n: base["m"][n]["pe"] for n in ("aws", "lab", "ret")}
@@ -284,20 +304,22 @@ def main() -> int:
     def total_at(d: float) -> float:
         x = tier("m", inp["k_eps_m"])
         v = x["port"]["val"] + x["cash"]["val"]
-        for name, r0, g in (("aws", r4, inp["g2_aws"]), ("lab", r7, inp["g2_aws"]), ("ret", r4, inp["g2_ret"])):
-            v += x[name]["e"] * perpetual_pe(g, x[name]["roe_ret"], r0 + d) / sh
+        for name, r0, g in (("aws", r4, inp["g2_aws"]), ("lab", r7t, inp["g2_aws"]), ("ret", r4, inp["g2_ret"])):
+            haircut = (1.0 - inp["k_lab"]) if name == "lab" else 1.0
+            v += x[name]["e"] * perpetual_pe(g, x[name]["roe_ret"], r0 + d) * haircut / sh
         return v
     lo, hi = -0.06, 0.06
     for _ in range(60):
         mid = (lo + hi) / 2
         lo, hi = (mid, hi) if total_at(mid) > inp["price"] else (lo, mid)
-    print(f"implied r(P): δ = {mid:+.2%} on every Gordon leg (篮 4 → {r4 + mid:.2%}, 篮 7 → {r7 + mid:.2%}) — disclosure only")
+    print(f"implied r(P): δ = {mid:+.2%} on every Gordon leg (篮 4 → {r4 + mid:.2%}; lab terminal → {r7t + mid:.2%}) — disclosure only")
     sens = [
         ("AWS marginal ROIC 16.4% (own realised avg-asset basis)", dict(roic_marg=0.164)),
         ("AWS marginal ROIC 13% (realised first-year lower bound)", dict(roic_marg=0.13)),
         ("lab share 48% (= RPO share)", dict(share_lab=0.48)),
         ("lab share 15% (= AI ARR share today)", dict(share_lab=0.15)),
-        ("lab sub-leg at 篮 4", dict(r_lab=r4)),
+        ("k_lab = 0 (no arrival haircut)", dict(k_lab=0.0)),
+        ("single-basket lab (篮 7 15%, no k — the pre-pair ruler)", dict(r_lab=r7, k_lab=0.0)),
         ("g2_aws −1pp", dict(g_aws=inp["g2_aws"] - 0.01)),
         ("g2_ret −1pp", dict(g_ret=inp["g2_ret"] - 0.01)),
         ("g2_ret +1pp", dict(g_ret=inp["g2_ret"] + 0.01)),
@@ -311,9 +333,30 @@ def main() -> int:
     print(f"杠杆门: net debt/EBITDA {inp['net_debt_ebitda']:.2f}, interest/EBIT {inp['interest_ebit']:.1%} — not triggered"
           f" | capex axis constituent: 2026 guide ${inp['capex_guide'] / 1e9:.0f}B")
     print(f"price={inp['price']} zone={zone}")
+
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # every priced r 1:1 — r_perp (AWS non-lab + retail) and the lab sub-leg's
+    # terminal basket r_aws_lab_t.  The journey rate r_aws_lab prices nothing in
+    # the base deck and r_disc only the candidate band, so neither moves; g, ROE,
+    # k_lab, k and the asset legs stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r4
+        saved = r4
+        r4 = r4 + dr
+        try:
+            b = band(r_lab=r7t + dr)
+            return b["l"]["total"], b["m"]["total"], b["h"]["total"]
+        finally:
+            r4 = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_aws_lab_t": r7t}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("AMZN.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

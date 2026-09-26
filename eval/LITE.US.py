@@ -64,12 +64,16 @@ from eval.lib.gordon import (  # noqa: E402
 )
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "LITE.US.md"
 FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v3"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
+# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
+LISTING_CCY = "USD"
 
 TIERS = ("L", "M", "H")
 
@@ -412,10 +416,28 @@ def main() -> int:
         f" M {inp['rev_fy27_cons'] * 1e6 / inp['capex_m']:.2%}"
     )
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 inside tier(); EPS, the rolled ROE and g2 stay put.  Disclosure
+    # only — the anchors above are the 中枢 column; the /1.1 line is not a rate.
+    def band_at(dr: float) -> tuple[float, float, float]:
+        nonlocal r
+        saved = r
+        r = r + dr
+        try:
+            return tuple(eps[t] * tier(eps[t])[1] for t in TIERS)  # type: ignore[return-value]
+        finally:
+            r = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # Only a clean run feeds the daily digest.
+    write_rf_readings("LITE.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

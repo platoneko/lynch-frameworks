@@ -83,9 +83,12 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSM.US.md"
 FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v9"
+LISTING_CCY = "USD"
 TOL = 0.15
 P_TOL = 0.0005
 MIN_R_MINUS_G = 0.02
@@ -483,6 +486,25 @@ def main() -> int:
         f"market-implied (P/2027E mean={inp['price'] / eps['m']:.1f}x): single-leg Gordon g={g_mkt:.4f} "
         f"({'well' if ok else 'ill'}-conditioned) | SOTP structure, platform g2 at M=price: {(lo + hi) / 2:.4f}"
     )
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves r_perp
+    # 1:1 on every leg -- platform (aw / B1 floor), mature wafer and B2 multiples are
+    # re-priced; EPS, ROE, g1_adv/g2 and the CoWoS capacity value stay put.
+    # Disclosure only: the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r
+        saved = r
+        r = r + dr
+        try:
+            return tuple(
+                legs_at(t, platform_pe(t, g2, t != "l"), perpetual_pe(g_mat, roe[t], r), perpetual_pe(g_b2, roe[t], r))["sum"]
+                for t in TIERS
+            )
+        finally:
+            r = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     print(
         f"COUPE V_opt={v_opt:.2f} p_k={p_k['l']:.3f}/{p_k['m']:.3f}/{p_k['h']:.1f}  "
         f"zone+V={L + v_k['l']:.1f}/{M + v_k['m']:.1f}/{H + v_k['h']:.1f}  "
@@ -551,6 +573,9 @@ def main() -> int:
     print(f"price={inp['price']:.2f} zone={zone} P/L={inp['price'] / L - 1:+.1%} P/M={inp['price'] / M - 1:+.1%}")
     if inp["price"] > H:
         print(f"  market-implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
+    # Only a clean run feeds the daily digest (output/rates/).
+    if not errors:
+        write_rf_readings("TSM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

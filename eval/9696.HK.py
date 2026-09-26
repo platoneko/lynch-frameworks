@@ -38,6 +38,12 @@ from lib.inputs import check_against_stated, check_missing, parse_baskets, parse
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
+# rf_report / bands_io import through the `eval.lib` package, so the repo root
+# must be importable too; appended so `lib.*` above still resolves first.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "9696.HK.md"
 FORMULA_ID = "tianqi_li2co3_twoleg_volplan_pe10_v2_gordon_v2"
 MIN_R_MINUS_G = 0.02
@@ -46,6 +52,8 @@ MIN_R_MINUS_G = 0.02
 RECOVERY_MEASURED = {"FY2025→2026H1×2": (5.06, 42.42 * 2 * 1.119522, 1)}
 TOL = 0.05
 YI = 1e8
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 
 REQUIRED = [
     "price", "shares", "bps",
@@ -130,10 +138,14 @@ def main() -> int:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
-    S = {t: scenario(inp, t) for t in ("l", "m", "h")}
-    for t in S:
-        S[t]["roe"] = S[t]["eps_hkd"] / inp["bps"]
-        S[t]["pe"] = perpetual_pe(inp["g2"], S[t]["roe"], r)
+    def priced(inp_: dict[str, float], r_: float) -> dict[str, dict[str, float]]:
+        S_ = {t: scenario(inp_, t) for t in ("l", "m", "h")}
+        for t in S_:
+            S_[t]["roe"] = S_[t]["eps_hkd"] / inp_["bps"]
+            S_[t]["pe"] = perpetual_pe(inp_["g2"], S_[t]["roe"], r_)
+        return S_
+
+    S = priced(inp, r)
     pe_l, pe_m, pe_h = (S[t]["pe"] for t in ("l", "m", "h"))
     # Guardrail (裁决顺序 ③): a tier outside the own band is BLOCKED, never fixed by twisting g or r.
     for tag, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
@@ -236,10 +248,21 @@ def main() -> int:
     print(f"V_opt={v_opt:.2f} (SQM k=1 × H1 inv income {inp['sqm_inv_income_h1']:g}亿 ×2)  p={p_tiers}  "
           f"zone+V: L′={corrected[0]:.2f} M′={corrected[1]:.2f} H′={corrected[2]:.2f} -> {zone_of(inp['price'], *corrected)}  V_opt/M={v_opt/M:.1%}")
     print(f"price={inp['price']} zone={zone}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp sets
+    # the multiple and r_disc discounts the ramp year inside the base numerator,
+    # so both move 1:1.  The Li2CO3 rungs, realization, cost, volumes and g2 stay
+    # put.  Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        S_ = priced({**inp, "r_disc": inp["r_disc"] + dr}, r + dr)
+        return tuple(S_[t]["eps_hkd"] * S_[t]["pe"] for t in ("l", "m", "h"))  # type: ignore[return-value]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_disc": inp["r_disc"]}, band_rf, inp["price"])
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("9696.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

@@ -50,8 +50,14 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "0728.HK.md"
 FORMULA_ID = "ct_hk_gordon_peak_flat_v1"
+LISTING_CCY = "HKD"
 TIERS = ("l", "m", "h")
 YI = 1e8
 R_LEGS = ("r_perp", "r_perp_a")
@@ -231,7 +237,19 @@ def main() -> int:
         f"A-share currency-segment r={r_ccy:.3f} band CNY="
         f"{[round(band_ccy[t], 2) for t in TIERS]} zone={zone_ccy} (disclosure only)"
     )
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # the H-share r_perp 1:1; EPS, g2, ROE and fx stay put.  r_perp_a prices only
+    # the A-share cross band above, not L/M/H, so it is not shifted.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return tuple(eps[t] * perpetual_pe(g2[t], roe[t], r + dr) / fx for t in TIERS)
 
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 0.02 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings("0728.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

@@ -75,9 +75,12 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
 )
 from eval.lib.zones import zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "0189.HK.md"
 FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v2"
+LISTING_CCY = "HKD"
 TOL = 0.05  # outputs are rounded to 2 decimals
 YI = 1e5  # 亿, from RMB thousand
 
@@ -416,11 +419,23 @@ def main() -> int:
     if meta.v_opt is not None:
         print(f"V_opt={meta.v_opt:.2f} (not in deck) p_tiers={meta.p_tiers}  zone+V: M+p·V={M + (meta.p_tiers[1] if meta.p_tiers else 0) * meta.v_opt:.2f}"
               f" H+V={H + meta.v_opt:.2f}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # the one basket r all four legs share 1:1; price scenarios, g2, ROE, ownership
+    # and fx stay put.  Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        pe_rf = gordon(r + dr)
+        return tuple(scenario(x, inp[f"upt_{x}"], pe_rf)["value"] for x in "lmh")
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # Only a clean run feeds the daily digest.
+    write_rf_readings("0189.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

@@ -100,6 +100,8 @@ from eval.lib.gordon import (  # noqa: E402
     perpetual_pe,
 )
 from eval.lib.inputs import parse_baskets  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GLW.US.md"
 FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v6"
@@ -113,6 +115,8 @@ G2_OC_PEER_RAW = 0.0635
 # A23a upgrade path: if the Verizon deal ever discloses its rate, r_disc moves
 # to the fixed-contract annuity basket. Printed as a sensitivity only.
 CONTRACT_ANNUITY_BASKET = 1
+# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
+LISTING_CCY = "USD"
 
 # Tier realisation of the two Verizon LTA option segments (A23a / A23b). Lives
 # here rather than in §3 Inputs because A2e-7a forbids p-class fields from
@@ -690,10 +694,28 @@ def main() -> int:
         f"L/M/H = {pf['l']:.2f} / {pf['m']:.2f} / {pf['h']:.2f}"
     )
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 in the three Gordon legs (OC / GI / AU); the rolled ROE, g2,
+    # numerators, P/S legs, prepaid and the closing items (pe_corp is a stated
+    # multiple, not a rate) stay put.  r_disc only prices V_opt, so it is not
+    # shifted here.  Disclosure only — the anchors above are the 中枢 column.
+    def band_at(dr: float) -> tuple[float, float, float]:
+        def at(k: str) -> float:
+            pe_ = {leg: perpetual_pe(inp[f"g2_{leg}"], roe[k], r + dr) for leg in ("oc", "gi", "au")}
+            return anchor(k, pe_["oc"], pe_gi_k=pe_["gi"], pe_au_k=pe_["au"])[1]
+
+        return at("l"), at("m"), at("h")
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # Only a clean run feeds the daily digest.
+    write_rf_readings("GLW.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

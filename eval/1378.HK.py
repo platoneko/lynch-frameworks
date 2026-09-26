@@ -54,9 +54,15 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1378.HK.md"
 PEER_CAPTIVE = Path(__file__).resolve().parent.parent / "frameworks" / "002532.SZ.md"
 FORMULA_ID = "hongqiao_al_spread_gm_bridge_gordon_v5"
+LISTING_CCY = "HKD"
 
 GP_M_FILING = 551.3  # 亿 CNY, 2026H1 x2 at the stated 31.5% margin
 NP_M_FILING = 344.2  # 亿 CNY, 2026H1 归母 172.1 x2
@@ -149,6 +155,17 @@ def main() -> int:
           f"交叉尺 (A17): 现价 PB {inp['price']/inp['bps']:.2f} vs 锚点 PB "
           f"{L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}; 现价 {inp['price']/eps_m_hkd:.2f}x EPS_M → "
           f"市价隐含永续 g {g_px:+.2%} ({'well-conditioned' if ok_px else 'ill-conditioned'})")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1; the spread ladder, g rows, k and fx stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return tuple(anchors(dict(inp, r_perp=r + dr), fx=fx)[0])
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings("1378.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

@@ -51,6 +51,8 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.tiers import report as tier_report  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "QCOM.US.md"
 # One annuity ladder for the asset class (A2e-5b): NOK's Technology Standards
@@ -58,6 +60,7 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "QCOM.US.md"
 PEER = REPO_ROOT / "frameworks" / "NOK.US.md"
 FORMULA_ID = "qcom_sotp_base4_qtl_evebit_vopt_fy27_v1"
 MM = 1e6  # revenue inputs are $M; shares and equity are absolute
+LISTING_CCY = "USD"
 
 LEGS = ("qtl", "hs", "auto", "iot")
 OP_LEGS = ("hs", "auto", "iot")
@@ -240,6 +243,16 @@ def main() -> int:
     r_delta = (lo + hi) / 2
     print(f"implied r(P): δ = {r_delta:+.2%} -> operating legs {inp['r_op'] + r_delta:.1%}"
           f" (篮 {basket} {inp['r_op']:.1%}; QTL leg no r) — disclosure only")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_op 1:1 on the three Gordon legs; the QTL leg prices on EV/EBIT (no r), and
+    # ROE_M / numerators stay put.  Disclosure only: base L/M/H are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        lmh = anchors_at(inp["r_op"] + dr, {})
+        return lmh[0], lmh[1], lmh[2]
+
+    rf = rf_block(LISTING_CCY, {"r_op": inp["r_op"]}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors += ["r_f readings: the dr = 0 column does not reproduce L/M/H"]
 
     # Shared annuity ladder (A14): every rung must equal NOK's TS rung.
     peer = parse_inputs(PEER.read_text(encoding="utf-8"))
@@ -289,6 +302,9 @@ def main() -> int:
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors += [f"p-class fields must not appear in Inputs (A2e-7a): {leaked}"]
+    # Only a clean run feeds the daily digest (output/rates/).
+    if not errors:
+        write_rf_readings("QCOM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

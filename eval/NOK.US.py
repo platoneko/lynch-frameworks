@@ -59,6 +59,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_optical_oe_mount  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     BASKET_R,
     check_g_cap,
@@ -71,6 +72,7 @@ from eval.lib.gordon import (  # noqa: E402
     two_stage_pe,
 )
 from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "NOK.US.md"
@@ -80,6 +82,7 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "NOK.US.md"
 PEER = REPO_ROOT / "frameworks" / "QCOM.US.md"
 SHARED_LADDER = {f"ev_ebit_ts_{k}": f"ev_ebit_ts_{k}" for k in ("l", "m", "h")}
 FORMULA_ID = "nok_sotp_ni2028_ts_annuity_ran_v1_gordon_v1"
+LISTING_CCY = "USD"  # the NYSE ADR; the model is EUR, converted at fx_eur_usd
 
 TOL = 0.05  # stated anchors are rounded to 2 decimals
 EBIT_TOL = 5e6  # segment identity slack, EUR (inputs are quoted to 0.005bn)
@@ -508,6 +511,20 @@ def main() -> None:
           + " / ".join(f"{perp[k]:.2f}" for k in TIERS)
           + f"x): {perp_vals['L']:.2f} / {perp_vals['M']:.2f} / {perp_vals['H']:.2f}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is the only
+    # priced r — the NI leg's two-stage multiple and its n_disc_ni discount factor both
+    # read it, so it shifts 1:1 in both.  The TS annuity ladder (篮 3, no r), the RAN /
+    # corp EV/EBIT multiples, g1/g2, ROE and the numerators stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        cr = compute(dict(v, r_perp=v["r_perp"] + dr), b)
+        return cr["L"], cr["M"], cr["H"]
+
+    print()
+    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf, price)
+    rf0 = band_rf(0.0)
+    checks.append((all(abs(x - c[k]) <= TOL for x, k in zip(rf0, ("L", "M", "H"))),
+                   f"r_f readings dr = 0 column reproduces L/M/H ({rf0[0]:.2f} / {rf0[1]:.2f} / {rf0[2]:.2f})"))
+
     print("\nchecks:")
     failed = False
     for ok, label in checks:
@@ -515,6 +532,8 @@ def main() -> None:
         failed |= not ok
     if failed:
         sys.exit(1)
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("NOK.US", rf.seg, (c["L"], c["M"], c["H"]), rf.consensus, rf.pressure)
     print("OK")
     sys.exit(0)
 

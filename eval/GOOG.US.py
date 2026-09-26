@@ -63,8 +63,18 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import (  # noqa: E402
     capex_constituent_share,
     check_capex_constituent,
+    check_lab_mount,
 )
-from eval.lib.gordon import check_g_cap, check_r, payout, perpetual_pe  # noqa: E402
+from eval.lib.gordon import (  # noqa: E402
+    check_basket_pair,
+    check_g_cap,
+    check_k_declared,
+    check_r,
+    payout,
+    perpetual_pe,
+)
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import zone_of  # noqa: E402
 
@@ -87,6 +97,8 @@ K_LADDER_TOL = 1e-4
 # capex wave retains far more (A23 待补), so report the band under a materially
 # larger FY2027 opening capital base.
 EQUITY_SENSITIVITY = (1.20, 1.40)
+# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
+LISTING_CCY = "USD"
 
 
 def parse_inputs(md: str) -> dict[str, float]:
@@ -137,6 +149,8 @@ REQUIRED = [
     "oi_other_bets_h1",
     "r_perp",
     "r_cld_lab",
+    "r_cld_lab_t",
+    "k_lab",
     "roic_marg_cld",
     "share_lab_cld",
     "equity_services",
@@ -198,6 +212,17 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if "r_cld_lab" not in baskets:
         errs.append("r_cld_lab: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
     errs += check_r(inp["r_cld_lab"], "r_cld_lab", baskets.get("r_cld_lab"))
+    # The lab sub-leg is a basket PAIR (valuation-rules「篮子对」, A27): 篮 7 is what
+    # Anthropic is as a payer today, 篮 4 what it is if it makes it.  Every leg is
+    # single-stage, so the steady state capitalises at the terminal rate and the
+    # shared k_lab carries all of the arrival risk (_AXIS.frontier-lab-funding §3).
+    if "r_cld_lab_t" not in baskets:
+        errs.append("r_cld_lab_t: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
+    errs += check_basket_pair(inp["r_cld_lab"], inp["r_cld_lab_t"], "lab",
+                              baskets.get("r_cld_lab"), baskets.get("r_cld_lab_t"))
+    errs += check_k_declared(inp["r_cld_lab"], inp["r_cld_lab_t"], (inp["k_lab"],) * 3, "k_lab")
+    errs += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
+    # G_cap stays keyed to the JOURNEY basket (「篮子对」判据 3).
     errs += check_g_cap(inp["g2_cld"], inp["r_cld_lab"], "g2_cld@lab")
     if not (0.0 < inp["share_lab_cld"] < 1.0):
         errs.append("share_lab_cld outside (0,1)")
@@ -331,7 +356,8 @@ def main() -> int:
             raise ValueError(f"opening-capital roll diverges: g*N/E = {g * unbooked / e_fy27:.3f}")
         return e_fy27 / (ic0 / (1.0 - g * unbooked / e_fy27))
 
-    r_lab = inp["r_cld_lab"]
+    r_lab = inp["r_cld_lab_t"]  # the steady state capitalises at the terminal basket
+    k_lab = inp["k_lab"]
 
     def tier_multiples(g_svc: float, g_cld: float, ic_scale: float = 1.0,
                        roic_marg: float | None = None, r_lab_: float | None = None) -> dict[str, dict[str, float]]:
@@ -341,7 +367,7 @@ def main() -> int:
         computed and printed, but the retention that funds g_cld is priced at
         the MARGINAL steady-state ROIC of the capex wave (A26), scaled by the
         A18 margin retreat in the L tier.  The lab sub-leg (A27) shares that
-        retention rate and takes 篮 7's r.
+        retention rate and capitalises at its terminal basket (篮子对).
         """
         rm = inp["roic_marg_cld"] if roic_marg is None else roic_marg
         rl = r_lab if r_lab_ is None else r_lab_
@@ -367,8 +393,10 @@ def main() -> int:
     # growth cannot make an ROE-20% leg out-multiple an ROE-60% leg, because
     # that growth costs it ~3x the retained capital.
     for tier in ("l", "m", "h"):
-        if pe_lab[tier] >= pe_cld[tier]:
-            errors.append(f"tier {tier}: 篮 7 lab sub-leg must not out-multiple the 篮 4 cloud sub-leg")
+        # Same terminal basket as the rest of cloud, so only the haircut keeps the
+        # lab sub-leg below it per dollar of earnings.
+        if pe_lab[tier] * (1.0 - k_lab) > pe_cld[tier] + 1e-9:
+            errors.append(f"tier {tier}: lab sub-leg after k_lab out-values the non-lab cloud sub-leg")
         lam = pe_cld[tier] / pe_svc[tier]
         if lam >= 1.0:
             errors.append(
@@ -395,14 +423,15 @@ def main() -> int:
         """Per-share contribution of each leg; the anchor is their sum.
 
         The cloud numerator is split (A27): (1 - share_lab_cld) at the 篮 4
-        multiple, share_lab_cld (Anthropic) at the 篮 7 multiple.
+        multiple, share_lab_cld (Anthropic) at the same terminal multiple times
+        (1 - k_lab) -- the haircut leaves the value, never the multiple.
         """
         sh = inp["shares_diluted"]
         cld_num = nopat_cloud * cloud_scale * k_eps
         return {
             "svc": svc_leg * k_eps * mult_svc / sh,
             "cld": cld_num * (1 - share_lab) * mult_cld / sh,
-            "lab": cld_num * share_lab * mult_lab / sh,
+            "lab": cld_num * share_lab * mult_lab * (1.0 - k_lab) / sh,
             "cash": net_cash / sh,
             "port": portfolio_gross * (1 - d_port) / sh,
             "ob": waymo_gross * (1 - d_ob) / sh,
@@ -595,15 +624,21 @@ def main() -> int:
         f" -> PE {pe_cld['m']:.2f}x -> {pe_cld['l']:.2f}x (A26: marginal ROIC, snapshot ROE {roe_cld['l']:.1%} only printed)"
     )
     print(
-        f"cloud lab sub-leg (A27): share {share_lab:.0%} of the cloud numerator at 篮 7 r {r_lab:.0%}"
-        f" -> PE {pe_lab['m']:.2f}x vs 篮 4 {pe_cld['m']:.2f}x"
+        f"cloud lab sub-leg (A27): share {share_lab:.0%} of the cloud numerator, basket pair "
+        f"{inp['r_cld_lab']:.0%}->{r_lab:.0%} x (1 - k_lab {k_lab:g}) -> PE {pe_lab['m']:.2f}x vs 篮 4 {pe_cld['m']:.2f}x"
     )
     for label, kw in (
         ("cloud marginal ROIC 13%", dict(roic_marg=0.13)),
         ("cloud marginal ROIC 20%", dict(roic_marg=0.20)),
-        ("lab sub-leg at 篮 4", dict(r_lab_=r)),
     ):
         sL, sM, sH, _ = band_at(inp["g2_svc"], inp["g2_cld"], **kw)
+        sz = zone_of(inp["price"], sL, sM, sH)
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+    for label, k_alt, r_alt in (("k_lab = 0 (no arrival haircut)", 0.0, None),
+                                ("single-basket lab (篮 7 15%, no k — the pre-pair ruler)", 0.0, inp["r_cld_lab"])):
+        k_saved, k_lab = k_lab, k_alt
+        sL, sM, sH, _ = band_at(inp["g2_svc"], inp["g2_cld"], r_lab_=r_alt)
+        k_lab = k_saved
         sz = zone_of(inp["price"], sL, sM, sH)
         print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
     for sl in (0.15, 0.50):
@@ -649,6 +684,24 @@ def main() -> int:
             f"敏感区 g2_svc {delta:+.1%} -> svc M {t_['pe_svc']['m']:.2f}x -> L={sL:.2f} M={sM:.2f} H={sH:.2f}"
             f" zone={sz}" + ("  ⚠敏感区 (zone flips, disclosure only)" if sz != zone else "")
         )
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # every priced r 1:1 — r_perp and the lab sub-leg's terminal basket — while
+    # g, ROE and the numerator stay put.  Disclosure only: the anchors above are
+    # the 中枢 column, and g_cap is keyed to the basket r, not re-checked per column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r, r_lab
+        saved = r, r_lab
+        r, r_lab = r + dr, r_lab + dr
+        try:
+            return band_at(inp["g2_svc"], inp["g2_cld"])[:3]
+        finally:
+            r, r_lab = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r, "r_cld_lab_t": r_lab}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+    # The daily digest cannot re-price a model, so the two reading bands go to
+    # output/rates/ for it; only a clean run writes, so a FAIL never feeds it.
     # Implied r(P), single-stage approximation g + (r - g) * M / P on the services
     # leg's g (the structural read is the market-implied g_svc in §3 交叉校验).
     implied_r = inp["g2_svc"] + (r - inp["g2_svc"]) * M / inp["price"]
@@ -686,6 +739,7 @@ def main() -> int:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    write_rf_readings("GOOG.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

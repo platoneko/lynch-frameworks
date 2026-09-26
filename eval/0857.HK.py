@@ -61,10 +61,16 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 FRAMEWORK = REPO / "frameworks" / "0857.HK.md"
 FORMULA_ID = "petrochina_hk_brent_axis_owner_earnings_flat_pe_v2"
 TICKER = "0857.HK"
+LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")
 MN = 1e6                    # Inputs money fields are RMB million
@@ -335,7 +341,20 @@ def main() -> int:
     print(f"属性 D: 2026H1 归母 {inp['ni_h1_26']:,.0f} x2 = {2 * inp['ni_h1_26']:,.0f} ↔ 本尺 Brent {inp['brent_2025'] + (2 * inp['ni_h1_26'] - inp['ni_fy25']) / beta:.1f}")
     la, ma, ha = L * fx, M * fx, H * fx
     print(f"A股对照(CNY): L={la:.2f} M={ma:.2f} H={ha:.2f} | price_a={inp['price_a']} zone_a={zone_of(inp['price_a'], la, ma, ha)} | H/A = {inp['price'] * fx / inp['price_a']:.3f}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 in the flat multiple; the Brent rungs, E_owner, b_growth and g2
+    # stay put.  r_ng / r_rc / r_mk only price the 表1′ leg-sum cross-check, not
+    # L/M/H, so they are not shifted.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return band_at(e_owner, flat_pe(inp["b_growth"], r + dr, inp["g2_m"]), fx)
 
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings(TICKER, rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

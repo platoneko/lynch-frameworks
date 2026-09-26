@@ -49,6 +49,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_capex_mount  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
@@ -64,10 +65,12 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "AEHR.US.md"
 FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v5"
+LISTING_CCY = "USD"
 TOL = 0.05
 MILLION = 1e6  # money inputs are in $M, share counts are absolute
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
@@ -347,6 +350,20 @@ def main() -> int:
     print(f"capex axis implied share: M {inp['rev_fy28_m'] * MILLION / inp['capex_m']:.3%} (not material)")
     print(f"price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H:.2f}x  P/(H+V)={inp['price'] / opt[2]:.2f}x  "
           f"implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.1f}")
+
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 — the only priced r; the rolled ROE, g2, the SBC-haircut core
+    # numerator and the net-cash add-back stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        s = [core[t] * perpetual_pe(g2, roe[t], r + dr) + cash_ps for t in TIERS]
+        return s[0], s[1], s[2]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("AEHR.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

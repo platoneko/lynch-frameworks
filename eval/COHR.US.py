@@ -58,12 +58,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_capex_mount, check_optical_oe_mount  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import check_g_cap, check_r, g_cap, implied_g, perpetual_pe  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "COHR.US.md"
 FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt"
+LISTING_CCY = "USD"
 TOL = 0.05  # outputs rounded to 2 decimals
 
 MGN_DCC_HARD_CAP = 0.35  # DC&C segment-profit margin: 19.0/24.1/25.2% FY24-26
@@ -489,10 +492,34 @@ def main() -> int:
         tag = " (MKSI single house, reference)" if abs(g - 0.0409) < 1e-9 else " (no peer anchor)"
         print(f"  sens g2_ind={g:+.4f}{tag}: " + "/".join(f"{x:.2f}" for x in reprice(inp["g2_dcc"], g)))
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # every priced r 1:1 — r_perp (both legs' Gordon multiple) and r_disc (the
+    # t_disc pull-back of the FY28 sum; A17 pins it to r_perp, so it moves with
+    # it).  g2, the re-rolled ROE, numerators and net debt stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        saved = inp["r_perp"], inp["r_disc"]
+        inp["r_perp"], inp["r_disc"] = saved[0] + dr, saved[1] + dr
+        try:
+            disc_r = (1.0 + inp["r_disc"]) ** (-inp["t_disc"])
+            lmh = [
+                scenario(inp[f"rev_dcc_{t.lower()}"], inp[f"m_dcc_{t.lower()}"], inp[f"m_ind_{t.lower()}"])["sum"]
+                * disc_r + inp["net_debt_ps"]
+                for t in TIERS
+            ]
+            return lmh[0], lmh[1], lmh[2]
+        finally:
+            inp["r_perp"], inp["r_disc"] = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_disc": inp["r_disc"]}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
 
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("COHR.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

@@ -47,7 +47,7 @@ Sanity checks beyond the anchor comparison:
   * no p-class fields in Inputs; L < M < H; stated anchors / cut points / zone
 
 Disclosures printed for the A2f record (never fed back into the anchors):
-  r_f band and reverse-pressure row (rf_hub / rf_step / rf_cap), g2 +-1pp with
+  r_f readings from _AXIS.rates (rf_report.rf_block), g2 +-1pp with
   the zone each lands in (the sensitivity zone), IC frozen / x1.58, RL = 0,
   contingent settlement 30%, tax 21%.
 
@@ -65,6 +65,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import capex_constituent_share, check_capex_constituent  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_branch,
     check_g_cap,
@@ -81,10 +82,12 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "META.US.md"
 FORMULA_ID = "meta_fwd_numerator_gordon_foa_rl_icpath_v1"
+LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 IMPLIED_R_TOL = 0.03  # A13: |delta| above this triggers the basket review
 # Observed payout for check_branch: dividend ~6% + buybacks ~55% of earnings
@@ -120,9 +123,6 @@ REQUIRED = [
     "eps_ttm_clean",
     "pe_own_min",
     "pe_own_max",
-    "rf_hub",
-    "rf_step",
-    "rf_cap",
     "capex_guide_low",
     "capex_guide_high",
     "amd_warrant_shares",
@@ -319,15 +319,7 @@ def main() -> int:
     lo, hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
     print(f"axis _AXIS.ai-capex constituent: FY26 capex guide share of 2026 base {lo:.1%}–{hi:.1%}")
 
-    # Disclosures: r_f band, reverse pressure, g2 +-1pp (sensitivity zone), IC, RL, settlement, tax.
-    rf_rows = []
-    for dx in (-inp["rf_step"], 0.0, inp["rf_step"]):
-        b = band(inp, r_shift=dx)
-        rf_rows.append(f"r {r + dx:.1%}: {fmt(b)} {zone_of(price, *lmh(b))}")
-    print("r_f band: " + " | ".join(rf_rows))
-    rp_l = band(inp, r_shift=inp["rf_cap"])["l"]["v"]
-    rp_h = band(inp, r_shift=-inp["rf_cap"])["h"]["v"]
-    print(f"reverse pressure ±{inp['rf_cap'] * 1e4:.0f}bp: {rp_l:.1f} / {M:.1f} / {rp_h:.1f} {zone_of(price, rp_l, M, rp_h)}")
+    # Disclosures: g2 +-1pp (sensitivity zone), IC, RL, settlement, tax; r_f readings below.
     for g in (g2 - 0.01, g2 + 0.01):
         b = band(inp, g2=g)
         z = zone_of(price, *lmh(b))
@@ -344,6 +336,17 @@ def main() -> int:
     m_tax21 = band(inp, tax=0.21)["m"]["v"]
     print(f"settlement contingent 30% (+{SETTLEMENT_CONTINGENT_B}B): M {m_contingent - M:+.1f} | tax 21%: M {m_tax21 / M - 1:+.1%}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves both
+    # priced r 1:1 — r_foa (Gordon multiple) and r_rl (RL loss capitalisation) — via
+    # band()'s r_shift; numerator, g2, IC path, closing items stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return lmh(band(inp, r_shift=dr))
+
+    rf = rf_block(LISTING_CCY, {"r_foa": inp["r_foa"], "r_rl": inp["r_rl"]}, band_rf, price)
+
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("META.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

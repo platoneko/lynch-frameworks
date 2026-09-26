@@ -86,9 +86,15 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORKS = Path(__file__).resolve().parent.parent / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
 FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6"
+LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")
 LEGS = ("a", "b", "c")
@@ -649,7 +655,21 @@ def main() -> int:
           f"/ {inp['net_cash'] * 1e8 / inp['shares'] / fx:.2f} HKD = H 口径市值的 "
           f"{inp['net_cash'] / mcap_h:.1%}（不进主公式，A11）")
     print(f"H/A = {ha_live:.3f} | BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 in the three incumbent legs' multiple; NI, leg weights, g2 and
+    # ROE stay put.  r_disc only discounts the G50/G200 V_opt legs, which are
+    # outside L/M/H, so it is not shifted.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        shifted = dict(inp, r_perp=r + dr)
+        return tuple(anchor(shifted, t) for t in TIERS)
 
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings("1072.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

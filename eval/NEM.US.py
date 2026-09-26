@@ -45,6 +45,11 @@ from lib.inputs import check_against_stated, check_missing, parse_baskets, parse
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
+# The r_f readings helpers import through the `eval.lib` package, so the repo root joins the path.
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NEM.US.md"
 PEER = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
 FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v1"
@@ -58,6 +63,7 @@ SHARED_LADDER = {"lme_cu_l": "lme_cu_l", "lme_cu_m": "lme_cu_m", "lme_cu_h": "lm
                  "lme_au_l": "lme_au_l", "lme_au_m": "lme_au_m", "lme_au_h": "lme_au_h"}
 H1_2026_X2_PARENT = 5464.0 * 2   # $M, six months ended 2026-06-30 × 2 (M guard)
 H1_TOL = 0.01
+LISTING_CCY = "USD"
 
 REQUIRED = [
     "price", "shares", "equity", "net_debt",
@@ -117,7 +123,8 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0) -> dict:
     g1_raw = {k: (l28[k] / lc[k]) ** (1.0 / n) - 1.0 for k in LEGS}
     g1_co = (fwd["eps"] / cur["eps"]) ** (1.0 / n) - 1.0
     roic = (fwd["parent"] - cur["parent"]) / inp["growth_capex_26_28"]
-    gate = roic >= inp["r_perp"]
+    # The hurdle is the discount rate itself, so an r shift (r_f readings, implied δ) moves it too.
+    gate = roic >= inp["r_perp"] + r_shift
     g2 = {k: inp[g_key] for k, (_, g_key) in LEGS.items()}
     g1 = g1_raw if gate else {k: (g2[k] if k in BASKET4_LEGS else 0.0) for k in LEGS}
     w = {k: lc[k] / cur["eps"] for k in LEGS}
@@ -258,7 +265,20 @@ def main() -> int:
         print(line)
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
     print(f"implied r: δ={delta:+.2%} (metal {inp['r_perp'] + delta:.1%})")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves both
+    # leg rates 1:1 (r_perp metal, r_pbzn lead-zinc) through tier()'s r_shift, the same
+    # path implied_delta uses; the Au/Cu ladder, volumes, g1/g2, the ROIC gate and k
+    # stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return tuple(tier(inp, t, r_shift=dr)["anchor"] for t in TIERS)
+
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_pbzn": inp["r_pbzn"]}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     print(f"price={inp['price']} zone={zone}")
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("NEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

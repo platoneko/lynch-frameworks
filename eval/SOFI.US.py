@@ -40,9 +40,12 @@ from lib.zones import cut_points, zone_of  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.lib.frameworks import load_framework  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "SOFI.US.md"
 FORMULA_ID = "sofi_gordon_tbv_oe_v1"
+LISTING_CCY = "USD"
 MAINT_TOL = 0.005
 # Own-tested P/TBV band (2022-12 trough 1.26×, 2026-07 cycle low 2.03×) — guardrail, not a generator.
 PB_BAND = (1.26, 2.03)
@@ -268,6 +271,20 @@ def main() -> int:
     for gg in (0.03, 0.05):
         print(f"敏感性 g={gg:.0%}: M={tier_mh(inp, inp['eps_27_m'], gs27, gg)['price']:.2f} H={tier_mh(inp, inp['eps_27_h'], gs27, gg)['price']:.2f}")
     print(f"敏感性 g_H=5%: H={tier_mh(inp, inp['eps_27_h'], gs27, 0.05)['price']:.2f}")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves r_op
+    # 1:1 — the L 1/r multiple, the M/H Gordon multiple and their n-year discount —
+    # while numerators, g and the CET1 retention stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        inp_dr = {**inp, "r_op": r + dr}
+        return (
+            tier_l(inp_dr, gs26)["price"],
+            tier_mh(inp_dr, inp["eps_27_m"], gs27, g)["price"],
+            tier_mh(inp_dr, inp["eps_27_h"], gs27, g)["price"],
+        )
+
+    rf = rf_block(LISTING_CCY, {"r_op": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # A22 candidate band (AGENTS.md「共识升级候选带」): recomputed and compared with the
     # Outputs 候选带 line the digest reads; never a zone input here.
     cm = fy28_coordinate(inp, inp["eps_27_m"], gs27, g)
@@ -288,6 +305,9 @@ def main() -> int:
         f"CET1 钉 16% 时 FY28 RWA 增速 {cm['rwa_g_28']:.0%}"
     )
 
+    # Only a clean run feeds the daily digest (output/rates/).
+    if not errors:
+        write_rf_readings("SOFI.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

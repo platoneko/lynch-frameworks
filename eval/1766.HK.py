@@ -73,6 +73,12 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
+# rf_report / bands_io import through the `eval.lib` package, so the repo root
+# must be importable too; appended so `lib.*` above still resolves first.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1766.HK.md"
 FORMULA_ID = "crrc_hk_anchored_consensus_pe_gordon_v3"
 
@@ -84,6 +90,8 @@ G2_TOL = 0.0005
 SEGMENT_GAP_WARN = 0.20
 CANDIDATE_TOL = 0.05
 YI = 1e8
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 
 REQUIRED = [
     "price", "price_a", "shares", "bps", "equity", "fx_hkdcny",
@@ -360,6 +368,20 @@ def main() -> int:
           f"{lc:.2f}/{mc:.2f}/{hc:.2f} A={(lc + mc) / 2:.2f} B={(mc + hc) / 2:.2f} zone={zone_of(inp['price_a'], lc, mc, hc)} P/M={inp['price_a'] / mc:.2f}")
     print(f"H/A = {inp['price'] * fx / inp['price_a']:.3f}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): only
+    # r_perp prices the HK anchors; r_perp_a and the CNY 段 r feed the A-share
+    # companion band, not L/M/H, so they stay put.  g2, ROE, EPS and fx stay put.
+    # Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return band_at(inp["g2_m"], eps, roe, r + dr, fx)
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("1766.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

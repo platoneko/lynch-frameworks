@@ -48,10 +48,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eval.lib.axes import check_cowos_mount, check_optical_oe_mount  # noqa: E402
+from eval.lib.axes import check_cowos_mount, check_lab_mount, check_optical_oe_mount  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
+    check_basket_pair,
     check_g_cap,
+    check_k_declared,
     check_r,
     check_transition_years,
     g_cap,
@@ -69,9 +71,12 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
 FORMULA_ID = "avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v4"
+LISTING_CCY = "USD"
 TOL = 0.15
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A8: guidance bridge vs consensus
@@ -100,6 +105,8 @@ REQUIRED = [
     "n_consensus",
     "r_perp",
     "r_lab",
+    "r_lab_t",
+    "k_lab",
     "g2_xpu",
     "g2_net",
     "g2_nonai",
@@ -123,6 +130,10 @@ LEGS = ("uw", "lab", "net", "nonai", "sw")
 # customer quality, so they share g2 and differ only in the r tier.
 LEG_G2 = {"uw": "g2_xpu", "lab": "g2_xpu", "net": "g2_net", "nonai": "g2_nonai", "sw": "g2_sw"}
 LEG_R = {"uw": "r_perp", "lab": "r_lab", "net": "r_perp", "nonai": "r_perp", "sw": "r_perp"}
+# Terminal rate per leg (valuation-rules「篮子对」): only the lab leg fades -- its
+# 篮 7 is "the customer pays from funding rounds", a state that ends if the lab
+# makes it; the other legs' single basket is already their steady state.
+LEG_RT = {**LEG_R, "lab": "r_lab_t"}
 TRANSITION_LEGS = ("uw", "lab", "net")  # FY28 consensus growth is an AI story (A4/A5 flat)
 
 
@@ -138,7 +149,7 @@ def eps_leg(rev: float, om: float, tax_rate: float, shares: float) -> float:
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
     # Each r row must name its basket and carry that basket's value (A23).
-    for key in ("r_perp", "r_lab"):
+    for key in ("r_perp", "r_lab", "r_lab_t"):
         if key not in baskets:
             errs.append(f"{key}: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
         errs += check_r(inp[key], key, baskets.get(key))
@@ -150,6 +161,12 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
             errs.append(f"perpetuity diverges on {key}: g2 >= r")
         elif gap < MIN_R_MINUS_G:
             errs.append(f"r - {key} = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    # Lab leg = basket pair; its arrival haircut is the shared axis value (A23b).
+    errs += check_basket_pair(inp["r_lab"], inp["r_lab_t"], "lab",
+                              baskets.get("r_lab"), baskets.get("r_lab_t"))
+    errs += check_k_declared(inp["r_lab"], inp["r_lab_t"], (inp["k_lab"],) * 3, "k_lab")
+    errs += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
+    # G_cap stays keyed to the JOURNEY basket (「篮子对」判据 3).
     errs += check_g_cap(inp["g2_xpu"], inp["r_lab"], "g2_xpu@r_lab")
     errs += check_g_cap(inp["g2_cand"], inp["r_lab"], "g2_cand@r_lab")
     # Only FY28 carries a >=2-house consensus (A8); FY29 is a story.
@@ -248,14 +265,27 @@ def main() -> int:
     excess_cash = {tier: (ret_actual - b1[tier]) * unbooked for tier in TIERS}  # disclosure only
 
     # ---- Step 5: multiples per leg per tier; L runs no transition (digest world) ----
-    def leg_pe(leg: str, tier: str, transition: bool) -> float:
-        g2, rr = inp[LEG_G2[leg]], inp[LEG_R[leg]]
+    # The lab leg is a basket PAIR (valuation-rules「篮子对」, _AXIS.frontier-lab-funding
+    # §3): 篮 7 discounts the journey, 篮 4 capitalises the steady state -- a lab that
+    # made it pays from its own revenue, like any hyperscaler.  With no transition
+    # (L, and the no-transition cross-checks) the terminal rate is the only rate.
+    # Every re-pricing below goes through this one function so the pair cannot
+    # drift between the anchors and their sensitivities.
+    def pe_at(leg: str, tier: str, g2: float, transition: bool, dr: float = 0.0) -> float:
+        r_j, r_t = inp[LEG_R[leg]] + dr, inp[LEG_RT[leg]] + dr
         if transition and leg in TRANSITION_LEGS:
-            return two_stage_pe(g1_ai, n, g2, roe[tier], rr)
-        return perpetual_pe(g2, roe[tier], rr)
+            return two_stage_pe(g1_ai, n, g2, roe[tier], r_j, r_terminal=r_t)
+        return perpetual_pe(g2, roe[tier], r_t)
+
+    def leg_pe(leg: str, tier: str, transition: bool) -> float:
+        return pe_at(leg, tier, inp[LEG_G2[leg]], transition)
+
+    # k_lab leaves the lab leg's value only -- never its multiple, never another
+    # leg, whose customers carry their own balance sheets (axis §3b).
+    keep = {leg: (1.0 - inp["k_lab"]) if leg == "lab" else 1.0 for leg in LEGS}
 
     pes = {tier: {leg: leg_pe(leg, tier, transition=(tier != "L")) for leg in LEGS} for tier in TIERS}
-    legs_ps = {tier: {leg: eps[tier][leg] * pes[tier][leg] for leg in LEGS} for tier in TIERS}
+    legs_ps = {tier: {leg: eps[tier][leg] * pes[tier][leg] * keep[leg] for leg in LEGS} for tier in TIERS}
     anchors = {tier: sum(legs_ps[tier].values()) for tier in TIERS}
     blended = {tier: anchors[tier] / eps_total[tier] for tier in TIERS}
     L, M, H = (anchors[tier] for tier in TIERS)
@@ -273,16 +303,11 @@ def main() -> int:
 
     # Re-price one tier with a g2 shift on a subset of legs (same construction as above).
     def anchor_at(tier: str, delta: float, shifted: tuple[str, ...]) -> float:
-        out = 0.0
-        for leg in LEGS:
-            g2, rr = inp[LEG_G2[leg]] + (delta if leg in shifted else 0.0), inp[LEG_R[leg]]
-            pe = (
-                two_stage_pe(g1_ai, n, g2, roe[tier], rr)
-                if tier != "L" and leg in TRANSITION_LEGS
-                else perpetual_pe(g2, roe[tier], rr)
-            )
-            out += eps[tier][leg] * pe
-        return out
+        return sum(
+            eps[tier][leg] * keep[leg]
+            * pe_at(leg, tier, inp[LEG_G2[leg]] + (delta if leg in shifted else 0.0), tier != "L")
+            for leg in LEGS
+        )
 
     # Band-edge Δg (③ 带即证据): shift every leg's g2 by the same Δ until the M-tier
     # blended multiple reaches each edge of the own band.  Reported, never used.
@@ -338,7 +363,7 @@ def main() -> int:
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v) > 1e-9:
-        errors.append(f"V_opt must be stated as 0 (lab XPU is a 篮 7 leg, not an option), got {said_v}")
+        errors.append(f"V_opt must be stated as 0 (lab XPU is a basket-pair leg, not an option), got {said_v}")
     errors += [f"axis: {e}" for e in check_cowos_mount("AVGO", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"])]
     errors += [f"axis: {e}" for e in check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))]
 
@@ -355,12 +380,8 @@ def main() -> int:
 
     # ---- Step 10: implied r(P) — one δ on every leg's basket r so the M-tier sum meets the price ----
     def m_at_r_shift(delta: float) -> float:
-        out = 0.0
-        for leg in LEGS:
-            g2, rr = inp[LEG_G2[leg]], inp[LEG_R[leg]] + delta
-            pe = two_stage_pe(g1_ai, n, g2, roe["M"], rr) if leg in TRANSITION_LEGS else perpetual_pe(g2, roe["M"], rr)
-            out += eps["M"][leg] * pe
-        return out
+        return sum(eps["M"][leg] * keep[leg] * pe_at(leg, "M", inp[LEG_G2[leg]], True, dr=delta)
+                   for leg in LEGS)
 
     lo, hi = -0.03, 0.30  # M falls as r rises; bisect the price crossing
     for _ in range(200):
@@ -376,6 +397,7 @@ def main() -> int:
     print(
         f"g1 company (FY28 cons {inp['eps_fy28_cons']:g} / FY27 cons {inp['eps_fy27_cons']:g} - 1) = {g1_co:.4f}"
         f" -> AI legs g1_ai = {g1_ai:.4f} (n={n}; software / non-AI flat)  r={r:g} / lab {inp['r_lab']:g}"
+        f"->{inp['r_lab_t']:g} (basket pair) k_lab {inp['k_lab']:g}"
         f"  g2 xpu/net/nonai/sw = {inp['g2_xpu']:.4f}/{inp['g2_net']:.4f}/{inp['g2_nonai']:.4f}/{inp['g2_sw']:.4f}"
     )
     print(f"tier EPS (FY27, after below-line) L/M/H = {eps_total['L']:.3f}/{eps_total['M']:.3f}/{eps_total['H']:.3f}"
@@ -432,9 +454,9 @@ def main() -> int:
         f"(篮 {baskets.get('r_perp')}) / lab {inp['r_lab'] + r_delta:.4f} (篮 {baskets.get('r_lab')}); "
         f"M at δ = {m_at_r_shift(r_delta):.1f} = price — disclosure only"
     )
-    l_with_transition = sum(eps["L"][leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
-    m_no_transition = sum(eps["M"][leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
-    h_no_transition = sum(eps["H"][leg] * leg_pe(leg, "H", transition=False) for leg in LEGS)
+    l_with_transition = sum(eps["L"][leg] * keep[leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
+    m_no_transition = sum(eps["M"][leg] * keep[leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
+    h_no_transition = sum(eps["H"][leg] * keep[leg] * leg_pe(leg, "H", transition=False) for leg in LEGS)
     print(f"cross-check: L with FY28 transition = {l_with_transition:.1f}; M/H without transition = "
           f"{m_no_transition:.1f}/{h_no_transition:.1f}")
     print(f"A8 bridge: FY27 {eps_total['M']:.3f} vs cons {inp['eps_fy27_cons']:g} ({dev27:+.1%}) | "
@@ -450,13 +472,10 @@ def main() -> int:
     # A22 candidate band: same formula, only AI-leg g2 -> g2_cand (peak-normalized).
     def cand_leg_pe(leg: str, tier: str) -> float:
         g2 = inp["g2_cand"] if leg in TRANSITION_LEGS else inp[LEG_G2[leg]]
-        rr = inp[LEG_R[leg]]
-        if tier != "L" and leg in TRANSITION_LEGS:
-            return two_stage_pe(g1_ai, n, g2, roe[tier], rr)
-        return perpetual_pe(g2, roe[tier], rr)
+        return pe_at(leg, tier, g2, tier != "L")
 
     cand = tuple(
-        sum(eps[tier][leg] * cand_leg_pe(leg, tier) for leg in LEGS) for tier in TIERS
+        sum(eps[tier][leg] * keep[leg] * cand_leg_pe(leg, tier) for leg in LEGS) for tier in TIERS
     )
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not a ladder: {cand}")
@@ -472,6 +491,29 @@ def main() -> int:
         f"L′/M′/H′={cand[0]:.1f}/{cand[1]:.1f}/{cand[2]:.1f}  "
         f"候选 zone={zone_of(inp['price'], *cand)}"
     )
+
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # every priced r 1:1 through pe_at's dr — r_perp (operating legs), the lab
+    # pair's journey r_lab (M/H transition) and terminal r_lab_t; g1/g2, tier
+    # ROE, numerators and k_lab stay put.  Base deck only.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        lmh = [
+            sum(eps[tier][leg] * keep[leg] * pe_at(leg, tier, inp[LEG_G2[leg]], tier != "L", dr=dr) for leg in LEGS)
+            for tier in TIERS
+        ]
+        return lmh[0], lmh[1], lmh[2]
+
+    rf = rf_block(
+        LISTING_CCY,
+        {"r_perp": r, "r_lab": inp["r_lab"], "r_lab_t": inp["r_lab_t"]},
+        band_rf,
+        inp["price"],
+    )
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("AVGO.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

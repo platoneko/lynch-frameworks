@@ -15,7 +15,8 @@ Three legs, each on its own basket r, added per share (SOTP):
   machinery    NI_mac = ni_exli * w_mac
                PE_mac = min(1, 1 - g2_mac/ROE) / (r_mac - g2_mac)  (g2_mac = own ladder, A7)
   ROE          = (ni_exli + NI_lk) / equity                        (company-wide, shared by all legs)
-  anchor       = sum_i NI_i * PE_i * 1e8 / shares
+  anode K_remain  P_x = capex_anode * stake_anode * max(0, 1 - roic_anode_x / r_mac)   (A20)
+  anchor       = (sum_i NI_i * PE_i - P_x) * 1e8 / shares
 
 r comes from the basket each leg is assigned to (valuation-rules.md「§r 篮子」,
 values in gordon.BASKET_R); the Inputs rows `r_li` / `r_afr` / `r_mac` name the
@@ -48,6 +49,13 @@ The Lanke L tier is the axis L regime, not the company's realised trough; the
 recovery form `recovery_two_stage_pe` on the measured paths is printed as a
 coordinate only (A18).  Book value is disclosed, never max()'d into L.
 
+Anode expansion (A20, retention audit D bucket): the 45亿 Baotou graphite
+project (announced 2026-09-21) is unspent capital whose output is not in any
+numerator, so it is charged K_remain x (1 - ROIC_proj / r_mac) per tier, with
+ROIC_proj read off steady-state peer years (L = 2026H1 price-war reading, M =
+peer FY2024-25 median, H = best integrated peer through-cycle).  The charge
+floors at 0: unspent money earns no credit above r.
+
 Run:  python3 eval/600499.SH.py
 """
 
@@ -75,6 +83,9 @@ MIN_R_MINUS_G = 0.02
 RECOVERY_MEASURED = {"公司 FY2024→FY2025": (10.06, 13.09, 1), "蓝科 FY2025→2026H1×2": (7.30, 28.22, 1)}
 # A6 sensitivity: the lithium-producer cross-section g2 that the framework does not use.
 G2_LI_PEER = 0.0235
+# A20 sensitivity: anode ROIC with every tier on 2026H1 price-war readings —
+# 中科电气 3.8% / two-peer mean 5.7% / 尚太科技 7.6% (annualised, Longbridge).
+ANODE_ROIC_STRESS = (0.038, 0.057, 0.076)
 
 TIERS = ("l", "m", "h")
 LEGS = ("lk", "afr", "mac")
@@ -93,6 +104,7 @@ REQUIRED = [
     "g2_mac_l", "g2_mac_m", "g2_mac_h",
     "ni_ttm", "ni_fy2024", "ni_exli_fy2025", "ni_2026e_street", "tp_street",
     "pe_own_hi", "pe_own_lo",
+    "capex_anode", "stake_anode", "roic_anode_l", "roic_anode_m", "roic_anode_h",
 ]
 
 
@@ -122,11 +134,17 @@ def leg_pe(inp: dict[str, float], leg: str, tag: str, r_shift: float = 0.0,
     return perpetual_pe(g, forward_roe(inp, tag), inp[R_ROWS[leg]] + r_shift)
 
 
+def anode_penalty(inp: dict[str, float], tag: str) -> float:
+    """A20: unspent anode capex charged at (1 - ROIC_proj / r_mac), 亿 CNY; no credit above r."""
+    shortfall = max(0.0, 1.0 - inp[f"roic_anode_{tag}"] / inp["r_mac"])
+    return inp["capex_anode"] * inp["stake_anode"] * shortfall
+
+
 def value(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    """Sum of legs, 亿 CNY.  `pes` overrides the per-leg multiples (flat / sensitivity)."""
+    """Sum of legs less the anode K_remain charge, 亿 CNY.  `pes` overrides the per-leg multiples."""
     ni = legs(inp, tag)
     pe = pes or {leg: leg_pe(inp, leg, tag) for leg in LEGS}
-    return sum(ni[leg] * pe[leg] for leg in LEGS)
+    return sum(ni[leg] * pe[leg] for leg in LEGS) - anode_penalty(inp, tag)
 
 
 def anchor(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
@@ -246,6 +264,10 @@ def main() -> int:
     errors += check_africa_mount(
         (inp["g2_afr_l"], inp["g2_afr_m"], inp["g2_afr_h"])
     )
+    # A20: the anode charge sits on the machinery leg's basket and eases toward H.
+    if inp["capex_anode"] <= 0 or not 0.0 < inp["stake_anode"] < 1.0:
+        errors.append("capex_anode must be positive and stake_anode in (0, 1)")
+    errors += ladder("roic_anode", *(inp[f"roic_anode_{t}"] for t in TIERS))
     if errors:
         return report(errors, "FAIL (guards/axis)")
 
@@ -330,6 +352,16 @@ def main() -> int:
     print(f"蓝科腿谷底 x 1/r = {ni['l']['lk'] / r['lk']:.1f} 亿  (deep_discount pressure coordinate)")
     print(f"flat-multiple @PE_M (蓝科 {pe['m']['lk']:.2f} / 非洲 {pe['m']['afr']:.2f} / 机械 {pe['m']['mac']:.2f}): "
           f"L={flat['l']:.2f} M={flat['m']:.2f} H={flat['h']:.2f} — 带宽 {(flat['h'] - flat['l']) / (2 * flat['m']):.0%}（阶梯由蓝科腿轴价承载）")
+    pen = {t: anode_penalty(inp, t) for t in TIERS}
+    print(f"负极 K_remain 罚项（A20）: {inp['capex_anode']:g} 亿 × {inp['stake_anode']:.2%} × max(0, 1 − ROIC/{r['mac']:.0%}) "
+          f"@ROIC {inp['roic_anode_l']:.1%}/{inp['roic_anode_m']:.1%}/{inp['roic_anode_h']:.1%} → "
+          + " / ".join(f"{pen[t]:.2f} 亿 ({pen[t] * YI / inp['shares']:.2f} CNY)" for t in TIERS))
+    no_pen = [(value(inp, t) + pen[t]) * YI / inp["shares"] for t in TIERS]
+    print(f"罚项前（事件前底牌）: {no_pen[0]:.2f} / {no_pen[1]:.2f} / {no_pen[2]:.2f}")
+    for label, roics in (("单值 M 档 ROIC", (inp["roic_anode_m"],) * 3), ("2026H1 价格战读数", ANODE_ROIC_STRESS)):
+        alt = {**inp, **{f"roic_anode_{t}": x for t, x in zip(TIERS, roics)}}
+        band = [anchor(alt, t) for t in TIERS]
+        print(f"敏感区 负极 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f} zone={zone_of(inp['price'], *band)}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"分子比（两腿合计 {total['l']:.2f}/{total['m']:.2f}/{total['h']:.2f} 亿）"
@@ -365,7 +397,8 @@ def main() -> int:
     # 属性 D: strip the M-tier Lanke and machinery legs, read the residual on the
     # Africa numerator, invert for the Africa-leg g at its basket r.
     for label, px in (("现价", inp["price"]), ("本框架 M", M), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
-        resid = px * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"]
+        # The market cap is net of the anode charge, so the Africa residual adds it back.
+        resid = px * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"] + anode_penalty(inp, "m")
         p = resid / ni["m"]["afr"]
         gi, ok = implied_g(p, roe_m, r["afr"])
         flag = "" if ok else "  ⚠ 反解只能当方向读"

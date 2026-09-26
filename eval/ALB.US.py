@@ -40,8 +40,14 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
+# rf_report imports eval.lib.* absolutely, so the repo root must be importable too.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "ALB.US.md"
 FORMULA_ID = "alb_li2co3_grid_interp_spec_gordon_v2"
+LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 # A10: the ticker's own measured trough→recovery years — FY2021 123.7M (lowest positive year)
@@ -235,9 +241,21 @@ def main() -> int:
     print(f"  both legs at r_ES {r_es:g} (first-leg approximation): {l_:.2f} / {m_:.2f} / {h_:.2f}")
     print(f"price={inp['price']} zone={zone}  P/H={inp['price']/H:.3f}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # both legs' basket r 1:1 (ES r_perp, Specialties r_spec); g2, tier ROE and
+    # the grid-read numerator stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        return band(S, g2, r_es + dr, r_spec + dr)
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r_es, "r_spec": r_spec}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("ALB.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

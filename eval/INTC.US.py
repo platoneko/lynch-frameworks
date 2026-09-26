@@ -70,6 +70,8 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "INTC.US.md"
 FORMULA_IDS = (
@@ -78,6 +80,8 @@ FORMULA_IDS = (
 )
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
+# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
+LISTING_CCY = "USD"
 
 # Mirror of framework §2 A6 PB bands (update together with the MD).
 PB_BANDS = {"fail": (0.3, 0.8), "base": (1.2, 2.2), "success": (2.5, 3.5)}
@@ -138,7 +142,10 @@ def main() -> int:
     ni = {t: oi[t] * MM * keep for t in TIERS}
     eps = {t: ni[t] / sh for t in TIERS}
     roe = {t: ni[t] / eq for t in TIERS}
-    pe = {t: perpetual_pe(g2, roe[t], r) for t in TIERS}
+    def tier_pe(r_: float) -> dict[str, float]:
+        return {t: perpetual_pe(g2, roe[t], r_) for t in TIERS}
+
+    pe = tier_pe(r)
     cpu = {t: eps[t] * pe[t] for t in TIERS}
     for t in TIERS:
         if not (inp["pe_own_min"] <= pe[t] <= inp["pe_own_max"]):
@@ -148,8 +155,11 @@ def main() -> int:
             )
 
     # ---- Step 2: closing items (A10); corporate unallocated at the M multiple (A10b) ----
+    def closure_at(pe_: dict[str, float]) -> float:
+        return sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * pe_["M"]
+
     corp_ps = inp["corp_other_eps"] * pe["M"]
-    adj = sum(inp[k] for k in ADJ_PS) + corp_ps
+    adj = closure_at(pe)
     base = {t: cpu[t] + adj for t in TIERS}
     L, M, H = (base[t] for t in TIERS)
     A, B = cut_points(L, M, H)
@@ -247,6 +257,20 @@ def main() -> int:
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors += [f"p-class fields must not appear in Inputs (A2e-7a): {leaked}"]
+
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 in every tier multiple and so in the corp-unallocated closure
+    # capitalised at the M multiple (A10b); OI, ROE, g2 and the $/share closing
+    # items stay put, and the Foundry option is outside the base.  Disclosure only.
+    def band_at(dr: float) -> tuple[float, float, float]:
+        pe_ = tier_pe(r + dr)
+        adj_ = closure_at(pe_)
+        return tuple(eps[t] * pe_[t] + adj_ for t in TIERS)  # type: ignore[return-value]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings("INTC.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

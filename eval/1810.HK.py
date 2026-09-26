@@ -66,13 +66,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "1810.HK.md"
 FORMULA_ID = "xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v2"
 
 TOL = 0.05  # Outputs are rounded to 2 decimals
 YI = 1e8  # 亿 -> unit
+# _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
+LISTING_CCY = "HKD"
 
 REQUIRED = (
     "price", "shares", "fx_cny_hkd", "tax_rate",
@@ -437,6 +441,17 @@ def main() -> int:
           f"{alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
     alt = compute(dict(v, eps27_m_cny=v["eps27_m_cny"] + 0.1))
     print(f"  eps27_m +0.1 CNY: M {alt['M']:.2f} ({alt['M'] - c['M']:+.2f})")
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is
+    # the only r in the anchors (both Gordon legs); the EV PS leg and the closing
+    # item carry no r.  g2, ROE basis, numerators, PS and d stay put.
+    # Disclosure only — the anchors above are the 中枢 column.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        alt_rf = compute(dict(v, r_perp=v["r_perp"] + dr))
+        return alt_rf["L"], alt_rf["M"], alt_rf["H"]
+
+    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf, v["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (c["L"], c["M"], c["H"]))):
+        checks.append((False, "r_f readings: the dr = 0 column does not reproduce L/M/H"))
 
     if gaps:
         print(f"\ngaps (待补, not consumed): {', '.join(gaps)}")
@@ -449,6 +464,8 @@ def main() -> int:
     if failed:
         print("FAIL: framework Outputs disagree with recomputation", file=sys.stderr)
         return 1
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    write_rf_readings("1810.HK", rf.seg, (c["L"], c["M"], c["H"]), rf.consensus, rf.pressure)
     print("OK")
     return 0
 

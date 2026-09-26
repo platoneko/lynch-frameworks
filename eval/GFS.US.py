@@ -74,6 +74,8 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "GFS.US.md"
 MIRROR = REPO_ROOT / "frameworks" / "TSEM.US.md"
@@ -81,6 +83,8 @@ FORMULA_ID = "gfs_gordon_two_stage_2027_opeq_v2"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 P_TIERS = (0.0, 0.25, 1.0)  # A10 — table 3 only, never an input
+# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
+LISTING_CCY = "USD"
 
 REQUIRED = [
     "price",
@@ -356,6 +360,27 @@ def main() -> int:
     print(f"A2f endpoint: P {inp['price']:.2f} {'<=' if inp['price'] <= H + v_opt else '>'} H+V_opt {H + v_opt:.2f}; implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
     print(f"candidate (Analyst Day 2028 model: rev {rev_2028 / 1e9:.3f}B x OpM {inp['opm_model_2028']:g} -> NI {ni_2028 / 1e9:.3f}B -> econ EPS {econ_2028:.3f} -> g1' {g1_cand:.4f} vs consensus {g1:.4f}): "
           f"L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
+
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # r_perp 1:1 through deck() (L perpetual, M/H two-stage); g1, g2, the rolled
+    # ROE, numerators and cash stay put.  Disclosure only — the anchors above are
+    # the 中枢 column; the r 9%/8% contrast and implied r are separate readings.
+    def band_at(dr: float) -> tuple[float, float, float]:
+        nonlocal r
+        saved = r
+        r = r + dr
+        try:
+            a_ = deck(g2, g1)[1]
+            return a_["L"], a_["M"], a_["H"]
+        finally:
+            r = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+    # Only a clean run feeds the daily digest.
+    if not errors:
+        write_rf_readings("GFS.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

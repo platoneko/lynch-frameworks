@@ -10,7 +10,7 @@ description: >
 
 # 沉淀估值框架（sediment-framework · 篮子折现率）
 
-折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates.md` 与日报的共识 / 反向压力两行 **[待建]**，建成前只报隐含 r(P)。
+折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**，未接入的票只报隐含 r(P)。
 
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
@@ -48,7 +48,7 @@ description: >
 11. **Ticker 规范化**：见下方表；文件名 = 题头 `# TICKER` = `eval/<TICKER>.py`。
 12. **两端 zone MUST 反思**：`stretched` / `deep_discount` → `zone-reflection.md`。现价不是输入；两终点同等合法（\(P\le H+V_{opt}\)，或接受溢价并举证）。中间三档不强制。
 13. **BLOCKED 不落盘**：见 `valuation-rules.md`「BLOCKED 的语义」「纠正对账门」。授权解不开 BLOCKED；subagent prompt **MUST** 转述本条。
-14. **r 只能归篮，不能拧**：每腿 \(r\) 只能是 `valuation-rules.md`「§r 篮子」表中 7 个值之一（真源 `gordon.py` `BASKET_R`）；Inputs 每条**进锚点公式的 r 行**来源单元格 **MUST** 写 `篮 N` + 归篮理由（eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` 校验）；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样；改篮子值属仓库级，单票 **MUST NOT** 动。市价与篮子尺的差走「隐含 r 对账」，不走 r。
+14. **r 只能归篮，不能拧**：每腿 \(r\) 只能是 `valuation-rules.md`「§r 篮子」表中 7 个值之一（真源 `gordon.py` `BASKET_R`）；一腿 **MAY** 按「篮子对」声明过渡篮 / 终值篮**两个**篮子值（默认相等；四条判据 + \(k\) 强制见该节；稳态特征**不要求今天已满足**，差距归 \(k\)），仍**只能取表中值**；Inputs 每条**进锚点公式的 r 行**来源单元格 **MUST** 写 `篮 N` + 归篮理由（eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` 校验）；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样；改篮子值属仓库级，单票 **MUST NOT** 动。市价与篮子尺的差走「隐含 r 对账」，不走 r。
 15. **倍数形式由留存去向审出，不是选的**：定锚前 **MUST** 跑 `valuation-rules.md`「留存去向审计」Step 0–5 并把分桶结论写进 Assumptions；命中「禁止形态」任一条即停下回对话。
 16. **出带不许照印，也不许换带 / 拧 g 凑进去**：M 倍数低于自身带下沿时 **MUST** 走 `valuation-rules.md`「③ 出带处理流程」——先补 ②、带与分子同基、**带有效性核验**（带下沿月份的预期增速与 ROE 是否与现模型同量级；失真带 **MUST NOT** 用来降篮或反推，③ 判不可判定走对账门）、增长率按窗口 + 终值诚实写、逐档降篮到篮 4（仅限干净带）；仍出带 → BLOCKED，不出 zone，印对照带 + 带边 r 并列 zone。**MUST NOT** 维持初分篮照印、改看另一条能过的带、把区间 CAGR 当永续、用期权救尺、用失真带降篮。
 
@@ -99,7 +99,7 @@ description: >
    - 分腿先声明每腿 Gordon vs EV/EBIT（§5b）；分腿 **不合成 \(\bar r\)**，逐腿相加
    - 先印证矩阵，再锁倍数，再算 \(L/M/H\)、切点、五档、zone；周期票两口径都算，主 zone 取轴声明语义
    - 每锚一句「定价了什么」；**禁止现价倒推**
-   - 报隐含 r(P)；\(r_f\) 敏感带 + 共识列 + 反向压力列待利率轴 **[待建]** 后补（`valuation-rules.md`「§利率轴」）
+   - 报隐含 r(P)；USD / HKD 票 eval 接 `rf_report.rf_block` 出 \(r_f\) 敏感带 + 共识列 + 反向压力列（`valuation-rules.md`「§利率轴」；CNY / TWD 段 **[待建]**）
    - 两端 zone → **MUST** `Read references/zone-reflection.md` 跑完再进摘要
 
 **决定权边界**：仅**林奇主类**、**归篮**与**主尺骨架**列选项；其余构造给推荐+默认并推进，用户不反对即定。

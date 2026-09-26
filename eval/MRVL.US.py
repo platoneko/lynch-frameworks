@@ -54,6 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
@@ -70,6 +71,7 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
+from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
@@ -77,6 +79,7 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "MRVL.US.md"
 AVGO_FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
 FORMULA_ID = "mrvl_sotp_gordon_two_stage_fy28_v3"
 TOL = 0.05
+LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 
 REQUIRED = [
@@ -359,6 +362,25 @@ def main() -> int:
         + ("  ⚠敏感区 zone flips" if zone_down != zone else "  (no flip)")
         + "; +1pp exceeds g_cap, skipped"
     )
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves the
+    # single r_perp 1:1 in every leg's multiple (two-stage cu/conn and perpetual comm);
+    # g1, g2, tier ROE and the numerator stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r
+        saved = r
+        r = r + dr
+        try:
+            return tuple(eps[t] * blended_at(t, 0.0) for t in TIERS)
+        finally:
+            r = saved
+
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("MRVL.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

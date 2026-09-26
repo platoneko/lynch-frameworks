@@ -9,7 +9,12 @@ three points of one distribution (A7).  Multiples are generated, not borrowed:
 `two_stage_pe` runs one named transition year (FY28 FactSet aggregate, g1 =
 +60.2%, n = 1 — FY29 has no ≥2-house consensus) and then the peer-cluster
 reverse-solved perpetual g2 (GEV / VRT / ETN median 7.60%, capped at 6%, A13),
-with r = the basket the Inputs row names (篮 7 单押 / 故事股, 15%, A18) and tier
+with a BASKET PAIR (valuation-rules「篮子对」, A18): 篮 7 单押 / 故事股 15% prices
+the journey — stage-1 cash and the year the tail is discounted back over — while
+篮 4 龙头制造 10% capitalises the steady state, because the world in which FY27
+consensus lands is a proven power-equipment supplier, not a story stock.  The
+split is worth only 4.3% on its own at n=1, so the arrival risk it stops
+charging moves to an explicit numerator haircut k (A21), and tier
 ROE = EPS_x ÷ the FY27 OPENING book per share (A8/A9/A19): the 2Q26
 if-converted book rolled over the 2H26 earnings not yet booked (FY26 consensus
 minus 1H26 actual) at the growth-required retention b1 = g1/ROE — the same b
@@ -25,11 +30,14 @@ t=1 for all three tiers, `two_stage_pe` and `perpetual_pe` share the date, and
 the FY28-basis multiple (PE / (1 + g1)) is printed because 表1 reports the
 post-transition numerator.
 
-Guardrail: none (裁决顺序 ③ has no band).  The ticker's own 12-month P/NTM band
-[47.4, 199] is non-representative (super-ramp, NTM basis ≠ FY27 anchor), and
-the peer forward-PE cluster (`pe_peer_lo/hi`, GEV / VRT / ETN) sits in 篮 4 --
-a guardrail band must share the leg's basket, so the cluster is printed as a
-cross-basket comparison only and never blocks (A8).
+Guardrail: 裁决顺序 ③ stays inapplicable — the ticker has no own band (FY27's
+4.92 has never been earned, so there are no same-earnings months), and step 1
+of the ③ flow routes that case to the 纠正对账门 instead.  What the pair changes
+is the peer cluster: GEV / VRT / ETN sit in 篮 4, which is now the TERMINAL
+basket, so the cluster is same-basket and serves as reconciliation coordinate ⑤
+rather than a cross-basket footnote.  M's 27.48x lands inside [26.37, 37.82]
+(A8) — the −14.58-turn gap the single-basket ruler showed was the 5pp rate
+difference, not a fundamental one.
 
 Option (A16): the beyond-consensus GW runway is priced as V_opt with per-tier
 p_k; the script recomputes the corrected band and the market-implied p and
@@ -54,7 +62,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
+    check_basket_pair,
     check_g_cap,
+    check_k_declared,
     check_r,
     check_transition_years,
     perpetual_pe,
@@ -70,9 +80,12 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "BE.US.md"
 FORMULA_ID = "be_fy2_eps_pe_order_gate_v1_gordon_v2"
+LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # below this the multiple sits at the pole
 DERIVED_TOL = 5e-4  # g1 / roe_* rows are derived; Inputs must agree with the recomputation
@@ -92,7 +105,11 @@ REQUIRED = [
     "g1",
     "n_g1",
     "g2",
-    "r_perp",
+    "r_journey",
+    "r_terminal",
+    "k_l",
+    "k_m",
+    "k_h",
     "roe_l",
     "roe_m",
     "roe_h",
@@ -125,14 +142,27 @@ def stated_option_cuts(md: str) -> tuple[float | None, float | None]:
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
 
-    # r is the basket value the Inputs row names (篮 7 single-product / story
-    # stock, A18); a missing basket tag is itself an error.
-    if "r_perp" not in baskets:
-        errs.append("r_perp: Inputs source cell names no 篮 N")
-    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    # A basket PAIR (valuation-rules「篮子对」, A18): 篮 7 prices the journey to
+    # the steady state, 篮 4 prices the steady state itself.  Both rows must name
+    # their 篮 N; a missing tag is itself an error.
+    for row in ("r_journey", "r_terminal"):
+        if row not in baskets:
+            errs.append(f"{row}: Inputs source cell names no 篮 N")
+    errs += check_basket_pair(
+        inp["r_journey"], inp["r_terminal"], "r",
+        baskets.get("r_journey"), baskets.get("r_terminal"),
+    )
+    # A faded terminal MUST carry the arrival risk in the numerator (A21): one
+    # transition year is too short an exponent to hold it.
+    errs += check_k_declared(
+        inp["r_journey"], inp["r_terminal"],
+        (inp["k_l"], inp["k_m"], inp["k_h"]), "k",
+    )
 
-    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
-    gap = inp["r_perp"] - inp["g2"]
+    # G_cap stays keyed to the JOURNEY basket — fading the terminal must not
+    # widen the perpetual g (valuation-rules「篮子对」判据 3).
+    errs += check_g_cap(inp["g2"], inp["r_journey"], "g2")
+    gap = inp["r_terminal"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
     elif gap < MIN_R_MINUS_G:
@@ -166,7 +196,9 @@ def main() -> int:
     baskets = parse_baskets(md)
     errors = sanity_checks(inp, baskets)
 
-    r = inp["r_perp"]
+    r = inp["r_journey"]
+    r_t = inp["r_terminal"]
+    k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
     n = int(inp["n_g1"])
     g2 = inp["g2"]
     eps = {"L": inp["eps_fy27_l"], "M": inp["eps_fy27_m"], "H": inp["eps_fy27_h"]}
@@ -206,17 +238,22 @@ def main() -> int:
     # ---- Step 2: multiples (g shared across tiers; only ROE varies) and anchors ----
     def tier_pes(g2_: float, transition: bool = True) -> dict[str, float]:
         return {
-            t: (two_stage_pe(g1, n, g2_, roe[t], r) if transition else perpetual_pe(g2_, roe[t], r))
+            t: (two_stage_pe(g1, n, g2_, roe[t], r, r_terminal=r_t) if transition
+                else perpetual_pe(g2_, roe[t], r_t))
             for t in TIERS
         }
 
+    # k leaves the anchors only — never the multiple, never b (A21; same
+    # discipline as the「视同派出」k).  It is flat across tiers here, so the four
+    # cross-ticker ratios are identical with and without it.
     pes = tier_pes(g2)
-    anchors = {t: eps[t] * pes[t] for t in TIERS}
+    anchors = {t: eps[t] * pes[t] * (1.0 - k[t]) for t in TIERS}
     L, M, H = (anchors[t] for t in TIERS)
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
 
-    # ---- Step 3: cross-basket comparison, not a guardrail (A8) ----
+    # ---- Step 3: peer cluster — same basket as the TERMINAL, so it is
+    # reconciliation coordinate ⑤, not a cross-basket footnote (A8/A18) ----
     # The peer FY+1 forward-PE cluster is 篮 4 (GEV / VRT / ETN); a ③ band must
     # share the leg's basket, so the cluster is only printed against the tiers.
     lo, hi = inp["pe_peer_lo"], inp["pe_peer_hi"]
@@ -224,7 +261,8 @@ def main() -> int:
         errors.append("pe_peer_lo/hi comparison band malformed")
 
     # ---- Step 4: A2e-2c flat ladder + A2e-5 decomposition ----
-    flat_errs, flat = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pes["M"])
+    flat_errs, flat = flat_multiple_ladder(
+        tuple(eps[t] * (1.0 - k[t]) for t in TIERS), pes["M"])
     errors += flat_errs
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
@@ -257,7 +295,7 @@ def main() -> int:
     # g2 leverage: every peer reverse-solves above the cap, so the evidence range
     # collapses onto it; the zone must be the same one step below (A13).
     pes_dn = tier_pes(g2 - G2_LEVERAGE_STEP)
-    band_dn = tuple(eps[t] * pes_dn[t] for t in TIERS)
+    band_dn = tuple(eps[t] * pes_dn[t] * (1.0 - k[t]) for t in TIERS)
     zone_dn = zone_of(inp["price"], *band_dn)
     if zone_dn != zone:
         errors.append(f"zone moves within g2 evidence range: {zone} at cap vs {zone_dn} at g2-1pp — BLOCKED")
@@ -268,7 +306,9 @@ def main() -> int:
 
     # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
-    print(f"g1(FY28 aggregate / FY27 mean - 1)={g1:.4f} n={n} g2={g2:.4f} r={r:g} (篮 {baskets.get('r_perp')})")
+    print(f"g1(FY28 aggregate / FY27 mean - 1)={g1:.4f} n={n} g2={g2:.4f} "
+          f"r_journey={r:g} (篮 {baskets.get('r_journey')}) -> r_terminal={r_t:g} "
+          f"(篮 {baskets.get('r_terminal')})  k={k['L']:g}/{k['M']:g}/{k['H']:g}")
     print(f"tier ROE L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f} (FY27 EPS / opening-FY27 if-converted book)")
     print(
         f"ROE basis: BPS_open_FY27 = {bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f} USD/sh "
@@ -298,9 +338,9 @@ def main() -> int:
     )
     print(f"flat-multiple ladder @ M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
-        f"cross-basket comparison (no ③): 篮 4 peer FY+1 fwd-PE cluster [{lo:g}, {hi:g}] vs "
+        f"same-basket vs terminal (③ n/a, no own band): 篮 4 peer FY+1 fwd-PE cluster [{lo:g}, {hi:g}] vs "
         f"L {pes['L']:.2f}x / M {pes['M']:.2f}x / H {pes['H']:.2f}x "
-        f"(M Δ lower edge {pes['M'] - lo:+.2f} turn; floor 1/r = {1 / r:.2f}x)"
+        f"(M Δ lower edge {pes['M'] - lo:+.2f} turn; floor 1/r_terminal = {1 / r_t:.2f}x)"
     )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
@@ -312,25 +352,50 @@ def main() -> int:
         f"{band_v[0]:.2f}/{band_v[1]:.2f}/{band_v[2]:.2f} A'={A_v:.2f} B'={B_v:.2f} zone={zone_v} | "
         f"market-implied p=(P-H)/V_opt={implied_p:.2f}"
     )
-    print(f"implied r(P), single-stage approx g2+(r-g2)*M/P = {g2 + (r - g2) * M / inp['price']:.4f} vs basket r {r:g}")
+    print(f"implied r(P), single-stage approx g2+(r_t-g2)*M/P = "
+          f"{g2 + (r_t - g2) * M / inp['price']:.4f} vs r_terminal {r_t:g} (journey {r:g})")
     no_tr = tier_pes(g2, transition=False)
     print(
-        f"cross-check, no transition year: {eps['L'] * no_tr['L']:.2f}/{eps['M'] * no_tr['M']:.2f}/"
-        f"{eps['H'] * no_tr['H']:.2f}  (L no-transition {eps['L'] * no_tr['L']:.2f} = deep_discount pressure coordinate)"
+        f"cross-check, no transition year: "
+        f"{eps['L'] * no_tr['L'] * (1 - k['L']):.2f}/{eps['M'] * no_tr['M'] * (1 - k['M']):.2f}/"
+        f"{eps['H'] * no_tr['H'] * (1 - k['H']):.2f}  (L no-transition "
+        f"{eps['L'] * no_tr['L'] * (1 - k['L']):.2f} = deep_discount pressure coordinate)"
     )
     roe26 = inp["eps_fy26_m"] / opening_bps(inp["eps_fy26_m"])
-    pe26 = two_stage_pe(g1, n, g2, roe26, r)
-    print(f"coordinate, L on FY26 mean {inp['eps_fy26_m']:.3f} (digest year): {inp['eps_fy26_m'] * pe26:.2f} ({pe26:.2f}x)")
+    pe26 = two_stage_pe(g1, n, g2, roe26, r, r_terminal=r_t)
+    print(f"coordinate, L on FY26 mean {inp['eps_fy26_m']:.3f} (digest year): "
+          f"{inp['eps_fy26_m'] * pe26 * (1 - k['L']):.2f} ({pe26:.2f}x, k-adjusted)")
     print(
         f"g2 leverage: g2 {g2 - G2_LEVERAGE_STEP:.0%} -> {band_dn[0]:.2f}/{band_dn[1]:.2f}/{band_dn[2]:.2f} zone={zone_dn} | "
         f"g2 {g2:.0%} (cap) -> {L:.2f}/{M:.2f}/{H:.2f} zone={zone}  (+1pp above cap, not listed)"
     )
     print(f"cover={cover:.4f}  price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H - 1:+.1%}")
 
+    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
+    # both rates of the basket pair 1:1 — r_journey (stage 1 + the discount year)
+    # and r_terminal (the tail); g1/g2, tier ROE, EPS and k stay put.  Disclosure only.
+    def band_rf(dr: float) -> tuple[float, float, float]:
+        nonlocal r, r_t
+        saved = r, r_t
+        r, r_t = r + dr, r_t + dr
+        try:
+            pes_r = tier_pes(g2)
+            lmh = [eps[t] * pes_r[t] * (1.0 - k[t]) for t in TIERS]
+            return lmh[0], lmh[1], lmh[2]
+        finally:
+            r, r_t = saved
+
+    rf = rf_block(LISTING_CCY, {"r_journey": r, "r_terminal": r_t}, band_rf, inp["price"])
+    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
+        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
+
     # Gate watch (framework §3 G2): non-failing — trigger needs 2 consecutive quarters
     conc = inp.get("conc_q2_max")
     if conc is not None and conc > 0.40:
         print(f"WARN[G2-watch]: conc_q2_max={conc:.2f} > 0.40 quarterly threshold")
+    # Only a clean run writes, so a FAIL never feeds the daily digest.
+    if not errors:
+        write_rf_readings("BE.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
 
 

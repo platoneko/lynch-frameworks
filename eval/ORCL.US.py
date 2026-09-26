@@ -59,11 +59,14 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import (  # noqa: E402
     capex_constituent_share,
     check_capex_constituent,
+    check_lab_mount,
 )
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     basket_r,
+    check_basket_pair,
     check_g_cap,
+    check_k_declared,
     check_r,
     payout,
     perpetual_pe,
@@ -118,6 +121,8 @@ REQUIRED = [
     "r_perp",
     "r_oci_non",
     "r_oci_open",
+    "r_oci_open_t",
+    "k_lab",
     "tax_rate",
     "shares_fy28",
     "rev_software_fy26",
@@ -181,7 +186,7 @@ REQUIRED = [
     "xchk_ev_ebit_low",
     "xchk_ev_ebit_high",
 ]
-R_FIELDS = ("r_perp", "r_oci_non", "r_oci_open")
+R_FIELDS = ("r_perp", "r_oci_non", "r_oci_open", "r_oci_open_t")
 
 TIERS = ("l", "m", "h")
 LINES = ("software", "saas", "hw", "svc")
@@ -212,6 +217,13 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         if field not in baskets:
             errs.append(f"{field}: source cell names no 篮 N (AGENTS.md「篮子声明」)")
         errs += check_r(inp[field], field, baskets.get(field))
+    # The OpenAI sub-leg is a basket pair on the frontier-lab axis: journey
+    # basket for the window's discounting, terminal basket for capitalising,
+    # arrival risk in the shared k_lab (valuation-rules.md「篮子对」).
+    errs += check_basket_pair(inp["r_oci_open"], inp["r_oci_open_t"], "oci_open",
+                              baskets.get("r_oci_open"), baskets.get("r_oci_open_t"))
+    errs += check_k_declared(inp["r_oci_open"], inp["r_oci_open_t"], (inp["k_lab"],) * 3, "k_lab")
+    errs += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
 
     # AGENTS.md「永续增长口径」: the software leg's perpetual g at or below the
     # cap of ITS basket r.  The OCI leg has no perpetual g (D-bucket, A6).
@@ -281,7 +293,8 @@ def main() -> int:
     errors = sanity_checks(inp, baskets)
 
     r = inp["r_perp"]
-    r_non, r_open = inp["r_oci_non"], inp["r_oci_open"]
+    r_non, r_open, r_open_t = inp["r_oci_non"], inp["r_oci_open"], inp["r_oci_open_t"]
+    k_lab = inp["k_lab"]
     keep = 1.0 - inp["tax_rate"]
     sh = inp["shares_fy28"]
     n_win = int(inp["window_years"])
@@ -367,17 +380,27 @@ def main() -> int:
     open_window = {"l": False, "m": True, "h": True}
 
     # ---- Step 4: OCI D-bucket project value, two sub-legs (A6/A7/A19) ----
-    def sub_leg(k: float, r_i: float, roe: float, kr: float, window: bool, n: int) -> tuple[float, float]:
-        """(base, window) in $M: K x ROE/r, plus n years of K_remain x (ROE/r - 1) discounted at r_i."""
-        base = k * roe / r_i
-        win = sum(kr * (roe / r_i - 1.0) / (1.0 + r_i) ** t for t in range(1, n + 1)) if window else 0.0
-        return base, win
+    def sub_leg(
+        k: float, r_cap: float, r_disc: float, roe: float, kr: float, window: bool, n: int, keep_k: float = 1.0
+    ) -> tuple[float, float]:
+        """(base, window) in $M.
+
+        Capital is capitalised at r_cap (the steady state it earns in) and each
+        window tranche is discounted back at r_disc (the road to it); keep_k is
+        the certainty-equivalent haircut on the value.  A single-basket
+        sub-leg passes r_cap == r_disc and keep_k == 1.
+        """
+        base = k * roe / r_cap
+        win = sum(kr * (roe / r_cap - 1.0) / (1.0 + r_disc) ** t for t in range(1, n + 1)) if window else 0.0
+        return base * keep_k, win * keep_k
 
     def oci_value(
         t: str,
         roe: float | None = None,
         r_n: float = r_non,
         r_o: float = r_open,
+        r_ot: float = r_open_t,
+        kl: float = k_lab,
         kr: float | None = None,
         share: float = share_open,
         n: int = n_win,
@@ -385,8 +408,8 @@ def main() -> int:
     ) -> dict[str, float]:
         roe = roe_proj[t] if roe is None else roe
         kr = k_remain[t] if kr is None else kr
-        bn, wn = sub_leg(k * (1 - share), r_n, roe, kr * (1 - share), True, n)
-        bo, wo = sub_leg(k * share, r_o, roe, kr * share, open_window[t], n)
+        bn, wn = sub_leg(k * (1 - share), r_n, r_n, roe, kr * (1 - share), True, n)
+        bo, wo = sub_leg(k * share, r_ot, r_o, roe, kr * share, open_window[t], n, 1.0 - kl)
         return {"base_non": bn, "win_non": wn, "base_open": bo, "win_open": wo, "total": bn + wn + bo + wo}
 
     parts = {t: oci_value(t) for t in TIERS}
@@ -418,8 +441,11 @@ def main() -> int:
     pe_fwd = {t: v / eps["m"] for t, v in zip(TIERS, (L, M, H))}
     out_of_band = pe_fwd["m"] < inp["pe_fwd_min"]
     downgrade = []
+    # Reference coordinates: the OpenAI sub-leg as ONE basket b, no haircut
+    # (the pre-pair reading).  The pair sits between 篮 7 and 篮 4 by
+    # construction, so 篮 4 un-haircut is the most lenient rate reading.
     for b in OPENAI_DOWNGRADE_BASKETS:
-        band_b = band_at(r_o=basket_r(b))
+        band_b = band_at(r_o=basket_r(b), r_ot=basket_r(b), kl=0.0)
         downgrade.append((b, basket_r(b), band_b, band_b[1] / eps["m"]))
     blocked = out_of_band and all(pe_m < inp["pe_fwd_min"] for _, _, _, pe_m in downgrade)
     # Header contract (AGENTS.md「BLOCKED — 题头契约」): same parser as the digest.
@@ -437,14 +463,14 @@ def main() -> int:
     m_floor = inp["pe_fwd_min"] * eps["m"]
 
     def m_at_delta(d: float) -> float:
-        return per_share(oci_value("m", r_n=r_non + d, r_o=r_open + d)["total"])
+        return per_share(oci_value("m", r_n=r_non + d, r_o=r_open + d, r_ot=r_open_t + d)["total"])
 
     def m_at_roe(z: float) -> float:
         return per_share(oci_value("m", roe=z)["total"])
 
     delta_floor = bisect(lambda d: m_at_delta(d) - m_floor, -0.09, 0.05)
     roe_floor = bisect(lambda z: m_at_roe(z) - m_floor, 0.05, 0.6)
-    band_edge = band_at(r_n=r_non + delta_floor, r_o=r_open + delta_floor)
+    band_edge = band_at(r_n=r_non + delta_floor, r_o=r_open + delta_floor, r_ot=r_open_t + delta_floor)
     a_edge, b_edge = (band_edge[0] + band_edge[1]) / 2, (band_edge[1] + band_edge[2]) / 2
     zone_edge = zone_of(inp["price"], *band_edge)
     delta_price = bisect(lambda d: m_at_delta(d) - inp["price"], -0.09, 0.05)
@@ -498,7 +524,8 @@ def main() -> int:
         )
     print(
         f"OCI D-bucket sub-legs ($M): K non-OpenAI {k_spent * (1 - share_open) / BN:.1f}B @ r {r_non:.0%}"
-        f" | K OpenAI {k_spent * share_open / BN:.1f}B @ r {r_open:.0%} | L: OpenAI window off"
+        f" | K OpenAI {k_spent * share_open / BN:.1f}B @ pair r {r_open:.0%}->{r_open_t:.0%} x (1-k_lab {k_lab:g})"
+        f" | L: OpenAI window off"
     )
     print("  tier   nonOpenAI base / window      OpenAI base / window      OCI total   x K    $/sh")
     for t in TIERS:
@@ -534,18 +561,18 @@ def main() -> int:
         f" | price {inp['price'] / eps['m']:.1f}x"
         f" -> M {'OUT OF BAND' if out_of_band else 'inside'}"
     )
-    print("  降篮 path (OpenAI sub-leg only; non-OpenAI already 篮 4):")
+    print("  single-basket reference path (OpenAI sub-leg as one basket, no k_lab; non-OpenAI already 篮 4):")
     for b, rb, band_b, pe_m in downgrade:
         print(f"    篮 {b} r {rb:.0%}: L/M/H = {band_b[0]:.2f} / {band_b[1]:.2f} / {band_b[2]:.2f}  M fwd {pe_m:.2f}x"
               f" {'<' if pe_m < inp['pe_fwd_min'] else '>='} {inp['pe_fwd_min']}")
     print(f"  verdict: {'BLOCKED — 篮 4 still out of band; no zone' if blocked else 'in band'} | header {'BLOCKED' if header_blocked else '(no BLOCKED line)'}")
     print(
-        f"  表2′ band-edge δ = {delta_floor:+.2%} (r {r_non + delta_floor:.2%} / {r_open + delta_floor:.2%}):"
+        f"  表2′ band-edge δ = {delta_floor:+.2%} (r {r_non + delta_floor:.2%} / {r_open + delta_floor:.2%}->{r_open_t + delta_floor:.2%}):"
         f" L/M/H = {band_edge[0]:.2f} / {band_edge[1]:.2f} / {band_edge[2]:.2f}  A′ {a_edge:.2f} B′ {b_edge:.2f}"
         f" -> zone@band-edge r = {zone_edge} | equivalent ROE_proj {roe_floor:.1%}"
     )
     print(
-        f"  implied r(P): uniform δ = {delta_price:+.2%} (r {r_non + delta_price:.2%} / {r_open + delta_price:.2%})"
+        f"  implied r(P): uniform δ = {delta_price:+.2%} (r {r_non + delta_price:.2%} / {r_open + delta_price:.2%}->{r_open_t + delta_price:.2%})"
         f" | equivalent ROE_proj {roe_price:.1%} | market OCI = {mkt_oci / BN:.1f}B = {mkt_oci / k_spent:.2f}x K_spent"
         f" = {mkt_oci / nopat_oci['m']:.1f}x M NOPAT"
     )
@@ -575,6 +602,9 @@ def main() -> int:
     def fmt(b: tuple[float, float, float]) -> str:
         return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f}"
 
+    for kl in (0.0, 0.5):
+        b = band_at(kl=kl)
+        print(f"sensitivity k_lab={kl:g} (axis value {k_lab:g}): {fmt(b)}  M fwd {b[1] / eps['m']:.2f}x")
     print(f"sensitivity H @ AWS-2025 state ROE_proj {ROE_PROJ_H_AWS_2025:.1%}: H = {per_share(oci_value('h', roe=ROE_PROJ_H_AWS_2025)['total']):.2f}")
     for dp in ROE_PROJ_SENSITIVITY:
         b = tuple(per_share(oci_value(t, roe=roe_proj[t] + dp)["total"]) for t in TIERS)
