@@ -33,7 +33,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 
 from lib.gordon import (  # noqa: E402
     basket_r,
@@ -54,7 +54,7 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "600111.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600111.SH.md"
 FORMULA_ID = "nre_consensus_fy28_disc_two_stage_gordon_v2"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05

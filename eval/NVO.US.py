@@ -35,7 +35,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import (  # noqa: E402
     check_branch, check_g_cap, check_r, check_transition_years, payout_gap, perpetual_pe, two_stage_pe,
 )
@@ -43,11 +43,11 @@ from lib.inputs import check_against_stated, check_missing, ladder, parse_basket
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NVO.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NVO.US.md"
 FORMULA_ID = "nvo_fy27_consensus_two_stage_gordon_v1"
 TIERS = ("l", "m", "h")
 REQUIRED = [

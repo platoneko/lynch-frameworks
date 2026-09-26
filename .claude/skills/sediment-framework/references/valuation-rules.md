@@ -311,7 +311,7 @@ Gordon 用的 ROE 含财务杠杆：ROE = 资产回报 × 权益乘数。篮子 
 
 ### 利率轴与 \(r_f\) 敏感性（USD 段已建；其余 `[待建]`）
 
-**`_AXIS.rates`**（`frameworks/axes/rates.md`；与商品轴同构，按**上市货币**分段：USD 已建 2026-09-25、HKD 跟 USD，CNY / TWD `[待建]`；读取 `axes.load_rates(ccy)`，读数块 `rf_report.rf_block(ccy, priced_r, band_at, price)`（票只供 `band_at(dr)`：所有进锚点的 r 同加 dr）；每票 eval 接入 `[待建]`，样板 `eval/GOOG.US.py`）。每段：\(r_f\) 中枢（篮子 r 的基底）、当前 10y、**共识 12 个月前瞻**（USD：联邦基金期货 + 卖方中位；CNY：10y 国债卖方中位，**不用联储**；HKD 跟 USD；TWD 央行路径）、`rf_step`（默认 50bp，可 25bp）、`rf_cap`（反向压力上限，默认 50bp）、更新日。\(\Delta_{cons}=r_f^{共识}-r_f^{中枢}\)，同货币所有票共用；月更或央行会议后事件增量；中枢本身变动 ≥25bp → 先改轴，篮子 r 不动。
+**`_AXIS.rates`**（`frameworks/axes/rates.md`；与商品轴同构，按**上市货币**分段：USD 已建 2026-09-25、HKD 跟 USD，CNY / TWD `[待建]`；读取 `axes.load_rates(ccy)`，读数块 `rf_report.rf_block(ccy, priced_r, band_at, price)`（票只供 `band_at(dr)`：所有进锚点的 r 同加 dr）；每票 eval 接入 `[待建]`，样板 `frameworks/eval/GOOG.US.py`）。每段：\(r_f\) 中枢（篮子 r 的基底）、当前 10y、**共识 12 个月前瞻**（USD：联邦基金期货 + 卖方中位；CNY：10y 国债卖方中位，**不用联储**；HKD 跟 USD；TWD 央行路径）、`rf_step`（默认 50bp，可 25bp）、`rf_cap`（反向压力上限，默认 50bp）、更新日。\(\Delta_{cons}=r_f^{共识}-r_f^{中枢}\)，同货币所有票共用；月更或央行会议后事件增量；中枢本身变动 ≥25bp → 先改轴，篮子 r 不动。
 
 **按上市货币取段**：A 股 CNY、H 股 HKD、美股 USD；A/H 双报票各用各的段；**ETF / QDII / 港股通产品按底层持仓的上市货币 look-through**（`513530` / `520900` 人民币挂牌但持港股 → HKD 段；持仓跨货币时按权重分段）。理由：美联储对 A 股周期票的直接通道是**商品价（E，经由商品轴）**，不是 CNY \(r_f\)（央行路径常反向）；H 股经联系汇率 r 与 E 都走；美股两者都走。商品轴的共识 deck 已烘进美元 / 利率宏观，再推 A 股 r 是双计。两条轴独立输入，不做联动公式。
 
@@ -338,7 +338,7 @@ regime + V       …                …                …                ┃ �
 - \(V_{opt}\) 若自身含折现则同步用该列 r，否则原值叠加
 - 收窄配对（L 降息、H 加息，宏观上更典型）从全敏感带可读，不单列
 - **\(\Delta r_f\) MUST NOT 进锚点**：相关性不稳定（2022 同向；2008 油价见顶时已降息；2021–22 A 股周期牛市时 CNY 利率在降）；与 point 口径的分子回落双计；破坏 `calibration.py` 跨票 L/M 语义
-- **日报**（`daily_bands.py`，已建；数据路径见 `AGENTS.md`「\(r_f\) 读数行」）：主 zone 行不变；每票加两行——「利率·共识(Δ) … zone」与「利率·压力±`rf_cap` … zone」，只作读数、不告警。eval 接入：算完两组 L/M/H 后 `bands_io.write_rf_readings`（样板 `eval/GOOG.US.py`）；point 口径 / +V 的共识列 `[待建]`。全敏感带不进日报
+- **日报**（`daily_bands.py`，已建；数据路径见 `AGENTS.md`「\(r_f\) 读数行」）：主 zone 行不变；每票加两行——「利率·共识(Δ) … zone」与「利率·压力±`rf_cap` … zone」，只作读数、不告警。eval 接入：算完两组 L/M/H 后 `bands_io.write_rf_readings`（样板 `frameworks/eval/GOOG.US.py`）；point 口径 / +V 的共识列 `[待建]`。全敏感带不进日报
 
 ### ETF 例外：被动篮子 = 全收益趋势通道（定案 2026-09-18）
 

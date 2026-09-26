@@ -33,7 +33,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -44,7 +44,7 @@ from eval.lib.zones import ZONE_ORDER as ZONES, cut_points, zone_of  # noqa: E40
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "MSFT.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "MSFT.US.md"
 FORMULA_ID = "msft_fwd_numerator_gordon_ai_dc_openai_v1"
 TOL = 0.05
 BN = 1e3

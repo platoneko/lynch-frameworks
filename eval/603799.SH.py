@@ -64,7 +64,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from eval.lib.axes import load_au_cu_rungs  # noqa: E402
 from eval.lib.gordon import basket_r, check_branch, check_g_cap, check_r, implied_g, payout_gap, perpetual_pe  # noqa: E402
@@ -78,7 +78,7 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.zones import zone_of  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 FRAMEWORK = REPO / "frameworks" / "603799.SH.md"
 PEER = REPO / "frameworks" / "601899.SH.md"
 FORMULA_ID = "huayou_eight_leg_gp_bridge_conv_ladder_gordon_v2"

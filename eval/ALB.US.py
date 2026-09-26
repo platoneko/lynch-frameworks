@@ -29,7 +29,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_LI2CO3, check_li2co3_mount, load_axis_g2  # noqa: E402
 from lib.gordon import (  # noqa: E402
     check_g_cap, check_r, implied_g, payout, perpetual_pe, recovery_two_stage_pe,
@@ -41,11 +41,11 @@ from lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
 # rf_report imports eval.lib.* absolutely, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "ALB.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "ALB.US.md"
 FORMULA_ID = "alb_li2co3_grid_interp_spec_gordon_v2"
 LISTING_CCY = "USD"
 TOL = 0.05

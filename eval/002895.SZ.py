@@ -37,7 +37,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import check_phosphate_mount  # noqa: E402
 from lib.gordon import check_r, g_cap  # noqa: E402
 from lib.inputs import (  # noqa: E402
@@ -45,8 +45,8 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "002895.SZ.md"
-PEER = Path(__file__).resolve().parent.parent / "frameworks" / "600096.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
+PEER = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
 FORMULA_ID = "chuanheng_map_ladder_margin_bridge_flat_pe_v1"
 YI = 1e8
 

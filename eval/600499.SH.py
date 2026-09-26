@@ -64,7 +64,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_LI2CO3, check_africa_mount, check_li2co3_mount, load_axis_g2  # noqa: E402
 from lib.gordon import (  # noqa: E402
     basket_r, check_g_cap, check_r, implied_g, payout, perpetual_pe, recovery_two_stage_pe,
@@ -74,7 +74,7 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "600499.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600499.SH.md"
 FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_v3"
 MIN_R_MINUS_G = 0.02
 # A18: realised trough→recovery paths — the company's (Longbridge annual parent NI,

@@ -33,7 +33,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.etf import REGIME_GAP, SUBWINDOWS, channel, history, slope_since  # noqa: E402
 from lib.etf_lookthrough import scale  # noqa: E402
 from lib.gordon import (  # noqa: E402
@@ -45,9 +45,9 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "513530.SH.md"
-PEER = Path(__file__).resolve().parent.parent / "frameworks" / "520900.SH.md"
-COAL = Path(__file__).resolve().parent.parent / "frameworks" / "1898.HK.md"  # China Coal look-through source
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "513530.SH.md"
+PEER = Path(__file__).resolve().parents[2] / "frameworks" / "520900.SH.md"
+COAL = Path(__file__).resolve().parents[2] / "frameworks" / "1898.HK.md"  # China Coal look-through source
 FORMULA_ID = "etf_tr_trend_channel_v1"
 SOTP_FORMULA_ID = "huatai_hk_hdy_qdi_sotp_index_pe_v3"
 

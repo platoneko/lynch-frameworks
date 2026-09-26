@@ -57,7 +57,7 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_COAL, check_coal_mount, load_coal_series  # noqa: E402
 from lib.gordon import (  # noqa: E402
     BASKET_R, capped_payout_pe, check_branch, check_g_cap, check_r, g_cap, payout_gap, perpetual_pe,
@@ -68,7 +68,7 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "000543.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000543.SZ.md"
 FORMULA_ID = "wanneng_coal_axis_midcycle_pe_v5"
 TIERS = ("l", "m", "h")
 YI = 1e8

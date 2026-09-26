@@ -27,7 +27,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.gordon import check_g_cap, check_r, g_cap, justified_pb  # noqa: E402
 from lib.inputs import (  # noqa: E402
@@ -35,7 +35,7 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "600036.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600036.SH.md"
 FORMULA_ID = "cmb_gordon_pb_roe_v2"
 YI = 1e8
 ROE_L_TOL = 5e-4

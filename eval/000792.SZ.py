@@ -34,7 +34,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 import re  # noqa: E402
 
 from lib.axes import AXIS_LI2CO3, check_li2co3_mount  # noqa: E402
@@ -42,7 +42,7 @@ from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_tw
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "000792.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000792.SZ.md"
 FORMULA_ID = "saltlake_li_axis_kcl_ladder_pe_v2_gordon_v2"
 MIN_R_MINUS_G = 0.02
 # A9: the company's own realised trough→recovery path (Longbridge annual parent NI,

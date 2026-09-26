@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_r, g_cap  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
@@ -34,7 +34,7 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "000725.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000725.SZ.md"
 FORMULA_ID = "boe_midcycle_eps_flat_pe_v1"
 REQUIRED = ["price", "shares", "bps", "ni_l", "ni_m", "ni_h", "pe", "v_opt", "pb_floor", "r_perp"]
 TIERS = ("l", "m", "h")

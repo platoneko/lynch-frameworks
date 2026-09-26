@@ -1,6 +1,8 @@
-# lynch — Agent 协作契约
+# lynch-frameworks — 框架契约
 
-长线标的的**估值框架沉淀**仓库。标的由用户指定；挖掘在 `../invest`，本仓不负责。
+长线标的的**估值框架**内容仓库，检出在代码仓库 `lynch/` 的 `frameworks/` 下（代码仓库忽略此目录）。标的由用户指定；挖掘在 `../invest`，本仓不负责。
+
+**路径约定**：本文件与 skill 里的路径一律相对 `lynch/`（研究会话的根）。唯一例外：框架题头的 `eval: eval/<TICKER>.py` 相对本仓库根解析。提交框架改动要在 `frameworks/` 里 `git commit`，`lynch/` 根的 `git status` 看不到这里。
 
 面向用户的说明用**简体中文**。代码标识符、`formula_id`、林奇枚举值用英文。
 
@@ -12,10 +14,10 @@
 | 标的池 | 扫 `frameworks/*.md`（排除 `_TEMPLATE.md` 及 `_` 前缀） |
 | 模板 | `frameworks/_TEMPLATE.md` |
 | 共享情景轴 | `frameworks/axes/<轴名>.md`（逻辑 id 仍写 `_AXIS.<轴名>`；不进标的池） |
-| 演算（后置） | `eval/<TICKER>.py`、`eval/lib/` |
-| 跨票口径体检 | `scripts/calibration.py` |
+| 演算（后置） | `frameworks/eval/<TICKER>.py`（本仓）；库 `eval/lib/`（代码仓库） |
+| 跨票口径体检 | `scripts/calibration.py`（代码仓库） |
 
-**Ticker 文件名**：美股 **MUST** 带 `.US`（`INTC.US`、`WOLF.US`）；港股/A 股保留市场后缀（`0700.HK`、`601899.SH`）。文件名 = 题头 `# TICKER` = `eval/<TICKER>.py`；与 Longbridge 等多市场符号对齐。细则见 skill `sediment-framework`。
+**Ticker 文件名**：美股 **MUST** 带 `.US`（`INTC.US`、`WOLF.US`）；港股/A 股保留市场后缀（`0700.HK`、`601899.SH`）。文件名 = 题头 `# TICKER` = `frameworks/eval/<TICKER>.py`；与 Longbridge 等多市场符号对齐。细则见 skill `sediment-framework`。
 
 最终真源是仓库里的 Markdown，但沉淀过程 **MUST** 先多轮对话对齐；**MUST NOT** 在用户明确说「可以落盘 / 写成文件 / 确认写入」之前创建或覆盖 `frameworks/*.md`。  
 沉淀或更新时 **MUST** 使用 skill **`sediment-framework`**（`/sediment-framework` / `/lynch-framework`）。  
@@ -84,11 +86,6 @@
 日报：`scripts/daily_bands.py` 只读框架锚点 + Longbridge 现价 → 写 `output/bands/` → 飞书（**每天都发**；跨带 `@所有人`）。**MUST NOT** 回写框架 MD。
 
 **\(r_f\) 读数行**：已接利率轴的票，eval 干净跑完时把「共识 \(\Delta r_f\)」与「反向压力 ±`rf_cap`」两组 L/M/H 写入 `output/rates/<TICKER>.json`（记下所依据的轴值与底牌锚点）；日报读之，按上市货币段（`_AXIS.rates`，未建段不出）在该票末尾加两行 `利率·共识` / `利率·压力`。只是读数：**MUST NOT** 触发跨带告警、进 `_INDEX` 或 `calibration.py`；轴值或锚点变了而 eval 未重跑 → 打印「过期」而非旧数。
-
-## 密钥与本地
-
-- **MUST NOT** 提交 `.mcp.json`、`config/mcporter.json`、`_local/`
-- Wisburg / 行情密钥只放在 gitignore 的本地配置里
 
 ## 不要做的事
 

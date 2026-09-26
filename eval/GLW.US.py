@@ -84,7 +84,7 @@ from pathlib import Path
 
 # eval/lib/frameworks.py imports `eval.lib.inputs`, so the repo root (not
 # eval/) must be importable.
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from eval.lib.axes import check_capex_mount  # noqa: E402
@@ -103,7 +103,7 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GLW.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GLW.US.md"
 FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v6"
 TOL = 0.05
 PE_OC_HARD_CAP = 30.0  # strict: generated OC PE and H/eps_fy28_l must be < this

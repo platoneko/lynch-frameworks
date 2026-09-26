@@ -42,7 +42,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.al_bridge import (  # noqa: E402
     REQUIRED, anchors, bridge, check_gordon, check_regression, flat_ladder,
     multiples, pb_floor,
@@ -55,12 +55,12 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1378.HK.md"
-PEER_CAPTIVE = Path(__file__).resolve().parent.parent / "frameworks" / "002532.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1378.HK.md"
+PEER_CAPTIVE = Path(__file__).resolve().parents[2] / "frameworks" / "002532.SZ.md"
 FORMULA_ID = "hongqiao_al_spread_gm_bridge_gordon_v5"
 LISTING_CCY = "HKD"
 

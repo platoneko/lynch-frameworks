@@ -38,7 +38,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
 from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
@@ -46,12 +46,12 @@ from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
 # The r_f readings helpers import through the `eval.lib` package, so the repo root joins the path.
-sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "NEM.US.md"
-PEER = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NEM.US.md"
+PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
 FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v1"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05

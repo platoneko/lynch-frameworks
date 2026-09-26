@@ -70,7 +70,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import (  # noqa: E402
     check_g_cap, check_r, g_cap, perpetual_pe,
 )
@@ -81,11 +81,11 @@ from lib.zones import cut_points, zone_of  # noqa: E402
 
 # rf_report / bands_io import through the `eval.lib` package, so the repo root
 # must be importable too; appended so `lib.*` above still resolves first.
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "1898.HK.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1898.HK.md"
 FORMULA_ID = "chinacoal_selfmined_asp_ladder_flat_pe_hkd_v2_gordon_v4"
 YI = 1e8
 

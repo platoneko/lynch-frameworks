@@ -48,7 +48,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import (  # noqa: E402
     AXIS_PHOS, PHOS_INERT_BETA_CEILING, check_axis_g2_mount, check_phosphate_mount,
 )
@@ -58,8 +58,8 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "600096.SH.md"
-PEER = Path(__file__).resolve().parent.parent / "frameworks" / "002895.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
+PEER = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
 FORMULA_ID = "ytn_realized_earnings_regime_gordon_v4"
 YI = 1e8
 

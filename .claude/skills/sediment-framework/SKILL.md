@@ -10,7 +10,7 @@ description: >
 
 # 沉淀估值框架（sediment-framework · 篮子折现率）
 
-折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**，未接入的票只报隐含 r(P)。
+折现率 \(r\) 按生意性质归入 7 个篮子（`references/valuation-rules.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `frameworks/eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**，未接入的票只报隐含 r(P)。
 
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
@@ -35,8 +35,8 @@ description: >
 
 ## 硬约束（违反则停下问用户）
 
-1. **对话优先 / 落盘门闩**：一次只问一块；授权前 **MUST NOT** 写 `frameworks/` 或 `eval/`。取数与贴表可以。
-2. **只写本仓库**（授权后）：`frameworks/<TICKER>.md`；可选 `eval/<TICKER>.py`。不写 invest-data / `universe.yaml`。
+1. **对话优先 / 落盘门闩**：一次只问一块；授权前 **MUST NOT** 写 `frameworks/`（含每票演算 `frameworks/eval/`）。取数与贴表可以。
+2. **只写本仓库**（授权后）：`frameworks/<TICKER>.md`；可选 `frameworks/eval/<TICKER>.py`。不写 invest-data / `universe.yaml`。新票的演算脚本写到 `frameworks/eval/<TICKER>.py`（内容仓库），题头仍写 `eval: eval/<TICKER>.py`（相对内容仓库根）。**MUST NOT** 在 `lynch/eval/` 下建每票脚本——那是代码仓库的库目录。
 3. **林奇分类**：`lynch_primary` 必填；`lynch_secondary` 可选；∈ 六类枚举。专属叙事只进 §1 / Assumptions，不作 secondary。
 4. **业务地图有材料**：分部/SOTP 前 **MUST** 拉财报分部 + ≥1 份研报线索；**MUST NOT** 凭常识空拆。不足标 `待补`。
 5. **单文件时间线**：不建多版本文件。Changelog **仅事件追踪**；初建日不写；框架纠正不写；事件按自然日合并 `### YYYY-MM-DD`。
@@ -45,7 +45,7 @@ description: >
 8. **倍数多维印证**：定倍数 / \(L/M/H\) 前 **MUST** 展示印证矩阵（`heuristics.md` A2d）。
 9. **档位跨票可比**：构造走 `construction.md`；语义见 `valuation-rules.md`「锚点语义」。散布 **MUST NOT** 来自手法。
 10. **不做交易指令**。
-11. **Ticker 规范化**：见下方表；文件名 = 题头 `# TICKER` = `eval/<TICKER>.py`。
+11. **Ticker 规范化**：见下方表；文件名 = 题头 `# TICKER` = `frameworks/eval/<TICKER>.py`。
 12. **两端 zone MUST 反思**：`stretched` / `deep_discount` → `zone-reflection.md`。现价不是输入；两终点同等合法（\(P\le H+V_{opt}\)，或接受溢价并举证）。中间三档不强制。
 13. **BLOCKED 不落盘**：见 `valuation-rules.md`「BLOCKED 的语义」「纠正对账门」。授权解不开 BLOCKED；subagent prompt **MUST** 转述本条。
 14. **r 只能归篮，不能拧**：每腿 \(r\) 只能是 `valuation-rules.md`「§r 篮子」表中 7 个值之一（真源 `gordon.py` `BASKET_R`）；一腿 **MAY** 按「篮子对」声明过渡篮 / 终值篮**两个**篮子值（默认相等；四条判据 + \(k\) 强制见该节；稳态特征**不要求今天已满足**，差距归 \(k\)），仍**只能取表中值**；Inputs 每条**进锚点公式的 r 行**来源单元格 **MUST** 写 `篮 N` + 归篮理由（eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` 校验）；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样；改篮子值属仓库级，单票 **MUST NOT** 动。市价与篮子尺的差走「隐含 r 对账」，不走 r。
@@ -122,7 +122,7 @@ description: >
 ### A3. 落盘（仅明确授权后）
 
 1. 写满框架：题头两行 + §0–§3（§0 含「这张表怎么读」）；§4 初建日留空。规则拦下但用户拍板入池的票，题头第三行 `> **状态：BLOCKED**（原因；解封条件）`，底牌行照写（对照带），日报 / 索引不出 zone（`AGENTS.md`「BLOCKED — 题头契约」）
-2. 可选 `eval/<TICKER>.py` 薄壳
+2. 可选 `frameworks/eval/<TICKER>.py` 薄壳
 3. 新建/改题头/改轴挂载 → `python3 scripts/gen_index.py`
 4. 汇报路径、分类、主尺、假设条数、尚缺数据
 

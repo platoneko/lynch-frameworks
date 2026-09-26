@@ -78,7 +78,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.gordon import check_g_cap, check_r, implied_g, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
@@ -87,11 +87,11 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORKS = Path(__file__).resolve().parent.parent / "frameworks"
+FRAMEWORKS = Path(__file__).resolve().parents[2] / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
 FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6"
 LISTING_CCY = "HKD"

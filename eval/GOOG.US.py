@@ -56,7 +56,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -78,7 +78,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "GOOG.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GOOG.US.md"
 FORMULA_ID = "goog_fwd_numerator_gordon_services_cloud_assets_v3"
 TOL = 0.05
 BN = 1e3  # inputs are in $M; report in $B

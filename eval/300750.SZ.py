@@ -52,7 +52,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import (  # noqa: E402
     check_g_cap, check_r, g_cap, implied_g, payout, perpetual_pe, two_stage_pe,
 )
@@ -62,7 +62,7 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "300750.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300750.SZ.md"
 FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v2"
 
 TIERS = ("l", "m", "h")

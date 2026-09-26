@@ -64,7 +64,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import check_g_cap, check_r, perpetual_pe  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
@@ -78,7 +78,7 @@ from eval.lib.zones import zone_of  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "0189.HK.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "0189.HK.md"
 FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v2"
 LISTING_CCY = "HKD"
 TOL = 0.05  # outputs are rounded to 2 decimals

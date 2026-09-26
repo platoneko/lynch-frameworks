@@ -29,7 +29,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from math import ceil
 
 from lib.gordon import check_g_cap, check_r, check_transition_years, g_cap  # noqa: E402
@@ -38,12 +38,12 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "SOFI.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "SOFI.US.md"
 FORMULA_ID = "sofi_gordon_tbv_oe_v1"
 LISTING_CCY = "USD"
 MAINT_TOL = 0.005

@@ -31,16 +31,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_g_cap, check_r, perpetual_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 # rf_report imports `eval.lib.*`, so the repo root must be importable too.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "HIMS.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "HIMS.US.md"
 FORMULA_ID = "hims_fy27_gaap_consensus_gordon_b7_v1"
 REQUIRED = [
     "price", "shares", "equity", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",

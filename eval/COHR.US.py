@@ -53,7 +53,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -64,7 +64,7 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "COHR.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "COHR.US.md"
 FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt"
 LISTING_CCY = "USD"
 TOL = 0.05  # outputs rounded to 2 decimals

@@ -39,7 +39,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -50,7 +50,7 @@ from eval.lib.zones import cut_points, zone_of  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "AMZN.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "AMZN.US.md"
 FORMULA_ID = "amzn_fwd_numerator_gordon_aws_retail_portfolio_v1"
 LISTING_CCY = "USD"
 TOL = 0.05

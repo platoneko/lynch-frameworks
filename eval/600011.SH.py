@@ -66,7 +66,7 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.frameworks import load_framework  # noqa: E402
 from lib.gordon import (  # noqa: E402
@@ -79,7 +79,7 @@ from lib.inputs import (  # noqa: E402
 from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "600011.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600011.SH.md"
 FORMULA_ID = "huaneng_forward_consensus_mid_pe_v6"
 
 TIERS = ("l", "m", "h")

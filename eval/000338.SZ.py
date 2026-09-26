@@ -78,7 +78,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.gordon import (  # noqa: E402
     check_g_cap, check_r, g_cap, implied_g, perpetual_pe, recovery_two_stage_pe,
@@ -88,8 +88,8 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "000338.SZ.md"
-BE_FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "BE.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000338.SZ.md"
+BE_FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BE.US.md"
 FORMULA_ID = "weichai_asymmetric_sotp_runrate_gordon_v4"
 YI = 1e8
 TIERS = ("l", "m", "h")

@@ -43,7 +43,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -67,7 +67,7 @@ from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "LITE.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "LITE.US.md"
 FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v3"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole

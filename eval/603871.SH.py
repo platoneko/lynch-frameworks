@@ -37,7 +37,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import (  # noqa: E402
     africa_window_from_perp,
     check_africa_jiayou_window,
@@ -51,7 +51,7 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-HERE = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parents[2]
 FRAMEWORK = HERE / "frameworks" / "603871.SH.md"
 FORMULA_ID = "jiayou_mgl_afr_window_pv_parity_concession_vopt_kasa_v3"
 

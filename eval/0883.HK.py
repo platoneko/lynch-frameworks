@@ -50,7 +50,7 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_BRENT  # noqa: E402
 from lib.gordon import (  # noqa: E402
     NEAR_FULL_PAYOUT, basket_r, check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, justified_pb,
@@ -64,11 +64,11 @@ from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 # rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 FRAMEWORK = REPO / "frameworks" / "0883.HK.md"
 FORMULA_ID = "cnooc_hk_brent_axis_gordon_retention_v2"
 TICKER = "0883.HK"

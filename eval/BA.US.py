@@ -28,7 +28,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import (  # noqa: E402
     check_branch, check_g_cap, check_r, check_transition_years, g_cap, perpetual_pe,
     recovery_two_stage_pe, two_stage_pe,
@@ -37,11 +37,11 @@ from lib.inputs import check_against_stated, check_missing, ladder, parse_basket
 from lib.zones import cut_points, zone_of  # noqa: E402
 
 # rf_report imports eval.lib.* absolutely, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "BA.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BA.US.md"
 FORMULA_ID = "ba_unlevered_fy27_recovery_gordon_v1"
 LISTING_CCY = "USD"
 REQUIRED = [

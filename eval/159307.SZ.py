@@ -29,7 +29,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.etf import (  # noqa: E402
     REGIME_GAP, RF_MID, SUBWINDOWS, channel, history, rate_neutral, rates, slope_since,
 )
@@ -43,7 +43,7 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "159307.SZ.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "159307.SZ.md"
 FORMULA_ID = "etf_tr_trend_channel_v1"
 CROSS_FORMULA_ID = "bosera_div_lowvol_gordon_named_zero_bandedge_v6"
 

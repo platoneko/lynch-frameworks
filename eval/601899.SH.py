@@ -45,15 +45,15 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_AU_CU, AXIS_LI2CO3, check_au_cu_mount, check_li2co3_mount  # noqa: E402
 from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.zones import zone_of  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "601899.SH.md"
-PEER = Path(__file__).resolve().parent.parent / "frameworks" / "603993.SH.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
+PEER = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
 FORMULA_ID = "zijin_fed_li_dual_axis_fwd2028_two_stage_v1"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05

@@ -31,16 +31,16 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.zones import cut_points, zone_of  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
-FRAMEWORK = Path(__file__).resolve().parent.parent / "frameworks" / "SPCX.US.md"
+FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "SPCX.US.md"
 FORMULA_ID = "spcx_sotp_fy27_starlink_b4_compute_b7_v1"
 TIERS = ("l", "m", "h")
 REQUIRED = [
