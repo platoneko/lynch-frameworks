@@ -2,7 +2,9 @@
 """WOLF.US (Wolfspeed) valuation eval — asset-PB bottom + court-EV recovery option.
 
 frameworks/WOLF.US.md is the source of truth; this script recomputes
-bottom L/M/H / A/B / zone / V_opt / 表3 and exits 1 on mismatch.
+bottom L/M/H / A/B / V_opt / 表3 and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: wolf_asset_pb_fd_court_vopt_v3
 
@@ -48,7 +50,7 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "WOLF.US.md"
 FORMULA_ID = "wolf_asset_pb_fd_court_vopt_v3"
@@ -59,7 +61,7 @@ TIERS = ("l", "m", "h")
 P_K = (0.0, 0.25, 1.0)
 
 REQUIRED = [
-    "price", "shares_fd", "cash", "debt", "conv_principal", "warrant_proceeds", "debt_total",
+    "shares_fd", "cash", "debt", "conv_principal", "warrant_proceeds", "debt_total",
     "equity_book", "pb_l", "pb_m", "pb_h", "r_perp",
     "ev_court_l", "ev_court_m", "ev_court_h", "eq_court_bridge",
     "rev_l", "rev_m", "rev_h", "rev_fy26",
@@ -109,7 +111,6 @@ def main() -> int:
     bps_fd = book_fd * MM / i["shares_fd"]
     L, M, H = (i[f"pb_{t}"] * bps_fd for t in TIERS)
     A, B = cut_points(L, M, H)
-    zone = zone_of(i["price"], L, M, H)
 
     # ---- Step 2: option ceiling — court EV high bridged with today's net cash (A12)
     net_debt = i["debt"] - i["cash"] - i["warrant_proceeds"]
@@ -118,7 +119,6 @@ def main() -> int:
     v_opt = max(0.0, v_top - H)
     adj = [x + p * v_opt for x, p in zip((L, M, H), P_K)]
     adj_a, adj_b = cut_points(*adj)
-    adj_zone = zone_of(i["price"], *adj)
     # The court's own emergence bridge, put on the same FD footing (A12 known weakness).
     bridge_fd = (i["eq_court_bridge"] + i["conv_principal"] + i["warrant_proceeds"]) * MM / i["shares_fd"]
 
@@ -134,24 +134,21 @@ def main() -> int:
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}  V_opt/M={v_opt / M:.1%}")
     print(f"decompose  L/M = num 1.000 x pb {i['pb_l'] / i['pb_m']:.3f} | H/M = num 1.000 x pb {i['pb_h'] / i['pb_m']:.3f}"
           f"  (asset ruler; flat ladder == base)")
-    print(f"own band: post-emergence min close {i['close_own_min']:g} = FD PB {i['close_own_min'] / bps_fd:.2f}x; "
-          f"price/BPS_fd {i['price'] / bps_fd:.2f}x")
+    print(f"own band: post-emergence min close {i['close_own_min']:g} = FD PB {i['close_own_min'] / bps_fd:.2f}x")
     print(f"option     net_debt {net_debt:.1f}; court EV {i['ev_court_l']:.0f}/{i['ev_court_m']:.0f}/{i['ev_court_h']:.0f} "
           f"-> per FD share {court['l']:.2f}/{court['m']:.2f}/{court['h']:.2f}; ceiling = high {v_top:.2f} -> V_opt {v_opt:.2f}")
     print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  "
-          f"A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}")
-    print(f"     市价隐含 p = {(i['price'] - H) / v_opt:.2f}; P/(H+V) = {i['price'] / adj[2] - 1:+.1%}")
+          f"A'={adj_a:.2f} B'={adj_b:.2f}")
     print(f"  sens anchor -> court mid / low: V_opt {max(0.0, court['m'] - H):.2f} / {max(0.0, court['l'] - H):.2f}; "
           f"court bridge equity {i['eq_court_bridge']:.1f} -> FD {bridge_fd:.2f}: V_opt {max(0.0, bridge_fd - H):.2f}")
     print(f"  cross retired EV/S ruler ({evs['l']:.3f}/{evs['m']:.3f}/{evs['h']:.3f}x on rev {i['rev_l']:.0f}/{i['rev_m']:.0f}/{i['rev_h']:.0f}): "
           f"{old['l']:.2f}/{old['m']:.2f}/{old['h']:.2f}")
     if basic:
         print(f"  cross basic-share error: BPS {i['equity_book'] * MM / basic:.2f}, court high {(i['ev_court_h'] - net_debt) * MM / basic:.2f}")
-    print(f"表2  price {i['price']} -> zone = {zone}   P/H {i['price'] / H:.2f}x")
     # 篮 7 floor is 1/r × E; consensus EPS is negative, so it is 0 -- printed, never max()-ed into L.
     print(f"  r_perp {i['r_perp']:g} (篮 {baskets.get('r_perp')}), disclosure only; 篮 7 floor 1/r x E = 0.00 (E < 0), L stays {L:.2f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     errors += ladder("base", L, M, H)
     if v_opt < 0:
         errors.append(f"V_opt must be >= 0, got {v_opt:.2f}")
@@ -164,8 +161,6 @@ def main() -> int:
         errors.append(f"p leaked into the base: 表3 L row {adj[0]:.4f} != base L {L:.4f}")
     if v_opt > 0 and "表3" not in outputs_section(md):
         errors.append("V_opt > 0 but Outputs has no 表3")
-    if abs(v_top - i["price"]) < 1e-9:
-        errors.append("option ceiling equals the current price: the anchor must be the court EV, not a price input (A12)")
     return report(errors)
 
 

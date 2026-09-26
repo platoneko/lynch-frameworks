@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """TSM.US valuation eval — recompute anchors from frameworks/TSM.US.md.
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
+
 formula_id: tsm_sotp_2027_two_stage_gordon_v9
 
 Numerators: 2027E consensus EPS range (low/mean/high, 13 houses, USD/ADR).
@@ -41,7 +45,7 @@ r: every leg (advanced / mature wafer, B1 / B2) discounts at the basket it is
 assigned to (valuation-rules「§r 篮子」) -- both legs sit in 篮 4 龙头制造, one
 `r_perp` row whose source cell names the basket; `check_r` demands the row's
 value equal that basket's, and `check_g_cap(g, r)` caps every perpetual g at
-min(6%, r - 4%) (A25).  Implied r(P) is printed as a disclosure only.
+min(6%, r - 4%) (A25).
 
 COUPE: V_opt = H-tier OE×$450×share×npm×platform PE; p_k = V_k/V_H.
 
@@ -68,7 +72,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
     check_transition_years,
-    implied_g,
     payout_gap,
     perpetual_pe,
     two_stage_pe,
@@ -82,7 +85,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -104,7 +107,6 @@ _T3_ROW = re.compile(
 )
 
 REQUIRED = [
-    "price",
     "shares_adr",
     "equity",
     "rev_2q26_twd",
@@ -357,8 +359,7 @@ def main() -> int:
     p_k = {t: v_k[t] / v_opt for t in TIERS}
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     vm = _V_OPT.search(out_sec)
     if vm is None:
@@ -441,7 +442,7 @@ def main() -> int:
 
     def fmt(b: tuple[float, float, float]) -> str:
         a_x, b_x = cut_points(*b)
-        return f"{b[0]:.1f}/{b[1]:.1f}/{b[2]:.1f} (A {a_x:.1f} / B {b_x:.1f}) zone={zone_of(inp['price'], *b)}"
+        return f"{b[0]:.1f}/{b[1]:.1f}/{b[2]:.1f} (A {a_x:.1f} / B {b_x:.1f})"
 
     print(f"cross-check no transition (aw/B1): {fmt(band_with(transition=False))}")
     print(f"cross-check no pin (as-of {inp['mat_of_wafer_asof']:.0%} held into 2027E): {fmt(band_with(mat_share=inp['mat_of_wafer_asof']))}")
@@ -466,26 +467,7 @@ def main() -> int:
             inp["pe_own_min"] <= blended_pe(t, g2_d) <= inp["pe_own_max"] + 1e-6 for t in TIERS
         )
         lever.append(f"{g2_d:.2%}: {fmt(band_with(g2_x=g2_d))}{'' if legal else ' (illegal)'}")
-    zone_down = zone_of(inp["price"], *band_with(g2_x=g2 - 0.01))
-    flip_note = f"⚠敏感区 (-1pp -> {zone_down}, disclosure only)" if zone_down != zone else "(no flip: not a 敏感区)"
-    print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever) + f" | base zone={zone}  {flip_note}")
-    # Implied r(P): single-stage approximation r ≈ g2 + (r - g2)·M/P, a direction
-    # reading against the basket r (SOTP carries the transition and mature legs,
-    # so the structural reverse-solve below is the finer number).  Disclosure only.
-    r_impl = g2 + (r - g2) * M / inp["price"]
-    print(f"implied r(P) ≈ {r_impl:.1%} (single-stage approx) vs basket r {r:.1%} ({r_impl - r:+.1%}, disclosure only)")
-    g_mkt, ok = implied_g(inp["price"] / eps["m"], roe["m"], r)
-    lo, hi = -0.05, r - 1e-4
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        if band_with(g2_x=mid)[1] < inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    print(
-        f"market-implied (P/2027E mean={inp['price'] / eps['m']:.1f}x): single-leg Gordon g={g_mkt:.4f} "
-        f"({'well' if ok else 'ill'}-conditioned) | SOTP structure, platform g2 at M=price: {(lo + hi) / 2:.4f}"
-    )
+    print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever))
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves r_perp
     # 1:1 on every leg -- platform (aw / B1 floor), mature wafer and B2 multiples are
     # re-priced; EPS, ROE, g1_adv/g2 and the CoWoS capacity value stay put.
@@ -502,14 +484,13 @@ def main() -> int:
         finally:
             r = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     print(
         f"COUPE V_opt={v_opt:.2f} p_k={p_k['l']:.3f}/{p_k['m']:.3f}/{p_k['h']:.1f}  "
         f"zone+V={L + v_k['l']:.1f}/{M + v_k['m']:.1f}/{H + v_k['h']:.1f}  "
-        f"A'={(L + v_k['l'] + M + v_k['m']) / 2:.1f} B'={(M + v_k['m'] + H + v_k['h']) / 2:.1f}  "
-        f"zone+V={zone_of(inp['price'], L + v_k['l'], M + v_k['m'], H + v_k['h'])}"
+        f"A'={(L + v_k['l'] + M + v_k['m']) / 2:.1f} B'={(M + v_k['m'] + H + v_k['h']) / 2:.1f}"
     )
     print(
         f"ROE basis: BPS_2027 = {bps_open_2027['l']:.1f}/{bps_open_2027['m']:.1f}/{bps_open_2027['h']:.1f} USD/ADR (opening 2027 = end-2026) "
@@ -566,13 +547,10 @@ def main() -> int:
     )
     print(
         f"A27 cross band (PB 5y q1/med/q3 {pb_q[0]:g}/{pb_q[1]:g}/{pb_q[2]:g}, ÷(1+r)^{inp['n_disc']:g}): "
-        f"{cross[0]:.1f}/{cross[1]:.1f}/{cross[2]:.1f} (A {ca:.1f} / B {cb:.1f}) zone={zone_of(inp['price'], *cross)} | "
+        f"{cross[0]:.1f}/{cross[1]:.1f}/{cross[2]:.1f} (A {ca:.1f} / B {cb:.1f}) | "
         f"implied perpetual g at ROE28: {g_impl_pb[0]:.1%}/{g_impl_pb[1]:.1%}/{g_impl_pb[2]:.1%} (cap 6%)"
     )
 
-    print(f"price={inp['price']:.2f} zone={zone} P/L={inp['price'] / L - 1:+.1%} P/M={inp['price'] / M - 1:+.1%}")
-    if inp["price"] > H:
-        print(f"  market-implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
     # Only a clean run feeds the daily digest (output/rates/).
     if not errors:
         write_rf_readings("TSM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

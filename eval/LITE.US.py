@@ -2,7 +2,9 @@
 """LITE.US (Lumentum) valuation eval — recompute anchors from frameworks/LITE.US.md.
 
 frameworks/LITE.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v3
 
@@ -23,7 +25,7 @@ SBC haircut.  No g1 window, so every tier rolls at g2.
 
 Candidate band (A2e-7h, A19): the company's FY28 EPS target ($40, company
 guidance, above the consensus high) replaces only the H numerator -> H'.
-Never a zone input.
+Never in the base band.
 
 Guardrail (valuation-rules 裁决顺序 ③): the M multiple must sit inside the
 ticker's own realised current-FY forward-PE band [pe_own_min, pe_own_max];
@@ -164,7 +166,6 @@ def main() -> int:
 
     inp = parse_inputs(md)
     required = [
-        "price",
         "eps_fy27",
         "eps_fy28_m",
         "eps_fy28_h",
@@ -261,11 +262,10 @@ def main() -> int:
             f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] — ③ 出带, stop, back to dialogue"
         )
 
-    # ---- Step 4-5: anchors, cut points, zone ----
+    # ---- Step 4-5: anchors, cut points ----
     L, M, H = (eps[t] * pe[t] for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
 
@@ -298,10 +298,6 @@ def main() -> int:
             errors.append(f"stated {k} not found in Outputs")
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
     vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
     if vo is None or abs(float(vo.group(1))) > 1e-9:
         errors.append(f"V_opt must be stated as 0 (no realised option unit), got {vo.group(1) if vo else None}")
@@ -377,15 +373,7 @@ def main() -> int:
     )
     eps_lo = inp["eps_fy28_l"] * haircut
     print(f"FY28 consensus-low coordinate: {eps_lo:.3f} x {tier(eps_lo)[1]:.2f}x = {eps_lo * tier(eps_lo)[1]:.2f} -> {zone_of(eps_lo * tier(eps_lo)[1], L, M, H)}")
-    print(
-        f"implied mcap (bn USD) L/M/H = {mcap(L):.1f}/{mcap(M):.1f}/{mcap(H):.1f}"
-        f"  price={mcap(inp['price']):.1f}"
-    )
-    print(
-        f"price={inp['price']} -> fwd PE on FY27 consensus {inp['price'] / inp['eps_fy27']:.1f}x,"
-        f" on FY28 consensus {inp['price'] / inp['eps_fy28_m']:.1f}x, on FY28 guide {inp['price'] / inp['eps_fy28_guide']:.1f}x,"
-        f" zone={zone}  P/H={inp['price'] / H - 1:+.1%}  P/H'={inp['price'] / cand[2] - 1:+.1%}"
-    )
+    print(f"implied mcap (bn USD) L/M/H = {mcap(L):.1f}/{mcap(M):.1f}/{mcap(H):.1f}")
     # Sensitivities the doc quotes (Outputs 敏感性)
     for g in (g2 - 0.01, g2 + 0.01, 0.0664):
         vals = [eps[t] * tier(eps[t], g)[1] for t in TIERS]  # book re-rolls at the perturbed g
@@ -428,7 +416,7 @@ def main() -> int:
         finally:
             r = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

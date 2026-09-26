@@ -2,7 +2,9 @@
 """NVDA.US (NVIDIA) valuation eval — recompute anchors from frameworks/NVDA.US.md.
 
 frameworks/NVDA.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on any mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on any mismatch.  The doc
+carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls
+in is derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: nvda_fy28_scenario_rev_gm_gordon_v2
 
@@ -71,7 +73,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
     g_cap,
-    implied_g,
     perpetual_pe,
 )
 from eval.lib.inputs import parse_baskets  # noqa: E402
@@ -87,7 +88,6 @@ BRIDGE_TOL = 0.15  # A17: max allowed deviation from consensus EPS
 B = 1e9
 
 REQUIRED = [
-    "price",
     "shares_fy28",
     "tax_rate",
     "opex_fy28",
@@ -126,7 +126,6 @@ _ANCHORS = re.compile(
     r" · 切点 A = \*\*([0-9.]+)\*\* · B = \*\*([0-9.]+)\*\*",
     re.MULTILINE,
 )
-_ZONE = re.compile(r"zone = \*\*`([a-z_]+)`\*\*")
 _V_OPT = re.compile(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*")
 _P_TIERS = re.compile(
     r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
@@ -157,19 +156,6 @@ def parse_inputs(md: str) -> dict[str, float]:
         except ValueError:
             continue
     return out
-
-
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    a, b = (L + M) / 2, (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < a:
-        return "conservative"
-    if price < b:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
 
 
 def eps_of(rev: float, gm: float, opex: float, tax: float, shares: float) -> float:
@@ -274,7 +260,6 @@ def main() -> int:
     H = eps_h * pe_h
     A = (L + M) / 2
     Bcut = (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}/{M:.2f}/{H:.2f}")
 
@@ -329,9 +314,7 @@ def main() -> int:
     )
 
     # --- Step 4: diagnostics that must never feed back into the anchors ---
-    weight_m = (inp["price"] - L) / (M - L)
     implied_peak_pe = L / eps_m
-    g_mkt, g_mkt_ok = implied_g(inp["price"] / eps_m, roe_m, r)
 
     # On-axis revenue scales with the quota; ACIE is the residual. Printing the
     # implied ACIE move keeps L's weakest input (A4 ②) visible on every run.
@@ -354,19 +337,15 @@ def main() -> int:
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
-    am, zm = _ANCHORS.search(out_sec), _ZONE.search(out_sec)
+    am = _ANCHORS.search(out_sec)
     if not am:
         errors.append("stated 底牌 L/M/H · 切点 A/B line not found in ### Outputs")
-    if not zm:
-        errors.append("stated zone not found in ### Outputs")
 
     if am:
         stated = dict(zip(("L", "M", "H", "A", "B"), [float(x) for x in am.groups()]))
         for k, v in {"L": L, "M": M, "H": H, "A": A, "B": Bcut}.items():
             if abs(stated[k] - v) > TOL:
                 errors.append(f"{k}: stated {stated[k]} vs recomputed {v:.4f}")
-    if zm and zm.group(1) != zone:
-        errors.append(f"zone: stated {zm.group(1)} vs recomputed {zone}")
     vm = _V_OPT.search(out_sec)
     if vm is None or abs(float(vm.group(1)) - v_opt) > TOL:
         errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {v_opt:.4f}")
@@ -414,15 +393,8 @@ def main() -> int:
     if p_tiers:
         opt = tuple(a + p * v_opt for a, p in zip((L, M, H), p_tiers))
         a2, b2 = (opt[0] + opt[1]) / 2, (opt[1] + opt[2]) / 2
-        print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}  "
-              f"zone+V={zone_of(inp['price'], *opt)}")
-    print(f"price={inp['price']} zone={zone}")
-    print(
-        f"implied weight on FY28 consensus = {weight_m:.1%}"
-        f" | L implied peak PE = {implied_peak_pe:.2f}x"
-        f" | market-implied g (P / eps_M = {inp['price'] / eps_m:.1f}x) = {g_mkt:.4f}"
-        f" ({'well' if g_mkt_ok else 'ill'}-conditioned, reference only)"
-    )
+        print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
+    print(f"L implied peak PE = {implied_peak_pe:.2f}x")
     for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (eps_l, eps_m, eps_h)):
         print(line)
     print("axis _AXIS.cowos-capacity (α/β/γ -> L/M/H), $B on-axis / ACIE:")
@@ -450,8 +422,7 @@ def main() -> int:
     print(
         f"候选带（g2={g2c:g} 峰值后归一；不进底牌/zone 判定）: "
         f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
-        f"pe={pe_c[0]:.2f}/{pe_c[1]:.2f}/{pe_c[2]:.2f}  "
-        f"候选 zone={zone_of(inp['price'], *cand)}"
+        f"pe={pe_c[0]:.2f}/{pe_c[1]:.2f}/{pe_c[2]:.2f}"
     )
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): r_perp is the only
     # priced r; Δr_f moves it 1:1 in each tier's Gordon multiple while the FY28 EPS
@@ -459,7 +430,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return tuple(e * perpetual_pe(g2, roe, r + dr) for e, roe in ((eps_l, roe_l), (eps_m, roe_m), (eps_h, roe_h)))
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

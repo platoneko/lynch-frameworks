@@ -2,7 +2,9 @@
 """GLW.US (Corning) valuation eval — recompute anchors from frameworks/GLW.US.md.
 
 frameworks/GLW.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: glw_sotp_core_segment_pe_gordon_v6
 
@@ -55,7 +57,7 @@ Solar revenue -> H'. Same formula, same g2 / r / P/S; L' and M' copy the base
 deck. Never a zone input. There is no transition stage anywhere (FY29 has no
 consensus), so `check_transition_years` does not apply.
 
-Sensitivities printed for the A2f record: g2_oc ±1pp (the +1pp side crosses
+Sensitivities printed (the doc quotes them): g2_oc ±1pp (the +1pp side crosses
 g_cap(r) and is reference only) and the untruncated peer median 6.35%; g2_gi ±1pp
 because GI's g2 = 0 has no peer anchor; g2_au ±1pp; and the OC perpetual g that
 would put each tier on the guardrail edges (band-as-evidence, 裁决顺序 ③).
@@ -161,20 +163,6 @@ def parse_inputs(md: str) -> dict[str, float]:
     return out
 
 
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A = (L + M) / 2
-    B = (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
-
-
 def first_float(pattern: str, md: str) -> float | None:
     m = re.search(pattern, md)
     return float(m.group(1)) if m else None
@@ -188,7 +176,6 @@ def main() -> int:
 
     inp = parse_inputs(md)
     required = [
-        "price",
         "shares_diluted",
         "eps_fy28_l",
         "eps_fy28_h",
@@ -401,7 +388,6 @@ def main() -> int:
     legs_h, H = anchor("h")
     A = (L + M) / 2
     B = (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
 
     # Candidate band (A29): only the H-tier Solar revenue moves to the guidance.
     _, H_cand = anchor("h", sales_so_k=inp["sales_so_fy28_guide"])
@@ -465,14 +451,9 @@ def main() -> int:
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
 
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
-
-    # Option leg (A23a/A23b). Deliberately computed after zone: it must not be
-    # able to reach L/M/H, the cut points, the zone verdict, or the four
-    # cross-ticker ratios (A2e-7a).
+    # Option leg (A23a/A23b). Deliberately computed after the anchors: it must
+    # not be able to reach L/M/H, the cut points, or the four cross-ticker
+    # ratios (A2e-7a).
     r_disc, n_yrs = inp["r_disc"], inp["contract_years"]
     lta_rate = inp["lta_anchor"] / inp["lta_years"]
     ann_n = annuity_factor(0.0, r_disc, n_yrs)
@@ -618,14 +599,6 @@ def main() -> int:
         f" M {rev_oc_m * MM / inp['capex_m']:.2%}"
     )
 
-    others_m = sum(v for k, v in legs_m.items() if k != "oc")
-    implied_pe_oc = (inp["price"] * sh - adj - others_m) / ni_oc["m"]
-    print(
-        f"price={inp['price']} zone={zone}  "
-        f"price/eps_fy28_l={inp['price'] / eps['l']:.2f}x  price/eps_fy28_h={inp['price'] / eps['h']:.2f}x  "
-        f"implied pe_oc FY28 (others+pp at M)={implied_pe_oc:.1f}x  P/H={inp['price'] / H - 1:+.1%}  "
-        f"P/(H+V_opt)={inp['price'] / (H + v_opt) - 1:+.1%}  P/(H'+V_opt)={inp['price'] / (H_cand + v_opt) - 1:+.1%}"
-    )
     print(
         f"V_opt={v_opt:.2f}/sh = signed {v_signed:.2f} + renew {v_renew:.2f}  "
         f"(rate {lta_rate:,.0f}M/y x {inp['pp_margin']:.4f} x "
@@ -639,20 +612,8 @@ def main() -> int:
             for k, lab in (("l", "L"), ("m", "M"), ("h", "H"))
         )
     )
-    if inp["price"] > H:
-        print(
-            f"market-implied multiple = (price - H)/V_opt = "
-            f"{(inp['price'] - H) / v_opt:.2f} Verizon-sized six-year deals"
-        )
-    # Implied r(P), disclosure only (A30): single-stage Gordon approximation on
-    # the OC leg's g2 and the M anchor; a multi-leg SOTP makes it approximate.
-    implied_r = inp["g2_oc"] + (r - inp["g2_oc"]) * M / inp["price"]
-    print(
-        f"implied r(P) ≈ g2_oc + (r - g2_oc) x M/P = {implied_r:.2%} "
-        f"vs 篮 {baskets['r_perp']} {r:.1%} ({implied_r - r:+.1%}) — disclosure only"
-    )
 
-    # Sensitivities the A2f record quotes. g2_oc: ±1pp and the untruncated peer
+    # Sensitivities the doc quotes. g2_oc: ±1pp and the untruncated peer
     # median (both above-cap values are reference only). g2_gi: ±1pp because
     # its g2 has no peer anchor. g2_au: ±1pp.
     # The book re-rolls with the shifted g (b1 = g/ROE moves with it).
@@ -681,7 +642,7 @@ def main() -> int:
     print(
         f"sensitivity r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: signed {vs_c:.2f} "
         f"({vs_c / v_signed - 1:+.1%}), V_opt {vo_c:.2f} ({vo_c / v_opt - 1:+.1%}), "
-        f"table3 H {H + vo_c:.2f}, market-implied multiple {(inp['price'] - H) / vo_c:.2f}"
+        f"table3 H {H + vo_c:.2f}"
     )
 
     # ATM full-execution pro-forma (A24): new shares at the illustration price,
@@ -706,7 +667,7 @@ def main() -> int:
 
         return at("l"), at("m"), at("h")
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

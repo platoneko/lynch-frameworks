@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """BE.US valuation eval — recompute anchors from frameworks/BE.US.md.
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing here
+reads a price.
+
 formula_id: be_fy2_eps_pe_order_gate_v1_gordon_v2
 
 Single earnings ruler on the FY2027 Non-GAAP EPS consensus (28 houses): the
@@ -40,12 +44,11 @@ rather than a cross-basket footnote.  M's 27.48x lands inside [26.37, 37.82]
 difference, not a fundamental one.
 
 Option (A16): the beyond-consensus GW runway is priced as V_opt with per-tier
-p_k; the script recomputes the corrected band and the market-implied p and
-checks the stated V_opt / p_k / A′ / B′.
+p_k; the script recomputes the corrected band and checks the stated V_opt /
+p_k / A′ / B′.
 
-g2 leverage must be explicit: the zone is recomputed at g2 − 1pp and the eval
-fails if it differs from the zone at the cap (valuation-rules「g₂ 的杠杆 MUST
-显式」).  Order-gate fields (cover, concentration) are recomputed / watched but
+g2 leverage must be explicit: the band at g2 − 1pp is printed next to the band
+at the cap, L/M/H only (valuation-rules「g₂ 的杠杆 MUST 显式」).  Order-gate fields (cover, concentration) are recomputed / watched but
 never enter the anchors.  No probability enters the base deck.
 
 Run:  python3 frameworks/eval/BE.US.py
@@ -79,7 +82,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -89,10 +92,9 @@ LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # below this the multiple sits at the pole
 DERIVED_TOL = 5e-4  # g1 / roe_* rows are derived; Inputs must agree with the recomputation
-G2_LEVERAGE_STEP = 0.01  # zone must survive g2 − 1pp (evidence range collapses onto the cap)
+G2_LEVERAGE_STEP = 0.01  # band disclosed at g2 − 1pp (evidence range collapses onto the cap)
 
 REQUIRED = [
-    "price",
     "shares",
     "equity",
     "eps_fy26_m",
@@ -268,14 +270,13 @@ def main() -> int:
         errors.append(f"flat-multiple ladder broken: {flat}")
     dec = decompose((L, M, H), (pes["L"], pes["M"], pes["H"]))
 
-    # ---- Step 5: zone, g2 leverage, order-gate coordinates ----
+    # ---- Step 5: cut points, g2 leverage, order-gate coordinates ----
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
 
     # Option (A16): V_opt is a stated input of the framework (its four elements
     # live in A16, not in Inputs); the script checks the corrected band and its
-    # cut-points reproduce, and reads the market-implied p from the ceiling.
+    # cut-points reproduce.
     said_v = stated_v_opt(md)
     p_tiers = stated_p_tiers(md)
     if said_v is None or p_tiers is None:
@@ -289,16 +290,11 @@ def main() -> int:
     for name, said, got in (("A′", said_a_v, A_v), ("B′", said_b_v, B_v)):
         if said is None or abs(said - got) > TOL:
             errors.append(f"{name}: stated {said} vs recomputed {got:.4f}")
-    zone_v = zone_of(inp["price"], *band_v)
-    implied_p = (inp["price"] - H) / v_opt if v_opt else float("nan")
 
     # g2 leverage: every peer reverse-solves above the cap, so the evidence range
-    # collapses onto it; the zone must be the same one step below (A13).
+    # collapses onto it; the band one step below is disclosed (A13).
     pes_dn = tier_pes(g2 - G2_LEVERAGE_STEP)
     band_dn = tuple(eps[t] * pes_dn[t] * (1.0 - k[t]) for t in TIERS)
-    zone_dn = zone_of(inp["price"], *band_dn)
-    if zone_dn != zone:
-        errors.append(f"zone moves within g2 evidence range: {zone} at cap vs {zone_dn} at g2-1pp — BLOCKED")
 
     cover = (inp["rpo_product_install"] + inp["customer_deposits"]) / inp["revenue_next_12m"]
     if abs(cover - inp["cover"]) > 0.01:
@@ -349,11 +345,8 @@ def main() -> int:
     )
     print(
         f"option (A16): V_opt={v_opt:.2f} p={p_tiers[0]:g}/{p_tiers[1]:g}/{p_tiers[2]:g} -> "
-        f"{band_v[0]:.2f}/{band_v[1]:.2f}/{band_v[2]:.2f} A'={A_v:.2f} B'={B_v:.2f} zone={zone_v} | "
-        f"market-implied p=(P-H)/V_opt={implied_p:.2f}"
+        f"{band_v[0]:.2f}/{band_v[1]:.2f}/{band_v[2]:.2f} A'={A_v:.2f} B'={B_v:.2f}"
     )
-    print(f"implied r(P), single-stage approx g2+(r_t-g2)*M/P = "
-          f"{g2 + (r_t - g2) * M / inp['price']:.4f} vs r_terminal {r_t:g} (journey {r:g})")
     no_tr = tier_pes(g2, transition=False)
     print(
         f"cross-check, no transition year: "
@@ -366,10 +359,10 @@ def main() -> int:
     print(f"coordinate, L on FY26 mean {inp['eps_fy26_m']:.3f} (digest year): "
           f"{inp['eps_fy26_m'] * pe26 * (1 - k['L']):.2f} ({pe26:.2f}x, k-adjusted)")
     print(
-        f"g2 leverage: g2 {g2 - G2_LEVERAGE_STEP:.0%} -> {band_dn[0]:.2f}/{band_dn[1]:.2f}/{band_dn[2]:.2f} zone={zone_dn} | "
-        f"g2 {g2:.0%} (cap) -> {L:.2f}/{M:.2f}/{H:.2f} zone={zone}  (+1pp above cap, not listed)"
+        f"g2 leverage: g2 {g2 - G2_LEVERAGE_STEP:.0%} -> {band_dn[0]:.2f}/{band_dn[1]:.2f}/{band_dn[2]:.2f} | "
+        f"g2 {g2:.0%} (cap) -> {L:.2f}/{M:.2f}/{H:.2f}  (+1pp above cap, not listed)"
     )
-    print(f"cover={cover:.4f}  price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H - 1:+.1%}")
+    print(f"cover={cover:.4f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # both rates of the basket pair 1:1 — r_journey (stage 1 + the discount year)
@@ -385,7 +378,7 @@ def main() -> int:
         finally:
             r, r_t = saved
 
-    rf = rf_block(LISTING_CCY, {"r_journey": r, "r_terminal": r_t}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_journey": r, "r_terminal": r_t}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

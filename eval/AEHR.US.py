@@ -35,6 +35,10 @@ second AI processor customer and a return of SiC to its FY24 peak, both named
 outside the consensus by the covering houses, A14), priced at the M-tier
 multiple.  Probabilities live only in the zone+V table.
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
+
 Run:  python3 frameworks/eval/AEHR.US.py
 """
 
@@ -66,7 +70,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.rf_report import rf_block  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "AEHR.US.md"
 FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v5"
@@ -79,7 +83,6 @@ HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the
 P_TIERS = (0.0, 0.25, 1.0)  # A14 — table 3 only, never an input
 
 REQUIRED = [
-    "price",
     "shares",
     "shares_basic",
     "equity",
@@ -283,30 +286,26 @@ def main() -> int:
     num_lm, num_hm = core["L"] / core["M"], core["H"] / core["M"]
     pe_lm, pe_hm = pes["L"] / pes["M"], pes["H"] / pes["M"]
 
-    # ---- g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」): zone must survive -1pp; +1pp breaks ① ----
+    # ---- g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」): -1pp disclosed (L/M/H only); +1pp breaks ① ----
     def deck_at(g: float) -> tuple[float, float, float, bool]:
         roe_g = rolled_roe(g)  # the book rolls at the g being tested
         s = {t: core[t] * perpetual_pe(g, roe_g[t], r) + cash_ps for t in TIERS}
         return s["L"], s["M"], s["H"], s["L"] < s["M"] < s["H"]
 
     lo_l, lo_m, lo_h, lo_ok = deck_at(g2 - 0.01)
-    lo_zone = zone_of(inp["price"], lo_l, lo_m, lo_h) if lo_ok else ("stretched" if inp["price"] > lo_h else "ladder-broken")
 
     # ---- Option ceiling and zone+V (probabilities only here) ----
     d_eps = (inp["unit_gp"] - inp["unit_opex"]) * (1.0 - inp["tax"]) * MILLION / inp["shares"]
     unit_value = d_eps * pes["M"]
     v_opt = inp["v_opt_units"] * unit_value
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
     p_tiers = stated_p_tiers(md)
     if p_tiers != P_TIERS:
         errors.append(f"p_L/p_M/p_H stated {p_tiers} vs A14 {P_TIERS}")
-    if lo_zone != zone:
-        errors.append(f"g2 -1pp moves zone {zone} -> {lo_zone}: not settleable (valuation-rules g2 杠杆)")
 
     # ---- Report ----
     derived, sbc_fy28 = derived_haircut(inp)
@@ -342,14 +341,12 @@ def main() -> int:
           f"H/M {H / M:.3f} (ex-cash {ex_cash['H'] / ex_cash['M']:.3f} = num {num_hm:.3f} x pe {pe_hm:.3f}) | "
           f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
     print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} "
-          f"{'(ladder broken)' if not lo_ok else ''} zone {lo_zone}; +1pp exceeds cap {cap:.3f} (①, unusable)")
+          f"{'(ladder broken)' if not lo_ok else ''}; +1pp exceeds cap {cap:.3f} (①, unusable)")
     print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} (FY24 unit EBIT {inp['unit_gp'] - inp['unit_opex']:.3f}M after tax) x PE_M {pes['M']:.2f} = {unit_value:.2f}/unit])")
     opt = tuple(anchor + p * v_opt for anchor, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
-    print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}  zone+V={zone_of(inp['price'], *opt)}")
+    print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
     print(f"capex axis implied share: M {inp['rev_fy28_m'] * MILLION / inp['capex_m']:.3%} (not material)")
-    print(f"price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H:.2f}x  P/(H+V)={inp['price'] / opt[2]:.2f}x  "
-          f"implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.1f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 — the only priced r; the rolled ROE, g2, the SBC-haircut core
@@ -358,7 +355,7 @@ def main() -> int:
         s = [core[t] * perpetual_pe(g2, roe[t], r + dr) + cash_ps for t in TIERS]
         return s[0], s[1], s[2]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # Only a clean run writes, so a FAIL never feeds the daily digest.

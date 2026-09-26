@@ -2,7 +2,8 @@
 """NEM.US (Newmont) valuation eval — recompute anchors from frameworks/NEM.US.md.
 
 frameworks/NEM.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
+no current price or zone (the digest and the app zone on live quotes).
 
 formula_id: nem_fed_gold_fwd6moz_two_stage_v1
 
@@ -43,7 +44,6 @@ from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
 from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
-from lib.zones import zone_of  # noqa: E402
 
 # The r_f readings helpers import through the `eval.lib` package, so the repo root joins the path.
 sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
@@ -55,7 +55,6 @@ PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
 FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v1"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
-DELTA_TOL = 0.0005
 TIERS = ("l", "m", "h")
 LEGS = {"metal": ("r_perp", "g2_metal"), "pbzn": ("r_pbzn", "g2_pbzn")}
 BASKET4_LEGS = {"metal"}
@@ -66,7 +65,7 @@ H1_TOL = 0.01
 LISTING_CCY = "USD"
 
 REQUIRED = [
-    "price", "shares", "equity", "net_debt",
+    "shares", "equity", "net_debt",
     "lme_au_l", "lme_au_m", "lme_au_h", "lme_cu_l", "lme_cu_m", "lme_cu_h",
     "realization_au", "realization_cu", "price_ag_m",
     "vol_au_oz", "vol_cu_t", "vol_ag_oz", "sales_pbzn",
@@ -123,7 +122,7 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0) -> dict:
     g1_raw = {k: (l28[k] / lc[k]) ** (1.0 / n) - 1.0 for k in LEGS}
     g1_co = (fwd["eps"] / cur["eps"]) ** (1.0 / n) - 1.0
     roic = (fwd["parent"] - cur["parent"]) / inp["growth_capex_26_28"]
-    # The hurdle is the discount rate itself, so an r shift (r_f readings, implied δ) moves it too.
+    # The hurdle is the discount rate itself, so an r shift (r_f readings) moves it too.
     gate = roic >= inp["r_perp"] + r_shift
     g2 = {k: inp[g_key] for k, (_, g_key) in LEGS.items()}
     g1 = g1_raw if gate else {k: (g2[k] if k in BASKET4_LEGS else 0.0) for k in LEGS}
@@ -154,17 +153,6 @@ def tier(inp: dict[str, float], tag: str, r_shift: float = 0.0) -> dict:
             "anchor": anchor, "eq_pe": anchor_pre_k / cur["eps"],
             "cash_ps": cash_ps, "haircut": haircut, "anchor_pre_k": anchor_pre_k,
             "issue": b1 > (1 - inp["payout_actual"])}
-
-
-def implied_delta(inp: dict[str, float]) -> float:
-    lo, hi = -0.08, 0.15
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if tier(inp, "m", r_shift=mid)["anchor"] > inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
 
 
 def main() -> int:
@@ -231,13 +219,10 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append("flat-multiple ladder broken")
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
-    delta = implied_delta(inp)
     net_cash_ps = -inp["net_debt"] / inp["shares"]
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
-    for label, want, rx, tol in (("δ", delta * 100, r"δ = \*\*([+-]?[0-9.]+)%\*\*", DELTA_TOL * 100),
-                                 ("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
+    for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
                                  ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
@@ -264,18 +249,15 @@ def main() -> int:
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
-    print(f"implied r: δ={delta:+.2%} (metal {inp['r_perp'] + delta:.1%})")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves both
-    # leg rates 1:1 (r_perp metal, r_pbzn lead-zinc) through tier()'s r_shift, the same
-    # path implied_delta uses; the Au/Cu ladder, volumes, g1/g2, the ROIC gate and k
+    # leg rates 1:1 (r_perp metal, r_pbzn lead-zinc) through tier()'s r_shift; the Au/Cu ladder, volumes, g1/g2, the ROIC gate and k
     # stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
         return tuple(tier(inp, t, r_shift=dr)["anchor"] for t in TIERS)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_pbzn": inp["r_pbzn"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_pbzn": inp["r_pbzn"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    print(f"price={inp['price']} zone={zone}")
     # Only a clean run writes, so a FAIL never feeds the daily digest.
     if not errors:
         write_rf_readings("NEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

@@ -2,7 +2,9 @@
 """HIMS.US (Hims & Hers Health) valuation eval — recompute anchors from frameworks/HIMS.US.md.
 
 frameworks/HIMS.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: hims_fy27_gaap_consensus_gordon_b7_v1
 
@@ -21,7 +23,8 @@ printed and v_opt must be 0.
 
 Candidate band (A2e-7h): Barclays 2027E adjusted EPS (single house) on the
 same multiple.  Cross (not a scale): EV/EBITDA per sell-side (Barclays 17×,
-JPM 22×) and the multiple the current price pays on consensus-revenue EBITDA.
+JPM 22×) and the 2027E EBITDA on consensus revenue × the Barclays margin
+(printed only).
 
 Run:  python3 frameworks/eval/HIMS.US.py
 """
@@ -34,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_g_cap, check_r, perpetual_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 # rf_report imports `eval.lib.*`, so the repo root must be importable too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -43,7 +46,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "HIMS.US.md"
 FORMULA_ID = "hims_fy27_gaap_consensus_gordon_b7_v1"
 REQUIRED = [
-    "price", "shares", "equity", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
+    "shares", "equity", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
     "r_perp", "g2", "roe_cap", "rev_2030_target", "nm_2025_gaap", "n_opt_years",
     "eps_adj_fy27_house", "ebitda_fy27_jpm", "ebitda_fy27_barc", "m_ev_jpm", "m_ev_barc",
     "rev_fy27e", "ebitda_margin_house", "net_debt", "net_debt_ebitda", "interest_ebit", "v_opt",
@@ -93,8 +96,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # V_opt chain (construction §7c-7): 2030 target × measured margin → EPS → PE at cap → PV → − H.
     eps_2030 = inp["rev_2030_target"] * inp["nm_2025_gaap"] / inp["shares"]
@@ -113,7 +115,6 @@ def main() -> int:
         "Barclays": (inp["m_ev_barc"] * inp["ebitda_fy27_barc"] - inp["net_debt"]) / inp["shares"],
     }
     ebitda_cons = inp["rev_fy27e"] * inp["ebitda_margin_house"]
-    ev_mult_now = (inp["price"] * inp["shares"] + inp["net_debt"]) / ebitda_cons
 
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g}  BPS {bps:.3f}  ROE cap {inp['roe_cap']:.0%}")
     print(f"L: floor BPS {floor:.2f} (scenario_L = {scenario_l:.2f}: consensus low {inp['eps_fy27e_low']} is a loss) → {L:.2f}")
@@ -126,20 +127,8 @@ def main() -> int:
         f"× PE {pe_2030:.2f} (g2 {g2:g}, ROE cap, r {r:g}) = {eps_2030 * pe_2030:.2f} @2029 → PV {pv_opt:.2f} − H {H:.2f} → V_opt = {v_opt:.2f}"
     )
     print(f"candidate band (Barclays adj EPS {inp['eps_adj_fy27_house']}): M′ = {M_c:.2f} (PE {pe_c:.2f}, ROE {roe_c:.0%}); L′ = {L:.2f}, H′ = {H:.2f} → check L′<M′: {L < M_c}")
-    print(f"EV/EBITDA cross: JPM {cross['JPM']:.2f}  Barclays {cross['Barclays']:.2f}  | price pays {ev_mult_now:.1f}× 2027E EBITDA {ebitda_cons:.0f}M")
-    lo, hi = g2 + 0.001, 0.60
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        val = inp["eps_fy27e_consensus"] * perpetual_pe(g2, roe_m, mid)
-        lo, hi = (mid, hi) if val > inp["price"] else (lo, mid)
-    print(f"implied r(P) on M = {mid:.2%} (δ {(mid - r) * 100:+.1f}pp) ; implied r on candidate M′ = ", end="")
-    lo, hi = g2 + 0.001, 0.60
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        val = inp["eps_adj_fy27_house"] * perpetual_pe(g2, roe_c, mid)
-        lo, hi = (mid, hi) if val > inp["price"] else (lo, mid)
-    print(f"{mid:.2%}")
-    print(f"price={inp['price']} zone={zone}  P/H = {inp['price'] / H:.2f}  V_opt/M = {v_opt / M:.2f}")
+    print(f"EV/EBITDA cross: JPM {cross['JPM']:.2f}  Barclays {cross['Barclays']:.2f}  | 2027E EBITDA on consensus revenue × Barclays margin {ebitda_cons:.0f}M")
+    print(f"V_opt/M = {v_opt / M:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 in the M/H multiples; EPS, ROE (cap) and g2 stay put, and L is
@@ -149,7 +138,7 @@ def main() -> int:
         h_ = inp["eps_fy27e_high"] * tier_pe(inp["eps_fy27e_high"], bps, inp["roe_cap"], g2, r + dr)[0]
         return L, m_, h_
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > RF_TOL for x, y in zip(band_at(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # Only a clean run feeds the daily digest.

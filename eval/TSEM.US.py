@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """TSEM.US valuation eval — recompute anchors from frameworks/TSEM.US.md.
 
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
+
 formula_id: tsem_gordon_two_stage_2027_opeq_v2
 
 Whole-company Gordon PE on the FY2027 consensus (8 houses, adjusted EPS; the
@@ -29,11 +33,9 @@ generated multiples must sit inside the own realised forward-PE band [9.2,
 39.9] (③); the tangible floor is disclosed only — L is the scenario value,
 never max(scenario, floor).
 
-g2 leverage (A5): at g2 - 1pp the price crosses H, so the zone flips
-neutral -> stretched.  valuation-rules calls that BLOCKED; the framework was
-settled at the cap by user decision on 2026-09-14 because every g2 source
-(6.52% / 6.64% / market-implied 6.26%) sits above the cap, so -1pp lies below
-all evidence.  This eval prints both ends and warns; it does not fail.
+g2 leverage (A5): the anchors at g2 - 1pp are printed (L/M/H only).  The
+framework was settled at the cap by user decision on 2026-09-14 because every
+g2 source (6.52% / 6.64%) sits above the cap, so -1pp lies below all evidence.
 
 V_opt = Japan Track 2 priced as 1 x the own realised silicon-photonics leg
 (Q2'26 annualised revenue x realised net margin) at the H-tier perpetual
@@ -60,7 +62,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     check_transition_years,
     g_cap,
-    implied_g,
     perpetual_pe,
     two_stage_pe,
 )
@@ -72,7 +73,7 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -85,7 +86,6 @@ MIN_R_MINUS_G = 0.02
 P_TIERS = (0.0, 0.25, 1.0)  # A9 — table 3 only, never an input
 
 REQUIRED = [
-    "price",
     "shares",
     "equity",
     "net_cash",
@@ -128,20 +128,6 @@ def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
         md,
     )
     return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
-
-def solve_g(target_pe: float, fn, lo: float = -0.05, hi: float = 0.0999) -> float | None:
-    if fn(hi) < target_pe:
-        return None
-    if fn(lo) >= target_pe:
-        return lo
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        if fn(mid) >= target_pe:
-            hi = mid
-        else:
-            lo = mid
-    return (lo + hi) / 2
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -243,7 +229,7 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
-    # ---- g2 leverage: both ends printed; the flip is a documented user decision (A5) ----
+    # ---- g2 leverage: the -1pp anchors are printed; g2 at the cap is a documented user decision (A5) ----
     def deck_at(g: float) -> tuple[float, float, float]:
         return (
             ops["L"] * perpetual_pe(g, roe["L"], r) + cash_ps,
@@ -252,15 +238,13 @@ def main() -> int:
         )
 
     lo_l, lo_m, lo_h = deck_at(g2 - 0.01)
-    lo_zone = zone_of(inp["price"], lo_l, lo_m, lo_h)
 
     # ---- Option ceiling (A9): Track 2 = one own SiPho leg at the H-tier perpetual multiple ----
     unit_ni_ps = inp["sipho_unit_rev"] * inp["npm_unit"] / inp["shares"]
     v_opt = inp["v_opt_units"] * unit_ni_ps * perpetual_pe(g2, roe["H"], r)
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
@@ -280,8 +264,6 @@ def main() -> int:
     roe_tot = {t: econ_tot[t] * inp["shares"] / inp["equity"] for t in TIERS}
     tot = (econ_tot["L"] * perpetual_pe(g2, roe_tot["L"], r), econ_tot["M"] * two_stage_pe(g1, n, g2, roe_tot["M"], r), econ_tot["H"] * two_stage_pe(g1, n, g2, roe_tot["H"], r))
     no_tr = tuple(ops[t] * perpetual_pe(g2, roe[t], r) + cash_ps for t in TIERS)
-    mkt_g, mkt_ok = implied_g((inp["price"] - cash_ps) / ops["M"], roe["M"], r)
-    mkt_g2 = solve_g((inp["price"] - cash_ps) / ops["M"], lambda g: two_stage_pe(g1, n, g, roe["M"], r))
 
     print(f"formula_id={FORMULA_ID}")
     print(f"r={r:g} (篮 4 龙头制造, A15) g1(2028)={g1:.4f} n={n} g2={g2:.4f} (source {inp['g_peer_median']:.4f} truncated to cap {g_cap(r):.3f})")
@@ -296,18 +278,12 @@ def main() -> int:
     print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
           f"(L positive = cash the model deems distributed but the company keeps; M/H negative = cash-pool funding the model books; disclosure only, not a leg, not in BPS)")
     print(f"floor (disclosed only, not max()-ed) = PB {inp['pb_floor']:g} x BVPS {inp['bvps']:g} = {floor:.2f}; L = scenario {scen['L']:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f} P/B={inp['price'] / B:.3f}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]: L {pes['L']:.2f}x | M {pes['M']:.2f}x | H {pes['H']:.2f}x (all inside)")
     print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} zone {lo_zone}; +1pp exceeds cap {g_cap(r):.3f} (unusable)")
-    if lo_zone != zone:
-        print(f"WARN (A5): g2 -1pp flips zone {zone} -> {lo_zone}; all g2 evidence sits above the cap, settled at {g2:.2%} by user decision 2026-09-14 — price sits against H")
-    print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f} zone {zone_of(inp['price'], *tot)}")
-    print(f"market-implied perpetual g (no transition) {mkt_g:.4f} well_conditioned={mkt_ok}; with 2028 transition g2 {mkt_g2 if mkt_g2 is None else round(mkt_g2, 4)}")
-    # Disclosure only (A15): single-stage Gordon approximation of the r the market pays for the M deck.
-    implied_r = g2 + (r - g2) * M / inp["price"]
-    print(f"implied r(P) ~ {implied_r:.4f} (single-stage approx g2 + (r - g2) * M / P; basket 4 r {r:g}, gap {implied_r - r:+.4f})")
+    print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f}; +1pp exceeds cap {g_cap(r):.3f} (unusable)")
+    print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves r_perp
     # 1:1 (L Gordon, M/H two-stage); numerators, ROE, g1/g2 and the cash add-back stay
     # put.  Disclosure only: the anchors above are the 中枢 column.
@@ -320,12 +296,12 @@ def main() -> int:
         finally:
             r = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
-    print(f"V_opt={v_opt:.2f} (Track 2 = 1 x own SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f} zone+V={zone_of(inp['price'], *opt)}; at g2-1pp H+V={lo_h + v_opt:.2f}")
+    print(f"V_opt={v_opt:.2f} (Track 2 = 1 x own SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}; at g2-1pp H+V={lo_h + v_opt:.2f}")
     # Only a clean run feeds the daily digest (output/rates/).
     if not errors:
         write_rf_readings("TSEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

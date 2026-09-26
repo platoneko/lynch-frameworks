@@ -2,7 +2,9 @@
 """MSFT.US (Microsoft) valuation eval — recompute anchors from frameworks/MSFT.US.md.
 
 frameworks/MSFT.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: msft_fwd_numerator_gordon_ai_dc_openai_v1
 
@@ -22,7 +24,7 @@ priced at ONE growth rate per leg.  Four Gordon legs + asset legs:
 
 Cross-check (b): the FY26 three OLD segments (PBP / IC / MPC), each with its
 own g and allocated capital, the IC leg retaining at the same marginal ROIC.
-Printed and compared to (a); it does not set the zone.
+Printed and compared to (a) as an anchor-to-anchor reading; it sets nothing.
 
 Run:  python3 frameworks/eval/MSFT.US.py
 """
@@ -40,7 +42,7 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import check_lab_mount  # noqa: E402
 from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, perpetual_pe  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
-from eval.lib.zones import ZONE_ORDER as ZONES, cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -85,7 +87,7 @@ def first_float(pattern: str, md: str) -> float | None:
 
 
 REQUIRED = [
-    "price", "shares_diluted", "tax_rate",
+    "shares_diluted", "tax_rate",
     "oi_total_fy26", "share_ai_oi", "rev_azure_fy26", "rev_ic_fy26", "oi_ic_fy26", "rev_openai_fy26",
     "r_perp", "r_az_lab", "r_az_lab_t", "k_lab",
     "ic_group", "ic_azure", "ic_dc", "roic_marg_az",
@@ -218,7 +220,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     for t in "lmh":
         for name in ("az", "lab", "rest", "dc"):
             b1 = base[t][name]["b1"]
@@ -271,8 +272,6 @@ def main() -> int:
 
     bres = {t: tier_b(t) for t in "lmh"}
     Lb, Mb, Hb = (bres[t][0] for t in "lmh")
-    zone_b = zone_of(inp["price"], Lb, Mb, Hb) if Lb < Mb < Hb else "n/a"
-    tier_gap = abs(ZONES.index(zone) - ZONES.index(zone_b)) if zone_b in ZONES else 99
 
     out_sec = md.split("### Outputs", 1)[-1]
     stated = {k: first_float(rf"{k} = \*\*([0-9.]+)\*\*", out_sec) for k in ("L", "M", "H", "A", "B")}
@@ -282,9 +281,6 @@ def main() -> int:
             errors.append(f"stated {k} not found")
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    if (zm.group(1) if zm else None) != zone:
-        errors.append(f"zone: stated {zm.group(1) if zm else None} vs recomputed {zone}")
     if inp["v_opt"] != 0:
         errors.append("v_opt must be 0: no consensus-referenced option anchor")
 
@@ -309,23 +305,10 @@ def main() -> int:
     print(f"ratios: L/M {L / M:.3f} H/M {H / M:.3f} (H-L)/2M {(H - L) / 2 / M:.3f} | numerator ratio L/M {inp['k_eps_l'] / inp['k_eps_m']:.3f} H/M {inp['k_eps_h'] / inp['k_eps_m']:.3f}")
     print(f"guardrail: H/core_eps {H / core_eps:.2f}x vs own 5y band top {inp['pe_own_top']:.2f}x (p50 {inp['pe_own_p50']:.2f}x) — {'OK' if H / core_eps <= inp['pe_own_top'] else '越出'};"
           f" L/M/H on core EPS {L / core_eps:.1f}/{M / core_eps:.1f}/{H / core_eps:.1f}x; M on FY28E mean {M / mean:.1f}x")
-    print(f"cross-check (b) FY26 old segments: L/M/H {Lb:.2f}/{Mb:.2f}/{Hb:.2f} zone={zone_b} (M {Mb / M - 1:+.1%} vs a) — tier gap {tier_gap}"
-          + ("  ⚠ >1 tier: 回对话" if tier_gap > 1 else ""))
+    print(f"cross-check (b) FY26 old segments: L/M/H {Lb:.2f}/{Mb:.2f}/{Hb:.2f} (M {Mb / M - 1:+.1%} vs a)")
     print("    " + " | ".join(f"{n} {v['val']:.2f}({v['pe']:.2f}x ROE {v['roe']:.1%})" for n, v in bres["m"][1].items())
           + "  [PBP ROE > 60% = allocation artefact; b is a cross-check only]")
 
-    def total_at(d: float) -> float:
-        x = tier("m", inp["k_eps_m"])
-        v = x["oai"]["val"] + x["cash"]["val"] - inp["k_m"] * x["deemed"]
-        for name, r0, g in (("az", r4, inp["g2_ai"]), ("lab", r7t, inp["g2_ai"]), ("rest", r4, inp["g2_ai"]), ("dc", r4, inp["g2_dc"])):
-            haircut = (1.0 - inp["k_lab"]) if name == "lab" else 1.0
-            v += x[name]["e"] * perpetual_pe(g, x[name]["roe_ret"], r0 + d) * haircut / sh
-        return v
-    lo, hi = -0.06, 0.06
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if total_at(mid) > inp["price"] else (lo, mid)
-    print(f"implied r(P): δ = {mid:+.2%} on every Gordon leg (篮 4 → {r4 + mid:.2%}; OpenAI terminal → {r7t + mid:.2%}) — disclosure only")
     sens = [
         ("Azure marginal ROIC 20% (consensus-implied FY26→28)", dict(roic_marg=0.20)),
         ("Azure marginal ROIC 10% (= r; realised first-year lower bound)", dict(roic_marg=0.10)),
@@ -339,8 +322,7 @@ def main() -> int:
     for label, kw in sens:
         b = band(**kw)
         sL, sM, sH = (b[t]["total"] for t in "lmh")
-        sz = zone_of(inp["price"], sL, sM, sH)
-        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f}")
     print(f"杠杆门: net debt/EBITDA {inp['net_debt_ebitda']:.2f}, interest/EBIT {inp['interest_ebit']:.1%} — not triggered"
           f" | capex axis constituent: FY26 capex ${inp['capex_fy26'] / 1e9:.0f}B (FY27 guide 待补)")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves every
@@ -357,10 +339,9 @@ def main() -> int:
         finally:
             r4, r7t = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_az_lab_t": r7t}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_az_lab_t": r7t}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    print(f"price={inp['price']} zone={zone}")
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1

@@ -2,7 +2,9 @@
 """COIN.US (Coinbase Global) valuation eval — recompute anchors from frameworks/COIN.US.md.
 
 frameworks/COIN.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: coin_midcycle_gordon_plus_assets_v1
 
@@ -45,7 +47,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 # rf_report imports `eval.lib.*`, so the repo root must be importable too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -63,7 +65,7 @@ POINT_N = 2
 LISTING_CCY = "USD"
 
 REQUIRED = [
-    "price", "shares", "equity",
+    "shares", "equity",
     "ebitda_l", "ebitda_m", "ebitda_h",
     "addback_l", "addback_m", "addback_h",
     "interest", "tax",
@@ -131,13 +133,10 @@ def main() -> int:
     )
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- disclosure ----------------------------------------------------------
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])
-    core_price = inp["price"] - asset_m
-    implied_r = g2 + (1 - g2 / roe_m) / (core_price / eps_m)
     ev = M * shares - inp["net_cash"]
     ev_ebitda = ev / (inp["ebitda_m"] * EBITDA_UNIT)
     g1_point = (eps_m / eps_l) ** (1 / POINT_N) - 1
@@ -148,9 +147,8 @@ def main() -> int:
     print(f"  ROE   {roe_l:.2%} / {roe_m:.2%} / {roe_h:.2%}   (r {r:.0%}, g2 {g2:.0%})")
     print(f"  PE    {pe_l:.2f}x / {pe_m:.2f}x / {pe_h:.2f}x")
     print(f"  core  {core_l:.2f} / {core_m:.2f} / {core_h:.2f}   asset {asset_l:.2f} / {asset_m:.2f} / {asset_h:.2f}")
-    print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}  zone {zone}")
+    print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}")
     print(f"  ratios L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / (2 * M):.1%}")
-    print(f"  implied r(P) {implied_r:.2%}  vs basket {r:.0%}  delta {implied_r - r:+.2%}")
     print(f"  EV/EBITDA at M {ev_ebitda:.2f}x   (MS 21.0x on the same 2028 rung)")
     print(f"  payout modelled {modelled_payout:.1%} vs observed {inp['payout_obs']:.1%} gap {gap:+.1%}")
     print(f"  A16 point-basis L {point_l:.2f} (g1 {g1_point:.1%}, n={POINT_N}) vs regime L {L:.2f}")
@@ -162,7 +160,7 @@ def main() -> int:
         pl, pm, ph = multiples(r + dr)
         return eps_l * pl + asset_l, eps_m * pm + asset_m, eps_h * ph + asset_h
 
-    rf = rf_block(LISTING_CCY, {"r_op": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_op": r}, band_at)
     # Only a clean run feeds the daily digest.
     if not errors:
         write_rf_readings("COIN.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

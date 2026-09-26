@@ -2,7 +2,9 @@
 """COHR.US (Coherent Corp.) valuation eval — recompute anchors from frameworks/COHR.US.md.
 
 frameworks/COHR.US.md is the source of truth; this script re-parses its §3 Inputs,
-recomputes L/M/H / A/B / zone and exits 1 on mismatch.
+recomputes L/M/H / A/B and exits 1 on mismatch.  The doc carries no current price
+(AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is derived live by the
+daily digest and the app, so nothing here reads a price.
 
 formula_id: cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt
 
@@ -41,8 +43,7 @@ Sanity checks beyond the L<M<H / Outputs reconciliation:
   - the M-scenario bottom-up economic EPS must land within +/-20% of the
     FY2028 street consensus non-GAAP EPS (the A2d cross-constraint, mechanised)
   - shared-axis rungs (ai-capex, optical-comms) match the axis files
-  - option: stated V_opt and 表3 reconcile; p never leaks into the base;
-    the ceiling anchor is the deal mark, not the price
+  - option: stated V_opt and 表3 reconcile; p never leaks into the base
 
 Run:  python3 frameworks/eval/COHR.US.py
 """
@@ -104,20 +105,6 @@ def parse_inputs(md: str) -> dict[str, float]:
     return out
 
 
-def zone_of(price: float, L: float, M: float, H: float) -> str:
-    A = (L + M) / 2
-    B = (M + H) / 2
-    if price < L:
-        return "deep_discount"
-    if price < A:
-        return "conservative"
-    if price < B:
-        return "neutral"
-    if price <= H:
-        return "optimistic"
-    return "stretched"
-
-
 def first_float(pattern: str, md: str) -> float | None:
     m = re.search(pattern, md)
     return float(m.group(1)) if m else None
@@ -131,7 +118,6 @@ def main() -> int:
 
     inp = parse_inputs(md)
     required = [
-        "price",
         "shares_diluted",
         "equity",
         "rev_dcc_l",
@@ -292,7 +278,6 @@ def main() -> int:
     L, M, H = (anchors[t] for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
 
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
@@ -309,7 +294,6 @@ def main() -> int:
     v_opt = v_deal + drag_base
     adj = tuple(x + p * v_opt for x, p in zip((L, M, H), P_K))
     adj_a, adj_b = (adj[0] + adj[1]) / 2, (adj[1] + adj[2]) / 2
-    adj_zone = zone_of(inp["price"], *adj)
 
     errors: list[str] = []
     # Guardrail (AGENTS.md「永续增长口径」): a generated multiple outside the
@@ -353,8 +337,6 @@ def main() -> int:
         errors.append(f"p leaked into the base: 表3 L row {adj[0]:.4f} != base L {L:.4f}")
     if "表3" not in out_sec:
         errors.append("V_opt > 0 but Outputs has no 表3")
-    if abs(v_deal - inp["price"]) < 1e-9:
-        errors.append("option ceiling equals the current price: the anchor must be the deal mark (A12)")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -373,11 +355,6 @@ def main() -> int:
             errors.append(f"stated {k} not found")
         elif abs(st - v) > TOL:
             errors.append(f"{k}: stated {st} vs recomputed {v:.4f}")
-
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    stated_zone = zm.group(1) if zm else None
-    if stated_zone != zone:
-        errors.append(f"zone: stated {stated_zone} vs recomputed {zone}")
 
     # --- Report -----------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
@@ -439,7 +416,7 @@ def main() -> int:
     )
     print(
         f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}"
-        f"  A'={adj_a:.2f} B'={adj_b:.2f}  zone+V = {adj_zone}"
+        f"  A'={adj_a:.2f} B'={adj_b:.2f}"
     )
     print(
         f"capex axis implied share (wide, DC&C FY28 incl. pluggables):"
@@ -448,17 +425,7 @@ def main() -> int:
     print(
         f"implied PE on street FY28 EPS: L={L / inp['eps_cons_fy28']:.1f}x"
         f" M={M / inp['eps_cons_fy28']:.1f}x H={H / inp['eps_cons_fy28']:.1f}x"
-        f" price={inp['price'] / inp['eps_cons_fy28']:.1f}x"
     )
-    # Market-implied reference only (never an anchor): the datacom multiple the
-    # price pays on the M numerator, and the perpetual g it would need.
-    impl_pe = ((inp["price"] - inp["net_debt_ps"]) / disc - s["M"]["v_ind"]) / s["M"]["eps_dcc"]
-    g_impl, ok = implied_g(impl_pe, s["M"]["roe"], inp["r_perp"])
-    print(
-        f"price-implied dcc PE on M numerator = {impl_pe:.1f}x -> g {g_impl:.2%}"
-        f" ({'well' if ok else 'ill'}-conditioned; r-g {inp['r_perp'] - g_impl:.2%}) — reference only"
-    )
-    print(f"price={inp['price']} zone={zone}  P/H={inp['price'] / H - 1:+.1%}")
 
     # Band as evidence (裁决顺序 ③): the datacom g each guardrail edge implies at
     # the tier ROE. The lower edge sits under the payout cap; the upper edge is
@@ -510,7 +477,7 @@ def main() -> int:
         finally:
             inp["r_perp"], inp["r_disc"] = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_disc": inp["r_disc"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": inp["r_perp"], "r_disc": inp["r_disc"]}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

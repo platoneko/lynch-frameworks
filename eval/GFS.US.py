@@ -29,11 +29,12 @@ band.  The own realised forward-PE band [15.6, 46.2] is the 裁决顺序 ③
 guardrail (A7): M sits below its floor, but the band was judged *distorted* at
 step 1b (its floor is the IPO month over FY22 *realised* EPS, and 2022 priced
 multi-year growth that never came), so ③ is indeterminate — the ruler stays in
-basket 4 (already the floor), no band-edge r is solved, the zone is read as is
+basket 4 (already the floor), no band-edge r is solved, the anchors stand
 (A18).  This eval therefore WARNs on the band breach instead of failing.  The
 realised PB low is printed as a floor coordinate, never max()'d in (A8).  The
-g2 +-1pp zones are printed and a flip warns; the price-implied r is printed as
-a disclosure.
+g2 +-1pp bands are printed (L/M/H only).  The doc carries no current price
+(AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is derived live by
+the daily digest and the app, so nothing here reads a price.
 
 V_opt = 1 x a Tower-sized silicon-photonics leg (peer realised unit, A10) at
 the H-tier perpetual multiple.  Candidate band swaps the consensus 2028 g1 for
@@ -61,7 +62,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     check_transition_years,
     g_cap,
-    implied_g,
     perpetual_pe,
     two_stage_pe,
 )
@@ -73,7 +73,7 @@ from eval.lib.inputs import (  # noqa: E402
     parse_inputs,
     report,
 )
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -87,7 +87,6 @@ P_TIERS = (0.0, 0.25, 1.0)  # A10 — table 3 only, never an input
 LISTING_CCY = "USD"
 
 REQUIRED = [
-    "price",
     "shares",
     "equity",
     "net_cash",
@@ -144,18 +143,6 @@ def stated_candidate(md: str) -> tuple[float, float, float] | None:
     if len(ms) != 1:
         return None
     return tuple(float(ms[0].group(i)) for i in (1, 2, 3))  # type: ignore[return-value]
-
-
-def _implied_r(price: float, eps_m: float, roe_m: float, g1: float, n: int, g2: float, cash_ps: float) -> float:
-    """r at which the M-tier two-stage deck equals the price (disclosure only, A18)."""
-    lo, hi = g2 + 1e-4, 0.50
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        if eps_m * two_stage_pe(g1, n, g2, roe_m, mid) + cash_ps > price:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -269,11 +256,9 @@ def main() -> int:
     # ---- Floor disclosure (A8): realised PB low is a coordinate, never max()'d into L ----
     pb_low_coord = inp["pb_own_min"] * inp["bvps"]
 
-    # ---- g2 leverage: both ends printed; a flip is disclosed, not failed (A5, price sits on H) ----
+    # ---- g2 leverage: both ends printed, L/M/H only (A5) ----
     lo = deck(g2 - 0.01, g1)[1]
     hi = deck(g2 + 0.01, g1)[1] if g2 + 0.01 <= g_cap(r) + 1e-9 else None
-    lo_zone = zone_of(inp["price"], lo["L"], lo["M"], lo["H"])
-    hi_zone = zone_of(inp["price"], hi["L"], hi["M"], hi["H"]) if hi else None
 
     # ---- Option ceiling (A10): one Tower-sized SiPho leg at the H-tier perpetual multiple ----
     unit_ni_ps = inp["sipho_unit_rev"] * inp["npm_unit"] / inp["shares"]
@@ -290,8 +275,7 @@ def main() -> int:
         errors.append(f"candidate band ladder broken: {cand_band}")
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
@@ -321,8 +305,6 @@ def main() -> int:
     nosbc_deck = (nosbc["L"] * perpetual_pe(g2, roe_nosbc["L"], r) + cash_ps, nosbc["M"] * two_stage_pe(g1, n, g2, roe_nosbc["M"], r) + cash_ps, nosbc["H"] * two_stage_pe(g1, n, g2, roe_nosbc["H"], r) + cash_ps)
     r_contrast = {rr: tuple(ops[t] * (perpetual_pe(g2, roe[t], rr) if t == "L" else two_stage_pe(g1, n, g2, roe[t], rr)) + cash_ps for t in TIERS) for rr in (0.09, 0.08)}
     cap_deck = deck(g_cap(r), g1)[1]
-    mkt_g, mkt_ok = implied_g((inp["price"] - cash_ps) / ops["M"], roe["M"], r)
-    implied_r = _implied_r(inp["price"], ops["M"], roe["M"], g1, n, g2, cash_ps)
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
 
@@ -338,33 +320,28 @@ def main() -> int:
           f"ROE_M - r = {roe['M'] - r:+.4f} (病态区, multiple pinned near 1/r)")
     print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
           f"(L positive = cash the model deems distributed but the company keeps; M/H negative = external/cash-pool funding the model books; disclosure only, not a leg, not in BPS)")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  zone={zone}  price={inp['price']:.2f}  P/M={inp['price'] / M:.3f} P/H={inp['price'] / H:.3f}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
     print(f"③ guardrail own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on anchor/street-FY27 basis: L {band_basis['L']:.1f}x M {band_basis['M']:.2f}x H {band_basis['H']:.1f}x "
           f"({sum(1 for t in TIERS if band_basis[t] < inp['pe_own_min'])} of 3 below the floor; A7)")
     if band_basis["M"] < inp["pe_own_min"]:
         print(f"WARN (A18): PE_M {band_basis['M']:.2f}x < pe_own_min {inp['pe_own_min']:g} — ③ breach, but the band was judged distorted at step 1b "
-              f"(IPO-month perfect-foresight floor; 2022 priced growth that never came) → ③ indeterminate: ruler stays in 篮 4 (already the floor), no band-edge r, zone read as is")
+              f"(IPO-month perfect-foresight floor; 2022 priced growth that never came) → ③ indeterminate: ruler stays in 篮 4 (already the floor), no band-edge r, anchors stand")
     print(f"FLOOR (disclosure only, not max()'d): realised PB low {inp['pb_own_min']:g}x x BVPS {inp['bvps']:g} = {pb_low_coord:.2f} {'ABOVE M' if pb_low_coord > M else 'below M'} (A8)")
-    print(f"DISCLOSURE price-implied r (two-stage, M numerator) = {implied_r:.4f} vs 篮 4 {r:g} ({implied_r - r:+.4f})")
-    print(f"g2 leverage: -1pp ({g2 - 0.01:.4f}) -> {lo['L']:.2f}/{lo['M']:.2f}/{lo['H']:.2f} zone {lo_zone}; "
-          + (f"+1pp ({g2 + 0.01:.4f}) -> {hi['L']:.2f}/{hi['M']:.2f}/{hi['H']:.2f} zone {hi_zone}" if hi else "+1pp exceeds cap"))
-    if lo_zone != zone or (hi_zone is not None and hi_zone != zone):
-        print(f"WARN (A5): zone moves within g2 +-1pp ({lo_zone} / {zone} / {hi_zone}) — the price sits on H (P/H {inp['price'] / H:.3f}); g2 is the cluster median, not a free choice; disclosed, not failed")
+    print(f"g2 leverage: -1pp ({g2 - 0.01:.4f}) -> {lo['L']:.2f}/{lo['M']:.2f}/{lo['H']:.2f}; "
+          + (f"+1pp ({g2 + 0.01:.4f}) -> {hi['L']:.2f}/{hi['M']:.2f}/{hi['H']:.2f}" if hi else "+1pp exceeds cap"))
     print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | SBC not deducted: {nosbc_deck[0]:.2f}/{nosbc_deck[1]:.2f}/{nosbc_deck[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} (2Q26, not rolled) no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f}")
     print(f"contrast r 9% / 8% (not a path, A18): {r_contrast[0.09][0]:.2f}/{r_contrast[0.09][1]:.2f}/{r_contrast[0.09][2]:.2f} | {r_contrast[0.08][0]:.2f}/{r_contrast[0.08][1]:.2f}/{r_contrast[0.08][2]:.2f}; "
           f"g2 at cap {g_cap(r):.0%}: {cap_deck['L']:.2f}/{cap_deck['M']:.2f}/{cap_deck['H']:.2f} (M/FY27 street {cap_deck['M'] / inp['eps_2027_m']:.2f}x)")
-    print(f"market-implied perpetual g (no transition, econ M) {mkt_g:.4f} well_conditioned={mkt_ok}")
-    print(f"V_opt={v_opt:.2f} (1 x Tower-sized SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f} zone+V={zone_of(inp['price'], *opt)}")
-    print(f"A2f endpoint: P {inp['price']:.2f} {'<=' if inp['price'] <= H + v_opt else '>'} H+V_opt {H + v_opt:.2f}; implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
+    print(f"V_opt={v_opt:.2f} (1 x Tower-sized SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
     print(f"candidate (Analyst Day 2028 model: rev {rev_2028 / 1e9:.3f}B x OpM {inp['opm_model_2028']:g} -> NI {ni_2028 / 1e9:.3f}B -> econ EPS {econ_2028:.3f} -> g1' {g1_cand:.4f} vs consensus {g1:.4f}): "
           f"L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 through deck() (L perpetual, M/H two-stage); g1, g2, the rolled
     # ROE, numerators and cash stay put.  Disclosure only — the anchors above are
-    # the 中枢 column; the r 9%/8% contrast and implied r are separate readings.
+    # the 中枢 column; the r 9%/8% contrast is a separate reading.
     def band_at(dr: float) -> tuple[float, float, float]:
         nonlocal r
         saved = r
@@ -375,7 +352,7 @@ def main() -> int:
         finally:
             r = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # Only a clean run feeds the daily digest.

@@ -2,7 +2,9 @@
 """NVO.US (Novo Nordisk ADR) valuation eval — recompute anchors from frameworks/NVO.US.md.
 
 frameworks/NVO.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: nvo_fy27_consensus_two_stage_gordon_v1
 
@@ -41,7 +43,7 @@ from lib.gordon import (  # noqa: E402
 )
 from lib.inputs import check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -51,7 +53,7 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NVO.US.md"
 FORMULA_ID = "nvo_fy27_consensus_two_stage_gordon_v1"
 TIERS = ("l", "m", "h")
 REQUIRED = [
-    "price", "fx_dkk_usd", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
+    "fx_dkk_usd", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
     "eps_fy26e", "eps_h1_26_adj", "bps_h1_26", "dps_interim_26",
     "r_perp", "g1_window", "n_window", "g2", "payout_actual",
     "k_l", "k_m", "k_h", "pe_own_min", "pe_own_top", "eps_ttm_core",
@@ -119,8 +121,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder(tuple(eps[t] / fx for t in TIERS), rows["m"]["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # Branch / payout consistency on the M tier (monotone domain: sign only, gap disclosed).
     errors += check_branch(g2, rows["m"]["roe"], r, inp["payout_actual"], "M")
@@ -150,18 +151,9 @@ def main() -> int:
     m_ttm = rows["m"]["anchor"] / inp["eps_ttm_core"]
     print(
         f"③ band: M = {m_ttm:.2f}× core TTM EPS vs own 5y trailing band [{inp['pe_own_min']}, {inp['pe_own_top']}] "
-        f"(band low = current trading → disclosure only); M = {rows['m']['anchor'] / eps['m']:.2f}× FY27E"
+        f"(disclosure only); M = {rows['m']['anchor'] / eps['m']:.2f}× FY27E"
     )
     print(f"payout_gap (M): modelled {modelled:.0%} vs actual {inp['payout_actual']:.0%} → {gap:+.0%} (单调区, sign only)")
-    # Implied r: shift the basket r until the M-tier anchor (same form, same k row) equals the price.
-    price_dkk = inp["price"] * fx
-    lo, hi = 0.04, 0.30
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        _, roe_m, _ = tier_roe(inp, eps["m"], g1)
-        val = eps["m"] * two_stage_pe(g1, n, g2, roe_m, mid) - inp["k_m"] * rows["m"]["deemed"]
-        lo, hi = (mid, hi) if val > price_dkk else (lo, mid)
-    print(f"implied r(P) = {mid:.2%} (δ = {(mid - r) * 100:+.2f}pp vs 篮子)")
     # Sensitivities (M only; other inputs fixed).
     _, roe_m, _ = tier_roe(inp, eps["m"], g1)
     for label, gg1, nn, gg2 in (
@@ -184,10 +176,9 @@ def main() -> int:
             out.append((eps[t] * pe - x["k"] * x["deemed"]) / fx)
         return out[0], out[1], out[2]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > RF_TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    print(f"price={inp['price']} zone={zone}")
     # Only a clean run feeds the daily digest (output/rates/).
     if not errors:
         write_rf_readings("NVO.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

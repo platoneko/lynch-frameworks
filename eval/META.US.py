@@ -2,7 +2,10 @@
 """META.US (Meta Platforms) valuation eval — recompute anchors from frameworks/META.US.md.
 
 frameworks/META.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on any mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on any mismatch.  The doc
+carries no current META price (AGENTS.md「现价 — 禁写契约」): which zone a quote
+falls in is derived live by the daily digest and the app, so nothing here reads
+it.  amd_price is another company's market price (the warrant's unit economics).
 
 formula_id: meta_fwd_numerator_gordon_foa_rl_icpath_v1
 
@@ -42,14 +45,12 @@ Sanity checks beyond the anchor comparison:
     payout_gap printed as a disclosure
   * guardrail ③: M / reported TTM EPS inside the own 5-year band
     [pe_own_min, pe_own_max]; H / clean TTM EPS at or below the band top
-  * implied r(P): |delta| <= 3pp (A13), printed with implied g2 and implied IC
   * constituent mount on _AXIS.ai-capex (share of the 2026 base is sane)
-  * no p-class fields in Inputs; L < M < H; stated anchors / cut points / zone
+  * no p-class fields in Inputs; L < M < H; stated anchors / cut points
 
-Disclosures printed for the A2f record (never fed back into the anchors):
-  r_f readings from _AXIS.rates (rf_report.rf_block), g2 +-1pp with
-  the zone each lands in (the sensitivity zone), IC frozen / x1.58, RL = 0,
-  contingent settlement 30%, tax 21%.
+Disclosures printed (never fed back into the anchors; L/M/H only):
+  r_f readings from _AXIS.rates (rf_report.rf_block), g2 +-1pp,
+  IC frozen / x1.58, RL = 0, contingent settlement 30%, tax 21%.
 
 Run:  python3 frameworks/eval/META.US.py
 """
@@ -83,13 +84,12 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.rf_report import rf_block  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "META.US.md"
 FORMULA_ID = "meta_fwd_numerator_gordon_foa_rl_icpath_v1"
 LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
-IMPLIED_R_TOL = 0.03  # A13: |delta| above this triggers the basket review
 # Observed payout for check_branch: dividend ~6% + buybacks ~55% of earnings
 # (framework §3 step 3).  With ROIC >= r + 3pp the branch test is sign-only.
 PAYOUT_OBSERVED = 0.61
@@ -102,7 +102,6 @@ P_TIERS = (0.0, 1.0 / 6.0, 1.0)
 V_OPT_TOL = 0.05
 
 REQUIRED = [
-    "price",
     "shares",
     "eps_l",
     "eps_m",
@@ -186,17 +185,6 @@ def fmt(b: dict[str, dict[str, float]]) -> str:
     return " / ".join(f"{v:.1f}" for v in lmh(b))
 
 
-def solve(fn, lo: float, hi: float, target: float, increasing: bool) -> float:
-    """Bisect fn(x) = target on [lo, hi]; fn monotone in the stated direction."""
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if (fn(mid) < target) == increasing:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
-
-
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -206,7 +194,7 @@ def main() -> int:
         return report(missing)
 
     errors: list[str] = []
-    price, shares, g2 = inp["price"], inp["shares"], inp["g2"]
+    shares, g2 = inp["shares"], inp["g2"]
 
     # --- Step 1: r by basket, g2 under the cap, perpetuity away from the pole ---
     baskets = parse_baskets(md)
@@ -226,7 +214,6 @@ def main() -> int:
     base = band(inp)
     L, M, H = lmh(base)
     A, Bcut = cut_points(L, M, H)
-    zone = zone_of(price, L, M, H)
     errors += ladder("L<M<H", L, M, H)
     errors += ladder("NOPAT", *(base[k]["nopat"] for k in TIERS))
     if not (inp["rl_loss_l"] >= inp["rl_loss_m"] >= inp["rl_loss_h"]):
@@ -251,19 +238,14 @@ def main() -> int:
     if pe_h_clean > inp["pe_own_max"]:
         errors.append(f"H / clean TTM = {pe_h_clean:.1f}x above band top {inp['pe_own_max']:g}")
 
-    # --- Step 4: implied r(P) / g2 / IC — disclosure, with the A13 delta gate ---
-    delta = solve(lambda d: band(inp, r_shift=d)["m"]["v"], -0.05, 0.05, price, increasing=False)
-    g_implied = solve(lambda g: band(inp, g2=g)["m"]["v"], 0.0, r - 1e-3, price, increasing=True)
+    # --- Step 4: current invested capital, the base of the IC-path disclosures ---
     ic_now = inp["equity"] + inp["net_debt"]
-    ic_mult = solve(lambda x: band(inp, ic=ic_now * x)["m"]["v"], 1.0, 3.0, price, increasing=False)
-    if abs(delta) > IMPLIED_R_TOL:
-        errors.append(f"implied r(P) delta {delta:+.2%} beyond {IMPLIED_R_TOL:.0%} — basket review (A13)")
 
     # --- Step 5: constituent mount on _AXIS.ai-capex (A11) ---
     errors += check_capex_constituent(inp["capex_guide_low"], inp["capex_guide_high"])
 
     # --- Step 6: compare with the stated Outputs block ---
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut}, None)
 
     # --- Step 7: option leg (A14) -- table 3 only; the deck above never sees it ---
     v_opt = warrant_value(inp)
@@ -277,7 +259,6 @@ def main() -> int:
     if abs(adj[0] - L) > 1e-9:
         errors.append("table 3 L row must equal base L (p_L = 0, check_no_p_leak)")
     a_adj, b_adj = cut_points(*adj)
-    zone_adj = zone_of(price, *adj)
 
     print(f"formula_id={FORMULA_ID}")
     print(
@@ -290,17 +271,16 @@ def main() -> int:
             f"  {k.upper()}: NOPAT {t['nopat']:.2f} x PE {t['pe']:.2f} (ROIC {t['roic']:.1%}) "
             f"= {t['nopat'] * t['pe']:.1f}  RL {t['rl']:.1f}  closing {closing:.1f}  -> {t['v']:.1f}"
         )
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}  price={price} zone={zone}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
     print(f"flat (all {pe_m:.2f}x): " + " / ".join(f"{x:.1f}" for x in flat))
     print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}  V_opt/M {v_opt / M:.1%}")
     print(
         f"V_opt (A14 AMD warrant) = {inp['amd_warrant_shares']:g}B sh x (AMD {inp['amd_price']:g} - {inp['amd_warrant_strike']:g}) "
         f"x (1-{inp['tax']:g}) / {shares}B = {v_opt:.2f}/sh  p_k {P_TIERS[0]:g}/{P_TIERS[1]:.3f}/{P_TIERS[2]:g}"
     )
-    print(f"表3: {adj[0]:.1f} / {adj[1]:.1f} / {adj[2]:.1f}  A'={a_adj:.1f} B'={b_adj:.1f}  zone+V={zone_adj}")
-    implied_p = f"{(price - H) / v_opt:.2f}" if price > H else "n/a (P <= H)"
+    print(f"表3: {adj[0]:.1f} / {adj[1]:.1f} / {adj[2]:.1f}  A'={a_adj:.1f} B'={b_adj:.1f}")
     print(
-        f"market-implied p = {implied_p}; AMD $400/$600/$800 -> V_opt "
+        "AMD $400/$600/$800 -> V_opt "
         + " / ".join(f"{warrant_value(inp, x):.1f}" for x in (400.0, 600.0, 800.0))
         + f"; p_M 0.5 -> M' {M + 0.5 * v_opt:.1f}"
     )
@@ -312,26 +292,20 @@ def main() -> int:
         f"guardrail ③: M / reported TTM {inp['eps_ttm_reported']:g} = {pe_m_ttm:.1f}x in "
         f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.1f}x"
     )
-    print(
-        f"implied r(P): delta {delta * 100:+.2f}pp (r {r + delta:.2%}) | implied g2 {g_implied:.2%} | "
-        f"implied IC x{ic_mult:.2f} (path x{inp['ic_fy27'] / ic_now:.2f}) — disclosure only (A13)"
-    )
     lo, hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
     print(f"axis _AXIS.ai-capex constituent: FY26 capex guide share of 2026 base {lo:.1%}–{hi:.1%}")
 
-    # Disclosures: g2 +-1pp (sensitivity zone), IC, RL, settlement, tax; r_f readings below.
+    # Disclosures: g2 +-1pp, IC, RL, settlement, tax; r_f readings below.
     for g in (g2 - 0.01, g2 + 0.01):
         b = band(inp, g2=g)
-        z = zone_of(price, *lmh(b))
         over_cap = " (above g_cap, reference only)" if g > g_cap(r) + 1e-9 else ""
-        flip = " — SENSITIVITY ZONE: zone flips" if z != zone else ""
-        print(f"g2 {g:.1%}: {fmt(b)} {z}{over_cap}{flip}")
+        print(f"g2 {g:.1%}: {fmt(b)}{over_cap}")
     for label, b in (
         ("IC frozen", band(inp, ic=ic_now)),
         (f"IC x{IC_STRESS_MULT}", band(inp, ic=ic_now * IC_STRESS_MULT)),
         ("RL = 0 (bull, not adopted)", band(inp, rl_scale=0.0)),
     ):
-        print(f"{label}: {fmt(b)} {zone_of(price, *lmh(b))}")
+        print(f"{label}: {fmt(b)}")
     m_contingent = band(inp, settlement_npv=inp["settlement_npv"] + SETTLEMENT_CONTINGENT_B)["m"]["v"]
     m_tax21 = band(inp, tax=0.21)["m"]["v"]
     print(f"settlement contingent 30% (+{SETTLEMENT_CONTINGENT_B}B): M {m_contingent - M:+.1f} | tax 21%: M {m_tax21 / M - 1:+.1%}")
@@ -342,7 +316,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return lmh(band(inp, r_shift=dr))
 
-    rf = rf_block(LISTING_CCY, {"r_foa": inp["r_foa"], "r_rl": inp["r_rl"]}, band_rf, price)
+    rf = rf_block(LISTING_CCY, {"r_foa": inp["r_foa"], "r_rl": inp["r_rl"]}, band_rf)
 
     # Only a clean run writes, so a FAIL never feeds the daily digest.
     if not errors:

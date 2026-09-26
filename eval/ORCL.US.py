@@ -2,7 +2,9 @@
 """ORCL.US (Oracle) valuation eval — recompute anchors from frameworks/ORCL.US.md.
 
 frameworks/ORCL.US.md is the source of truth; this script re-derives
-L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: orcl_sotp_sw_gordon_oci_dbucket_split_v2
 
@@ -30,14 +32,13 @@ Main ruler: two-leg SOTP; each leg discounts at its own basket r
                            A9); there is no V_opt.
 
 Guardrail (③): the band is compared to the same-basis forward PE band
-(price / next-FY non-GAAP consensus).  M sits below the measured floor, the
+(historical month-end price / next-FY non-GAAP consensus).  M sits below the measured floor, the
 floor month passed the 1b validity check, and stepping the OpenAI sub-leg
 down 7 -> 6 -> 5 -> 4 still leaves M below the floor (A21).  The user saw
 that and landed the framework anyway, so it is not BLOCKED (valuation-rules
-「BLOCKED 的语义」: a landed file never is): the deck is the band and its
-zone is asserted like any other ticker's.  This script recomputes the band,
-the 降篮 path, the band-edge δ (表2′) and the market-implied δ / ROE_proj, and
-prints the ③ verdict as a diagnostic.
+「BLOCKED 的语义」: a landed file never is): the deck is the band like any
+other ticker's.  This script recomputes the band, the 降篮 path and the
+band-edge δ (表2′), and prints the ③ verdict as a diagnostic.
 
 The street's EV/EBIT read (JPM 13x / HSBC 14x on OCI EBIT) is recomputed as a
 cross-check only.  Net debt is taken at face at the start of FY28 and the
@@ -116,7 +117,6 @@ STREET_TPS = (("Stephens", 175.0), ("median", 240.0), ("Citi", 330.0))
 WEEK52_LOW = 114.50
 
 REQUIRED = [
-    "price",
     "r_perp",
     "r_oci_non",
     "r_oci_open",
@@ -464,10 +464,6 @@ def main() -> int:
     roe_floor = bisect(lambda z: m_at_roe(z) - m_floor, 0.05, 0.6)
     band_edge = band_at(r_n=r_non + delta_floor, r_o=r_open + delta_floor, r_ot=r_open_t + delta_floor)
     a_edge, b_edge = (band_edge[0] + band_edge[1]) / 2, (band_edge[1] + band_edge[2]) / 2
-    zone_edge = zone_of(inp["price"], *band_edge)
-    delta_price = bisect(lambda d: m_at_delta(d) - inp["price"], -0.09, 0.05)
-    roe_price = bisect(lambda z: m_at_roe(z) - inp["price"], 0.05, 0.8)
-    mkt_oci = inp["price"] * sh + net_debt_fy28 + inp["pref_liq"] - v_sw
     sm = STATED_BAND_EDGE.search(md)
     if sm is None:
         errors.append("表2′ 带边带 not stated in Outputs (A21 step 4 ②)")
@@ -477,8 +473,7 @@ def main() -> int:
                 errors.append(f"表2′ {lbl}: stated {said} vs recomputed {calc:.4f}")
 
     # ---- Stated vs recomputed ----
-    zone_now = zone_of(inp["price"], L, M, H)
-    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone_now, TOL))
+    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL))
 
     # ================= diagnostics =================
     print(f"formula_id={FORMULA_ID}")
@@ -542,7 +537,6 @@ def main() -> int:
         f"③ guardrail (A12, same-basis forward PE on FY28E mid {eps['m']}): band {inp['pe_fwd_min']:.2f}-{inp['pe_fwd_max']:.2f}x"
         f" (p10 {inp['pe_fwd_p10']:.2f} / med {inp['pe_fwd_med']:.2f} / p90 {inp['pe_fwd_p90']:.2f})"
         f" | L {pe_fwd['l']:.2f}x M {pe_fwd['m']:.2f}x H {pe_fwd['h']:.2f}x"
-        f" | price {inp['price'] / eps['m']:.1f}x"
         f" -> M {'OUT OF BAND' if out_of_band else 'inside'}"
     )
     print("  single-basket reference path (OpenAI sub-leg as one basket, no k_lab; non-OpenAI already 篮 4):")
@@ -553,15 +547,10 @@ def main() -> int:
     print(
         f"  表2′ band-edge δ = {delta_floor:+.2%} (r {r_non + delta_floor:.2%} / {r_open + delta_floor:.2%}->{r_open_t + delta_floor:.2%}):"
         f" L/M/H = {band_edge[0]:.2f} / {band_edge[1]:.2f} / {band_edge[2]:.2f}  A′ {a_edge:.2f} B′ {b_edge:.2f}"
-        f" -> zone@band-edge r = {zone_edge} | equivalent ROE_proj {roe_floor:.1%}"
+        f" | equivalent ROE_proj {roe_floor:.1%}"
     )
     print(
-        f"  implied r(P): uniform δ = {delta_price:+.2%} (r {r_non + delta_price:.2%} / {r_open + delta_price:.2%}->{r_open_t + delta_price:.2%})"
-        f" | equivalent ROE_proj {roe_price:.1%} | market OCI = {mkt_oci / BN:.1f}B = {mkt_oci / k_spent:.2f}x K_spent"
-        f" = {mkt_oci / nopat_oci['m']:.1f}x M NOPAT"
-    )
-    print(
-        f"  price {inp['price']} -> {zone_now} (P/H {inp['price'] / H:.2f}); "
+        "  coordinates: "
         + " | ".join(f"{lbl} {tp:.0f} -> {zone_of(tp, L, M, H)}" for lbl, tp in STREET_TPS)
         + f" | 52w low {WEEK52_LOW} -> {zone_of(WEEK52_LOW, L, M, H)}"
     )
@@ -576,15 +565,10 @@ def main() -> int:
         f" = {_lo:.1%}-{_hi:.1%} of the axis 2026 base"
     )
     print("floor: none (PP&E is debt- and prepay-funded; no hidden asset) — nothing max()'d")
-    ev = inp["price"] * sh + net_debt_aug + inp["pref_liq"]
-    print(
-        f"market read: mcap {inp['price'] * sh / BN:.0f}B EV {ev / BN:.0f}B"
-        f" | EV/FY28E NOPAT(M) {ev / (nopat_sw + nopat_oci['m']):.1f}x"
-    )
 
     # ---- sensitivities (all disclosure; none moves M back into the ③ band) ----
     def fmt(b: tuple[float, float, float]) -> str:
-        return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f} -> {zone_of(inp['price'], *b)}"
+        return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f}"
 
     for kl in (0.0, 0.5):
         b = band_at(kl=kl)
@@ -619,7 +603,6 @@ def main() -> int:
         )
     disc = 1.0 / (1.0 + r)
     print(f"sensitivity discount 1y at r_perp: L/M/H = {L * disc:.2f} / {M * disc:.2f} / {H * disc:.2f}")
-    print(f"price={inp['price']} zone={zone_now}")
 
     return report(errors)
 

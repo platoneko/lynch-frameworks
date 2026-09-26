@@ -39,7 +39,11 @@ multiple.  Probabilities never enter the base deck.
 r is the basket rate the framework names on the `r_perp` Inputs row (all three
 legs 篮 4 龙头制造, 10%); `check_r` pins the value to the named basket and
 `check_g_cap` caps each leg's g2 at g_cap(r) = min(6%, r - 4%).  Disclosure
-only: the single-stage implied r(P) and the g2 -1pp band (no zone flip expected).
+only: the g2 -1pp band (L/M/H only).
+
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
 
 Run:  python3 frameworks/eval/MRVL.US.py
 """
@@ -73,7 +77,7 @@ from eval.lib.inputs import (  # noqa: E402
 )
 from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "MRVL.US.md"
 AVGO_FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
@@ -83,7 +87,6 @@ LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 
 REQUIRED = [
-    "price",
     "shares",
     "equity",
     "eps_fy27_m",
@@ -280,11 +283,10 @@ def main() -> int:
         errors.append(f"flat-multiple ladder broken: {flat}")
     dec = decompose((L, M, H), (blended["L"], blended["M"], blended["H"]))
 
-    # ---- Step 4: option ceiling and zone+V (probabilities only here) ----
+    # ---- Step 4: option ceiling and the zone+V band (probabilities only here) ----
     v_opt = inp["v_opt_units"] * inp["d_eps_per_bn"] * pes["M"]["cu"]
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
@@ -345,21 +347,12 @@ def main() -> int:
     if p_tiers:
         opt = tuple(anchors[t] + p * v_opt for t, p in zip(TIERS, p_tiers))
         a2, b2 = cut_points(*opt)
-        print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}  "
-              f"zone+V={zone_of(inp['price'], *opt)}")
-    print(f"price={inp['price']:.2f} zone={zone}  P/H={inp['price'] / H - 1:+.1%}  "
-          f"implied p=(P-H)/V_opt={(inp['price'] - H) / v_opt:.2f}")
+        print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
 
-    # ---- Disclosure only (valuation-rules「g₂ 的杠杆 MUST 显式」/ 隐含 r(P)) ----
-    # Single-stage Gordon approximation on the M anchor; the two-stage ruler makes
-    # it an approximation, which the framework says.
-    implied_r = inp["g2_cu"] + (r - inp["g2_cu"]) * M / inp["price"]
-    print(f"implied r(P) ≈ g2 + (r - g2)·M/P = {implied_r:.4f}  (篮 {baskets.get('r_perp')} r={r:g}, δ={implied_r - r:+.4f})")
+    # ---- Disclosure only (valuation-rules「g₂ 的杠杆 MUST 显式」) ----
     down = {t: eps[t] * blended_at(t, -0.01) for t in TIERS}
-    zone_down = zone_of(inp["price"], down["L"], down["M"], down["H"])
     print(
-        f"g2 -1pp (all legs): {down['L']:.2f}/{down['M']:.2f}/{down['H']:.2f} zone={zone_down}"
-        + ("  ⚠敏感区 zone flips" if zone_down != zone else "  (no flip)")
+        f"g2 -1pp (all legs): {down['L']:.2f}/{down['M']:.2f}/{down['H']:.2f}"
         + "; +1pp exceeds g_cap, skipped"
     )
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves the
@@ -374,7 +367,7 @@ def main() -> int:
         finally:
             r = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

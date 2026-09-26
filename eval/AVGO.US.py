@@ -31,9 +31,11 @@ The AI legs' M/H two-stage multiple is on the FY27 numerator with FY27 = t=1
 2026-09-14): divided by (1 + g1) it is the multiple on FY28 (= steady-state
 Gordon discounted one year) and must read below the steady-state cap
 perpetual_pe(g2).  The AI legs' g2 shifted ±1pp is a disclosure (敏感区,
-valuation-rules「g₂ 的杠杆 MUST 显式」): a zone flip is printed, not an error.
-Implied r(P) -- one δ added to every leg's basket r until the M-tier sum meets
-the price -- is printed for the same reason.
+valuation-rules「g₂ 的杠杆 MUST 显式」), L/M/H only.
+
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
 
 Run:  python3 frameworks/eval/AVGO.US.py
 """
@@ -57,7 +59,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     check_transition_years,
     g_cap,
-    implied_g,
     perpetual_pe,
     two_stage_pe,
 )
@@ -70,7 +71,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -82,7 +83,6 @@ MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A8: guidance bridge vs consensus
 
 REQUIRED = [
-    "price",
     "shares",
     "equity",
     "tax_rate",
@@ -357,10 +357,9 @@ def main() -> int:
     if abs(dev28) > BRIDGE_TOL:
         errors.append(f"FY28 guidance bridge deviates {dev28:+.1%} from consensus (> {BRIDGE_TOL:.0%})")
 
-    # ---- Step 8: zone, stated values, axis mounts ----
+    # ---- Step 8: stated values, axis mounts ----
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v) > 1e-9:
         errors.append(f"V_opt must be stated as 0 (lab XPU is a basket-pair leg, not an option), got {said_v}")
@@ -369,28 +368,13 @@ def main() -> int:
 
     # ---- Step 9: g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」), disclosure only ----
     # The AI legs' g2 shifted ±1pp together (lab reads g2_xpu too); +1pp sits above
-    # g_cap and is not a legal state.  A zone flip is the 敏感区 line, not BLOCKED.
+    # g_cap and is not a legal state.
     lever = []
     for delta in (-0.01, +0.01):
         if inp["g2_xpu"] + delta > g_cap(r) + 1e-9:
             continue
         lmh = tuple(anchor_at(tier, delta, TRANSITION_LEGS) for tier in TIERS)
-        lever.append((delta, *lmh, zone_of(inp["price"], *lmh)))
-    sensitive = [f"{d:+.0%} -> {z}" for d, *_, z in lever if z != zone]
-
-    # ---- Step 10: implied r(P) — one δ on every leg's basket r so the M-tier sum meets the price ----
-    def m_at_r_shift(delta: float) -> float:
-        return sum(eps["M"][leg] * keep[leg] * pe_at(leg, "M", inp[LEG_G2[leg]], True, dr=delta)
-                   for leg in LEGS)
-
-    lo, hi = -0.03, 0.30  # M falls as r rises; bisect the price crossing
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        if m_at_r_shift(mid) > inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    r_delta = (lo + hi) / 2
+        lever.append((delta, *lmh))
 
     # ---- Report ----
     print(f"formula_id={FORMULA_ID}")
@@ -445,14 +429,8 @@ def main() -> int:
         )
     print(
         "g2 leverage (AI legs ±1pp): "
-        + " | ".join(f"{d:+.0%}: {l:.1f}/{m:.1f}/{h:.1f} zone={z}" for d, l, m, h, z in lever)
+        + " | ".join(f"{d:+.0%}: {l:.1f}/{m:.1f}/{h:.1f}" for d, l, m, h in lever)
         + ("  (+1pp above the 6% cap, skipped)" if len(lever) == 1 else "")
-        + (f"  ⚠敏感区: {', '.join(sensitive)} (disclosed, not BLOCKED)" if sensitive else "")
-    )
-    print(
-        f"implied r(P): δ = {r_delta:+.4f} on every leg -> operating legs {r + r_delta:.4f} "
-        f"(篮 {baskets.get('r_perp')}) / lab {inp['r_lab'] + r_delta:.4f} (篮 {baskets.get('r_lab')}); "
-        f"M at δ = {m_at_r_shift(r_delta):.1f} = price — disclosure only"
     )
     l_with_transition = sum(eps["L"][leg] * keep[leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
     m_no_transition = sum(eps["M"][leg] * keep[leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
@@ -462,12 +440,8 @@ def main() -> int:
     print(f"A8 bridge: FY27 {eps_total['M']:.3f} vs cons {inp['eps_fy27_cons']:g} ({dev27:+.1%}) | "
           f"FY28 guidance bridge {eps28_guide:.3f} vs cons {inp['eps_fy28_cons']:g} ({dev28:+.1%}) | "
           f"FY28 implied by g1 = {eps_total['M'] * (1 + g1_co):.3f}")
-    g_mkt, ok = implied_g(inp["price"] / eps_total["M"], roe["M"], r)
-    print(f"market-implied (P / FY27 M-EPS = {inp['price'] / eps_total['M']:.1f}x, no transition): g = {g_mkt:.4f}"
-          f" ({'well' if ok else 'ill'}-conditioned) — reference only")
     print(f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/{inp['cowos_quota_m'] / 1e4:.1f}/"
           f"{inp['cowos_quota_h'] / 1e4:.1f}万片 (L γ / M β / H α); optical OE mount checked")
-    print(f"price={inp['price']:.2f} zone={zone}  P/L={inp['price'] / L - 1:+.1%}  P/M={inp['price'] / M - 1:+.1%}")
 
     # A22 candidate band: same formula, only AI-leg g2 -> g2_cand (peak-normalized).
     def cand_leg_pe(leg: str, tier: str) -> float:
@@ -488,8 +462,7 @@ def main() -> int:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     print(
         f"候选带（AI g2={inp['g2_cand']:g} 峰值后归一；sw/nonai 不动；不进底牌/zone 判定）: "
-        f"L′/M′/H′={cand[0]:.1f}/{cand[1]:.1f}/{cand[2]:.1f}  "
-        f"候选 zone={zone_of(inp['price'], *cand)}"
+        f"L′/M′/H′={cand[0]:.1f}/{cand[1]:.1f}/{cand[2]:.1f}"
     )
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
@@ -507,7 +480,6 @@ def main() -> int:
         LISTING_CCY,
         {"r_perp": r, "r_lab": inp["r_lab"], "r_lab_t": inp["r_lab_t"]},
         band_rf,
-        inp["price"],
     )
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")

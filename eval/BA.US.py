@@ -2,7 +2,9 @@
 """BA.US (Boeing) valuation eval — recompute anchors from frameworks/BA.US.md.
 
 frameworks/BA.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: ba_unlevered_fy27_recovery_gordon_v1
 
@@ -34,7 +36,7 @@ from lib.gordon import (  # noqa: E402
     recovery_two_stage_pe, two_stage_pe,
 )
 from lib.inputs import check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # rf_report imports eval.lib.* absolutely, so the repo root must be importable too.
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -45,7 +47,7 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BA.US.md"
 FORMULA_ID = "ba_unlevered_fy27_recovery_gordon_v1"
 LISTING_CCY = "USD"
 REQUIRED = [
-    "price", "shares_basic", "mcp_units", "mcp_rate_min", "mcp_rate_max",
+    "shares_basic", "mcp_units", "mcp_rate_min", "mcp_rate_max",
     "eps27_low", "eps27_mean", "eps27_high", "pref_div", "int_exp", "int_inc", "tax_rate",
     "ebit27_ms", "ebit28_ms", "n_stage", "equity", "debt", "cash", "pension_def", "opeb_def",
     "r_perp", "g2", "peer_g_median", "peer_g_defense", "payout_observed",
@@ -127,8 +129,7 @@ def main() -> int:
     errors += ladder("flat-multiple", flat["L"], flat["M"], flat["H"])
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     post = {"L": nopat["low"], "M": nopat["mean"] * (1 + g1), "H": nopat["high"] * (1 + g1)}
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (peer median {inp['peer_g_median']:g} → cap {g_cap(r):g})  g1={g1:.4f} n={n}")
@@ -138,7 +139,7 @@ def main() -> int:
         print(f"{k}: NOPAT27 {nopat[j]:.0f}  ROIC27 {roic27[j]:.1%}  ROIC28 {roic28[j]:.1%}  PE(t=1) {pe:.2f}  "
               f"post-transition NOPAT {post[k]:.0f} → EV/NOPAT {ev[k] / post[k]:.2f}  EV {ev[k]:.0f}  "
               f"shares {shares[k]:.1f}  → {anchors[k]:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  price={inp['price']} zone={zone}")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} width={(H - L) / (2 * M):.3f}  "
           f"numerator ratio L/M {post['L'] / post['M']:.3f} H/M {post['H'] / post['M']:.3f}; "
           f"multiple ratio L/M {(ev['L'] / post['L']) / (ev['M'] / post['M']):.3f} H/M {(ev['H'] / post['H']) / (ev['M'] / post['M']):.3f}")
@@ -152,7 +153,7 @@ def main() -> int:
         mm = per_share(nopat["mean"] * recovery_two_stage_pe(g1, n, gg, roic28["mean"], r) - claims, inp)[0]
         hh = per_share(nopat["high"] * recovery_two_stage_pe(g1, n, gg, roic28["high"], r) - claims, inp)[0]
         ll = per_share(nopat["low"] * perpetual_pe(gg, roic27["low"], r) - claims, inp)[0]
-        print(f"sensitivity {label} g2={gg:.4f}: L {ll:.2f} M {mm:.2f} H {hh:.2f} → zone {zone_of(inp['price'], ll, mm, hh)}")
+        print(f"sensitivity {label} g2={gg:.4f}: L {ll:.2f} M {mm:.2f} H {hh:.2f}")
     for k, j in (("L", "low"), ("M", "mean"), ("H", "high")):
         # Stage 1 (or L's first year) pays out 100% in the model; the company pays 0.
         deemed = nopat[j] / shares[k]
@@ -162,16 +163,8 @@ def main() -> int:
     rate_eps = inp["debt"] * 0.01 * (1 - t) / inp["shares_basic"]
     print(f"leverage gate: net debt/EBITDA FY25 {inp['net_debt_ebitda_fy25']:.2f}  interest/EBIT {inp['interest_ebit_fy25']:.0%}  "
           f"+100bp on total debt → EPS −{rate_eps:.2f} ({rate_eps / inp['eps27_mean']:.0%} of FY27 mean)")
-    ev_now = inp["price"] * (inp["shares_basic"] + mcp_shares(inp["price"], inp)) + claims
-    print(f"EV/EBITDA FY28: M {ev['M'] / inp['ebitda28_ms']:.1f}  H {ev['H'] / inp['ebitda28_ms']:.1f}  price {ev_now / inp['ebitda28_ms']:.1f}  "
-          f"| price EV / FY28 FCF {ev_now / inp['fcf28_ms']:.1f}")
-
-    lo, hi = g2 + 0.0001, 0.30
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        val = per_share(nopat["mean"] * recovery_two_stage_pe(g1, n, g2, roic28["mean"], mid) - claims, inp)[0]
-        lo, hi = (mid, hi) if val > inp["price"] else (lo, mid)
-    print(f"implied r(P) on the M construction = {mid:.2%} (δ {(mid - r) * 100:+.2f}pp vs 篮 4)")
+    print(f"EV/EBITDA FY28: M {ev['M'] / inp['ebitda28_ms']:.1f}  H {ev['H'] / inp['ebitda28_ms']:.1f}  "
+          f"| EV / FY28 FCF: M {ev['M'] / inp['fcf28_ms']:.1f}  H {ev['H'] / inp['fcf28_ms']:.1f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 — the only priced r; g1/g2, ROIC, NOPAT, claims and k stay put
@@ -186,7 +179,7 @@ def main() -> int:
         lmh = [per_share(ev_r[k] - claims, inp)[0] * (1 - ks[k]) for k in ("L", "M", "H")]
         return lmh[0], lmh[1], lmh[2]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     # 0.05 = check_against_stated's default tolerance, the one the anchors are held to.
     if any(abs(x - y) > 0.05 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")

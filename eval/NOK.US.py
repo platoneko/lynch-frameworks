@@ -4,7 +4,7 @@
 frameworks/NOK.US.md stays the human-facing source of truth for inputs; this
 script is the enforcement layer that keeps its number chain honest:
 
-    parse §3 Inputs table -> rebuild every SOTP leg -> L/M/H, A/B, zone
+    parse §3 Inputs table -> rebuild every SOTP leg -> L/M/H, A/B
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
@@ -42,8 +42,12 @@ Main ruler (SOTP, modelled in EUR, reported in USD per ADR):
 Hard checks mirror framework §3 校验步骤 (identity, ladders, shared annuity
 ladder vs QCOM.US, perpetual-growth caps, 裁决顺序 ③ guardrail against the
 realised trough multiple, stated Outputs incl. 表1 / zone-table bounds /
-candidate band, flat-@M ladder, g2 evidence-range zone stability, no p_* leak,
-optical axis mount).
+candidate band, flat-@M ladder, no p_* leak, optical axis mount).
+
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.  `price_trough_usd` is a dated historical print (the
+2025-09-12 low), kept as the 裁决顺序 ③ guardrail coordinate.
 
 Run after every edit of frameworks/NOK.US.md:  python3 frameworks/eval/NOK.US.py
 """
@@ -73,7 +77,7 @@ from eval.lib.gordon import (  # noqa: E402
 )
 from eval.lib.inputs import check_missing, ladder, parse_baskets, parse_inputs  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "NOK.US.md"
 # The licensing-annuity ladder is one ladder for the asset class (A2e-5b): the
@@ -101,7 +105,7 @@ EPS28_POINTS = ("eps28_jpm_cons_eur", "eps28_jpm_low_eur", "eps28_ms_eur", "eps2
 TIERS = ("l", "m", "h")
 
 REQUIRED = [
-    "price", "fx_eur_usd", "adr_ratio", "shares",
+    "fx_eur_usd", "adr_ratio", "shares",
     "ebit_group_fy26", "guide_ebit_low", "guide_ebit_high",
     "ebit_ni_fy26", "ts_sales_rr", "ts_margin",
     "ebit_mi_core_l", "ebit_mi_core_m", "ebit_mi_core_h",
@@ -123,17 +127,16 @@ ZONE_IDS = ("deep_discount", "conservative", "neutral", "optimistic", "stretched
 
 
 def parse_stated(text: str) -> dict:
-    """Anchors, cut-points, zone id, 表1 legs, zone-table bounds, candidate band."""
+    """Anchors, cut-points, 表1 legs, zone-table bounds, candidate band."""
     out = text.split("### Outputs", 1)[1].split("## 4.", 1)[0]
     anchors = re.search(
         r"L = \*\*([\d.]+)\*\* · M = \*\*([\d.]+)\*\* · H = \*\*([\d.]+)\*\*", out)
     cuts = re.search(r"A = \*\*([\d.]+)\*\* · B = \*\*([\d.]+)\*\*", out)
-    zone = re.search(r"zone = \*\*`(\w+)`\*\*", out)
     cand = re.search(
         r"候选带（[^）]+）[^\n]*?L′ = \*\*([\d.]+)\*\*[^\n]*?M′ = \*\*([\d.]+)\*\*[^\n]*?H′ = \*\*([\d.]+)\*\*",
         out)
-    if not (anchors and cuts and zone and cand):
-        sys.exit("FATAL: cannot parse Outputs section (anchors/cuts/zone/candidate line)")
+    if not (anchors and cuts and cand):
+        sys.exit("FATAL: cannot parse Outputs section (anchors/cuts/candidate line)")
     # 表1: 档 | NI | 授权 | RAN | 闭合项 | 合计
     legs: dict[str, tuple[float, ...]] = {}
     row_re = re.compile(
@@ -154,7 +157,6 @@ def parse_stated(text: str) -> dict:
         "L": float(anchors.group(1)), "M": float(anchors.group(2)),
         "H": float(anchors.group(3)),
         "A": float(cuts.group(1)), "B": float(cuts.group(2)),
-        "zone": zone.group(1),
         "legs": legs,
         "table_nums": {float(x) for x in re.findall(r"\d+(?:\.\d+)?", interval)},
         "cand": tuple(float(cand.group(i)) for i in (1, 2, 3)),
@@ -240,7 +242,7 @@ def group_ev_ebit_at(price_usd: float, v: dict, b: dict) -> float:
 
 
 def implied_ni27(target_usd: float, v: dict, b: dict, c: dict) -> tuple[float, float]:
-    """NI FY2027E EBIT a price implies with TS / RAN / corp pinned at M and the
+    """NI FY2027E EBIT a USD/ADR value implies with TS / RAN / corp pinned at M and the
     NI multiple re-solved on the implied ROE (fixed point).  Returns (EBIT, PE)."""
     net = 1.0 - v["tax_rate"]
     rest = c["tiers"]["m"]["ev_ts"] + c["tiers"]["m"]["ev_mi"] + b["ev_corp"]
@@ -271,7 +273,6 @@ def main() -> None:
     b = bridge(v)
     c = compute(v, b)
     bn = 1e9
-    price = v["price"]
     checks: list[tuple[bool, str]] = []
 
     # 1. segment identity + guidance envelope + RAN H residual (framework §3 校验 1)
@@ -364,9 +365,6 @@ def main() -> None:
         for name, got, exp in zip(("NI", "授权", "RAN", "闭合项", "合计"), row, want):
             checks.append((abs(got - exp) <= TOL,
                            f"leg table {k.upper()}/{name}: stated {got} vs computed {exp:.4f}"))
-    z = zone_of(price, c["L"], c["M"], c["H"])
-    checks.append((z == stated["zone"],
-                   f"zone at price {price}: computed `{z}` == stated `{stated['zone']}`"))
     # Candidate band (A7c): same formula, only the H-tier g1 swapped for the
     # single-house JPM high scenario; L′ / M′ copy the base.
     cand = compute(v, b, g1_by_tier={"h": b["g1_cand"]})
@@ -376,16 +374,12 @@ def main() -> None:
     for name, got, exp in zip(("L′", "M′", "H′"), stated["cand"], cand_vals):
         checks.append((abs(got - exp) <= TOL, f"candidate {name}: stated {got} vs computed {exp:.4f}"))
 
-    # 6. flat-@M ladder (A2e-2c) and g2 evidence-range zone stability (校验 6)
+    # 6. flat-@M ladder (A2e-2c) (校验 6)
     flat = compute(v, b, pin_pe=c["tiers"]["m"]["pe"],
                    ts_mult={k: v["ev_ebit_ts_m"] for k in TIERS})
     checks.append((flat["L"] < flat["M"] < flat["H"],
                    f"flat-@M ladder (NI PE_M {c['tiers']['m']['pe']:.2f}x, TS {v['ev_ebit_ts_m']:g}x, RAN flat): "
                    f"{fmt3(flat)} still L < M < H"))
-    for g2_edge in (g2_cap, g2_cap):
-        ce = compute(v, b, g2=g2_edge)
-        ze = zone_of(price, ce["L"], ce["M"], ce["H"])
-        checks.append((ze == z, f"g2 evidence edge {g2_edge:.2%}: zone `{ze}` == base `{z}`"))
 
     # 7. A2e-7a: no probability field may sit in Inputs
     leaked = [k for k in v if k == "p" or k.startswith("p_")]
@@ -425,12 +419,10 @@ def main() -> None:
           + " | ".join(f"{k.upper()} {(ret_actual - c['tiers'][k]['b1']) * b['unbooked_ni'] * b['unit']:+.3f} USD/ADR"
                        for k in TIERS)
           + "  [negative = the model retains more than the company actually did]")
-    print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f}  (A {c['A']:.2f} · B {c['B']:.2f})"
-          f"  zone@{price} = {z}  (P/H {price / c['H'] - 1:+.1%})")
+    print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f}  (A {c['A']:.2f} · B {c['B']:.2f})")
     print(f"candidate : (2028E·JPM单家高情景, g1_H {b['g1_cand']:+.1%}, payout1 "
           f"{cand['tiers']['h']['payout1']:+.2f}, PE {cand['tiers']['h']['pe']:.2f}x) "
-          f"L′ {cand_vals[0]:.2f} · M′ {cand_vals[1]:.2f} · H′ {cand_vals[2]:.2f}  "
-          f"zone@{price} = {zone_of(price, *cand_vals)}")
+          f"L′ {cand_vals[0]:.2f} · M′ {cand_vals[1]:.2f} · H′ {cand_vals[2]:.2f}")
 
     # A2e-5 decomposition per leg: NI / RAN ladders live in the numerator, TS in
     # its annuity ladder — they must not be read as one ratio.
@@ -444,11 +436,6 @@ def main() -> None:
     print(f"flat-@M   : {fmt3(flat)}   (A2e-2c)")
     print(f"guardrail : L-implied group EV/EBIT {l_implied:.2f}x vs trough {trough:.2f}x (③) | "
           f"M {c['tiers']['m']['group_ev_ebit']:.2f}x  H {c['tiers']['h']['group_ev_ebit']:.2f}x")
-    # Implied r(P), disclosure only (A18): single-stage Gordon approximation on
-    # the NI leg alone -- the TS / RAN legs carry no r, so nothing else shifts.
-    r_implied = v["g2_ni"] + (v["r_perp"] - v["g2_ni"]) * c["M"] / price
-    print(f"implied r : NI leg single-stage approx g2 + (r - g2) * M / P = {r_implied:.2%} "
-          f"(篮 {basket} r {v['r_perp']:.1%}, delta {r_implied - v['r_perp']:+.2%}; disclosure only)")
     g_street, ok_street = implied_g(30.0 / (1.0 - v["tax_rate"]), c["tiers"]["m"]["roe"], v["r_perp"])
     print(f"cross     : street Optical+IP 30x EV/EBIT = {30.0 / (1.0 - v['tax_rate']):.1f}x PE -> implied g "
           f"{g_street:+.2%} (well_conditioned={ok_street}) | perpetual-only PE_M (no g1) "
@@ -456,8 +443,8 @@ def main() -> None:
 
     print("\nimplied NI FY2027E EBIT (TS/RAN/corp at M, NI multiple re-solved on implied ROE):")
     span = nh - nl
-    for label, px in (("price", price), ("B", c["B"]), ("H", c["H"]),
-                      ("sell-side TP mean 14.96", 14.96), ("52w high 16.85", 16.85)):
+    for label, px in (("B", c["B"]), ("H", c["H"]),
+                      ("sell-side TP mean 14.96", 14.96), ("52w high 16.85 (2026-06-02)", 16.85)):
         ni, pe = implied_ni27(px, v, b, c)
         print(f"  {label:<24} ${px:6.2f} -> {ni / bn:5.2f}bn EUR  (PE {pe:.1f}x, position in [L,H] {(ni - nl) / span:+.2f})")
 
@@ -465,22 +452,21 @@ def main() -> None:
     for g2 in (v["g2_ni"], v["g2_ni"] - G2_SENSITIVITY_PP, v["g2_ni"] - 2 * G2_SENSITIVITY_PP):
         cg = compute(v, b, g2=g2)
         tag = "current" if abs(g2 - v["g2_ni"]) < 1e-12 else f"{(g2 - v['g2_ni']) * 100:+.0f}pp"
-        print(f"  g2 {g2:.1%} ({tag:7}): {fmt3(cg)}  A/B {cg['A']:.2f} / {cg['B']:.2f}"
-              f"  zone@{price} = {zone_of(price, cg['L'], cg['M'], cg['H'])}")
+        print(f"  g2 {g2:.1%} ({tag:7}): {fmt3(cg)}  A/B {cg['A']:.2f} / {cg['B']:.2f}")
 
     print("\nsensitivity:")
     # A2e-3 对照带: the extra one-year discount retired on 2026-09-14 (it would
     # now double-count the t=1 placement inside two_stage_pe).
     c2 = compute(v, b, disc_years=1)
-    print(f"  NI extra 1y discount (retired policy, 对照带): {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}")
+    print(f"  NI extra 1y discount (retired policy, 对照带): {fmt3(c2)}")
     for mult in (v["ev_ebit_mi"] - 1, v["ev_ebit_mi"] + 1):
         c2 = compute(v, b, ran_mult=mult)
-        print(f"  RAN flat {mult:g}x: {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}")
+        print(f"  RAN flat {mult:g}x: {fmt3(c2)}")
     old_ts = {"l": 10.0, "m": 14.45, "h": 18.9}
     c2 = compute(v, b, ts_mult=old_ts)
     c3 = compute(v, b, ts_mult=old_ts, g2=v["g2_ni"] - G2_SENSITIVITY_PP)
-    print(f"  TS prior ladder 10/14.45/18.9 (unsourced midpoint, retired): {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}"
-          f"  | at g2 -1pp: {fmt3(c3)} zone = {zone_of(price, c3['L'], c3['M'], c3['H'])}")
+    print(f"  TS prior ladder 10/14.45/18.9 (unsourced midpoint, retired): {fmt3(c2)}"
+          f"  | at g2 -1pp: {fmt3(c3)}")
     for m in (0.60, v["ts_margin"], 0.78):
         v2 = dict(v, ts_margin=m, ebit_mi_core_m=v["ebit_group_fy26"] - v["ebit_ni_fy26"]
                   - v["ts_sales_rr"] * m - v["ebit_pb_fy26"] - v["ebit_corp_fy26"])
@@ -489,16 +475,16 @@ def main() -> None:
     for share in (v["ni_rev_share"] - 0.10, v["ni_rev_share"] + 0.10):
         v2 = dict(v, ni_rev_share=share)
         c2 = compute(v2, bridge(v2))
-        print(f"  ni_rev_share {share:.3f} (A7a ±10pp): {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}")
+        print(f"  ni_rev_share {share:.3f} (A7a ±10pp): {fmt3(c2)}")
     for fx in (1.14,):
         v2 = dict(v, fx_eur_usd=fx)
         c2 = compute(v2, bridge(v2))
-        print(f"  fx_eur_usd {fx:.4f}: {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}")
+        print(f"  fx_eur_usd {fx:.4f}: {fmt3(c2)}")
     v2 = dict(v, shares=5.8019e9)
     c2 = compute(v2, bridge(v2))
     print(f"  diluted shares 5.8019e9: {fmt3(c2)}")
     c2 = compute(v, b, ni_evebit_flat=30.0)
-    print(f"  street NI 30x EV/EBIT flat (BofA, cross only): {fmt3(c2)}  zone = {zone_of(price, c2['L'], c2['M'], c2['H'])}")
+    print(f"  street NI 30x EV/EBIT flat (BofA, cross only): {fmt3(c2)}")
     # No g1 at all: FY27 NOPAT straight into perpetual_pe (next-period base), the
     # reading A7b quotes for "what the 2028E points are worth".
     perp = {k: perpetual_pe(v["g2_ni"], c["tiers"][k]["roe"], v["r_perp"]) for k in TIERS}
@@ -520,7 +506,7 @@ def main() -> None:
         return cr["L"], cr["M"], cr["H"]
 
     print()
-    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf, price)
+    rf = rf_block(LISTING_CCY, {"r_perp": v["r_perp"]}, band_rf)
     rf0 = band_rf(0.0)
     checks.append((all(abs(x - c[k]) <= TOL for x, k in zip(rf0, ("L", "M", "H"))),
                    f"r_f readings dr = 0 column reproduces L/M/H ({rf0[0]:.2f} / {rf0[1]:.2f} / {rf0[2]:.2f})"))

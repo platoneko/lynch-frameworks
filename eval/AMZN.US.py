@@ -2,7 +2,9 @@
 """AMZN.US (Amazon) valuation eval — recompute anchors from frameworks/AMZN.US.md.
 
 frameworks/AMZN.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from the §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: amzn_fwd_numerator_gordon_aws_retail_portfolio_v1
 
@@ -46,7 +48,7 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import check_lab_mount  # noqa: E402
 from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, perpetual_pe  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -95,7 +97,7 @@ def first_float(pattern: str, md: str) -> float | None:
 
 
 REQUIRED = [
-    "price", "shares_diluted", "tax_rate",
+    "shares_diluted", "tax_rate",
     "oi_na_h1", "oi_intl_h1", "oi_aws_h1", "rev_aws_h1", "net_interest_h1",
     "r_perp", "r_aws_lab", "r_aws_lab_t", "k_lab",
     "ic_group", "ic_aws", "roic_marg_aws", "share_lab_aws",
@@ -229,7 +231,6 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     for t in "lmh":
         for name in ("aws", "lab", "ret"):
@@ -273,9 +274,6 @@ def main() -> int:
             errors.append(f"stated {k} not found")
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
-    zm = re.search(r"zone = \*\*`([a-z_]+)`\*\*", out_sec)
-    if (zm.group(1) if zm else None) != zone:
-        errors.append(f"zone: stated {zm.group(1) if zm else None} vs recomputed {zone}")
     if inp["v_opt"] != 0:
         errors.append("v_opt must be 0: no consensus-referenced option anchor (A13)")
 
@@ -300,19 +298,6 @@ def main() -> int:
     print(f"guardrail: own 5y trailing PE band top {inp['pe_own_top']:.2f}x / p50 {inp['pe_own_p50']:.2f}x is DISTORTED (2022 loss year) — disclosure only;"
           f" L/M/H on core EPS {L / core_eps:.1f}/{M / core_eps:.1f}/{H / core_eps:.1f}x; M on FY27E mean {M / inp['eps_fy27e_consensus']:.1f}x")
     print(f"candidate band (JPM FY2028E {inp['eps_fy28e_single']}, single house, 1y @{inp['r_disc']:.0%}): L′={cand['l']:.2f} M′={cand['m']:.2f} H′={cand['h']:.2f}")
-    # implied r(P): one shift on every Gordon leg
-    def total_at(d: float) -> float:
-        x = tier("m", inp["k_eps_m"])
-        v = x["port"]["val"] + x["cash"]["val"]
-        for name, r0, g in (("aws", r4, inp["g2_aws"]), ("lab", r7t, inp["g2_aws"]), ("ret", r4, inp["g2_ret"])):
-            haircut = (1.0 - inp["k_lab"]) if name == "lab" else 1.0
-            v += x[name]["e"] * perpetual_pe(g, x[name]["roe_ret"], r0 + d) * haircut / sh
-        return v
-    lo, hi = -0.06, 0.06
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if total_at(mid) > inp["price"] else (lo, mid)
-    print(f"implied r(P): δ = {mid:+.2%} on every Gordon leg (篮 4 → {r4 + mid:.2%}; lab terminal → {r7t + mid:.2%}) — disclosure only")
     sens = [
         ("AWS marginal ROIC 16.4% (own realised avg-asset basis)", dict(roic_marg=0.164)),
         ("AWS marginal ROIC 13% (realised first-year lower bound)", dict(roic_marg=0.13)),
@@ -328,11 +313,9 @@ def main() -> int:
     for label, kw in sens:
         b = band(**kw)
         sL, sM, sH = (b[t]["total"] for t in "lmh")
-        sz = zone_of(inp["price"], sL, sM, sH)
-        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f} zone={sz}" + ("  ⚠ zone flips" if sz != zone else ""))
+        print(f"敏感区 {label}: L/M/H {sL:.2f}/{sM:.2f}/{sH:.2f}")
     print(f"杠杆门: net debt/EBITDA {inp['net_debt_ebitda']:.2f}, interest/EBIT {inp['interest_ebit']:.1%} — not triggered"
           f" | capex axis constituent: 2026 guide ${inp['capex_guide'] / 1e9:.0f}B")
-    print(f"price={inp['price']} zone={zone}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # every priced r 1:1 — r_perp (AWS non-lab + retail) and the lab sub-leg's
@@ -349,7 +332,7 @@ def main() -> int:
         finally:
             r4 = saved
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_aws_lab_t": r7t}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_aws_lab_t": r7t}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     if errors:

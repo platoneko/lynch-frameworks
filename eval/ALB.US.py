@@ -21,6 +21,10 @@ move with r would sit above M once the ES leg discounts at 13% (A8).  The
 trough-tier recovery form (`recovery_two_stage_pe` with the ticker's own
 measured n = 1 / 2 — FY2021 → FY2022, FY2020 → FY2022) lands at M (A10), so it
 is printed as a coordinate and not used as the anchor.
+
+The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
+quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ RECOVERY_YEARS = (1, 2)
 LEG_R = {"r_perp": "ES", "r_spec": "Spec"}
 
 REQUIRED = [
-    "price", "shares_diluted", "bps", "equity",
+    "shares_diluted", "bps", "equity",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "vat", "fx_usd_cny",
     "grid_p1", "grid_p2", "grid_p3",
@@ -172,7 +176,6 @@ def main() -> int:
     L, M, H = band(S, g2, r_es, r_spec)
     scenario_L = L  # the floor is disclosed only (A8): L is the scenario value
     A, B = (L + M) / 2, (M + H) / 2
-    zone = zone_of(inp["price"], L, M, H)
 
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
@@ -181,7 +184,7 @@ def main() -> int:
     ladder_errors, flat = flat_multiple_ladder(eps3, M / S["m"]["eps"])
     errors += ladder_errors
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
     out_sec = outputs_section(md)
     for label, v in (("scenario_L", scenario_L), ("floor", floor)):
         s = first_float(rf"`{label}` = \*\*([0-9.]+)\*\*", out_sec)
@@ -236,10 +239,9 @@ def main() -> int:
     )
     for g in (g2 - 0.01, g2 + 0.01, 0.0):
         l_, m_, h_ = band(S, g, r_es, r_spec)
-        print(f"  g2 {g:.4f}: {l_:.2f} / {m_:.2f} / {h_:.2f}  zone={zone_of(inp['price'], l_, m_, h_)}")
+        print(f"  g2 {g:.4f}: {l_:.2f} / {m_:.2f} / {h_:.2f}")
     l_, m_, h_ = band(S, g2, r_es, r_es)
     print(f"  both legs at r_ES {r_es:g} (first-leg approximation): {l_:.2f} / {m_:.2f} / {h_:.2f}")
-    print(f"price={inp['price']} zone={zone}  P/H={inp['price']/H:.3f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # both legs' basket r 1:1 (ES r_perp, Specialties r_spec); g2, tier ROE and
@@ -247,7 +249,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return band(S, g2, r_es + dr, r_spec + dr)
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r_es, "r_spec": r_spec}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r_es, "r_spec": r_spec}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 

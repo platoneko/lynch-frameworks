@@ -2,7 +2,9 @@
 """SOFI.US (SoFi Technologies) valuation eval — recompute anchors from frameworks/SOFI.US.md.
 
 frameworks/SOFI.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: sofi_gordon_tbv_oe_v1
 
@@ -51,7 +53,7 @@ MAINT_TOL = 0.005
 PB_BAND = (1.26, 2.03)
 
 REQUIRED = [
-    "price", "shares", "tce", "cet1_cap", "cet1_ratio", "cet1_tgt",
+    "shares", "tce", "cet1_cap", "cet1_ratio", "cet1_tgt",
     "ni_q1_26", "ni_q2_26", "ni_q3e_26", "ni_q4e_26",
     "eps_27_l", "eps_27_m", "eps_27_h", "rev_g_27",
     "lend_mkt_q", "fs_mkt_q", "pl_book", "pl_runoff", "sl_book", "sl_runoff",
@@ -140,23 +142,6 @@ def tier_l(inp: dict[str, float], gs26: float) -> dict[str, float]:
     }
 
 
-def implied_g(inp: dict[str, float], gs27: float, lo: float = 0.0, hi: float | None = None) -> float:
-    """Perpetual g at which the M numerator reproduces the market price (reference only).
-
-    The search stops just short of the pole at g = r, so a price the multiple
-    cannot reach reads as g* ≈ r (pathological), not as a clipped constant.
-    """
-    if hi is None:
-        hi = inp["r_op"] - 0.0005
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        if tier_mh(inp, inp["eps_27_m"], gs27, mid)["price"] < inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
-
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -217,8 +202,7 @@ def main() -> int:
         print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
         return 1
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # flat-multiple check: every tier on mult_M; L also pays for g's growth spend and is discounted.
     disc = (1.0 + r) ** inp["n"]
@@ -228,8 +212,6 @@ def main() -> int:
     if not (L_flat < M < H_flat):
         errors.append(f"flat-multiple ladder failed: {L_flat:.2f} / {M:.2f} / {H_flat:.2f}")
 
-    g_star = implied_g(inp, gs27)
-    e_needed = inp["price"] * inp["shares"] * disc / tm["mult"]
     x_excess = inp["cet1_cap"] - inp["cet1_tgt"] * inp["cet1_cap"] / inp["cet1_ratio"]
 
     print(f"formula_id={FORMULA_ID}")
@@ -246,14 +228,9 @@ def main() -> int:
         f"H/M = 分子比 {th['e_term'] / tm['e_term']:.3f} × 倍数比 {th['mult'] / tm['mult']:.3f}"
     )
     print(f"flat(mult_M 全档): L={L_flat:.2f} M={M:.2f} H={H_flat:.2f}")
-    print(f"price={inp['price']} zone={zone}  P/H={inp['price'] / H:.3f}  P/TBV={inp['price'] * inp['shares'] / inp['tce']:.2f}")
-    print(f"市价隐含 g*={g_star:.2%} (M 分子)；g={g:.0%} 下需 E_term {e_needed:.0f} = M 的 {e_needed / tm['e_term']:.2f}×")
-    # Disclosure only (A24 / Outputs): implied r(P) is the single-stage Gordon r = g + E/P on the
-    # M-tier consensus EPS; the band-low check is ③ 护栏 read on M/H only (L is *built* to sit at
-    # the tested trough).  The 2022-12 band low printed in a loss year (1b 失真), so a reading
-    # below it is disclosed, not a downgrade trigger and not an error.
-    implied_r = g + inp["eps_27_m"] / inp["price"]
-    print(f"隐含 r(P)={implied_r:.1%} (g2 + eps_27_m / price) vs 篮 {baskets.get('r_op')} r {r:.0%}：δ {implied_r - r:+.1%}（只披露）")
+    # Disclosure only (A24 / Outputs): the band-low check is ③ 护栏 read on M/H only (L is
+    # *built* to sit at the tested trough).  The 2022-12 band low printed in a loss year
+    # (1b 失真), so a reading below it is disclosed, not a downgrade trigger and not an error.
     mh_ok = all(PB_BAND[0] <= pb for pb in (tm["pb_t"], th["pb_t"]))
     print(
         f"③ 护栏 P/TBV 带 {PB_BAND}: PB_M {tm['pb_t']:.2f} / PB_H {th['pb_t']:.2f} → "
@@ -282,7 +259,7 @@ def main() -> int:
             tier_mh(inp_dr, inp["eps_27_h"], gs27, g)["price"],
         )
 
-    rf = rf_block(LISTING_CCY, {"r_op": r}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_op": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     # A22 candidate band (AGENTS.md「共识升级候选带」): recomputed and compared with the
@@ -301,7 +278,6 @@ def main() -> int:
         f"候选带（Piper 营收 +{inp['piper_rev_g_28']:.0%} × 增量净利率 {inp['incr_ni_margin']:.0%}，n={N_FY28}；不进底牌/zone 判定）: "
         f"NI28 {cm['ni27']:.0f}/{ch['ni27']:.0f}  E_term {cm['e_term']:.0f}/{ch['e_term']:.0f}  "
         f"b {cm['b']:.3f}/{ch['b']:.3f}  L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
-        f"候选 zone={zone_of(inp['price'], *cand)}  P/H′={inp['price'] / ch['price']:.3f}  "
         f"CET1 钉 16% 时 FY28 RWA 增速 {cm['rwa_g_28']:.0%}"
     )
 

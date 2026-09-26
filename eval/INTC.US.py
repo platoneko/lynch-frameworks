@@ -2,8 +2,10 @@
 """INTC.US valuation eval — base L/M/H with Foundry at 0, V_opt = success mid.
 
 frameworks/INTC.US.md is the source of truth for inputs; this script recomputes
-the base L/M/H (CPU leg on Gordon multiples + closing items, Foundry = 0), A/B,
-zone and V_opt, and exits 1 on mismatch with stated Outputs.
+the base L/M/H (CPU leg on Gordon multiples + closing items, Foundry = 0), A/B
+and V_opt, and exits 1 on mismatch with stated Outputs.  The doc carries no
+current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id (CPU):     intc_cpu_product_gordon_v2
 formula_id (Foundry): intc_foundry_pb_option_v1  (ceiling only; not in the base)
@@ -30,7 +32,7 @@ CPU leg (A2e-1 / AGENTS.md 永续增长口径):
               check_transition_years is not applicable here.
   candidate   the only FY27 product-leg number is single-house (HSBC core 4.25),
               so it feeds a 候选带 line (7h): H′ swaps that numerator in, L′/M′
-              copy the base; never a zone input (A18).
+              copy the base; never in the base band (A18).
   guardrail   every generated multiple must sit inside the ticker's own realised
               trailing-PE band (pe_own_min / pe_own_max).
   closure     corporate unallocated cost is capitalised at the M-tier generated
@@ -69,7 +71,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -94,7 +96,7 @@ OLD_P = {"fail": 0.20, "base": 0.55, "success": 0.25}
 ADJ_PS = ("net_cash_ps", "nci_ps", "mbly_stake_ps", "altera_stake_ps", "tax_asset_ps")
 
 REQUIRED = [
-    "price", "shares_diluted", "equity", "tax_rate",
+    "shares_diluted", "equity", "tax_rate",
     "oi_products_l", "oi_products_m", "oi_products_h",
     "r_perp", "g2_cpu", "pe_own_min", "pe_own_max", "eps_fy27_hsbc",
     "bvps_foundry_2027e", "pb_fail_mid", "pb_base_mid", "pb_success_mid", "foundry_discount",
@@ -163,7 +165,6 @@ def main() -> int:
     base = {t: cpu[t] + adj for t in TIERS}
     L, M, H = (base[t] for t in TIERS)
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
 
     # ---- Step 3: A2e-2c flat ladder + A2e-5 decomposition ----
     flat_errs, flat_eps = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pe["M"])
@@ -196,7 +197,6 @@ def main() -> int:
     p_k = (0.0, p_m, 1.0)
     adj_band = [base[t] + p_k[i] * v_opt for i, t in enumerate(TIERS)]
     a2, b2 = cut_points(*adj_band)
-    zone_v = zone_of(inp["price"], *adj_band)
 
     # ---- Report ----
     print(f"formula_id: {FORMULA_IDS[0]} + {FORMULA_IDS[1]}")
@@ -224,21 +224,17 @@ def main() -> int:
     print(f"foundry mids df={inp['foundry_discount']:g} = "
           + " / ".join(f"{k} {mids[k]:.1f}" for k in PB_BANDS)
           + f"  ->  V_opt={v_opt:.2f}  E[P_f]={epf:.1f}")
-    print(f"表2  price {inp['price']} -> zone = {zone}")
     print(f"表3  V_opt={v_opt:.2f}  p_k={p_k[0]:.2f}/{p_k[1]:.3f}/{p_k[2]:.2f}  "
           + "  ".join(f"{t}:{base[t]:.2f}+{p_k[i]:.3f}xV={adj_band[i]:.2f}" for i, t in enumerate(TIERS))
-          + f"  A'={a2:.2f} B'={b2:.2f} zone+V={zone_v}")
-    if inp["price"] > H:
-        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}; P/(H+V) = {inp['price'] / adj_band[2] - 1:+.1%}")
-    print(f"候选带（FY27·汇丰单家 {eps_c:g}，ROE {eps_c * sh / eq:.3f} -> {pe_c:.2f}x；不进底牌/zone）: "
-          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  候选 zone={zone_of(inp['price'], *cand)}  "
-          f"H′+V={cand[2] + v_opt:.2f} -> P/(H′+V) = {inp['price'] / (cand[2] + v_opt) - 1:+.1%}")
+          + f"  A'={a2:.2f} B'={b2:.2f}")
+    print(f"候选带（FY27·汇丰单家 {eps_c:g}，ROE {eps_c * sh / eq:.3f} -> {pe_c:.2f}x；不进底牌）: "
+          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  H′+V={cand[2] + v_opt:.2f}")
     for g in (g2 - 0.01, g2 + 0.01):
         pm = perpetual_pe(g, roe["M"], r)
         print(f"sensitivity g2={g:.2%}: M-PE {pm:.2f}x -> M {eps['M'] * pm + sum(inp[k] for k in ADJ_PS) + inp['corp_other_eps'] * pm:.2f}")
 
     # ---- Checks ----
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=TOL)
     errors += ladder("base", L, M, H)
     errors += check_no_p_leak(L, adj_band[0])
     if not p_k[0] <= p_k[1] <= p_k[2]:
@@ -267,7 +263,7 @@ def main() -> int:
         adj_ = closure_at(pe_)
         return tuple(eps[t] * pe_[t] + adj_ for t in TIERS)  # type: ignore[return-value]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     # Only a clean run feeds the daily digest.
     if not errors:
         write_rf_readings("INTC.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

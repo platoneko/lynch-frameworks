@@ -2,7 +2,9 @@
 """HOOD.US (Robinhood Markets) valuation eval — recompute anchors from frameworks/HOOD.US.md.
 
 frameworks/HOOD.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: hood_gordon_wholeco_v1
 
@@ -45,7 +47,7 @@ from lib.gordon import (  # noqa: E402
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 # rf_report imports `eval.lib.*`, so the repo root must be importable too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -57,7 +59,7 @@ FORMULA_ID = "hood_gordon_wholeco_v1"
 LISTING_CCY = "USD"
 
 REQUIRED = [
-    "price", "shares", "equity",
+    "shares", "equity",
     "eps_27_l", "eps_27_m", "eps_27_h", "eps_28_ms",
     "opt_l", "pred_l", "eq_l", "crypto_l", "othtx_l", "nii_l", "othrev_l",
     "opex_l", "nii_shock_100", "tax",
@@ -122,15 +124,13 @@ def main() -> int:
     errors += ladder("flat-multiple", eps_l * pe_m, eps_m * pe_m, eps_h * pe_m)
 
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # --- disclosure ----------------------------------------------------------
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])
     eps_28 = inp["eps_28_ms"]
     roe_28 = eps_28 * shares / equity
     cand_m = eps_28 * perpetual_pe(g2, roe_28, r)
-    implied_r = g2 + (1 - g2 / roe_m) / (inp["price"] / eps_m)
     # A4 prints two readings because the sports share of event-contract revenue
     # is not disclosed: half as a proxy for a sports-only ban, and the whole line.
     def eps_l_less_pred(share: float) -> float:
@@ -142,10 +142,9 @@ def main() -> int:
     print(f"  L rev {rev_l:.0f}  NI_L {ni_l:.1f}  EPS  {eps_l:.4f} / {eps_m:.4f} / {eps_h:.4f}")
     print(f"  ROE   {roe_l:.2%} / {roe_m:.2%} / {roe_h:.2%}   (r {r:.0%}, g2 {g2:.0%})")
     print(f"  PE    {pe_l:.2f}x / {pe_m:.2f}x / {pe_h:.2f}x")
-    print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}  zone {zone}")
+    print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}")
     print(f"  ratios L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / (2 * M):.1%}")
     print(f"  candidate M' {cand_m:.2f} (MS FY2028 {eps_28}, single house)")
-    print(f"  implied r(P) {implied_r:.2%}  vs basket {r:.0%}  delta {implied_r - r:+.2%}")
     print(f"  payout modelled {modelled_payout:.1%} vs observed {inp['payout_obs']:.1%} gap {gap:+.1%}")
     print(f"  A4 sensitivity: prediction markets halved -> L {eps_l_half * pe_l:.2f}"
           f"  |  zeroed -> L {eps_l_zero * pe_l:.2f}")
@@ -157,7 +156,7 @@ def main() -> int:
         pl, pm, ph = multiples(r + dr)
         return eps_l * pl, eps_m * pm, eps_h * ph
 
-    rf = rf_block(LISTING_CCY, {"r_op": r}, band_at, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_op": r}, band_at)
     # Only a clean run feeds the daily digest.
     if not errors:
         write_rf_readings("HOOD.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

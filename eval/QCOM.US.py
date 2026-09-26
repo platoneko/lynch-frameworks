@@ -2,7 +2,10 @@
 """QCOM.US valuation eval — recompute anchors from frameworks/QCOM.US.md.
 
 frameworks/QCOM.US.md is the source of truth for inputs; this script recomputes
-the base L/M/H, A/B, zone and V_opt, and exits 1 on mismatch with stated Outputs.
+the base L/M/H, A/B and V_opt, and exits 1 on mismatch with stated Outputs.  The
+doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote
+falls in is derived live by the daily digest and the app, so nothing here reads
+a price.
 
 formula_id: qcom_sotp_base4_qtl_evebit_vopt_fy27_v1
 
@@ -22,8 +25,8 @@ Three things here are specific to this ticker:
   in 篮 3 按量专利许可 but its 8.5% never enters a formula -- the ladder carries
   the annuity quality, so there is no r_qtl row.  `cyclical` policy asks for
   flat multiples on the operating legs (A2e-5); the cycle lives in the numerator.
-- Implied r(P) and the g2 +/-1pp lever are printed as disclosure only (A15);
-  neither touches the base.
+- The g2 +/-1pp lever is printed as disclosure only (A15); it never touches
+  the base.
 - Probabilities never touch the base. `P_K` is deliberately absent from the
   Inputs table and enters only 表3; `check_no_p_leak` proves it by rebuilding
   the p=0 row and requiring it to equal the base L exactly.
@@ -50,7 +53,7 @@ from eval.lib.inputs import (  # noqa: E402
     report,
 )
 from eval.lib.tiers import report as tier_report  # noqa: E402
-from eval.lib.zones import cut_points, zone_of  # noqa: E402
+from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
@@ -73,7 +76,7 @@ SHARED_LADDER = {f"ev_ebit_ts_{t}": f"ev_ebit_ts_{t}" for t in TIERS}
 P_K = (0.00, 0.35, 1.00)
 
 REQUIRED = (
-    ["price", "shares", "tax_rate", "equity", "v_opt", "r_op", "pe_own_min", "pe_own_max"]
+    ["shares", "tax_rate", "equity", "v_opt", "r_op", "pe_own_min", "pe_own_max"]
     + ["eps_fy26_cons", "eps_9m_fy26", "payout_3y"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -167,7 +170,6 @@ def main() -> int:
         base.append(sum(vals.values()))
     L, M, H = base
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
     # A10: an external residual (HSBC's DC sensitivity x the FY29 target), not a
     # leg of this model -- so it is an Input, not something recomputed from one.
     v_opt = inp["v_opt"]
@@ -197,11 +199,8 @@ def main() -> int:
         tuple(base), tuple(base[i] / eps_by_tier[i] for i in range(3)), tuple(eps_by_tier)
     ):
         print(line)
-    print(f"表2  price {inp['price']} -> zone = {zone}")
     print(f"表3  V_opt={v_opt:.2f}  " + "  ".join(
         f"{n}:{base[i]:.2f}+{P_K[i]:.2f}xV={adj[i]:.2f}" for i, n in enumerate("LMH")))
-    if inp["price"] > H:
-        print(f"     市价隐含 p = {(inp['price'] - H) / v_opt:.2f}")
 
     # Flat@M control: QTL multiples pinned to the M rung; numerator ladder still holds.
     flat_m = [
@@ -211,7 +210,7 @@ def main() -> int:
     ]
     print(f"Flat@{ev_ebit[1]:g}×  L={flat_m[0]:.2f} M={flat_m[1]:.2f} H={flat_m[2]:.2f}")
 
-    # Disclosure only (A15): the g2 lever and the implied r(P).  Neither reaches the base.
+    # Disclosure only (A15): the g2 lever.  It never reaches the base.
     def anchors_at(r: float, g2_shift: dict[str, float]) -> list[float]:
         pe = {leg: perpetual_pe(inp[f"g2_{leg}"] + g2_shift.get(leg, 0.0), roe_m, r) for leg in OP_LEGS}
         return [
@@ -229,20 +228,7 @@ def main() -> int:
         ("hs/iot +1pp", {leg: +0.01 for leg in OP_LEGS if inp[f"g2_{leg}"] + 0.01 <= cap + 1e-9}),
     ):
         lmh = anchors_at(inp["r_op"], shift)
-        print(f"g2 lever {label:12} L={lmh[0]:.2f} M={lmh[1]:.2f} H={lmh[2]:.2f}"
-              f" -> zone {zone_of(inp['price'], *lmh)}")
-    # One δ on the operating legs' basket r so the M-tier leg sum meets the price;
-    # the QTL leg prices on EV/EBIT and does not shift.  M falls as r rises.
-    lo, hi = -0.03, 0.30
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        if anchors_at(inp["r_op"] + mid, {})[1] > inp["price"]:
-            lo = mid
-        else:
-            hi = mid
-    r_delta = (lo + hi) / 2
-    print(f"implied r(P): δ = {r_delta:+.2%} -> operating legs {inp['r_op'] + r_delta:.1%}"
-          f" (篮 {basket} {inp['r_op']:.1%}; QTL leg no r) — disclosure only")
+        print(f"g2 lever {label:12} L={lmh[0]:.2f} M={lmh[1]:.2f} H={lmh[2]:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_op 1:1 on the three Gordon legs; the QTL leg prices on EV/EBIT (no r), and
     # ROE_M / numerators stay put.  Disclosure only: base L/M/H are the 中枢 column.
@@ -250,7 +236,7 @@ def main() -> int:
         lmh = anchors_at(inp["r_op"] + dr, {})
         return lmh[0], lmh[1], lmh[2]
 
-    rf = rf_block(LISTING_CCY, {"r_op": inp["r_op"]}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_op": inp["r_op"]}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors += ["r_f readings: the dr = 0 column does not reproduce L/M/H"]
 
@@ -280,7 +266,7 @@ def main() -> int:
             errors += [f"guardrail: {name} blended multiple {pe:.2f}x outside own band [{own_lo}, {own_hi}] — reverse-solve g to the band edge, do not widen the band"]
 
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone, tol=0.05
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.05
     )
     errors += ladder("base", L, M, H)
     # A2e-2c: the tiers must already separate in the numerator, before multiples.

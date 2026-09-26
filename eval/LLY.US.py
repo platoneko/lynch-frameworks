@@ -2,7 +2,9 @@
 """LLY.US (Eli Lilly) valuation eval — recompute anchors from frameworks/LLY.US.md.
 
 frameworks/LLY.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone from its §3 Inputs table and exits 1 on mismatch.
+L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
+no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
+derived live by the daily digest and the app, so nothing here reads a price.
 
 formula_id: lly_fy27_consensus_gordon_gcap_v1
 
@@ -34,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_branch, check_g_cap, check_r, payout_gap, perpetual_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 # The r_f readings helpers import through the `eval.lib` package, so the repo root joins the path.
 sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
@@ -45,7 +47,7 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "LLY.US.md"
 FORMULA_ID = "lly_fy27_consensus_gordon_gcap_v1"
 TIERS = ("l", "m", "h")
 REQUIRED = [
-    "price", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
+    "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
     "eps_fy26e", "eps_h1_26", "bps_h1_26", "dps_post_h1_26",
     "r_perp", "g2", "roe_cap", "payout_actual", "k_l", "k_m", "k_h",
     "pe_own_min", "pe_own_top", "eps_ttm", "net_debt_ebitda", "interest_ebit", "v_opt",
@@ -106,8 +108,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder(tuple(eps[t] for t in TIERS), rows["m"]["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
     errors += check_branch(g2, rows["m"]["roe"], r, inp["payout_actual"], "M")
     modelled, gap = payout_gap(g2, rows["m"]["roe"], inp["payout_actual"])
     if H / inp["eps_ttm"] > inp["pe_own_top"]:
@@ -134,13 +135,6 @@ def main() -> int:
         f"M = {M / eps['m']:.1f}× FY27E (band is on trailing EPS during +50%/yr growth → not the same base, disclosure only)"
     )
     print(f"payout_gap (M): modelled {modelled:.0%} vs actual {inp['payout_actual']:.0%} → {gap:+.0%} (单调区, sign only)")
-    lo, hi = 0.04, 0.30
-    for _ in range(80):
-        mid = (lo + hi) / 2
-        _, _, roe_m, b_m = tier_roe(inp, eps["m"], g2)
-        val = eps["m"] * perpetual_pe(g2, roe_m, mid) - inp["k_m"] * max(1 - inp["payout_actual"] - b_m, 0) * eps["m"] / (mid - g2)
-        lo, hi = (mid, hi) if val > inp["price"] else (lo, mid)
-    print(f"implied r(P) = {mid:.2%} (δ = {(mid - r) * 100:+.2f}pp vs 篮子)")
     _, _, roe_m, _ = tier_roe(inp, eps["m"], g2)
     for label, gg in (("g2 5%", 0.05), ("g2 4%", 0.04)):
         pe = perpetual_pe(gg, roe_m, r)
@@ -154,8 +148,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         return tuple(price_tier(t, r + dr)["anchor"] for t in TIERS)  # type: ignore[return-value]
 
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf, inp["price"])
-    print(f"price={inp['price']} zone={zone}  P/H = {inp['price'] / H:.3f}")
+    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     # Only a clean run writes, so a FAIL never feeds the daily digest.
     if not errors:
         write_rf_readings("LLY.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)

@@ -2,8 +2,10 @@
 """SPCX.US (SpaceX) valuation eval — recompute anchors from frameworks/SPCX.US.md.
 
 frameworks/SPCX.US.md is the source of truth; this script re-derives
-L/M/H / A/B / zone and the candidate band from its §3 Inputs table and exits 1
-on mismatch.
+L/M/H / A/B and the candidate band from its §3 Inputs table and exits 1 on
+mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which
+zone a quote falls in is derived live by the daily digest and the app, so nothing
+here reads a price.
 
 formula_id: spcx_sotp_fy27_starlink_b4_compute_b7_v1
 
@@ -34,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
-from lib.zones import cut_points, zone_of  # noqa: E402
+from lib.zones import cut_points  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -44,7 +46,7 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "SPCX.US.md"
 FORMULA_ID = "spcx_sotp_fy27_starlink_b4_compute_b7_v1"
 TIERS = ("l", "m", "h")
 REQUIRED = [
-    "price", "shares", "tax",
+    "shares", "tax",
     "subs0", "eg0", "roic_starlink", "g2_starlink", "r_starlink",
     *[f"{f}_{t}" for f in ("adds_q", "arpu", "hw", "eg_g", "margin_c", "space_ebit", "rev_ctr", "gw", "h2_ebitda") for t in TIERS],
     "r_space", "g_space", "roic_space",
@@ -134,8 +136,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    zone = zone_of(inp["price"], L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
 
     # construction §2c: flat-multiple ladder — every leg already carries one
     # multiple across tiers, so the ladder must come from numerators alone.
@@ -163,24 +164,6 @@ def main() -> int:
         elif abs(float(m.group(1)) - val) > CAND_TOL:
             errors.append(f"candidate {label} stated {m.group(1)} vs computed {val:.2f}")
 
-    # Implied common shift δ on every leg's basket r (valuation-rules「隐含 r 对账」, SOTP form).
-    t = "m"
-    target = inp["price"] * sh - rows[t]["legs"]["closure"]
-    ns_m = rows[t]["nopat_s"]
-    sp_m = inp["space_ebit_m"] * (1 - inp["tax"])
-    signed_nopat = rows[t]["signed"] * r7
-
-    def value_at(d: float) -> float:
-        g2 = inp["g2_starlink"]
-        v = ns_m * (1 - g2 / inp["roic_starlink"]) / (r4 + d - g2) + sp_m / (r4s + d) + signed_nopat / (r7 + d)
-        return v + rows[t]["build"]
-
-    lo, hi = -(r4 - inp["g2_starlink"]) + 1e-4, 0.20
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if value_at(mid) > target else (lo, mid)
-    delta = lo
-
     print(f"formula_id={FORMULA_ID}  shares {sh:.4f}bn  tax {inp['tax']:.0%}")
     print(f"r: starlink {r4:g} (篮 {baskets.get('r_starlink')})  launch {r4s:g} (篮 {baskets.get('r_space')})  compute {r7:g} (篮 {baskets.get('r_compute')})")
     print(f"PE: starlink {pe_s:.2f} (g2 {inp['g2_starlink']:g}, ROIC {inp['roic_starlink']:g})  launch {pe_sp:.2f}  compute 1/r {1 / r7:.2f}")
@@ -192,8 +175,7 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.3f} (Starlink 分子比 {ns[0] / ns[1]:.2f}) H/M={H / M:.3f} (分子比 {ns[2] / ns[1]:.2f}) width={(H - L) / (2 * M):.3f} V_opt/M=0")
     print(f"candidate (JPM 2030 subs {inp['subs_2030_jpm']:g}M, g1 {g1:.2%}, n {int(inp['n_cand'])}, stage-1 payout {1 - g1 / inp['roic_starlink']:+.2f} = 发股融资的增长): "
-          f"PE {pe_c:.2f} → L′ {Lc:.2f} M′ {Mc:.2f} H′ {Hc:.2f}  zone@cand {zone_of(inp['price'], Lc, Mc, Hc)}")
-    print(f"implied common δ on basket r (M tier) = {delta * 100:+.2f}pp → starlink r {r4 + delta:.2%} vs g2 {inp['g2_starlink']:.0%}; compute r {r7 + delta:.2%}")
+          f"PE {pe_c:.2f} → L′ {Lc:.2f} M′ {Mc:.2f} H′ {Hc:.2f}")
     for g2 in (inp["g2_starlink"] - 0.01, inp["g2_starlink"] + 0.01):
         d = (perpetual_pe(g2, inp["roic_starlink"], r4) - pe_s) / sh
         print(f"g2 {g2:.0%}: L/M/H {L + rows['l']['nopat_s'] * d:.2f}/{M + rows['m']['nopat_s'] * d:.2f}/{H + rows['h']['nopat_s'] * d:.2f}")
@@ -210,10 +192,9 @@ def main() -> int:
             tot.append((s + sp + signed + build + row["legs"]["closure"]) / sh)
         return tot[0], tot[1], tot[2]
 
-    rf = rf_block(LISTING_CCY, {"r_starlink": r4, "r_space": r4s, "r_compute": r7}, band_rf, inp["price"])
+    rf = rf_block(LISTING_CCY, {"r_starlink": r4, "r_space": r4s, "r_compute": r7}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    print(f"price={inp['price']} zone={zone}  P/H = {inp['price'] / H:.2f}")
     # Only a clean run feeds the daily digest (output/rates/).
     if not errors:
         write_rf_readings("SPCX.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
