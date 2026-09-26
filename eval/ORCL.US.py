@@ -32,11 +32,12 @@ Main ruler: two-leg SOTP; each leg discounts at its own basket r
 Guardrail (③): the band is compared to the same-basis forward PE band
 (price / next-FY non-GAAP consensus).  M sits below the measured floor, the
 floor month passed the 1b validity check, and stepping the OpenAI sub-leg
-down 7 -> 6 -> 5 -> 4 still leaves M below the floor, so the framework is
-BLOCKED: the deck line is printed as a reference band and NO zone is
-asserted.  This script recomputes the reference band, the 降篮 path, the
-band-edge δ (表2′) and the market-implied δ / ROE_proj, and checks the header
-BLOCKED line agrees with the recomputed verdict.
+down 7 -> 6 -> 5 -> 4 still leaves M below the floor (A21).  The user saw
+that and landed the framework anyway, so it is not BLOCKED (valuation-rules
+「BLOCKED 的语义」: a landed file never is): the deck is the band and its
+zone is asserted like any other ticker's.  This script recomputes the band,
+the 降篮 path, the band-edge δ (表2′) and the market-implied δ / ROE_proj, and
+prints the ③ verdict as a diagnostic.
 
 The street's EV/EBIT read (JPM 13x / HSBC 14x on OCI EBIT) is recomputed as a
 cross-check only.  Net debt is taken at face at the start of FY28 and the
@@ -61,7 +62,6 @@ from eval.lib.axes import (  # noqa: E402
     check_capex_constituent,
     check_lab_mount,
 )
-from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     basket_r,
     check_basket_pair,
@@ -78,7 +78,6 @@ from eval.lib.inputs import (  # noqa: E402
     parse_baskets,
     parse_inputs,
     report,
-    stated_zone,
 )
 from eval.lib.zones import zone_of  # noqa: E402
 
@@ -430,14 +429,14 @@ def main() -> int:
     def band_at(**kw) -> tuple[float, float, float]:
         return tuple(per_share(oci_value(t, **kw)["total"]) for t in TIERS)  # type: ignore[return-value]
 
-    # ---- Step 6: reference band (BLOCKED: no zone) ----
+    # ---- Step 6: anchors ----
     L, M, H = band_at()
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
         print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
         return 1
 
-    # ---- Step 7: ③ guardrail on the same-basis forward band, 降篮 path, BLOCKED (A12/A20/A21) ----
+    # ---- Step 7: ③ guardrail on the same-basis forward band, 降篮 path (A12/A20/A21) ----
     pe_fwd = {t: v / eps["m"] for t, v in zip(TIERS, (L, M, H))}
     out_of_band = pe_fwd["m"] < inp["pe_fwd_min"]
     downgrade = []
@@ -447,14 +446,7 @@ def main() -> int:
     for b in OPENAI_DOWNGRADE_BASKETS:
         band_b = band_at(r_o=basket_r(b), r_ot=basket_r(b), kl=0.0)
         downgrade.append((b, basket_r(b), band_b, band_b[1] / eps["m"]))
-    blocked = out_of_band and all(pe_m < inp["pe_fwd_min"] for _, _, _, pe_m in downgrade)
-    # Header contract (AGENTS.md「BLOCKED — 题头契约」): same parser as the digest.
-    header_blocked = load_framework(FRAMEWORK).blocked is not None
-    if blocked != header_blocked:
-        errors.append(
-            f"③ verdict: recomputed {'BLOCKED' if blocked else 'in band after 降篮'} but header "
-            f"{'has' if header_blocked else 'lacks'} the `> **状态：BLOCKED**` line (A21)"
-        )
+    out_after_downgrade = out_of_band and all(pe_m < inp["pe_fwd_min"] for _, _, _, pe_m in downgrade)
     if pe_fwd["h"] > inp["pe_fwd_max"]:
         errors.append(f"H / eps_fy28_mid = {pe_fwd['h']:.2f}x > pe_fwd_max {inp['pe_fwd_max']:.2f}x (A12)")
 
@@ -485,16 +477,8 @@ def main() -> int:
                 errors.append(f"表2′ {lbl}: stated {said} vs recomputed {calc:.4f}")
 
     # ---- Stated vs recomputed ----
-    # BLOCKED: the deck line is a reference band, so L/M/H/A/B must reproduce
-    # but no zone is asserted.  The doc states no zone (stated_zone -> None);
-    # handing that same value back makes the library's zone comparison a no-op
-    # without touching eval/lib.  If a zone ever gets written into a BLOCKED
-    # doc, the header check above and this line disagree loudly.
-    said_zone = stated_zone(md)
-    if blocked and said_zone is not None:
-        errors.append(f"BLOCKED framework states zone `{said_zone}` — a BLOCKED ticker MUST NOT carry a zone (A21)")
-    zone_ref = zone_of(inp["price"], L, M, H)
-    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, said_zone if blocked else zone_ref, TOL))
+    zone_now = zone_of(inp["price"], L, M, H)
+    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, zone_now, TOL))
 
     # ================= diagnostics =================
     print(f"formula_id={FORMULA_ID}")
@@ -541,7 +525,7 @@ def main() -> int:
         f" = {net_debt_fy28 / BN:.1f}B; pref {inp['pref_liq'] / BN:.1f}B -> {closure / sh:.2f}/sh"
         f" | depreciation lag capex_q1/dep_q1 = {inp['capex_q1'] / inp['dep_q1']:.1f}x (A10)"
     )
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  (reference band; BLOCKED -> no zone)")
+    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print("  leg $/sh   software(PE)   oci nonOpenAI   oci OpenAI   closure     total")
     for t, v in zip(TIERS, (L, M, H)):
         p = parts[t]
@@ -565,7 +549,7 @@ def main() -> int:
     for b, rb, band_b, pe_m in downgrade:
         print(f"    篮 {b} r {rb:.0%}: L/M/H = {band_b[0]:.2f} / {band_b[1]:.2f} / {band_b[2]:.2f}  M fwd {pe_m:.2f}x"
               f" {'<' if pe_m < inp['pe_fwd_min'] else '>='} {inp['pe_fwd_min']}")
-    print(f"  verdict: {'BLOCKED — 篮 4 still out of band; no zone' if blocked else 'in band'} | header {'BLOCKED' if header_blocked else '(no BLOCKED line)'}")
+    print(f"  verdict: {'篮 4 still out of band — landed on the user\'s call (A21)' if out_after_downgrade else 'in band'}")
     print(
         f"  表2′ band-edge δ = {delta_floor:+.2%} (r {r_non + delta_floor:.2%} / {r_open + delta_floor:.2%}->{r_open_t + delta_floor:.2%}):"
         f" L/M/H = {band_edge[0]:.2f} / {band_edge[1]:.2f} / {band_edge[2]:.2f}  A′ {a_edge:.2f} B′ {b_edge:.2f}"
@@ -577,7 +561,7 @@ def main() -> int:
         f" = {mkt_oci / nopat_oci['m']:.1f}x M NOPAT"
     )
     print(
-        f"  reference-band reading only: price {inp['price']} -> {zone_ref} (P/H {inp['price'] / H:.2f}); "
+        f"  price {inp['price']} -> {zone_now} (P/H {inp['price'] / H:.2f}); "
         + " | ".join(f"{lbl} {tp:.0f} -> {zone_of(tp, L, M, H)}" for lbl, tp in STREET_TPS)
         + f" | 52w low {WEEK52_LOW} -> {zone_of(WEEK52_LOW, L, M, H)}"
     )
@@ -598,9 +582,9 @@ def main() -> int:
         f" | EV/FY28E NOPAT(M) {ev / (nopat_sw + nopat_oci['m']):.1f}x"
     )
 
-    # ---- sensitivities (all disclosure; none changes BLOCKED) ----
+    # ---- sensitivities (all disclosure; none moves M back into the ③ band) ----
     def fmt(b: tuple[float, float, float]) -> str:
-        return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f}"
+        return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f} -> {zone_of(inp['price'], *b)}"
 
     for kl in (0.0, 0.5):
         b = band_at(kl=kl)
@@ -635,7 +619,7 @@ def main() -> int:
         )
     disc = 1.0 / (1.0 + r)
     print(f"sensitivity discount 1y at r_perp: L/M/H = {L * disc:.2f} / {M * disc:.2f} / {H * disc:.2f}")
-    print(f"price={inp['price']} status={'BLOCKED' if blocked else 'ok'} zone={'n/a (BLOCKED)' if blocked else zone_ref}")
+    print(f"price={inp['price']} zone={zone_now}")
 
     return report(errors)
 

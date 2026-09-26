@@ -70,7 +70,7 @@
 
 **篮子声明 — 行契约**：Inputs 表每条**进锚点公式的 r 行**的来源单元格 **MUST** 含 `篮 N`（N ∈ 1..7）+ 归篮理由；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 / 隐含 r）**MUST NOT** 含 `篮 N` 字样（写「同 `r_perp`，不归篮」之类）；eval 以 `inputs.parse_baskets` + `gordon.check_r(r, where, basket)` 校验值与篮子一致，`check_g_cap(g, r, where)` 校验永续 g。
 
-**BLOCKED — 题头契约**：规则拦下但用户拍板入池的票，题头第三行 `> **状态：BLOCKED**（原因；解封条件）`；Outputs 仍写底牌行（散文称对照带）。`daily_bands.py` / `_INDEX.md` / `calibration.py` 对 BLOCKED 票 **MUST NOT** 出 zone、**MUST NOT** 触发跨带告警。
+**BLOCKED 只在落盘前**：规则拦下（BLOCKED）= 停下来向用户报告原因，不落盘（skill references「BLOCKED 的语义」）。用户看过原因仍拍板落盘，该票就是正常票——底牌照常出 zone、进 `_INDEX` / `calibration.py`、参与跨带告警；未满足的规则写进 Outputs 披露行（样板 `ORCL.US`「③ 出带」行）。已落盘的文件 **MUST NOT** 带 BLOCKED 状态行。
 
 **未建模期权（\(V_{opt}\)）— 行契约**：Outputs bullet `\(V_{opt}\)` + `\(p_L/p_M/p_H\)`；`daily_bands.py` 据此报第二条 `+V` zone。底牌 \(L/M/H\) 与 zone 判定 **MUST NOT** 含概率。判据与构造见 skill references「未建模期权」。
 

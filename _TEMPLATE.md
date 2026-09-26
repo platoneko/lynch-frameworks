@@ -2,7 +2,6 @@
 
 > ⬜ 林奇：`lynch_primary`[ / `lynch_secondary`] | 更新：YYYY-MM-DD | eval: eval/TICKER.py
 > 主尺：（一句话索引，例：SOTP — A腿 PE 带 + B腿 PB 期权；细节在 §0 / §3）
-> **状态：BLOCKED**（可选第三行，仅规则拦下而用户仍拍板入池时；写原因一句 + 解封条件一句；日报 / 索引不出 zone）
 
 ## 0. 现行结论
 
