@@ -15,7 +15,7 @@ description: >
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
 「继续 / 嗯 / 好」≠ 授权落盘。标的池 = 扫 `frameworks/*.md`（排除 `_` 前缀与 `AGENTS.md` / `README.md`）；**MUST NOT** 维护 `universe.yaml`。  
-模板：`frameworks/_TEMPLATE.md`。仓库契约：`frameworks/AGENTS.md`。语义真源：`references/valuation-rules.md`。
+模板：`frameworks/_TEMPLATE.md`。仓库契约：`frameworks/AGENTS.md`（核心）+ `references/contracts.md`（写作细则、行契约）。语义真源：`references/valuation-rules.md`。
 
 ### 懒加载（MUST）
 
@@ -28,6 +28,7 @@ description: >
 | 生成的 M 倍数低于自身实测带下沿（③ 出带） | `references/valuation-rules.md`「③ 出带处理流程」（先补 ②、带同基、增长率诚实、逐档降篮、篮 4 仍出带 → BLOCKED + 带边 r 并列） |
 | zone ∈ {`stretched`,`deep_discount`}（研究当日现价归 zone，只在对话里） | `references/zone-reflection.md` |
 | 拟落盘摘要之后、授权之前 | `references/checklist.md` |
+| 写或改标的文档、轴文件之前（含题头修补） | `references/contracts.md` |
 
 未按上表加载对应 reference → **不得**报价带 / 声称 A2f 完成 / 勾自检完成。
 

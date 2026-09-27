@@ -1,0 +1,58 @@
+# 框架契约 — 写作细则（懒加载）
+
+`frameworks/AGENTS.md` 的写作细则部分：写或改标的文档、轴文件之前读。核心契约（真源、林奇分类、五档价带、现价禁写的核心、落盘门闩）仍在 `frameworks/AGENTS.md`；那里保留同名小节作路标，存量「`AGENTS.md「…」`」指针照旧有效。
+
+## Ticker 文件名
+
+**Ticker 文件名**：美股 **MUST** 带 `.US`（`INTC.US`、`WOLF.US`）；港股/A 股保留市场后缀（`0700.HK`、`601899.SH`）。文件名 = 题头 `# TICKER` = `frameworks/eval/<TICKER>.py`；与 Longbridge 等多市场符号对齐。细则见 skill `sediment-framework`。
+
+## 框架文档
+
+- 题头（`#` 下两行引用块）：第一行林奇类 / 更新日期 / eval 路径；**第二行 `主尺：…` 一句话索引**（人扫一眼 / 日后脚本抽题头用；细节仍在 §0 / §3）
+- 可选第三行 **`> 共识：<档>（依据；as-of YYYY-MM-DD）`**：卖方共识落在本票自己 \(L/M/H\) 的哪一档，写法见「共享情景轴」一节的共识行；**只用于没挂共享轴的票**（挂了轴的以轴上那行为准，本票再写 `just check` 给提醒）
+- 时间线：单文件内嵌；Changelog **append-only** 且**仅用于事件追踪**；**MUST NOT** 用多版本文件名管理
+- **Changelog 何时写**：
+  - **初建日不写**（首次落盘只改题头 + §0–§3；§4 可留空标题）
+  - **框架纠正不写**：口径/公式/证据链/skill 对齐等对框架本身的修订，只改现行块，**MUST NOT** 把纠正过程记进 §4
+  - **事件追踪才写**：财报后假设状态变化、里程碑触发等；以**自然日**为单位，同一天多次修订合并进同一节 `### YYYY-MM-DD`，不按小时/不拆多节
+- 引用规则版本（框架与每票演算同）：写规则名 + 日期，如「valuation-rules 裁决表 ② / 两段式过渡，2026-09-21」；**MUST NOT** 写 git 提交哈希——历史重写（2026-09-26 拆仓的 `filter-repo`）会让哈希失效
+
+## 跨票可比性
+
+**跨票可比性**：`scripts/daily_bands.py` 把所有票的 zone 并排推送，故构造方法 **MUST** 可比。每票 §3 **MUST** 报 \(L/M\)、\(H/M\)、\((H-L)/2M\)（`neutral` 档宽占 M 的比例）；三者的仓库分布由 `scripts/calibration.py` 输出。`_INDEX.md` 每票带篮子列（各腿 `篮 N r%`），由 Inputs `r*` 行的 `篮 N` 标签生成。
+
+## 篮子声明 — 行契约
+
+**篮子声明 — 行契约**：Inputs 表每条**进锚点公式的 r 行**的来源单元格 **MUST** 含 `篮 N`（N ∈ 1..7）+ 归篮理由；只作披露的 r 读数（`r_disc` 年漂移折现、`r_lt_implied`、带边 r）**MUST NOT** 含 `篮 N` 字样（写「同 `r_perp`，不归篮」之类）；eval 以 `inputs.parse_baskets` + `gordon.check_r(r, where, basket)` 校验值与篮子一致，`check_g_cap(g, r, where)` 校验永续 g。
+
+## BLOCKED 只在落盘前
+
+**BLOCKED 只在落盘前**：规则拦下（BLOCKED）= 停下来向用户报告原因，不落盘（skill references「BLOCKED 的语义」）。用户看过原因仍拍板落盘，该票就是正常票——底牌照常出 zone、进 `_INDEX` / `calibration.py`、参与跨带告警；未满足的规则写进 Outputs 披露行（样板 `ORCL.US`「③ 出带」行）。已落盘的文件 **MUST NOT** 带 BLOCKED 状态行。
+
+## 未建模期权（\(V_{opt}\)）— 行契约
+
+**未建模期权（\(V_{opt}\)）— 行契约**：Outputs bullet `\(V_{opt}\)` + `\(p_L/p_M/p_H\)`；`daily_bands.py` 据此报第二条 `+V` zone。底牌 \(L/M/H\) 与 zone 判定 **MUST NOT** 含概率。判据与构造见 skill references「未建模期权」。
+
+## 共识升级候选带（candidate）— 行契约
+
+**共识升级候选带（candidate）— 行契约**：Outputs 一行 `- 候选带（标签）：L′ = **x** · M′ = **y** · H′ = **z** · 门槛 Axx`（撇号使其不与底牌正则相撞；无过渡的档原样复制底牌值）；`daily_bands.py` 以第三行 `候选(标签)` 显示并给独立 zone，跨带告警与 `+V` 同权；**MUST NOT** 进底牌 zone、四个跨票比值或 `calibration.py`。何时用、怎么造见 skill references「共识升级候选带」。
+
+## 共享情景轴
+
+**共享情景轴**：多票落在同一条宏观或产业驱动因子上时（金铜价格梯、AI capex 路径、利率路径…），**MUST** 共用同一条情景梯，由各自 `eval/` 跨文件逐格校验，单改一边即红；各票只保留自己对该梯的**敏感度**，**MUST NOT** 各造各的下行。
+
+轴落盘为 `frameworks/axes/<轴名>.md`（不进标的池）；文档与 Assumptions 里的稳定引用写逻辑 id `` `_AXIS.<轴名>` ``，路径由 `eval/lib/axes.py` 的 `axis_path()` 解析。内含三档值、每档具名来源与 as-of、传导规则、跨票加总校验。怎么造见 skill references「共享情景轴」。
+
+**共识行（2026-09-27 定）**：轴题头引用块里写一行 `> 共识：<档>（依据；as-of YYYY-MM-DD）`，说明卖方共识落在本轴哪一档；app 卡片与轴页据此显示。`<档>` 只能是 `L` `M` `H` `L–M` `M–H` `<L` `>H`（两档之间用 en dash，解析也接受 `-`）；括号里写具名来源与 as-of，**MUST NOT** 编造、**MUST NOT** 含任何票的现价。未写 = 「共识未标注」；记号非法 → `just check` 红。挂载关系由题头「挂载票」段机器读出（遇「候选」即止），`rates_axis` 类型的轴不上卡片与筛选。
+
+## 现价 — 禁写契约（2026-09-27 定）
+
+**现价 — 禁写契约（2026-09-27 定）**：标的文档（§4 Changelog 除外）**MUST NOT** 含本票现价及其函数：现行 zone、「现价 → zone」行、市价隐含 r / g / p / \(\delta\)、现价到锚点或切点的距离（P/H、P/L、距切点 %…）、当前市值、当前 PE / PB / 股息率，以及拿现价立论的散文。允许的市场数据（每项 **MUST** 带 as-of）：① 本票**带日期的历史**成交价 / 倍数带（实证坐标、自身实测带护栏、同等盈利月份价、谷底价）——as-of 当日价不算历史；② **他物**市价：汇率、他股 / 同业的价格与倍数（含同业反解 \(g_2\)）、商品价；③ ETF 的 `nav_ref`（与折算所用指数值同一 as-of 日的 ETF 净值）+ 同日指数值。现价 **MAY** 在研究对话里作诊断（A2f 价带偏离反思、隐含 r 对账、\(g_2\) 证据区间门、纠正对账门等），但现价与诊断结论都 **MUST NOT** 落盘。§4 Changelog 是事件历史，其中带日期的价格与 zone 迁移原样保留。
+
+**机器守卫**：`just check` 用 `frameworks.price_free_violations` 扫 §4 以外的机器形态（本票价格 Inputs 行、`zone = **…**`、「→ zone」、「现价」后跟数字、「已过 A2f」、BLOCKED 状态行），命中即红；拿现价立论的散文扫不出，靠写作时自律（存量文件已于 2026-09-27 全部迁移）。
+
+## 日报与 \(r_f\) 读数行
+
+日报：`scripts/daily_bands.py` 只读框架锚点 + Longbridge 现价 → 写 `output/bands/` → 飞书（**每天都发**；跨带 `@所有人`）。**MUST NOT** 回写框架 MD。
+
+**\(r_f\) 读数行**：已接利率轴的票，eval 干净跑完时把「共识 \(\Delta r_f\)」与「反向压力 ±`rf_cap`」两组 L/M/H 写入 `output/rates/<TICKER>.json`（记下所依据的轴值与底牌锚点）；日报读之，按上市货币段（`_AXIS.rates`，未建段不出）在该票末尾加两行 `利率·共识` / `利率·压力`。只是读数：**MUST NOT** 触发跨带告警、进 `_INDEX` 或 `calibration.py`；轴值或锚点变了而 eval 未重跑 → 打印「过期」而非旧数。
