@@ -4,9 +4,7 @@
 frameworks/300014.SZ.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.  The
-one own-price row left, `px_low_2026`, is a dated historical coordinate (the
-2026 low close) and never reaches the anchor path.
+or a market-implied reading — the digest and the app zone on live quotes.
 
 formula_id: eve_core_excl_smoore_perpetual_g_plus_listed_stake_v1
 
@@ -100,7 +98,7 @@ VOPT_FIELDS = frozenset({
 P_K = (0.0, 0.10, 1.0)
 
 REQUIRED = sorted(FORMULA_FIELDS | VOPT_FIELDS | {
-    "px_low_2026", "bps",
+    "bps",
     "pe_own_hi", "pe_own_lo", "pe_own_ttm_lo", "pe_own_ttm_hi", "eps_fy2027e",
     "ni_group_fy2025", "ni_excl_fy2025",
     "smoore_equity_fy2025", "smoore_equity_h1", "eps_fy2026e",
@@ -324,11 +322,10 @@ def main() -> int:
     # trailing bands sit on a shrunken trailing EPS while the numerator is
     # FY2027E; they are not on the same basis, so ③ does not apply.
     at_cap = {t: perpetual_pe(cap, roe[t], r) for t in ("m", "h")}
-    fwd_low = inp["px_low_2026"] / inp["eps_fy2027e"]
     print(f"  裁决顺序 ③ (B16): trailing 带 own-year [{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}] / "
           f"5y 月频 TTM [{inp['pe_own_ttm_lo']}, {inp['pe_own_ttm_hi']}] 与 FY2027E 分子不同基 → 只披露，不构成 ③；"
           f"g=cap {cap:.0%} 时 PE M {at_cap['m']:.2f} / H {at_cap['h']:.2f}")
-    print(f"      同基坐标：2026 年内最低收盘 {inp['px_low_2026']:.2f} ÷ FY2027E {inp['eps_fy2027e']:.3f} = {fwd_low:.2f}×（序列最新月份，带下沿退化，不反推）；"
+    print(f"      同基前瞻带下沿落在序列最新月份（退化，不反推）；"
           f"整公司 M {M / inp['eps_fy2027e']:.2f}× / H {H / inp['eps_fy2027e']:.2f}× ÷ FY2027E")
     print(f"  卖方一致 TP {inp['tp_street']:.2f} 高于 H {inp['tp_street'] / H - 1:+.1%}"
           f"、高于表3 H 行 {inp['tp_street'] / band3[2] - 1:+.1%}（B11）")
