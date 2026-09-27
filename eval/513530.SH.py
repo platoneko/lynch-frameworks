@@ -222,7 +222,7 @@ def main() -> int:
     k = inp["nav_ref"] / ch["cur"]  # NAV tracks the TR index: map by NAV / index on the as-of date
     computed = {"L": ch["L"] * k, "M": ch["M"] * k, "H": ch["H"] * k}
     computed["A"], computed["B"] = cut_points(computed["L"], computed["M"], computed["H"])
-    errors += check_against_stated(md, computed, None, tol=0.01)
+    errors += check_against_stated(md, computed, tol=0.01)
     if errors:
         return report(errors)
 

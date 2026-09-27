@@ -234,7 +234,7 @@ def main() -> int:
         print(f"sensitivity g2={g:.2%}: M-PE {pm:.2f}x -> M {eps['M'] * pm + sum(inp[k] for k in ADJ_PS) + inp['corp_other_eps'] * pm:.2f}")
 
     # ---- Checks ----
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=TOL)
     errors += ladder("base", L, M, H)
     errors += check_no_p_leak(L, adj_band[0])
     if not p_k[0] <= p_k[1] <= p_k[2]:

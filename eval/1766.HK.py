@@ -264,7 +264,7 @@ def main() -> int:
             if abs(said - got) > CANDIDATE_TOL:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # A-share companion band: same CNY earnings, same basket r, same multiple
     # (A14).  The CNY r_f segment band is a disclosure line only.

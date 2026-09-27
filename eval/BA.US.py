@@ -129,7 +129,7 @@ def main() -> int:
     errors += ladder("flat-multiple", flat["L"], flat["M"], flat["H"])
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     post = {"L": nopat["low"], "M": nopat["mean"] * (1 + g1), "H": nopat["high"] * (1 + g1)}
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (peer median {inp['peer_g_median']:g} → cap {g_cap(r):g})  g1={g1:.4f} n={n}")

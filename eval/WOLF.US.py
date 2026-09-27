@@ -148,7 +148,7 @@ def main() -> int:
     # 篮 7 floor is 1/r × E; consensus EPS is negative, so it is 0 -- printed, never max()-ed into L.
     print(f"  r_perp {i['r_perp']:g} (篮 {baskets.get('r_perp')}), disclosure only; 篮 7 floor 1/r x E = 0.00 (E < 0), L stays {L:.2f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     errors += ladder("base", L, M, H)
     if v_opt < 0:
         errors.append(f"V_opt must be >= 0, got {v_opt:.2f}")

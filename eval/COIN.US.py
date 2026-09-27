@@ -133,7 +133,7 @@ def main() -> int:
     )
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- disclosure ----------------------------------------------------------
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])

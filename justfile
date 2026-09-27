@@ -5,6 +5,16 @@ check:
     cd ..
     python3 -c 'from eval.lib.frameworks import list_framework_paths, load_framework; ps = list_framework_paths(); [load_framework(p) for p in ps]; print(f"parsed {len(ps)} frameworks")'
     fail=0
+    # AGENTS.md「现价 — 禁写契约」: no own current price outside §4 Changelog.
+    python3 - <<'PY' || fail=1
+    import sys
+    from eval.lib.frameworks import list_framework_paths, price_free_violations
+    bad = [f"FAIL {p.name} {e}" for p in list_framework_paths()
+           for e in price_free_violations(p.read_text(encoding="utf-8"))]
+    if bad:
+        print(*bad, sep="\n")
+    sys.exit(1 if bad else 0)
+    PY
     for f in frameworks/eval/*.py; do
       python3 "$f" >/dev/null 2>&1 || { echo "FAIL $f"; fail=1; }
     done

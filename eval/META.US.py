@@ -245,7 +245,7 @@ def main() -> int:
     errors += check_capex_constituent(inp["capex_guide_low"], inp["capex_guide_high"])
 
     # --- Step 6: compare with the stated Outputs block ---
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut})
 
     # --- Step 7: option leg (A14) -- table 3 only; the deck above never sees it ---
     v_opt = warrant_value(inp)

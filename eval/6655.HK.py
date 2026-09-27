@@ -355,7 +355,7 @@ def main() -> int:
     flat = m.band({t: m.pe["m"] for t in TIERS})
     errors += ladder("flat-multiple", *flat)
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]

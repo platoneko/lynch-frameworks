@@ -286,7 +286,7 @@ def main() -> int:
     # ---- Step 4: option ceiling and the zone+V band (probabilities only here) ----
     v_opt = inp["v_opt_units"] * inp["d_eps_per_bn"] * pes["M"]["cu"]
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")

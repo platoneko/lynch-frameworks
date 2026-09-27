@@ -136,7 +136,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # construction §2c: flat-multiple ladder — every leg already carries one
     # multiple across tiers, so the ladder must come from numerators alone.

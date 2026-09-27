@@ -359,7 +359,7 @@ def main() -> int:
 
     # ---- Step 8: stated values, axis mounts ----
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v) > 1e-9:
         errors.append(f"V_opt must be stated as 0 (lab XPU is a basket-pair leg, not an option), got {said_v}")

@@ -272,7 +272,7 @@ def main() -> int:
             f"p leaked into the base: 表3 L row {band3[0]:.4f} != base L {L:.4f}"
         )
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- report -------------------------------------------------------------
     cap = g_cap(r)

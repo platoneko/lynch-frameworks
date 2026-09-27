@@ -473,7 +473,7 @@ def main() -> int:
                 errors.append(f"表2′ {lbl}: stated {said} vs recomputed {calc:.4f}")
 
     # ---- Stated vs recomputed ----
-    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL))
+    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL))
 
     # ================= diagnostics =================
     print(f"formula_id={FORMULA_ID}")

@@ -332,7 +332,7 @@ def main() -> int:
     if leaked:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- Cross bands and disclosures (printed, never asserted) ---------------------
     ddm = tuple(pay * eps[t] / (r - g_d) / fx for t in TIERS)

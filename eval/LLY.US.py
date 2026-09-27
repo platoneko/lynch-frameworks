@@ -108,7 +108,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder(tuple(eps[t] for t in TIERS), rows["m"]["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
     errors += check_branch(g2, rows["m"]["roe"], r, inp["payout_actual"], "M")
     modelled, gap = payout_gap(g2, rows["m"]["roe"], inp["payout_actual"])
     if H / inp["eps_ttm"] > inp["pe_own_top"]:

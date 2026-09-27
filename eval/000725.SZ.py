@@ -82,7 +82,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), inp["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     floor = inp["pb_floor"] * inp["bps"]
     p = stated_p_tiers(md)

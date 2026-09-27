@@ -359,7 +359,7 @@ def main() -> int:
     p_k = {t: v_k[t] / v_opt for t in TIERS}
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     vm = _V_OPT.search(out_sec)
     if vm is None:

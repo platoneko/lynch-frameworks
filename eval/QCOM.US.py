@@ -266,7 +266,7 @@ def main() -> int:
             errors += [f"guardrail: {name} blended multiple {pe:.2f}x outside own band [{own_lo}, {own_hi}] — reverse-solve g to the band edge, do not widen the band"]
 
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.05
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.05
     )
     errors += ladder("base", L, M, H)
     # A2e-2c: the tiers must already separate in the numerator, before multiples.

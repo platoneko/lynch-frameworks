@@ -121,7 +121,7 @@ def main() -> int:
     flat_errs, flat = flat_multiple_ladder(tuple(eps[t] / fx for t in TIERS), rows["m"]["pe"])
     errors += flat_errs
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # Branch / payout consistency on the M tier (monotone domain: sign only, gap disclosed).
     errors += check_branch(g2, rows["m"]["roe"], r, inp["payout_actual"], "M")

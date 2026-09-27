@@ -96,7 +96,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # V_opt chain (construction §7c-7): 2030 target × measured margin → EPS → PE at cap → PV → − H.
     eps_2030 = inp["rev_2030_target"] * inp["nm_2025_gaap"] / inp["shares"]

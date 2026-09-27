@@ -277,7 +277,7 @@ def main() -> int:
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # candidate band: exactly one line, L' = L, M' = M, H' recomputed (with V_proj)
     cand_h = eps["c"] * pe["m"] + v_proj

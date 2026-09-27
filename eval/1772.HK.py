@@ -220,7 +220,7 @@ def main() -> int:
     if not (Lc < Mc < Hc):
         errors.append(f"candidate band not ordered: {Lc:.2f}/{Mc:.2f}/{Hc:.2f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = outputs_section(md)
     for label, want_v, rx in (
         ("scenario_L", scenario_L, r"`scenario_L` = \*\*([0-9.]+)\*\*"),

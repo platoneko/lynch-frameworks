@@ -459,7 +459,7 @@ def main() -> int:
     print(f"坐标 · stretched（> {H:.2f}）：牛顶世界 煤 {inp['coal_h']:g} + 电价 {inp['tariff_h']:g} + 容量 165 = {bull:.4f} → {bull * inp['pe_m']:.2f}；FY2025 式肥年 + 165 = {inp['eps_fy25'] + uplift_eps:.4f} → {(inp['eps_fy25'] + uplift_eps) * inp['pe_m']:.2f}；"
           f"股息率 @L {inp['dps_fy25'] / L:.2%}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
     return report(errors)
 
 

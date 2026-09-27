@@ -316,7 +316,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
     # The 「视同派出」 row and its haircut as stated in Outputs must match.
     import re
     out_sec = outputs_section(md)

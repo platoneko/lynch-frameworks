@@ -220,7 +220,7 @@ def main() -> int:
         errors.append("flat-multiple ladder broken")
     A, B = (L + M) / 2, (M + H) / 2
     net_cash_ps = -inp["net_debt"] / inp["shares"]
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
                                  ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):

@@ -248,7 +248,7 @@ def main() -> int:
         return report(errors, "FAIL (cross-check band)")
 
     # --- Step 5: deck must equal the Outputs line -----------------------------
-    errors = check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.002)
+    errors = check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.002)
     if errors:
         return report(errors)
 

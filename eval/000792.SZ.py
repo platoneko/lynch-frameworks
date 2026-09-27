@@ -199,7 +199,7 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = [^*\n]*\*\*([0-9.]+)\*\*"),

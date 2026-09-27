@@ -111,7 +111,7 @@ def main() -> int:
           f"{floor:.2f} vs L {L:.2f} → {zone_of(floor, L, M, H)}")
 
     # Step 3: guards.
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.05)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.05)
     errors += ladder("base", L, M, H)
     errors += ladder("ni_display", inp["ni_display_l"], inp["ni_display_m"], inp["ni_display_h"])
     if not (inp["ni_pv_l"] <= inp["ni_pv_m"] <= inp["ni_pv_h"]):

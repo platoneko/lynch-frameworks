@@ -435,7 +435,7 @@ def main() -> int:
     if abs(eps_bridge_24 / inp["eps_fy24"] - 1) > CHAIN_TOL:
         errors.append(f"A20 bridge at (fuel_fy24, tariff_fy24) gives {eps_bridge_24:.4f}, >{CHAIN_TOL:.0%} from eps_fy24 {inp['eps_fy24']}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")

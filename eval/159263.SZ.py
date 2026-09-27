@@ -196,7 +196,7 @@ def main() -> int:
     L, M, H = ch["L"] * k, ch["M"] * k, ch["H"] * k
     A, B = cut_points(L, M, H)
     computed = {"L": L, "M": M, "H": H, "A": A, "B": B}
-    errors = check_against_stated(md, computed, None, tol=0.01)
+    errors = check_against_stated(md, computed, tol=0.01)
     # 敏感区: the window choice is the deck's only judgement input.  Sub-window
     # channels do not move the deck (gap < REGIME_GAP keeps the full window);
     # they are printed as disclosure only.

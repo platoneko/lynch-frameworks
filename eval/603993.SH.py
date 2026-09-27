@@ -241,7 +241,7 @@ def main() -> int:
     alt = [tier(inp, t, r_over={"r_perp": 0.11})["anchor"] for t in TIERS]
     kfm2_ret = {t: max((100_000 * (unit_rev_cu(inp, t) * (1 - inp["royalty_cu"]) - inp["cogs_cu"]) / YI) * (1 - inp["tax_rate"]), 0) / inp["capex_kfm2"] for t in TIERS}
     net_cash_ps = -inp["net_debt"] / inp["shares"]
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
                                  ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):

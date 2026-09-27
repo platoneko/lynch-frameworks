@@ -194,7 +194,7 @@ def main() -> int:
     net_cash_ps_hkd = inp["net_cash"] * YI / inp["shares"] / fx
 
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.02
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.02
     )
 
     print(f"formula_id={FORMULA_ID}")

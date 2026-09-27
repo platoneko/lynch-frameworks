@@ -310,7 +310,7 @@ def main() -> int:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # 裁决顺序 ②-b (valuation-rules): the margin ladder may stand in for the
     # consensus three points only while the FY2027 consensus mean sits inside

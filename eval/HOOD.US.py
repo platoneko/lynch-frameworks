@@ -124,7 +124,7 @@ def main() -> int:
     errors += ladder("flat-multiple", eps_l * pe_m, eps_m * pe_m, eps_h * pe_m)
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- disclosure ----------------------------------------------------------
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])

@@ -489,7 +489,7 @@ def main() -> int:
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # 裁决顺序 ②-b (valuation-rules): own realised numerators may stand in for
     # the FY2027 consensus three points only while the consensus mean sits inside

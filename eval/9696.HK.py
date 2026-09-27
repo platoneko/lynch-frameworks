@@ -183,7 +183,7 @@ def main() -> int:
     else:
         p_tiers = tuple(float(pm.group(i)) for i in (1, 2, 3))
     corrected = (L + p_tiers[0] * v_opt, M + p_tiers[1] * v_opt, H + p_tiers[2] * v_opt)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = [^*\n]*\*\*([0-9.]+)\*\*"),
         ("V_opt", v_opt, r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*"),

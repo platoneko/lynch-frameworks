@@ -180,7 +180,7 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
 
     # A2e-2c flat ladder on the connector leg (all tiers at PE_M), solar as is.
     flat = tuple((conn[t] * pe_a["M"] + solar[t] * pe_b[t]) / sh for t in TIERS)

@@ -272,7 +272,7 @@ def main() -> int:
 
     # ---- Step 5: cut points, g2 leverage, order-gate coordinates ----
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
 
     # Option (A16): V_opt is a stated input of the framework (its four elements
     # live in A16, not in Inputs); the script checks the corrected band and its

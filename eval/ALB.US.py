@@ -184,7 +184,7 @@ def main() -> int:
     ladder_errors, flat = flat_multiple_ladder(eps3, M / S["m"]["eps"])
     errors += ladder_errors
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = outputs_section(md)
     for label, v in (("scenario_L", scenario_L), ("floor", floor)):
         s = first_float(rf"`{label}` = \*\*([0-9.]+)\*\*", out_sec)

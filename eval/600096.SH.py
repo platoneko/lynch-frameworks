@@ -145,7 +145,7 @@ def main() -> int:
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
 
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # Candidate band (A17): single-house FY2027 EPS swapped into M only; disclosed, not judged.
     m_cand = inp["eps_fy27_single"] * pe["M"]

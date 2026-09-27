@@ -189,7 +189,7 @@ def main() -> int:
     print(f"篮 {baskets.get('r_perp')} floor 1/r x E (disclosure, not max()-ed): "
           + " / ".join(f"{k} {x['v']:.2f}" for k, x in ref.items()) + f"  | L stays {L:.2f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, tol=0.05)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.05)
     errors += ladder("base", L, M, H)
     if v_opt < 0:
         errors.append(f"V_opt must be >= 0, got {v_opt:.2f}")

@@ -271,7 +271,7 @@ def main() -> int:
     if leaked:
         errors.append(f"reference rows missing from Inputs: {leaked}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- report ----------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")

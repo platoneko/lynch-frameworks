@@ -186,7 +186,7 @@ def main() -> int:
         if abs(fit / e - 1.0) > BRIDGE_TOL:
             errors.append(f"bridge {year}: fit {fit:.3f} vs reported {e} (>{BRIDGE_TOL:.0%})")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want_v, rx in (
         ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*"),

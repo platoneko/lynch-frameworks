@@ -321,7 +321,7 @@ def main() -> int:
         return report(["ladder collapsed"])
     A, B = cut_points(computed["L"], computed["M"], computed["H"])
     computed["A"], computed["B"] = A, B
-    errors = check_against_stated(md, computed, None, tol=0.01)
+    errors = check_against_stated(md, computed, tol=0.01)
     # 校验步骤 5: the energy g2 evidence interval's two ends are printed as bands.
     evid = {g: band(perpetual_pe(g, inp["roe_ene"], r["ene"]), inp["pe_ind"]) for g in (inp["g_evid_min"], inp["g_evid_max"])}
 

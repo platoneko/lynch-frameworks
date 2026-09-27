@@ -107,7 +107,7 @@ def main() -> int:
 
     A, B = cut_points(L, M, H)
     errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None
+        md, {"L": L, "M": M, "H": H, "A": A, "B": B}
     )
 
     r = inp["r_perp"]

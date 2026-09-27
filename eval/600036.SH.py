@@ -152,7 +152,7 @@ def main() -> int:
         return 1
     A, B = cut_points(L, M, H)
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # A2e-2c flat-multiple ladder in PE space: every tier on PE_M = PB_M / ROE_M,
     # so the ladder that remains is the ROE (numerator) ladder alone.

@@ -300,7 +300,7 @@ def main() -> int:
     flat = {t: anchor(inp, t, pe["m"]) for t in TIERS}
     errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- report --------------------------------------------------------------
     disc = (1.0 + inp["r_disc"]) ** (-inp["n_disc"])

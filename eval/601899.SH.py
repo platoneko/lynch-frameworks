@@ -316,7 +316,7 @@ def main() -> int:
     alt = [tier(inp, t, r_over={"r_perp": ALT_METAL_BASKET_R})["anchor"] for t in TIERS]
     net_cash_ps = -inp["net_debt"] / inp["shares"]
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, None, TOL)
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (
         ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*", TOL),
