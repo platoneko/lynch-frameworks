@@ -174,7 +174,7 @@ def bloom_crosscheck(inp: dict[str, float], r: float) -> tuple[list[str], dict[s
     if not BE_FRAMEWORK.exists():
         return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no peer trajectory"], {}
     be = parse_inputs(BE_FRAMEWORK.read_text(encoding="utf-8"))
-    missing = [k for k in ("eps_fy26_m", "shares", "g2", "roe_m", "r_perp") if k not in be]
+    missing = [k for k in ("eps_fy26_m", "shares", "g2", "roe_m", "r_journey") if k not in be]
     if missing:
         return [f"BE.US missing {missing} — cannot cross-check the SOFC option"], {}
     errors: list[str] = []
@@ -429,10 +429,10 @@ def main() -> int:
     # into L) and the SOFC option re-read at BE.US's own 篮 7 rate.
     print(f"地板 (只披露, 不 max): PB 1.0 x BPS = {inp['bps']:.2f} vs L {L:.2f}")
     if be:
-        pe_sofc_be = perpetual_pe(be["g2"], be["roe_m"], be["r_perp"])
+        pe_sofc_be = perpetual_pe(be["g2"], be["roe_m"], be["r_journey"])
         v_sofc_be = v_sofc * pe_sofc_be / inp["pe_sofc"]
         v_opt_be = v_ms + v_sofc_be + v_aft
-        print(f"对照 BE.US 篮 r {be['r_perp']:.0%}: pe_sofc {pe_sofc_be:.2f}x -> SOFC {v_sofc_be:.2f}, V_opt {v_opt_be:.2f}, "
+        print(f"对照 BE.US 过渡篮 r {be['r_journey']:.0%}: pe_sofc {pe_sofc_be:.2f}x -> SOFC {v_sofc_be:.2f}, V_opt {v_opt_be:.2f}, "
               f"H+V {H + v_opt_be:.2f} (只披露, 表3 按 pe_sofc {inp['pe_sofc']:g}x)")
 
     return report(errors)
