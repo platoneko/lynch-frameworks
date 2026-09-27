@@ -9,7 +9,8 @@ or a market-implied reading — the digest and the app zone on live quotes.
 formula_id: muyuan_margin_per_kg_point_gordon_v1
 
 Main ruler: one company-wide leg.  EPS_x = parent net profit per kg sold (m_x)
-x kg sold (policy-locked 7,800万头 x 125 kg) / shares outstanding.
+x kg sold (policy sow cap 300万 x 23.8 = 7,140万头 x 125 kg) / shares outstanding.  The center
+margin is the measured complete-cycle average since 2021Q3 (A4).
 
     M = EPS_M x perpetual_pe(g2 = 0, ROE_M, r)       center margin forever
     L = (EPS_L + M) / (1 + r)                         trough lasts one 12-month
@@ -17,17 +18,19 @@ x kg sold (policy-locked 7,800万头 x 125 kg) / shares outstanding.
     H = EPS_H/(1+r) + EPS_H/(1+r)^2 + M/(1+r)^2       peak lasts two years, then M
 
 Both ends are point semantics (valuation-rules「周期票 regime / point 双口径」):
-the measured worst / best rolling four quarters, recovering to the center in
-one year (2018->2019, 2023->2024) and decaying after two (the consensus deck
-years 2027-28).  The library cannot express either path here —
+the measured worst / best rolling four quarters since 2021Q3 (the policy-locked
+sampling window, A15), recovering to the center in one year (troughs
+2021Q3-2022Q2 and 2023Q1-2024Q1 lasted 4-5 quarters) and decaying after two
+(the consensus deck years 2027-28).  The library cannot express either path here —
 `recovery_two_stage_pe` needs a positive trough EPS (this trough is a loss)
 and `decay_two_stage_pe` is [待建] — so both are written as explicit
 discounted cash-flow lines.
 
-r is basket 4 (reached from the initial basket 6 by the ③ step-down; M at
-basket 4 still sits below the clean equal-earnings band floor, and the user
-approved landing on 2026-09-27 — the ③ row, the band-edge-r table 表2′ and the
-recheck conditions are disclosures, not a status).
+r is basket 4 by a user override (A10 / A11): at this center every
+equal-earnings month is a distorted band, so ③ is undecidable and the rule
+would keep the initial basket 6; the user kept basket 4 on 2026-09-27 knowing
+that.  No clean band means no band-edge r and no 表2′; the band is checked only
+to keep the ③ disclosure row honest, and the basket-6 contrast is printed.
 
 Run:  python3 frameworks/eval/002714.SZ.py
 """
@@ -46,6 +49,9 @@ from lib.inputs import (  # noqa: E402
 )
 from lib.zones import cut_points  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from eval.lib.frameworks import load_framework  # noqa: E402
+
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002714.SZ.md"
 FORMULA_ID = "muyuan_margin_per_kg_point_gordon_v1"
 YI = 1e8
@@ -59,12 +65,13 @@ N_DECAY_H = 2
 FROM_BASKET = 6  # initial basket before the ③ step-down (A10)
 
 REQUIRED = [
-    "shares_total", "shares_treasury", "heads_m", "kg_per_head",
+    "shares_total", "shares_treasury", "heads_m", "sows_cap", "heads_per_sow", "kg_per_head",
     "m_l", "np_l_4q", "kg_l_4q",
     "m_center_total", "np_parent_fy25", "np_total_fy25",
     "m_h", "np_h_4q", "kg_h_4q",
     "bps", "r_perp", "g2", "pe_band_min", "pe_band_max",
-    "k_l", "k_m", "k_h", "m_consensus_2027",
+    "k_l", "k_m", "k_h", "m_consensus_2027", "payout_fy25", "pb_low_5y",
+    "cost_full", "price_realized_2024", "m_center_clear",
 ]
 
 
@@ -121,6 +128,10 @@ def main() -> int:
         errors.append(f"cyclical k must satisfy k_H >= k_M >= k_L, got {ks}")
 
     # --- numerator: margin per kg x kg / shares -------------------------------------
+    # Steady-state volume is the policy sow cap times measured output per sow (A2).
+    if abs(inp["heads_m"] - inp["sows_cap"] * inp["heads_per_sow"]) > 0.01 * inp["heads_m"]:
+        errors.append(f"heads_m {inp['heads_m']} != sows_cap x heads_per_sow = "
+                      f"{inp['sows_cap'] * inp['heads_per_sow']:.0f} (A2)")
     shares = inp["shares_total"] - inp["shares_treasury"]
     kg = inp["heads_m"] * WAN * inp["kg_per_head"]
     conv = inp["np_parent_fy25"] / inp["np_total_fy25"]
@@ -150,19 +161,35 @@ def main() -> int:
     flat = tuple(eps[t] * pe_m for t in "LMH")
     errors += ladder("flat-multiple anchors", *flat)
 
-    # --- ③: clean equal-earnings band, step-down path, band-edge r ------------------
+    # --- ③: equal-earnings band (distorted, disclosure only), basket-6 contrast -----
     if pe_m >= inp["pe_band_min"]:
         errors.append(
             f"PE_M {pe_m:.2f} is back inside the band floor {inp['pe_band_min']} — the ③ disclosure "
-            "row, 表2′ and A11 are stale; rewrite them"
+            "row and A11 are stale; rewrite them"
         )
     path = {b: perpetual_pe(inp["g2"], roe_m, basket_r(b)) for b in range(FROM_BASKET, 3, -1)}
     b6 = band(eps, roe_m, basket_r(FROM_BASKET), inp["g2"])[:3]
     errors += check_triple(md, f"初分篮 {FROM_BASKET}（13%）→", b6)
-    r_edge = 1 / inp["pe_band_min"]
-    edge = band(eps, roe_m, r_edge, inp["g2"])[:3]
-    errors += check_triple(md, "带边带", edge)
-    ea, eb = cut_points(*edge)
+
+    # correction reconciliation gate: independent coordinates for the new M
+    div_coord = inp["payout_fy25"] * eps["M"] / r
+    pb_coord = inp["bps"] * inp["pb_low_5y"]
+
+    # --- A16 candidate band (AGENTS.md「共识升级候选带」): the deck the clearing
+    # gate would install — a pre-ASF-style tight-balance center (m_center_clear)
+    # and a double-hit peak (2024's realised price over today's full cost), same
+    # formula.  L′ is recomputed because it reverts to M′; never a zone input here.
+    m_h_cand = (inp["price_realized_2024"] - inp["cost_full"]) * conv
+    m_m_cand = inp["m_center_clear"] * conv
+    eps_cand = {"L": eps["L"], "M": m_m_cand * kg / shares, "H": m_h_cand * kg / shares}
+    cand = band(eps_cand, eps_cand["M"] / inp["bps"], r, inp["g2"])[:3]
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A16)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
+            if abs(said - got) > TOL:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
 
     # --- sensitivity g2 ±1pp (L/M/H only) ---------------------------------------------
     g_up = band(eps, roe_m, r, inp["g2"] + 0.01)[:3]
@@ -181,7 +208,7 @@ def main() -> int:
     print(f"shares {shares:,.0f} (total - treasury); kg sold {kg / YI:.2f}亿; 归母转化 {conv:.4f}")
     print(f"basket: r_perp 篮 {baskets.get('r_perp')} {BASKET_R[4][0]} r={r:g}; g2={inp['g2']:g}; "
           f"ROE_M {roe_m:.2%} (monotone, ROE-r {roe_m - r:+.1%}); PE_M {pe_m:.3f}x")
-    for t, lab in (("L", "worst 4Q 2023Q2-2024Q1"), ("M", "center 2.0/kg x 归母转化"), ("H", "best 4Q 2024Q3-2025Q2")):
+    for t, lab in (("L", "worst 4Q 2021Q3-2022Q2"), ("M", "center 1.2/kg x 归母转化"), ("H", "best 4Q 2024Q3-2025Q2")):
         print(f"{t}: {lab:26} m={m[t]:+.4f}/kg  EPS={eps[t]:+.4f}")
     print(f"k L/M/H = {ks[0]:g}/{ks[1]:g}/{ks[2]:g} (retention bucket A)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -189,11 +216,16 @@ def main() -> int:
           f"分子比 L={eps['L'] / eps['M']:.3f} H={eps['H'] / eps['M']:.3f}")
     print("flat-multiple ladder @PE_M: " + " / ".join(f"{v:.2f}" for v in flat) + " (2c OK)")
     print(f"regime contrast (no normalisation): L {flat[0]:.2f} (loss -> n/a) / H {flat[2]:.2f} (stretched pressure)")
-    print(f"③ step-down path (g2 {inp['g2']:g}): " + " / ".join(f"篮 {b} {pe:.2f}x" for b, pe in path.items())
-          + f" — all below clean band floor {inp['pe_band_min']} (band [{inp['pe_band_min']}, {inp['pe_band_max']}]);"
-          " user-approved landing 2026-09-27 (A11)")
+    print(f"③ (g2 {inp['g2']:g}): " + " / ".join(f"篮 {b} {pe:.2f}x" for b, pe in path.items())
+          + f" — equal-earnings band [{inp['pe_band_min']}, {inp['pe_band_max']}] is distorted (A11): ③ undecidable,"
+          " basket 4 kept by user override 2026-09-27 (A10)")
     print(f"contrast 初分篮 {FROM_BASKET} 13%: " + " / ".join(f"{v:.2f}" for v in b6))
-    print(f"表2′ band-edge r {r_edge:.4%}: " + " / ".join(f"{v:.2f}" for v in edge) + f"  A′={ea:.2f} B′={eb:.2f}")
+    print(f"reconciliation: E_M/r {eps['M'] / r:.2f} | dividend {inp['payout_fy25']:g} x E_M / r {div_coord:.2f} | "
+          f"BPS x 5y PB low {pb_coord:.2f} (M = {M / inp['bps']:.2f}x BPS)")
+    print(f"候选带 出清·紧平衡 (A16; not a zone input here): m_M′ = {inp['m_center_clear']} x {conv:.4f} = "
+          f"{m_m_cand:.4f}/kg, m_H′ = ({inp['price_realized_2024']} - "
+          f"{inp['cost_full']}) x {conv:.4f} = {m_h_cand:.4f}/kg  L′/M′/H′ = "
+          + " / ".join(f"{v:.2f}" for v in cand))
     print("g2 +1pp: " + " / ".join(f"{v:.2f}" for v in g_up) + " | g2 -1pp: " + " / ".join(f"{v:.2f}" for v in g_dn))
     print(f"②-b: 2027 consensus margin {c27} in [M {m['M']:.3f}, H {m['H']:.3f}]; M sits {dev:.0%} below it "
           "(>20% -> measured structural explanation + trigger, A13/A16)")
