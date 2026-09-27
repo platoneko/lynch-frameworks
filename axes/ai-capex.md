@@ -2,6 +2,7 @@
 
 > 轴类型：`shared_scenario_axis` | 更新：2026-09-22 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 > 口径：**2027 日历年、前五大 hyperscaler（Amazon / Microsoft / Google / Meta / Oracle）总资本开支，USD**
+> 共识：L–M（高盛：2027 卖方共识 1.1 万亿美元，高盛自测 1.2 万亿；as-of 2026-09-25）
 
 共享情景轴（`AGENTS.md`「锚点语义」§共享情景轴）。挂载票的 §3 Inputs **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。
 **MUST NOT** 各票自造 capex 下行。

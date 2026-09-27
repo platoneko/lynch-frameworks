@@ -2,6 +2,7 @@
 
 > 轴类型：`shared_scenario_axis`（**隔层轴**）| 更新：2026-09-13 | 挂载票：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US
 > 口径：**日历年 CPO/NPO 相关光引擎（Optical Engine, OE）实际出货量（颗）**——已扣 SoIC / 下游组装良率，不是 PIC 名义产能 × die
+> 共识：M（大摩 2027E 实际 OE 出货 778 万颗，业界转述 600–700 万同量级；as-of 2026-07-10）
 
 共享情景轴（`AGENTS.md`「锚点语义」§共享情景轴）。挂载票的 §3 Inputs **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。
 **MUST NOT** 各票自造一套 CPO/NPO 出货下行或「换代消化」日历。
