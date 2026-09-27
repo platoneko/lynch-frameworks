@@ -8,7 +8,10 @@ non-AI semi / software).  The tier ladder lives in the numerator: the two
 CoWoS-constrained legs (XPU, networking) scale with the shared quota axis
 (_AXIS.cowos-capacity.md), L <- γ, M <- β, H <- α -- the mirror image of NVDA.
 Multiples are generated, not borrowed: each leg names a perpetual g2 (peer
-cross-section reverse-solve, capped at g_cap(r)), tier ROE = EPS_x / the FY27
+cross-section reverse-solve, capped at g_cap(r); the three hardware legs take the
+4% mega-hardware cap -- FY27 revenue clears MEGA_HW_REVENUE_USD and there is no
+pricing-power exemption, valuation-rules「巨型硬件上限」 -- and their peer values
+live only in the candidate band), tier ROE = EPS_x / the FY27
 OPENING book per share (FY26Q3 equity rolled over Q4 FY26 unbooked earnings at
 the growth-required retention b1 = g/ROE, E_{n+1}/B_n, A24), and the two AI legs run ONE named transition year (FY28 sell-side
 consensus EPS growth) through `two_stage_pe` in M/H only.  L is the digest
@@ -54,6 +57,7 @@ from eval.lib.axes import check_cowos_mount, check_lab_mount, check_optical_oe_m
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_basket_pair,
+    MEGA_HW_REVENUE_USD,
     check_g_cap,
     check_k_declared,
     check_r,
@@ -112,6 +116,7 @@ REQUIRED = [
     "g2_nonai",
     "g2_sw",
     "g2_cand",
+    "g2_nonai_cand",
     "pe_own_min",
     "pe_own_max",
     "cowos_quota_l",
@@ -135,6 +140,13 @@ LEG_R = {"uw": "r_perp", "lab": "r_lab", "net": "r_perp", "nonai": "r_perp", "sw
 # makes it; the other legs' single basket is already their steady state.
 LEG_RT = {**LEG_R, "lab": "r_lab_t"}
 TRANSITION_LEGS = ("uw", "lab", "net")  # FY28 consensus growth is an AI story (A4/A5 flat)
+# Hardware g2 keys under the mega-hardware cap (A25); software is a platform leg.
+MEGA_HW_KEYS = ("g2_xpu", "g2_net", "g2_nonai")
+
+
+def is_mega_hw(inp: dict[str, float]) -> bool:
+    """Numerator-year (FY27) revenue at or above the mega-hardware line (A25)."""
+    return inp["rev_ai_27"] + inp["rev_nonai_27"] + inp["rev_sw_27"] >= MEGA_HW_REVENUE_USD
 
 
 def stated_v_opt(md: str) -> float | None:
@@ -154,8 +166,9 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
             errs.append(f"{key}: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
         errs += check_r(inp[key], key, baskets.get(key))
     # g2 is capped by the r of every leg that reads it; the lab leg reads g2_xpu at r_lab.
-    for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw", "g2_cand"):
-        errs += check_g_cap(inp[key], inp["r_perp"], key)
+    mega_hw = is_mega_hw(inp)
+    for key in ("g2_xpu", "g2_net", "g2_nonai", "g2_sw", "g2_cand", "g2_nonai_cand"):
+        errs += check_g_cap(inp[key], inp["r_perp"], key, mega_hw=mega_hw and key in MEGA_HW_KEYS)
         gap = inp["r_perp"] - inp[key]
         if gap <= 0:
             errs.append(f"perpetuity diverges on {key}: g2 >= r")
@@ -167,7 +180,7 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs += check_k_declared(inp["r_lab"], inp["r_lab_t"], (inp["k_lab"],) * 3, "k_lab")
     errs += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
     # G_cap stays keyed to the JOURNEY basket (「篮子对」判据 3).
-    errs += check_g_cap(inp["g2_xpu"], inp["r_lab"], "g2_xpu@r_lab")
+    errs += check_g_cap(inp["g2_xpu"], inp["r_lab"], "g2_xpu@r_lab", mega_hw=mega_hw)
     errs += check_g_cap(inp["g2_cand"], inp["r_lab"], "g2_cand@r_lab")
     # Only FY28 carries a >=2-house consensus (A8); FY29 is a story.
     errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
@@ -371,7 +384,7 @@ def main() -> int:
     # g_cap and is not a legal state.
     lever = []
     for delta in (-0.01, +0.01):
-        if inp["g2_xpu"] + delta > g_cap(r) + 1e-9:
+        if inp["g2_xpu"] + delta > g_cap(r, is_mega_hw(inp)) + 1e-9:
             continue
         lmh = tuple(anchor_at(tier, delta, TRANSITION_LEGS) for tier in TIERS)
         lever.append((delta, *lmh))
@@ -406,11 +419,11 @@ def main() -> int:
               f"  stage-1 payout {p1:+.3f} ({tag})")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
     print(f"flat-multiple ladder @ M {blended['M']:.2f}x: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
-    ai_cap_hit = inp["g2_xpu"] + band_edge_dg[1] > g_cap(r) + 1e-9
+    ai_cap_hit = inp["g2_xpu"] + band_edge_dg[1] > g_cap(r, is_mega_hw(inp)) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge Δg @ M ROE (all legs shifted): "
         f"lower {band_edge_dg[0]:+.4f} / upper {band_edge_dg[1]:+.4f}"
-        f"{' (upper edge needs AI g2 above the 6% cap — unreachable under ①)' if ai_cap_hit else ''}"
+        f"{' (upper edge needs AI g2 above the 4% mega-hardware cap — unreachable under ①)' if ai_cap_hit else ''}"
     )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
@@ -430,7 +443,7 @@ def main() -> int:
     print(
         "g2 leverage (AI legs ±1pp): "
         + " | ".join(f"{d:+.0%}: {l:.1f}/{m:.1f}/{h:.1f}" for d, l, m, h in lever)
-        + ("  (+1pp above the 6% cap, skipped)" if len(lever) == 1 else "")
+        + ("  (+1pp above the 4% mega-hardware cap, skipped)" if len(lever) == 1 else "")
     )
     l_with_transition = sum(eps["L"][leg] * keep[leg] * leg_pe(leg, "L", transition=True) for leg in LEGS)
     m_no_transition = sum(eps["M"][leg] * keep[leg] * leg_pe(leg, "M", transition=False) for leg in LEGS)
@@ -443,9 +456,15 @@ def main() -> int:
     print(f"axis: quota L/M/H = {inp['cowos_quota_l'] / 1e4:.1f}/{inp['cowos_quota_m'] / 1e4:.1f}/"
           f"{inp['cowos_quota_h'] / 1e4:.1f}万片 (L γ / M β / H α); optical OE mount checked")
 
-    # A22 candidate band: same formula, only AI-leg g2 -> g2_cand (peak-normalized).
+    # A22 candidate band: same formula, the hardware legs' g2 back to their peer
+    # values (the post-horizon runway the mega-hardware cap keeps out of the base).
     def cand_leg_pe(leg: str, tier: str) -> float:
-        g2 = inp["g2_cand"] if leg in TRANSITION_LEGS else inp[LEG_G2[leg]]
+        if leg in TRANSITION_LEGS:
+            g2 = inp["g2_cand"]
+        elif leg == "nonai":
+            g2 = inp["g2_nonai_cand"]
+        else:
+            g2 = inp[LEG_G2[leg]]
         return pe_at(leg, tier, g2, tier != "L")
 
     cand = tuple(
@@ -461,7 +480,7 @@ def main() -> int:
             if abs(said - got) > TOL:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     print(
-        f"候选带（AI g2={inp['g2_cand']:g} 峰值后归一；sw/nonai 不动；不进底牌/zone 判定）: "
+        f"候选带（AI g2={inp['g2_cand']:g} / nonai {inp['g2_nonai_cand']:g} 可见期后跑道；sw 不动；不进底牌/zone 判定）: "
         f"L′/M′/H′={cand[0]:.1f}/{cand[1]:.1f}/{cand[2]:.1f}"
     )
 

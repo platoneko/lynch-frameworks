@@ -13,7 +13,9 @@ Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     ROE_i = eps_i / BPS_open_FY28_i      (E_{n+1} / B_n, A24)
     anchor_i = eps_i * perpetual_pe(g2, ROE_i, r_perp)
 The multiple is generated, not borrowed: one perpetual g2 shared by all three
-tiers (peer cross-section reverse-solve, capped at g_cap(r)), tier ROE on the
+tiers (peer cross-section reverse-solve, capped at the mega-hardware g_cap --
+FY28 revenue is far above MEGA_HW_REVENUE_USD and no pricing-power exemption,
+valuation-rules「巨型硬件上限」), tier ROE on the
 FY2028 OPENING book: the FY27Q2 equity rolled over the 2H FY27 earnings not
 yet booked at the growth-required retention b1 = g2/ROE (closed form
 BPS = BPS0 / (1 - g2·N/eps); valuation-rules 裁决表 ② as of 2026-09-21).  With ROE far above r the payout is ~1 and the three multiples
@@ -43,7 +45,7 @@ Sanity checks beyond the anchor comparison:
   * scenario ordering  rev_l < rev_m <= rev_h, gm_l < gm_m <= gm_h,
     and the resulting eps_l < eps_m < eps_h
   * r basket: the Inputs source cell of r_perp names 篮 N and r equals that
-    basket's value (valuation-rules.md「§r 篮子」) / g2 <= g_cap(r) / r - g2 >= 2%
+    basket's value (valuation-rules.md「§r 篮子」) / g2 <= g_cap(r, mega_hw) (4% mega-hardware cap) / r - g2 >= 2%
   * guardrail: every generated multiple inside the ticker's own realised band
   * flat-multiple ladder (A2e-2c): the tiers must still order correctly with the
     multiple held flat, i.e. the numerator alone separates them
@@ -70,6 +72,7 @@ from eval.lib.axes import check_cowos_mount  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
+    MEGA_HW_REVENUE_USD,
     check_g_cap,
     check_r,
     g_cap,
@@ -185,13 +188,16 @@ def main() -> int:
     if not (inp["gm_l"] < inp["gm_m"] <= inp["gm_h"]):
         errors.append(f"gm order: {inp['gm_l']}/{inp['gm_m']}/{inp['gm_h']}")
     # Perpetual-growth 口径: one basket r for the whole-company leg (A23), one
-    # g2 capped at that r, not at the pole.
+    # g2 capped at that r, not at the pole.  A hardware leg whose numerator-year
+    # revenue clears MEGA_HW_REVENUE_USD gets the 4% mega-hardware cap in the
+    # base; the peer value above it lives only in the candidate band (A22).
+    mega_hw = inp["rev_m"] >= MEGA_HW_REVENUE_USD
     r, g2 = inp["r_perp"], inp["g2"]
     baskets = parse_baskets(md)
     if "r_perp" not in baskets:
         errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    errors += check_g_cap(g2, r, "g2")
+    errors += check_g_cap(g2, r, "g2", mega_hw=mega_hw)
     errors += check_g_cap(inp["g2_cand"], r, "g2_cand")
     if r - g2 <= 0:
         errors.append("perpetuity diverges: g2 >= r")
@@ -380,11 +386,11 @@ def main() -> int:
         f"{excess_cash['l']:.2f}/{excess_cash['m']:.2f}/{excess_cash['h']:.2f} USD/sh over 2H FY27 "
         f"(disclosure only; not a leg, not in BPS)"
     )
-    cap_hit = band_edge_g[1] > g_cap(r) + 1e-9
+    cap_hit = band_edge_g[1] > g_cap(r, mega_hw) + 1e-9
     print(
         f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] band-edge g @ M ROE: "
         f"lower {band_edge_g[0]:+.4f} (Δ {band_edge_g[0] - g2:+.4f}) / upper {band_edge_g[1]:+.4f} "
-        f"(Δ {band_edge_g[1] - g2:+.4f}){f' — above the {g_cap(r):.0%} cap, unreachable under ①' if cap_hit else ''}"
+        f"(Δ {band_edge_g[1] - g2:+.4f}){f' — above the {g_cap(r, mega_hw):.0%} cap, unreachable under ①' if cap_hit else ''}"
     )
     print(
         f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x China DC unit ${inp['china_dc_rev_unit'] / B:.1f}B/yr "
@@ -406,7 +412,8 @@ def main() -> int:
             f"  ({acie / acie_m - 1.0:+.1%} vs M)"
         )
 
-    # A22 candidate band: same formula, only g2 -> g2_cand (peak-normalized).
+    # A22 candidate band: same formula, only g2 -> g2_cand (the post-horizon
+    # runway the mega-hardware cap keeps out of the base).
     g2c = inp["g2_cand"]
     pe_c = tuple(perpetual_pe(g2c, roe, r) for roe in (roe_l, roe_m, roe_h))
     cand = (eps_l * pe_c[0], eps_m * pe_c[1], eps_h * pe_c[2])
@@ -420,7 +427,7 @@ def main() -> int:
             if abs(said - got) > TOL:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     print(
-        f"候选带（g2={g2c:g} 峰值后归一；不进底牌/zone 判定）: "
+        f"候选带（g2={g2c:g} 可见期后跑道；不进底牌/zone 判定）: "
         f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
         f"pe={pe_c[0]:.2f}/{pe_c[1]:.2f}/{pe_c[2]:.2f}"
     )

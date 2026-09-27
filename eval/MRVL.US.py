@@ -109,10 +109,13 @@ REQUIRED = [
     "pe_own_max",
 ]
 
-# AVGO leg -> MRVL leg: each MRVL leg reads the perpetual g2 AVGO names for the
-# same business.  Reading AVGO's Inputs here is what makes "同轴" a checked
-# fact rather than a sentence.
-AVGO_LEG_FOR = {"g2_cu": "g2_xpu", "g2_conn": "g2_net", "g2_comm": "g2_nonai"}
+# AVGO leg -> MRVL leg: each MRVL leg reads the PEER-sourced perpetual g2 AVGO
+# names for the same business.  AVGO's base hardware legs sit under the
+# mega-hardware cap (valuation-rules「巨型硬件上限」), which MRVL (revenue far
+# below the line) does not share, so the peer values are read from AVGO's
+# candidate-band fields.  Reading AVGO's Inputs here is what makes "同轴" a
+# checked fact rather than a sentence.
+AVGO_LEG_FOR = {"g2_cu": "g2_cand", "g2_conn": "g2_cand", "g2_comm": "g2_nonai_cand"}
 TIERS = ("L", "M", "H")
 LEGS = ("cu", "conn", "comm")
 

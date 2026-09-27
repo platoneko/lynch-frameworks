@@ -47,7 +47,7 @@
 | id | 假设 | 状态 | 证据 | 影响 |
 |----|------|------|------|------|
 | A1 | 林奇 `fast_grower` / `cyclical` | active | 对话 2026-09-13 | 分类；倍数政策 flat、阶梯在分子 |
-| A2 | 主尺 = 三腿 SOTP，倍数由 Gordon 生成；「与 AVGO 同轴」= 共用永续 g：每腿直接读 `AVGO.US.md` Inputs 里同业务腿的 g2（Custom ← `g2_xpu`、Connectivity ← `g2_net`、Comm ← `g2_nonai`），来源层级随 AVGO A18（同业横截面反解；AI 腿 6.52% 已截到上限 6.0%，非 AI 5.26% 未触顶）。AVGO 改 g2 本票 eval 即红 | active | AVGO.US A18 / Inputs；`eval/MRVL.US.py` 跨文件逐字段核对 | `g2_*` |
+| A2 | 主尺 = 三腿 SOTP，倍数由 Gordon 生成；「与 AVGO 同轴」= 共用永续 g：每腿直接读 `AVGO.US.md` Inputs 里同业务腿的**同业值**（Custom / Connectivity ← `g2_cand`、Comm ← `g2_nonai_cand`），来源层级随 AVGO A18（同业横截面反解；AI 腿 6.52% 已截到上限 6.0%，非 AI 5.26% 未触顶）。AVGO 底牌硬件腿另受巨型硬件上限 4% 约束（AVGO A25），本票收入远低于 \$1,500 亿、不适用，故读同业值而非 AVGO 底牌。AVGO 改同业值本票 eval 即红 | active | AVGO.US A18 / Inputs；`eval/MRVL.US.py` 跨文件逐字段核对 | `g2_*` |
 | A3 | 分子 = 一条 FY28 增长轴的三点：L = FY27 共识均值 4.21（FY28 零增长）、M = FY28 共识均值 6.73、H = FY28 共识上沿 8.09（41 家）。L 与 H 是同一条轴的两端，不是一头共识一头指引。**分子年份的裁决（构造规则冲突裁决顺序 ②）**：FY28 是最远一个有 ≥2 家共识**区间**的年份；FY29 虽是 ≥2 家可见的最远年份，但只有三家点估计（花旗 / UBS 同为 9.82，美银自家 11.02；yfinance +1y 止于 FY28、Longbridge 季度共识止于 Q4 FY27），凑不出三点同源的区间，故只进 g1 层（A4）。信息坐标（不入锚）：把三家点估计强作 FY29 三点分子（9.82 / 10.22 / 11.02，永续 g2、无过渡、再折一年）得 191.9 / 200.8 / 218.5——L/M 0.96、消化年消失（A2e-1 的 L 失效），且中枢 201 落在底牌 M–H 之间，两种构造讲的是同一个中枢 | active | yfinance 2026-09-13（FY27 38 家，FY28 41 家）；Wisburg 104921 / 101063 / 103192；Longbridge 共识 2026-09-14 | `eps_*` |
 | A4 | 两段式 opt-in，**三档共用**：g1 = 9.82 / 6.73 − 1 = +45.9%，n = 1。理由：FY28 是爬坡年不是运行率（定制 FY28 翻倍、FY29「显著加速」），FY29 是唯一有共识的年份。段一派息率三档均为负（−2.00 / −0.65 / −0.33，= `two_stage_pe` 原形态 1 − g1/ROE，ROE 按 FY28 年初净资产 A17；MUST NOT 用实付派息率替代）= 这段增长靠发股融资，Google 权证与 $2B 优先股就是实例；同一个 \(b_1 = g_1/ROE\) = 3.00 / 1.65 / 1.33 也是 A17 滚账面用的留存率 | active | 花旗 104921（275/28 = 9.82）、UBS 101063（C2028E 9.82）、美银 103192（引用 cons 9.82）；FY27 Q2 call 2026-08-27 | `eps_fy29_cons`、`n_stage` |
 | A5 | FY28 收入权重：Custom 41% / Connectivity 45% / Comm 14%。链条：FY26 custom ≈ DC 一半（花旗 103238）→ FY27 +20%（Q1 call）→ FY28 >2×（Q2 call）≈ $7.4B；Comm FY28 ≈ $2.5B（总 $18B 减 DC $9.66B × 1.6）。权重 ±0.1 对 M 影响 <2% | active | 10-Q 分部表；Q1/Q2 FY27 call；花旗 103238 | `w_*` |
@@ -83,9 +83,9 @@
 | eps_fy29_cons | 9.82 | CY28E ≈ FY29 共识 EPS，三家同数 → g1；A4 | 2026-09-10 |
 | n_stage | 1 | 过渡年数（仅 FY29）；A4 | 2026-09-13 |
 | r_perp | 0.10 | 篮 4 龙头制造 10%：Custom / Connectivity / Comm 三腿同篮（备选篮 6 撤销，街 WACC ≈10.5%）；A16 / A14 | 2026-09-18 |
-| g2_cu | 0.06 | **同业反解·截顶**·Custom 永续增速 = `AVGO.US.md` 的 `g2_xpu`（半导体横截面 10 家中位 6.52% → 仓库上限 6%；cap = min(6%, r − 4%) = 6%）；A2 | 2026-09-11 |
-| g2_conn | 0.06 | **同业反解·截顶**·Connectivity 永续增速 = `AVGO.US.md` 的 `g2_net`（同一横截面 6.52% → 6%；cap 6%）；A2 | 2026-09-11 |
-| g2_comm | 0.0526 | **同业反解**·Comm 永续增速 = `AVGO.US.md` 的 `g2_nonai`（QCOM 5.26% / TXN 6.80% / NXPI 3.24% 中位）；未触顶（cap 6%）；A2 | 2026-09-11 |
+| g2_cu | 0.06 | **同业反解·截顶**·Custom 永续增速 = `AVGO.US.md` 的 `g2_cand`（半导体横截面 10 家中位 6.52% → 仓库上限 6%；cap = min(6%, r − 4%) = 6%）；A2 | 2026-09-11 |
+| g2_conn | 0.06 | **同业反解·截顶**·Connectivity 永续增速 = `AVGO.US.md` 的 `g2_cand`（同一横截面 6.52% → 6%；cap 6%）；A2 | 2026-09-11 |
+| g2_comm | 0.0526 | **同业反解**·Comm 永续增速 = `AVGO.US.md` 的 `g2_nonai_cand`（QCOM 5.26% / TXN 6.80% / NXPI 3.24% 中位）；未触顶（cap 6%）；A2 | 2026-09-11 |
 | w_custom | 0.41 | Custom FY28 收入权重；A5 | 2026-09-13 |
 | w_conn | 0.45 | Connectivity FY28 收入权重；A5 | 2026-09-13 |
 | w_comm | 0.14 | Comm FY28 收入权重；A5 | 2026-09-13 |
