@@ -15,6 +15,26 @@ check:
         print(*bad, sep="\n")
     sys.exit(1 if bad else 0)
     PY
+    # AGENTS.md「共享情景轴」共识行: tiers must parse; a mounted ticker's own line is shadowed by its axis.
+    python3 - <<'PY' || fail=1
+    import sys
+    from eval.lib.axes import list_axis_paths, load_axis
+    from eval.lib.frameworks import list_framework_paths, load_framework
+    bad, mounted = [], {}
+    for p in list_axis_paths():
+        try:
+            for t in load_axis(p).mounts:
+                mounted.setdefault(t, []).append(p.stem)
+        except ValueError as e:
+            bad.append(f"FAIL axes/{p.name} {e}")
+    for p in list_framework_paths():
+        m = load_framework(p)
+        if m.consensus is not None and m.ticker in mounted:
+            print(f"WARN {p.name} 共识行 is shadowed by axis {', '.join(mounted[m.ticker])}")
+    if bad:
+        print(*bad, sep="\n")
+    sys.exit(1 if bad else 0)
+    PY
     for f in frameworks/eval/*.py; do
       python3 "$f" >/dev/null 2>&1 || { echo "FAIL $f"; fail=1; }
     done

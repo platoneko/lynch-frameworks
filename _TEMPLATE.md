@@ -2,6 +2,7 @@
 
 > ⬜ 林奇：`lynch_primary`[ / `lynch_secondary`] | 更新：YYYY-MM-DD | eval: eval/TICKER.py
 > 主尺：（一句话索引，例：SOTP — A腿 PE 带 + B腿 PB 期权；细节在 §0 / §3）
+<!-- 可选（仅没挂共享轴的票）：> 共识：M–H（卖方 2027E；as-of YYYY-MM-DD）——卖方共识落在本票 L/M/H 哪一档，写法见 AGENTS.md「共享情景轴」共识行 -->
 
 ## 0. 现行结论
 
