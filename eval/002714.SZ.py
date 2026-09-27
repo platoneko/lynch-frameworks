@@ -225,7 +225,8 @@ def main() -> int:
     print(f"候选带 出清·紧平衡 (A16; not a zone input here): m_M′ = {inp['m_center_clear']} x {conv:.4f} = "
           f"{m_m_cand:.4f}/kg, m_H′ = ({inp['price_realized_2024']} - "
           f"{inp['cost_full']}) x {conv:.4f} = {m_h_cand:.4f}/kg  L′/M′/H′ = "
-          + " / ".join(f"{v:.2f}" for v in cand))
+          + " / ".join(f"{v:.2f}" for v in cand)
+          + "  A′={:.2f} B′={:.2f} (表2′)".format(*cut_points(*cand)))
     print("g2 +1pp: " + " / ".join(f"{v:.2f}" for v in g_up) + " | g2 -1pp: " + " / ".join(f"{v:.2f}" for v in g_dn))
     print(f"②-b: 2027 consensus margin {c27} in [M {m['M']:.3f}, H {m['H']:.3f}]; M sits {dev:.0%} below it "
           "(>20% -> measured structural explanation + trigger, A13/A16)")
