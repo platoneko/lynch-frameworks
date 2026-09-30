@@ -56,6 +56,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.axes import check_capex_mount  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
@@ -83,6 +84,7 @@ MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pol
 FLOOR_RATIO_MIN = 0.3  # A2e-1: scenario below the floor AND scenario_L / M below this -> back to dialogue
 HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the derived value
 P_TIERS = (0.0, 0.25, 1.0)  # A14 — table 3 only, never an input
+CAND_DISC_YEARS = 2  # A19: FY30 sits two years past the undiscounted FY28 numerator
 
 REQUIRED = [
     "shares",
@@ -99,7 +101,10 @@ REQUIRED = [
     "eps_fy28_m",
     "eps_fy28_h",
     "eps_fy28_gaap_m",
+    "rev_fy28_l",
     "rev_fy28_m",
+    "rev_fy28_h",
+    "rev_fy30_fb",
     "sbc_fy26",
     "amort_fy26",
     "tax",
@@ -309,6 +314,36 @@ def main() -> int:
     if p_tiers != P_TIERS:
         errors.append(f"p_L/p_M/p_H stated {p_tiers} vs A14 {P_TIERS}")
 
+    # ---- Candidate band (A19; AGENTS.md「共识升级候选带」): never a zone input ----
+    # One house (Freedom Broker) prints FY30 revenue and nothing else, so each
+    # tier's FY28 consensus net margin carries it to FY30: FY30 street EPS =
+    # FY28 street EPS x FY30 revenue / that tier's FY28 revenue.  Same haircut,
+    # interest strip, closing cash and g2 as the deck; the book rolls over
+    # FY27-FY29 at b1 = g2/ROE (FY29 core is the geometric midpoint — the path
+    # only moves the book), and FY30 is discounted two years.  The L world has
+    # no second leg of growth, so L′ = L.
+    rev28 = {"L": inp["rev_fy28_l"], "M": inp["rev_fy28_m"], "H": inp["rev_fy28_h"]}
+    errors += ladder("FY28 revenue", rev28["L"], rev28["M"], rev28["H"])
+
+    def fy30_tier(t: str) -> tuple[float, float, float]:
+        c30 = street[t] * inp["rev_fy30_fb"] / rev28[t] * (1.0 - inp["sbc_haircut"]) - int_ps
+        rolled = unbooked + core[t] + (core[t] * c30) ** 0.5
+        share = g2 * rolled / c30
+        if share >= 1.0:
+            raise ValueError(f"candidate book roll diverges at {t}: g·ΣN/c = {share:.2f}")
+        roe30 = c30 * (1.0 - share) / bps_op_fy26
+        return c30, roe30, c30 * perpetual_pe(g2, roe30, r) / (1.0 + r) ** CAND_DISC_YEARS + cash_ps
+
+    cand_m, cand_h = fy30_tier("M"), fy30_tier("H")
+    cand = (L, cand_m[2], cand_h[2])
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A19)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
+            if abs(said - got) > TOL:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+
     # ---- Report ----
     derived, sbc_fy28 = derived_haircut(inp)
     print(f"formula_id={FORMULA_ID}")
@@ -348,6 +383,9 @@ def main() -> int:
     opt = tuple(anchor + p * v_opt for anchor, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
+    print(f"候选带 (A19; Freedom Broker FY30 revenue {inp['rev_fy30_fb']:g}M x FY28 tier margin, g2, ÷(1+r)^{CAND_DISC_YEARS}; not a zone input): "
+          f"core FY30 {cand_m[0]:.3f}/{cand_h[0]:.3f}  ROE {cand_m[1]:.3f}/{cand_h[1]:.3f}  "
+          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}")
     print(f"capex axis implied share: M {inp['rev_fy28_m'] * MILLION / inp['capex_m']:.3%} (not material)")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
