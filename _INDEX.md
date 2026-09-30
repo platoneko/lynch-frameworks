@@ -14,6 +14,7 @@
 - [BE.US](./BE.US.md) — 篮子：r_journey 篮 7 15% · r_terminal 篮 4 10%
 - [COHR.US](./COHR.US.md) — 篮子：篮 4 10%
 - [COIN.US](./COIN.US.md) — 篮子：篮 4 10%
+- [FORM.US](./FORM.US.md) — 篮子：篮 4 10%
 - [GFS.US](./GFS.US.md) — 篮子：篮 4 10%
 - [GLW.US](./GLW.US.md) — 篮子：篮 4 10%
 - [GOOG.US](./GOOG.US.md) — 篮子：r_perp 篮 4 10% · r_cld_lab 篮 7 15% · r_cld_lab_t 篮 4 10%
