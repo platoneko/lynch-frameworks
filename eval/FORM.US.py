@@ -19,8 +19,11 @@ growth-required retention b1 = g2/ROE (A6).  The after-tax net interest is
 stripped from the numerator and the net cash added back per share as a closing
 item (A5, the 1810.HK A15 treatment).  FY27 = current FY + 1: no discount.
 
-V_opt = one realised co-packaged-optics unit (2026 revenue x the Systems
-segment's measured operating margin) at the M-tier multiple (A15).  The
+V_opt = two named items outside consensus, each one realised unit at the M-tier
+multiple: co-packaged optics (2026 revenue x the Systems segment's measured
+operating margin, A15) and GPU probe cards as Nvidia's second qualified source
+(sized on FORM's own realised HBM probe-card business x the Probe Cards
+segment's measured operating margin, A19).  The
 management 2030 target model is a candidate band (company single source, A16):
 same ruler, FY30 numerator, compounded book, discounted t years — on time (M′)
 and three years late like the 2020 model (L′); H′ copies H.  Probabilities
@@ -71,7 +74,8 @@ REQUIRED = [
     "cons_q_adj", "cons_q_gaap", "amort_fy25", "sbc_fy25", "sbc_haircut",
     "payout_3y", "r_perp", "g2", "g_peer_median", "k_l", "k_m", "k_h",
     "mgmt_eps_2030", "mgmt_years", "mgmt_delay",
-    "unit_rev", "unit_margin", "v_opt_units", "pb_low",
+    "unit_rev", "unit_margin", "v_opt_units",
+    "gpu_unit_rev", "gpu_unit_margin", "v_opt_gpu", "pb_low",
 ]
 TIERS = ("L", "M", "H")
 
@@ -219,9 +223,15 @@ def main() -> int:
     lo_ok = lo["L"] < lo["M"] < lo["H"]
 
     # ---- Option ceiling and zone+V (probabilities only here) ----
-    d_eps = inp["unit_rev"] * inp["unit_margin"] * (1.0 - inp["tax"]) * MILLION / inp["shares"]
-    unit_value = d_eps * pes["M"]
-    v_opt = inp["v_opt_units"] * unit_value
+    # Two named items, each on its own realised unit (A15 CPO, A19 GPU probe cards
+    # sized on FORM's own realised HBM probe-card business), at the M-tier multiple.
+    def unit(rev: float, margin: float) -> tuple[float, float]:
+        d = rev * margin * (1.0 - inp["tax"]) * MILLION / inp["shares"]
+        return d, d * pes["M"]
+
+    d_eps, unit_value = unit(inp["unit_rev"], inp["unit_margin"])
+    d_gpu, gpu_value = unit(inp["gpu_unit_rev"], inp["gpu_unit_margin"])
+    v_opt = inp["v_opt_units"] * unit_value + inp["v_opt_gpu"] * gpu_value
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     meta = load_framework(FRAMEWORK)
@@ -280,12 +290,13 @@ def main() -> int:
     for rr, tag in ((0.13, "篮 6 13% (not adopted)"), (0.15, "篮 7 15% (not adopted)")):
         _, _, _, s = deck(g2, rr, inp["sbc_haircut"])
         print(f"contrast r {tag}: {s['L']:.2f}/{s['M']:.2f}/{s['H']:.2f}")
-    print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} = {inp['unit_rev']:g}M x {inp['unit_margin']:.2%} after tax "
-          f"x PE_M {pes['M']:.2f} = {unit_value:.2f}/unit])")
+    print(f"V_opt={v_opt:.2f} = CPO {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} = {inp['unit_rev']:g}M x {inp['unit_margin']:.2%} after tax "
+          f"x PE_M {pes['M']:.2f} = {unit_value:.2f}] + GPU {inp['v_opt_gpu']:g} x [dEPS {d_gpu:.4f} = {inp['gpu_unit_rev']:g}M x "
+          f"{inp['gpu_unit_margin']:.2%} after tax x PE_M = {gpu_value:.2f}]")
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
     print(f"candidate (A16, mgmt FY30 core {c30:.4f}): on time ROE {roe_on:.4f} PE {pe_on:.2f}x -> {on_time:.2f}; "
           f"+{inp['mgmt_delay']:g}y ROE {roe_late:.4f} PE {pe_late:.2f}x -> {late:.2f}; H′ = H {H:.2f}")
-    for tp in (64.0, 157.5, 175.0):
+    for tp in (64.0, 157.5, 175.0, 200.0):
         g_tp, ok = implied_g((tp - cash_ps) / core["M"], roe["M"], r)
         print(f"street TP {tp:g} on this ruler (A17): implied perpetual g {g_tp:.4f}{'' if ok else ' (ill-conditioned)'}")
 
