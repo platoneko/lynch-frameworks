@@ -10,10 +10,12 @@ share of FY28 consensus NI before it becomes an economic EPS; the haircut is
 derived from the GAAP-vs-normalized consensus gap net of acquisition
 amortisation (A9).  Multiples are generated, not borrowed:
 `perpetual_pe(g2, ROE_x, r)` with g2 = the test-equipment peer cluster's
-reverse-solved median truncated to g_cap(r) (A5), r = 13% — the whole company
-is one leg in basket 6 周期商品 / 小盘 (small-cap equipment maker whose earnings
-are the derivative of a few customers' capacity plans, A17; basket 7 is the
-named alternative, its single-customer threshold unmet, A12) — and tier ROE = FY28 core EPS over the FY28 OPENING
+reverse-solved median truncated to g_cap(r) (A5), r = 10% — the whole company
+is one leg in basket 4 常规经营 (an equipment maker whose earnings follow its
+customers' capex projects, not a commodity price; size and customer
+concentration price into the L numerator and p_k, not r — valuation-rules
+「§r 篮子」 2026-09-28, A17; basket 7 is the named alternative, its
+single-customer threshold unmet, A12) — and tier ROE = FY28 core EPS over the FY28 OPENING
 *operating* book: book equity less net cash at FY26 year-end (2026-05-29, the
 latest balance sheet), rolled over the whole FY27 consensus not yet booked (no
 FY27 quarter reported yet) at the growth-required retention b1 = g2/ROE — no
@@ -323,7 +325,7 @@ def main() -> int:
           f"FY26-book basis would read ROE {roe_fy26['L']:.4f}/{roe_fy26['M']:.4f}/{roe_fy26['H']:.4f}")
     print(f"B bucket (actual retention {ret_actual:.0%} − b1) × FY27 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
           f"(cash the model deems distributed but the company keeps; disclosure only, not a leg, not in BPS)")
-    for rr, tag in ((0.10, "篮 4 10%"), (0.15, "篮 7 15%")):
+    for rr, tag in ((0.13, "篮 6 13% (former basket)"), (0.15, "篮 7 15%")):
         alt = {t: core[t] * perpetual_pe(g2, roe[t], rr) + cash_ps for t in TIERS}
         print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_opt {inp['v_opt_units'] * d_eps * perpetual_pe(g2, roe['M'], rr):.2f})")
     print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
