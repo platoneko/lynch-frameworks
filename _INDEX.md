@@ -14,6 +14,7 @@
 - [BE.US](./BE.US.md) — 篮子：r_journey 篮 7 15% · r_terminal 篮 4 10%
 - [COHR.US](./COHR.US.md) — 篮子：篮 4 10%
 - [COIN.US](./COIN.US.md) — 篮子：篮 4 10%
+- [CRDO.US](./CRDO.US.md) — 篮子：篮 4 10%
 - [FORM.US](./FORM.US.md) — 篮子：篮 4 10%
 - [GFS.US](./GFS.US.md) — 篮子：篮 4 10%
 - [GLW.US](./GLW.US.md) — 篮子：篮 4 10%
@@ -91,7 +92,7 @@
 ## 共享情景轴
 
 - [`_AXIS.africa-corridor`](./axes/africa-corridor.md) — 非洲建材与矿业通道情景轴 · 挂载票：`6655.HK` · `600499.SH` · `603871.SH`
-- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
+- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
 - [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：2（`000543.SZ` 皖能电力 · `600011.SH` 华能国际，均电厂侧；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
 - [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US · TSM.US
