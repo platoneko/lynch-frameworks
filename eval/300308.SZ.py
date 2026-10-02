@@ -224,8 +224,9 @@ def main() -> int:
     # ---- Axes (A18) ----
     npo_asp_cny = inp["ubs_rev28"] * inp["npo_share_28"] / inp["npo_units_28"]  # 百万 CNY / unit
     narrow = {
-        "L": 0.0,
-        "M": inp["npo_units_27"] * npo_asp_cny * 1e6 / inp["usdcny"],
+        # Axis tiers are one year (2028): L = delayed a year (2027 volume), M = H = UBS 2028.
+        "L": inp["npo_units_27"] * npo_asp_cny * 1e6 / inp["usdcny"],
+        "M": inp["ubs_rev28"] * inp["npo_share_28"] * 1e6 / inp["usdcny"],
         "H": inp["ubs_rev28"] * inp["npo_share_28"] * 1e6 / inp["usdcny"],
     }
     errors += check_optical_narrow_attach(narrow)
@@ -301,7 +302,7 @@ def main() -> int:
     print(f"  k = 0 reference: {pre['L']:.2f}/{pre['M']:.2f}/{pre['H']:.2f}")
     print("optical narrow (NPO, USD): " + " ".join(
         f"{t} ${narrow[t] / 1e9:.3f}B attach {optical_attachment(narrow[t], t):.1%} (OE share {n_ / oe[t]:.1%})"
-        for t, n_ in (("L", 0.0), ("M", inp["npo_units_27"]), ("H", inp["npo_units_28"]))))
+        for t, n_ in (("L", inp["npo_units_27"]), ("M", inp["npo_units_28"]), ("H", inp["npo_units_28"]))))
     rev_usd = inp["rev_fy27_cons"] * 1e6 / inp["usdcny"]
     print(f"capex axis implied share (wide, FY27 revenue ${rev_usd / 1e9:.1f}B): M {rev_usd / inp['capex_m']:.2%}")
     print("r_f readings: CNY segment of _AXIS.rates 待建 — not printed")

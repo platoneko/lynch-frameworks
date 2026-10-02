@@ -339,20 +339,14 @@ def main() -> int:
     coupe_rev = {t: inp[f"oe_{t}"] * inp["asp_oe"] * inp[f"coupe_share_{t}"] for t in TIERS}
     errors += [f"COUPE narrow: {e}" for e in check_optical_narrow_attach({t.upper(): coupe_rev[t] for t in TIERS})]
 
-    # COUPE follows its own axis trajectory, not the wafer platform's: the M
-    # world pays out 2027 OE (oe_m) and then steps to the axis 2028 volume
-    # (oe_h) at the M-tier share, valued at t=2 on the steady g2 -- applying
-    # the platform PE to 2027 COUPE NI would let the platform's +33% stand in
-    # for a leg whose own named 2028 step is +525%.  L has no transition; H
-    # is the cap (2028 volume as the numerator, A19) and keeps the platform PE.
+    # The axis tiers are all 2028 volume.  M values its 2028 COUPE NI on the
+    # steady g2 and discounts it one year to the platform's 2027 numerator --
+    # the platform PE would let the wafer business's +33% 2028 step stand in
+    # for COUPE's own.  L and H keep the platform PE (A19).
     ni_per_adr = lambda oe, share: oe * inp["asp_oe"] * share * inp["npm_coupe"] / inp["shares_adr"]  # noqa: E731
     v_k = {
         "l": ni_per_adr(inp["oe_l"], inp["coupe_share_l"]) * pe["l"],
-        "m": (
-            ni_per_adr(inp["oe_m"], inp["coupe_share_m"])
-            + ni_per_adr(inp["oe_h"], inp["coupe_share_m"]) * perpetual_pe(g2, roe["m"], r)
-        )
-        / (1.0 + r),
+        "m": ni_per_adr(inp["oe_m"], inp["coupe_share_m"]) * perpetual_pe(g2, roe["m"], r) / (1.0 + r),
         "h": ni_per_adr(inp["oe_h"], inp["coupe_share_h"]) * pe["h"],
     }
     v_opt = v_k["h"]

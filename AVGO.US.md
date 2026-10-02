@@ -101,9 +101,9 @@
 | cowos_quota_l | 3.870e5 | CoWoS 配额 **γ 状态**片数（NVDA 足额 → 本票被挤）；`_AXIS.cowos-capacity.md` §2。**映射与 NVDA 相反**：本票 L←γ | 2026-08-28 |
 | cowos_quota_m | 4.310e5 | CoWoS 配额 **β 状态**片数（等比例分摊）；同上 | 2026-08-28 |
 | cowos_quota_h | 4.840e5 | CoWoS 配额 **α 状态**片数（ASIC 长约优先，本票足额）；同上；H 档 XPU/网络分子 = β × α/β = **+12.3%** | 2026-08-28 |
-| oe_l | 3.9e5 | CPO/NPO 实际 OE 出货 L；`_AXIS.optical-comms.md` §1。约束 AI 网络光学附着；**不**替代 CoWoS 配额 | 2026-07-10 |
-| oe_m | 7.78e6 | 同上 M（2027E） | 2026-07-10 |
-| oe_h | 4.86e7 | 同上 H（2028E） | 2026-07-10 |
+| oe_l | 7.78e6 | CPO/NPO 实际 OE 出货 L；`_AXIS.optical-comms.md` §1。约束 AI 网络光学附着；**不**替代 CoWoS 配额 | 2026-10-02 |
+| oe_m | 4.0e7 | 同上 M（广发证券（香港）2028E scale-up NPO） | 2026-10-02 |
+| oe_h | 4.86e7 | 同上 H（大摩 2028E） | 2026-07-10 |
 | eps_fy26_cons | 11.658 | FY26 共识 non-GAAP EPS 均值（46 家，yfinance `0y`）；只用于把 Q4 FY26 尚未入账的利润滚进 FY27 年初净资产；A24 | 2026-09-11 |
 | eps_9m_fy26 | 7.81 | 9M FY26 已入账 non-GAAP EPS = Q1 2.05 + Q2 2.44 + Q3 3.32（8-K 新闻稿 / yfinance Reported EPS）；从 `eps_fy26_cons` 里扣掉；A24 | 2026-09-02 |
 | payout_3y | 0.405 | 近三年实付派息率均值（DPS ÷ non-GAAP EPS：FY23 1.84/4.22 = 43.6% / FY24 2.11/4.86 = 43.4% / FY25 2.36/6.82 = 34.6%）；只进 A24 的 B 桶披露行，**不进**主尺的 BPS 推演（主尺按 \(b_1=g/ROE\) 滚） | 2025-10-31 |
@@ -153,7 +153,7 @@
 - **林奇形状 = 结果检查**（裁决顺序 ⑤）：`fast_grower` 同向可接受；生成倍数 15.9 < 21.9 < 22.1× 的同向来自「L 不背过渡」与 ROE 按档的机械差，未为凑形状拧 g
 - **共享情景轴**：
   - `_AXIS.cowos-capacity.md`（**零和**）—— 本票 L←γ · M←β · H←α，**与 `NVDA.US` 严格相反**，由 `eval/lib/axes.py` 跨文件校验；单改一边即红
-  - `_AXIS.optical-comms.md`（隔层，与 CoWoS **正交**）—— CPO/NPO 实际 OE 出货 `oe_l/m/h = 3.9e5 / 7.78e6 / 4.86e7`；约束 AI 网络腿对光学部署的附着。
+  - `_AXIS.optical-comms.md`（隔层，与 CoWoS **正交**）—— CPO/NPO 实际 OE 出货 `oe_l/m/h = 7.78e6 / 4.0e7 / 4.86e7`；约束 AI 网络腿对光学部署的附着。
     - **窄口径**附着：**待补**（网络腿未拆光学 vs ASIC/DSP；需 ≥2 家卖方 CPO/NPO 交换机光学附着口径。2026-09-14 复核 Citi 104004 / GS 104708 / 法说纪要 104074：只有「CPO 已开始出货、仍处早期」「Tomahawk 6 几乎所有 XPU 客户在用」的定性表述，无收入或出货口径 → 不估）
     - **宽口径诊断**：FY27 AI 网络 **$31.1B** ÷ 池 M $3.50B ≈ **888%**，已声明 **含交换 ASIC/DSP**（轴 §4b）；**MUST NOT** 当窄口径
 
