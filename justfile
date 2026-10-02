@@ -23,7 +23,9 @@ check:
     bad, mounted = [], {}
     for p in list_axis_paths():
         try:
-            for t in load_axis(p).mounts:
+            a = load_axis(p)
+            # Rating and reference mounts alike: neither writes its own 共识 line (contracts.md「定档 / 参照挂载」).
+            for t in a.mounts + a.refs:
                 mounted.setdefault(t, []).append(p.stem)
         except ValueError as e:
             bad.append(f"FAIL axes/{p.name} {e}")
