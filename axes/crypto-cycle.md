@@ -1,6 +1,6 @@
 # _AXIS.crypto-cycle — 加密活跃度情景轴
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-23 | 挂载票（全档）：COIN.US ｜ 挂载票（**仅 L 档**）：HOOD.US
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-23 | 挂载票（全档）：COIN.US ｜ 参照（**仅 L 档**）：HOOD.US
 > 口径：**2028 日历年、Coinbase 调整后 EBITDA，USD**——以「加密资产价格与成交活跃度的持续状态」为自变量的常态盈利水平
 > 档语义：**regime**（三档都是「该活跃度水平持续下去」的常态年，不是周期路过的点）
 > 共识：M（大摩基准 2028E 调整后 EBITDA 30 亿美元，单家；as-of 2026-09-10）

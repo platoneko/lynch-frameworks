@@ -1,6 +1,6 @@
 # _AXIS.frontier-lab-funding — 前沿实验室付款能力情景轴
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-23 | 挂载票（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-23 | 挂载票：—（三档值待补前无定档）｜ 参照（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
 > 口径：**CY2028、前沿实验室（OpenAI + Anthropic）合计年化收入 ÷ 合计年度算力承诺支出 = 自付覆盖率 \(c\)**
 
 共享情景轴（`AGENTS.md`「共享情景轴」）。本轴锁的是**同一个问题**：卖给前沿实验室的那条腿，收入是靠客户的经营现金流付的，还是靠客户的下一轮融资付的。五张框架 **MUST** 引用本文三档值，由各自 `eval/` 跨文件逐格校验，单改一边即红。

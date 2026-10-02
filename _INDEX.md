@@ -93,16 +93,16 @@
 ## 共享情景轴
 
 - [`_AXIS.africa-corridor`](./axes/africa-corridor.md) — 非洲建材与矿业通道情景轴 · 挂载票：`6655.HK` · `600499.SH` · `603871.SH`
-- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US · VIAV.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
+- [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票：— ｜ 参照（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US · VIAV.US · 参照（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
-- [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：2（`000543.SZ` 皖能电力 · `600011.SH` 华能国际，均电厂侧；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
-- [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US · TSM.US
-- [`_AXIS.crypto-cycle`](./axes/crypto-cycle.md) — 加密活跃度情景轴 · 挂载票（全档）：COIN.US ｜ 挂载票（**仅 L 档**）：HOOD.US
+- [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：— ｜ 参照：`000543.SZ` 皖能电力 · `600011.SH` 华能国际（均电厂侧；000543 主尺写「分子取本轴」但锚点数值与轴档不对应，待该票纠正时复核）；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
+- [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US ｜ 参照：TSM.US
+- [`_AXIS.crypto-cycle`](./axes/crypto-cycle.md) — 加密活跃度情景轴 · 挂载票（全档）：COIN.US ｜ 参照（**仅 L 档**）：HOOD.US
 - [`_AXIS.fed-path-aluminium`](./axes/fed-path-aluminium.md) — 电解铝价差情景轴（利率路径 × 铝供应潮） · 挂载票：1378.HK · 601600.SH · 002532.SZ · 000933.SZ
-- [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH · 603799.SH（仅铜腿）
-- [`_AXIS.frontier-lab-funding`](./axes/frontier-lab-funding.md) — 前沿实验室付款能力情景轴 · 挂载票（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
-- [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：601899.SH · 9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH
-- [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
-- [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ · 600096.SH
+- [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH ｜ 参照：603799.SH（仅铜腿，且只进 M/H）
+- [`_AXIS.frontier-lab-funding`](./axes/frontier-lab-funding.md) — 前沿实验室付款能力情景轴 · 挂载票：—（三档值待补前无定档）｜ 参照（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
+- [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
+- [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
+- [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ ｜ 参照：600096.SH
 - [`_AXIS.rates`](./axes/rates.md) — 无风险利率轴（按上市货币分段） · 挂载票：全部 USD 段票（美股；港股经联系汇率跟 USD 段）——只出 \(r_f\) 敏感性读数，不进锚点
-- [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`
+- [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：— ｜ 参照：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`

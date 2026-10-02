@@ -1,6 +1,6 @@
 # _AXIS.ai-capex — AI 资本开支情景轴
 
-> 轴类型：`shared_scenario_axis` | 更新：2026-09-22 | 挂载票（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US · VIAV.US ｜ 挂载票（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
+> 轴类型：`shared_scenario_axis` | 更新：2026-09-22 | 挂载票：— ｜ 参照（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US · VIAV.US · 参照（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
 > 口径：**2027 日历年、前五大 hyperscaler（Amazon / Microsoft / Google / Meta / Oracle）总资本开支，USD**
 > 共识：L–M（高盛：2027 卖方共识 1.1 万亿美元，高盛自测 1.2 万亿；as-of 2026-09-25）
 

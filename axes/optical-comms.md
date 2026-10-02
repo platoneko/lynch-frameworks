@@ -1,6 +1,6 @@
 # _AXIS.optical-comms — 光通信 / CPO·NPO 光引擎出货情景轴
 
-> 轴类型：`shared_scenario_axis`（**隔层轴**）| 更新：2026-09-13 | 挂载票：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
+> 轴类型：`shared_scenario_axis`（**隔层轴**）| 更新：2026-09-13 | 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 > 口径：**日历年 CPO/NPO 相关光引擎（Optical Engine, OE）实际出货量（颗）**——已扣 SoIC / 下游组装良率，不是 PIC 名义产能 × die
 > 共识：M（大摩 2027E 实际 OE 出货 778 万颗，业界转述 600–700 万同量级；as-of 2026-07-10）
 

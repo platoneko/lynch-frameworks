@@ -1,6 +1,6 @@
 # _AXIS.cowos-capacity — CoWoS 产能与配额情景轴
 
-> 轴类型：`shared_scenario_axis` · **零和** | 更新：2026-09-08 | 挂载票：NVDA.US · AVGO.US · TSM.US
+> 轴类型：`shared_scenario_axis` · **零和** | 更新：2026-09-08 | 挂载票：NVDA.US · AVGO.US ｜ 参照：TSM.US
 > 口径：**2027 日历年、台积电 CoWoS 先进封装产能（片/年）及其在加速器客户间的分配**
 > 共识：M（大摩 2026-08-28 CY2027 需求拆分、缺口等比分摊 = β；摩通 2026-09-17 缺口约 10%；as-of 2026-09-17）
 
