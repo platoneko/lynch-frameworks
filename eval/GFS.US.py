@@ -268,6 +268,13 @@ def main() -> int:
     sip_lo = deck(g2s_=g2s - 0.01)[0]
     cap_hi, cap_hi2 = deck(cap_mult=1.35)[0], deck(cap_mult=1.62)[0]
     gm_hi = deck(gm=0.555)[0]
+
+    # Yield-lag haircut on the borrowed SiPho margin (A21): disclosure only, no source for its size.
+    def v_opt_gm(gm: float, d: dict) -> float:
+        inc = inp["opt_rev"] * (gm - inp["opex_ratio"]) * (1.0 - inp["tax"]) / inp["shares"]
+        return inc * perpetual_pe(g2s, d["H"]["roe_s"], r) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+
+    gm_lo = {gm: deck(gm=gm)[0] for gm in (0.45, 0.40)}
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
 
@@ -290,6 +297,8 @@ def main() -> int:
     print(f"contrast r 9% {trio(r_contrast[0.09])} / 8% {trio(r_contrast[0.08])}")
     print(f"g2 rest -1pp {trio(rest_lo)} / +1pp {trio(rest_hi)} | g2 SiPho -1pp {trio(sip_lo)}")
     print(f"capital share x1.35 {trio(cap_hi)} / x1.62 {trio(cap_hi2)} | SiPho GM 0.555 {trio(gm_hi)}")
+    print("yield-lag haircut on the borrowed SiPho GM (A21, disclosure only): "
+          + " | ".join(f"GM {gm:g} -> {trio(d)} V_opt {v_opt_gm(gm, d):.2f}" for gm, d in gm_lo.items()))
     print(f"V_opt={v_opt:.2f} ({inp['opt_rev'] / 1e9:.2f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio']:g}) x (1-t) = {inc_ps:.4f}/sh x SiPho perp PE "
           f"{perpetual_pe(g2s, base['H']['roe_s'], r):.2f}x / 1.1^{int(inp['t_opt']) - NUM_YEAR}); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
     print(f"candidate (Analyst Day 2028: econ EPS {econ_2028:.3f} -> company g1' {g1_cand:.4f}): L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
