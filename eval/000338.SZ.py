@@ -2,93 +2,72 @@
 """000338.SZ (Weichai Power) valuation eval — recompute anchors from frameworks/000338.SZ.md.
 
 frameworks/000338.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
+L/M/H / A/B and V_opt from its §3 Inputs table and exits 1 on mismatch.  The
+doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing here
+computes a zone or a market-implied reading.
 
-formula_id: weichai_asymmetric_sotp_runrate_gordon_v5
+formula_id: weichai_consensus_fy28_three_leg_gordon_v6
 
-Main ruler: an asymmetric three-leg SOTP.
-  * core     = attributable NP - KION equity NP - large-bore engine NP,
-               on a GENERATED multiple (valuation-rules「永续增长口径」), not an
-               own-year quantile
-  * KION     = KION's own net income x 46.52% (2026 interim, note to the
-               subsidiaries table) x KION's own forward PE, because that leg
-               is priced in Frankfurt, not by China's truck cycle
-  * M-series = measured units x realized unit price x net margin, on the core
-               M-tier multiple — at 3% of group revenue it is a product line in
-               the base, not a growth business
+Main ruler (2026-10-04, user ruling): an asymmetric three-leg SOTP on the
+FY2028 sell-side consensus.
 
-How the core multiple is generated (A14):
-  * ROE_x = np_x / equity (no leg equity is disclosed; company ROE stands in).
-  * r is the basket rate the framework names on the r_perp row (篮 4 龙头制造
-    10%, A15); the script reads the basket tag and refuses a value that is not
-    that basket's.  g2 is capped at g_cap(r) = min(6%, r - 4%).
-  * M / H: perpetual_pe(g2_x, ROE_x, r).  The tier-1 g2 source — the
-    truck/engine peer cross-section reverse-solved on the same ruler, median
-    +0.37% — generates 10.10 / 10.18x, BELOW the lowest monthly TTM PE this
-    ticker printed in five years (10.26, 2024-09).  裁决顺序 ③ therefore
-    replaces it with the g that reverse-solves to that band edge at each
-    tier's ROE (0.90% / 0.51%, labelled 自身实测带反解), so M and H both sit on
-    the edge: flat 10.26x, g reversed with ROE — the cyclical shape check (⑤)
-    passes as a result.  The script re-derives both edge g's and refuses a
-    stated g2 that disagrees, and proves the tier-1 peer g still lands below
-    the band (otherwise ③ no longer applies and the ticker goes back to tier 1).
-  * L is the FY2022 TROUGH (ROE 5.1% < r).  A trough numerator paired with the
-    steady g2 prices the trough as permanent (the cycle counted twice), and a
-    Gordon recovery g gets eaten by the retention term at a 5% ROE — the exact
-    failure that blocked the v1 migration.  valuation-rules「谷底档」 instead:
-    recovery_two_stage_pe(g1, n, g2, ROE_mid, r) with g1 = the ticker's OWN
-    realised trough-to-mid CAGR ((np_m / np_l)^(1/n) - 1 = 32.0%) over the
-    realised n = 3.5 years (FY2022 window centre -> TTM window centre), stage 1
-    paid out 100%, stage 2 = mid-cycle ROE + the same steady g2.  Both g1 and n
-    are facts in the filings, so check_transition_years does not apply.  The
-    trough year is t=1 (same valuation date as the perpetual_pe tiers, A2e-3);
-    the script also prints the multiple on the post-recovery (mid-cycle)
-    numerator, which is how 表1 reports a two-stage leg.
+  numerator  FY2028 company consensus (Eastmoney F10, 13 houses published
+             after the 2026-08-28 interim report): M = mean, H = high.
+             FY2028 = current FY2026 + 2 -> the consensus legs are discounted
+             one year at the basket r (construction §3).  ②-b: the old
+             run-rate ladder (TTM / Q2 x 4) fails both tests and is replaced.
+  legs       * power leg (large-bore reciprocating gensets: diesel backup +
+               gas engines; not turbines) = the only same-scope sell-side
+               FY2028 large-bore revenue (CMBI 209.43亿) x a segment-level
+               sell-side margin (CMBI diesel-engine segment 2028E 19.5%, after
+               CMBI's 14.5% tax), cross-checked against the public power-energy
+               profit share (20% of 1H26 NP over CMBI's 2026E power revenue).
+               Same NI in M and H (single house).  g2 = power-generation peer
+               cross-section reverse-solved on this ruler (CMI / Generac /
+               Jereh; CAT and Wärtsilä exceed the cap and are dropped,
+               Rolls-Royce mtu is inseparable) -> median 4.41%.
+             * KION leg = run-rate equity NI (1H26 x 2 x 46.52%) x KGX.DE
+               forward PE refreshed 2026-10-04 (7.98); today's market value,
+               not discounted.
+             * core = consensus - power leg - KION run-rate; g2 = 0: the
+               same-world Chinese truck peers (Sinotruk A/H) price below 1/r
+               and have no retention-branch solution; the US cluster's 4.74%
+               is a different country and only a control.
+  ROE        company forward ROE (no leg equity is disclosed): FY2028 EPS over
+             the start-of-2028 BPS rolled from the 2026-06-30 book less the
+             interim dividend, retention b = g/ROE (only the power leg grows).
+  L          FY2022 trough unchanged: core on recovery_two_stage_pe (own
+             realised recovery to the TTM level, 3.5 years, then g2 = 0);
+             KION halved; power leg at FY2025 actual units.  Not discounted
+             (trough year = t=1).
+  ③          the own PE band is trailing and the FY2028 numerator was never
+             printed (no same-earnings months) -> band test n/a, printed.
+  中枢        cyclical core: the FY2028 core is checked against the 5-year mean
+             (rule「周期票的中枢分子」); far above it -> kept by user ruling,
+             disclosed with a 中枢 coordinate and a falsification trigger.
+  gate       correction reconciliation gate printed and enforced.
 
-V_opt is three named options, none of which enters the base (valuation-rules
-「未建模期权」2026-10-03: units only from this ticker's named quantities, borrow
-volume never price, value at the vesting year on this ticker's own ruler and
-discount back to the numerator year at the basket r):
-  * AIDC units beyond what the base already holds: the company's named
-    end-2027 AIDC engine capacity (8,000-10,000, midpoint) minus its 2026 AIDC
-    shipment guidance (3,500-4,000, midpoint) x realised M-series unit price x
-    net margin, on the leg-C multiple (core M tier), vesting 2027 -> one year
-    back to the numerator year.  The 13.4k units already in the leg are NOT
-    re-rated (A2e-7c-4/5).
-  * SOFC at the company's 2027 200 MW capacity x Bloom's realised NI/MW (unit
-    economics only, cross-checked against BE.US's Inputs) on THIS ticker's
-    ruler: there is no SOFC leg and no peer group, so the profit sits on the
-    core H tier (r 篮 4 10%, g2_h, ROE_H) — BE's g2 / ROE are no longer
-    borrowed.  Vests 2027 -> one year back.
-  * M-series aftermarket at k=1 x own realised M-series revenue x Cummins'
-    realised aftermarket share (26%), on the leg-C multiple.  No named year:
-    alignment year (this ticker's farthest band consensus year) + 2, flagged
-    无时点锚·拍值.
-
-The former own-year inverse band (18.42 / 12.34 / 11.47, A2) is a cross-ruler:
-printed, never an anchor.  Consensus is unused in the base; 2026-10-03 review
-found a 13-house banded FY2027E on 2338.HK — whether M / H move to it is
-pending the conversation (A13), and FY2027 only serves as t_align here.
-
-Guards beyond the anchor comparison: band-edge re-derivation, tier-1-still-
-outside proof, guardrail, trough-tier precondition (ROE_L < r), shape check,
-flat-multiple ladder, KION-share band, SOFC cross-check against BE.US, p-leak
-scan, southbound-axis mount.
+V_opt: AIDC capacity increment and SOFC are zero (their vesting year 2027 is
+inside the consensus horizon; >=2 houses state that SOFC is in their
+forecasts).  Only the M-series aftermarket stays: k=1 x own measured M-series
+revenue x Cummins' realised aftermarket share x the power-leg margin, on the
+power-leg multiple, vesting at the alignment year FY2028 + 2 = 2030 (无时点锚),
+discounted to FY2028 and one more year to today.
 
 Run:  python3 frameworks/eval/000338.SZ.py
 """
 
 from __future__ import annotations
 
+import re
+import statistics
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    check_g_cap, check_r, g_cap, implied_g, perpetual_pe, recovery_two_stage_pe,
+    check_branch, check_g_cap, check_r, g_cap, payout_gap, perpetual_pe, recovery_two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
@@ -96,122 +75,47 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000338.SZ.md"
-BE_FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BE.US.md"
-FORMULA_ID = "weichai_asymmetric_sotp_runrate_gordon_v5"
+FORMULA_ID = "weichai_consensus_fy28_three_leg_gordon_v6"
 YI = 1e8
-TIERS = ("l", "m", "h")
-
-# The KION leg is the reason this ticker is not valued on a group PE.
-# If it stops being ~10% of profit, §1 属性 A has to be rewritten.
-KION_SHARE_BAND = (0.08, 0.12)
-BLOOM_NI_TOL = 0.10
-MIN_R_MINUS_G = 0.02      # 裁决顺序 ①
-G_EDGE_TOL = 5e-5         # A14: stated g2_x must equal implied_g(pe_own_min, ROE_x, r)
-GUARDRAIL_SLACK = 0.01    # band-edge multiples sit on the edge by construction
-SHAPE_TOL = 0.03          # 校验步骤 5: M->H same-direction only by ROE mechanics
+NUM_YEAR = 2028
+TODAY_FY = 2026
+P_TIERS = (0.0, 0.0, 1.0)
+TOL = 0.05
+KION_SHARE_BAND = (0.08, 0.12)   # 属性 A, on the measured TTM numerator
+B2_MAX_DEV = 0.20                # ②-b (ii)
+MID_MAX = 1.15                   # 周期票中枢: >15% above 中枢 = not a 中枢 numerator
+GATE_BAND = 0.20
+MARGIN_XCHK = 0.25               # sell-side leg margin vs public cross-check
 
 REQUIRED = [
-    "shares", "bps", "fx_hkdcny", "fx_eurcny",
-    "np_l", "np_m", "np_h",
+    "shares", "bps", "dps_after_h1", "eps_h1", "fx_hkdcny", "fx_eurcny",
+    "cons_fy26_m", "cons_fy26_h", "cons_fy27_m", "cons_fy27_h",
+    "cons_fy28_l", "cons_fy28_m", "cons_fy28_h",
+    "np_l", "np_ttm", "np_q2x4", "np_mid5", "n_rec_l",
     "kion_np_h1_eur", "kion_stake", "kion_l_factor", "pe_kion",
-    "ms_units_l", "ms_units_m", "ms_price", "ms_npm",
-    "equity", "r_perp", "g2_core_peer", "g2_m", "g2_h", "n_rec_l",
-    "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h",
-    "sofc_mw_h", "bloom_ni_fy26", "bloom_cap_mw", "fx_usdcny",
-    "r_disc", "aft_share_peer", "aidc_cap_2027", "aidc_units_2026",
-    "t_num", "t_ms", "t_sofc", "t_align", "t_aft",
+    "ms_units_l", "ms_units_m", "ms_price",
+    "lb_rev_fy28", "lb_rev_fy28_ct", "seg_margin", "seg_tax", "power_np_share_h1", "power_rev_h1",
+    "equity", "r_perp", "g2_core", "g2_core_us", "pe_sinotruk_a", "pe_sinotruk_h",
+    "g2_pw_cmi", "g2_pw_gnrc", "g2_pw_jereh", "g2_power", "payout_obs", "disc_years",
+    "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "pb_own_min",
+    "aft_share_peer", "t_align", "t_aft",
 ]
-# Reference-only rows (校验步骤 11): in Inputs, never in an anchor path.
-NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_peer")
+NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_us", "lb_rev_fy28_ct",
+               "cons_fy28_l", "np_q2x4", "pb_own_min")
 
 
-def legs(inp: dict[str, float], tag: str, pe_core: float, pe_ms: float) -> dict[str, float]:
-    """One scenario -> three legs -> market value -> per-share anchor.
-
-    M-series units are the measured run-rate only: L = FY2025 actual, M/H
-    frozen at the 2026H1 annualised 13,400.  The unverified 16k lives in
-    V_opt.  The KION leg keeps its own multiple because it is an external
-    market price, not a policy choice of this framework.
-    """
-    kion = (
-        inp["kion_np_h1_eur"] * 2.0 * inp["kion_stake"] * inp["fx_eurcny"]
-        * (inp["kion_l_factor"] if tag == "l" else 1.0)
-    )
-    units = inp["ms_units_l"] if tag == "l" else inp["ms_units_m"]
-    ms_np = units * inp["ms_price"] * inp["ms_npm"]
-    core = inp[f"np_{tag}"] - kion - ms_np
-    mv = core * pe_core + kion * inp["pe_kion"] + ms_np * pe_ms
-    return {"kion": kion, "ms_np": ms_np, "core": core, "mv": mv,
-            "anchor": mv / inp["shares"], "units": units,
-            "core_ps": core * pe_core / inp["shares"],
-            "kion_ps": kion * inp["pe_kion"] / inp["shares"],
-            "ms_ps": ms_np * pe_ms / inp["shares"]}
-
-
-def disc(inp: dict[str, float], t_vest: float) -> float:
-    """Back from the vesting year to the numerator year at the basket r (R1)."""
-    return (1.0 + inp["r_disc"]) ** -(t_vest - inp["t_num"])
-
-
-def ms_increment_v_opt(inp: dict[str, float], pe_m: float) -> float:
-    """Named AIDC capacity beyond the 2026 AIDC guidance, on the leg-C multiple (A4)."""
-    extra = inp["aidc_cap_2027"] - inp["aidc_units_2026"]
-    v_t = extra * inp["ms_price"] * inp["ms_npm"] * pe_m / inp["shares"]
-    return v_t * disc(inp, inp["t_ms"])
-
-
-def aftermarket_v_opt(inp: dict[str, float], pe_m: float) -> float:
-    """k=1 x own measured M-series revenue x Cummins' realised aftermarket share (A8)."""
-    rev = inp["ms_units_m"] * inp["ms_price"]
-    v_t = rev * inp["aft_share_peer"] * inp["ms_npm"] * pe_m / inp["shares"]
-    return v_t * disc(inp, inp["t_aft"])
-
-
-def sofc_v_opt(inp: dict[str, float], pe_h: float) -> float:
-    """2027 200 MW ceiling x Bloom FY26 NI/MW, on this ticker's core H-tier multiple (A12)."""
-    ni_usd = inp["sofc_mw_h"] * (inp["bloom_ni_fy26"] / inp["bloom_cap_mw"])
-    v_t = ni_usd * inp["fx_usdcny"] * pe_h / inp["shares"]
-    return v_t * disc(inp, inp["t_sofc"])
-
-
-def bloom_crosscheck(inp: dict[str, float]) -> tuple[list[str], dict[str, float]]:
-    """SOFC unit economics (NI per MW) come from BE.US's framework (A12).
-
-    Only the unit economics are borrowed; the multiple is this ticker's own
-    (valuation-rules「未建模期权」: borrow volume, never price).  Returns BE's
-    inputs so the caller can print the would-be peer-group g2 as a sensitivity.
-    """
-    if not BE_FRAMEWORK.exists():
-        return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no unit economics"], {}
-    be = parse_inputs(BE_FRAMEWORK.read_text(encoding="utf-8"))
-    missing = [k for k in ("eps_fy26_m", "shares", "g2") if k not in be]
-    if missing:
-        return [f"BE.US missing {missing} — cannot cross-check the SOFC option"], {}
-    errors: list[str] = []
-    peer = be["eps_fy26_m"] * be["shares"]
-    if abs(peer - inp["bloom_ni_fy26"]) > BLOOM_NI_TOL * inp["bloom_ni_fy26"]:
-        errors.append(
-            f"bloom_ni_fy26 {inp['bloom_ni_fy26']:.3e} vs BE.US "
-            f"eps_fy26_m×shares {peer:.3e} (>{BLOOM_NI_TOL:.0%})"
-        )
-    return errors, be
+def stated_v_opt(md: str) -> float | None:
+    sec = md[md.find("### Outputs"):]
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", sec)
+    return float(m.group(1)) if m else None
 
 
 def check_southbound_mount(md: str) -> list[str]:
-    """Axis §3 rule 3: a mounted ticker reports both the A and the H-share bands.
-
-    The southbound axis locks no numerator and no g here (A11: the Gordon
-    mechanism overrides its tier hint); what it still locks is the reporting
-    contract its own §4 direction check depends on.  The live H/A is a function
-    of today's two prices and no longer lives in the doc; the axis's
-    cross-ticker direction check reads its own dated series (§1).
-    """
     if not AXIS_SOUTHBOUND.exists():
         return [f"axis file missing: {AXIS_SOUTHBOUND.name}"]
     errors: list[str] = []
     if "000338.SZ" not in AXIS_SOUTHBOUND.read_text(encoding="utf-8"):
-        errors.append("000338.SZ is not declared on _AXIS.southbound-repricing.md — "
-                      "a mount has to exist on both sides")
+        errors.append("000338.SZ is not declared on _AXIS.southbound-repricing.md")
     if "H 股对照带" not in md:
         errors.append("framework lacks the H-share companion band (axis §3 rule 3)")
     return errors
@@ -222,231 +126,212 @@ def main() -> int:
     if FORMULA_ID not in md:
         print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
         return 1
-
     inp = parse_inputs(md)
     errors = check_missing(inp, REQUIRED)
     if errors:
         return report(errors)
     errors += check_southbound_mount(md)
-    r = inp["r_perp"]
     baskets = parse_baskets(md)
+    r = inp["r_perp"]
+    sh = inp["shares"]
 
-    # --- Step 1: numerator ladders ------------------------------------------
-    errors += ladder("numerator (np)", inp["np_l"], inp["np_m"], inp["np_h"])
-    if not (inp["ms_units_l"] <= inp["ms_units_m"]):
-        errors.append("M-series unit ladder violated")
-    if not (0 < inp["aidc_units_2026"] < inp["aidc_cap_2027"]):
-        errors.append("AIDC capacity must exceed the 2026 AIDC guidance already in the base (A4)")
-    if not (inp["t_num"] <= min(inp["t_ms"], inp["t_sofc"], inp["t_aft"])):
-        errors.append("vesting years must not precede the numerator year (R1)")
-    if inp["t_aft"] != inp["t_align"] + 2:
-        errors.append(f"t_aft {inp['t_aft']:g} != t_align + 2 (no named year -> alignment year + 2, 无时点锚·拍值)")
-    if errors:
-        return report(errors, "FAIL (ladders)")
-
-    # --- Step 2: tier ROE, then the generated core multiple (A14) -----------
-    roe = {t: inp[f"np_{t}"] / inp["equity"] for t in TIERS}
-    # The core leg is one operating basket (篮 4 龙头制造, A15): the framework
-    # names it on the r_perp row and r must be that basket's value.  r_disc
-    # only bridges the SOFC option one year: untagged (not a leg), same value.
+    # --- basket, g ------------------------------------------------------------
     if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (A15)")
+        errors.append("r_perp: Inputs source cell names no 篮 N")
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    if abs(inp["r_disc"] - r) > 1e-9:
-        errors.append(f"r_disc {inp['r_disc']} != r_perp {r} (A15: 同值)")
-    for t in ("m", "h"):
-        errors += check_g_cap(inp[f"g2_{t}"], r, f"g2_{t}")
-        if r - inp[f"g2_{t}"] < MIN_R_MINUS_G:
-            errors.append(f"g2_{t} {inp[f'g2_{t}']:+.4f}: r-g < {MIN_R_MINUS_G} (裁决顺序 ①)")
+    for k in ("g2_core", "g2_power"):
+        errors += check_g_cap(inp[k], r, k)
+    if inp["g2_core"] != 0.0:
+        errors.append("g2_core must be 0 (same-world Chinese truck peers have no retention-branch solution)")
+    if not all(p < 1.0 / r for p in (inp["pe_sinotruk_a"], inp["pe_sinotruk_h"])):
+        errors.append("a Sinotruk forward PE is now >= 1/r — the core g2 = 0 reading must be redone (A14)")
+    peer_g = [inp["g2_pw_cmi"], inp["g2_pw_gnrc"], inp["g2_pw_jereh"]]
+    if any(g > g_cap(r) for g in peer_g):
+        errors.append("a power peer g exceeds g_cap — it must be dropped, not capped")
+    g_pw = statistics.median(peer_g)
+    if abs(g_pw - inp["g2_power"]) > 5e-5:
+        errors.append(f"g2_power {inp['g2_power']} != peer median {g_pw:.5f}")
+    if int(inp["disc_years"]) != NUM_YEAR - TODAY_FY - 1:
+        errors.append(f"disc_years {inp['disc_years']:g} != FY{NUM_YEAR} - (FY{TODAY_FY}+1)")
+    if inp["t_aft"] != inp["t_align"] + 2 or inp["t_align"] != NUM_YEAR:
+        errors.append("t_align must be the numerator year and t_aft = t_align + 2 (无时点锚)")
+    errors += ladder("FY2028 consensus", inp["cons_fy28_l"], inp["cons_fy28_m"], inp["cons_fy28_h"])
     if errors:
-        return report(errors, "FAIL (growth 口径)")
+        return report(errors, "FAIL (basket / g)")
 
-    # 校验步骤 2: g2 of M / H must be the band-edge reverse-solve at that
-    # tier's ROE, and rule ③ applies only while the tier-1 peer g still
-    # generates a multiple below the band.
-    g_edge = {t: implied_g(inp["pe_own_min"], roe[t], r)[0] for t in ("m", "h")}
-    for t in ("m", "h"):
-        if abs(g_edge[t] - inp[f"g2_{t}"]) > G_EDGE_TOL:
-            errors.append(
-                f"g2_{t} {inp[f'g2_{t}']:+.5f} != band-edge implied g {g_edge[t]:+.5f} at ROE {roe[t]:.2%} "
-                "(A14: 自身实测带反解 must be re-derived, not carried)"
-            )
-    pe_peer = {t: perpetual_pe(inp["g2_core_peer"], roe[t], r) for t in ("m", "h")}
-    if all(p >= inp["pe_own_min"] for p in pe_peer.values()):
-        errors.append(
-            f"tier-1 peer g {inp['g2_core_peer']:+.2%} now generates in-band multiples "
-            f"{pe_peer['m']:.2f}/{pe_peer['h']:.2f} >= {inp['pe_own_min']} — "
-            "裁决顺序 ③ no longer applies; go back to 同业反解 (A14 证伪点)"
-        )
-    # 校验步骤 3: the trough-tier template only applies to a trough.
-    if roe["l"] >= r:
-        errors.append(
-            f"ROE_L {roe['l']:.1%} >= r {r:.0%}: L is not a trough tier — recovery_two_stage_pe "
-            "no longer the right template (valuation-rules「谷底档」), back to the conversation"
-        )
-    if errors:
-        return report(errors, "FAIL (band-edge g / trough tier)")
+    # --- ②-b: the old run-rate ladder against the FY2028 mean -----------------
+    eps_ttm, eps_q2 = inp["np_ttm"] / sh, inp["np_q2x4"] / sh
+    mean28 = inp["cons_fy28_m"]
+    b2_i = eps_ttm <= mean28 <= eps_q2
+    b2_dev = eps_ttm / mean28 - 1
+    if b2_i and abs(b2_dev) <= B2_MAX_DEV:
+        errors.append("②-b passes — the run-rate ladder would be admissible; numerator choice must be revisited")
 
-    n_rec = inp["n_rec_l"]
-    g1 = (inp["np_m"] / inp["np_l"]) ** (1.0 / n_rec) - 1.0
-    pe_core = {
-        "l": recovery_two_stage_pe(g1, n_rec, inp["g2_m"], roe["m"], r),
-        "m": perpetual_pe(inp["g2_m"], roe["m"], r),
-        "h": perpetual_pe(inp["g2_h"], roe["h"], r),
-    }
-    # 校验步骤 4: guardrail.
-    for t in TIERS:
-        if not (inp["pe_own_min"] - GUARDRAIL_SLACK <= pe_core[t] <= inp["pe_own_max"]):
-            errors.append(
-                f"guardrail: generated core PE_{t.upper()} {pe_core[t]:.3f} outside realised band "
-                f"[{inp['pe_own_min']}, {inp['pe_own_max']}] — STOP, do not force g"
-            )
-    if errors:
-        return report(errors, "FAIL (guardrail)")
-    # 校验步骤 5: shape is a RESULT (裁决顺序 ⑤): g reversed across M/H, PE
-    # reversed-or-flat with the trough tier above the mid.
-    if inp["g2_m"] < inp["g2_h"]:
-        errors.append(f"g2_m {inp['g2_m']:+.4f} < g2_h {inp['g2_h']:+.4f}: g not reversed (cyclical, 裁决顺序 ⑤)")
-    if not (pe_core["l"] > pe_core["m"]):
-        errors.append(f"trough-tier PE {pe_core['l']:.2f} <= mid {pe_core['m']:.2f}: recovery segment adds nothing (A14)")
-    if pe_core["h"] > pe_core["m"] * (1.0 + SHAPE_TOL):
-        errors.append(
-            f"PE_H {pe_core['h']:.2f} exceeds PE_M {pe_core['m']:.2f} by more than ROE mechanics allow "
-            f"({SHAPE_TOL:.0%}) — same-direction multiple on a cyclical (裁决顺序 ⑤)"
-        )
-
-    S = {t: legs(inp, t, pe_core[t], pe_core["m"]) for t in TIERS}
-
-    # --- Step 3: the asymmetry claim must still hold -------------------------
-    kion_share = S["m"]["kion"] / inp["np_m"]
+    # --- legs -------------------------------------------------------------------
+    disc = (1 + r) ** inp["disc_years"]
+    npm = inp["seg_margin"] * (1 - inp["seg_tax"])
+    pw_ni = inp["lb_rev_fy28"] * npm
+    pw_ni_l = inp["ms_units_l"] * inp["ms_price"] * npm
+    npm_pub = inp["power_np_share_h1"] * inp["eps_h1"] * sh / inp["power_rev_h1"]
+    if abs(npm / npm_pub - 1) > MARGIN_XCHK:
+        errors.append(f"power-leg margin {npm:.1%} vs public cross-check {npm_pub:.1%} (> {MARGIN_XCHK:.0%})")
+    kion = inp["kion_np_h1_eur"] * 2 * inp["kion_stake"] * inp["fx_eurcny"]
+    kion_share = kion / inp["np_ttm"]
     lo, hi = KION_SHARE_BAND
     if not (lo <= kion_share <= hi):
-        errors.append(
-            f"KION leg is {kion_share:.1%} of M numerator, outside {lo:.0%}-{hi:.0%} "
-            "— §1 属性 A (35% revenue / ~10% profit) no longer holds"
-        )
-    if S["l"]["core"] <= 0:
-        errors.append("L-scenario core profit <= 0 — check 口径")
+        errors.append(f"KION run-rate is {kion_share:.1%} of TTM NP, outside {lo:.0%}-{hi:.0%} (属性 A)")
 
-    # --- Step 4: flat-multiple ladder (校验步骤 6) ----------------------------
-    flat = {t: legs(inp, t, pe_core["m"], pe_core["m"])["anchor"] for t in TIERS}
-    errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
+    bps0 = inp["bps"] - inp["dps_after_h1"]
+    cons = {"m": (inp["cons_fy26_m"], inp["cons_fy27_m"], inp["cons_fy28_m"]),
+            "h": (inp["cons_fy26_h"], inp["cons_fy27_h"], inp["cons_fy28_h"])}
+    rows = {}
+    for t, (e26, e27, e28) in cons.items():
+        np28 = e28 * sh
+        roe = e28 / bps0
+        for _ in range(200):  # BPS roll, b = g/ROE; only the power leg funds growth
+            b = inp["g2_power"] * (pw_ni / np28) / roe
+            bps28 = bps0 + b * ((e26 - inp["eps_h1"]) + e27)
+            roe = e28 / bps28
+        pe_c = perpetual_pe(inp["g2_core"], roe, r)
+        pe_p = perpetual_pe(inp["g2_power"], roe, r)
+        core = np28 - kion - pw_ni
+        parts = (core * pe_c / disc / sh, kion * inp["pe_kion"] / sh, pw_ni * pe_p / disc / sh)
+        rows[t] = dict(np=np28, roe=roe, bps=bps28, pe_c=pe_c, pe_p=pe_p, core=core, parts=parts, anchor=sum(parts))
+        errors += check_branch(inp["g2_power"], roe, r, inp["payout_obs"], f"g2_power ({t.upper()})")
 
-    # --- Step 5: anchors ------------------------------------------------------
-    L, M, H = (S[t]["anchor"] for t in TIERS)
+    roe_mid = inp["np_ttm"] / inp["equity"]
+    if inp["np_l"] / inp["equity"] >= r:
+        errors.append("ROE_L >= r: L is not a trough tier (valuation-rules「谷底档」)")
+    g1 = (inp["np_ttm"] / inp["np_l"]) ** (1 / inp["n_rec_l"]) - 1
+    pe_l = recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_core"], roe_mid, r)
+    pe_p_l = perpetual_pe(inp["g2_power"], roe_mid, r)
+    kion_l = kion * inp["kion_l_factor"]
+    core_l = inp["np_l"] - kion_l - pw_ni_l
+    if core_l <= 0:
+        errors.append("L core profit <= 0")
+    parts_l = (core_l * pe_l / sh, kion_l * inp["pe_kion"] / sh, pw_ni_l * pe_p_l / sh)
+    L = sum(parts_l)
+    M, H = rows["m"]["anchor"], rows["h"]["anchor"]
     if not (L < M < H):
-        print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
-        return 1
+        return report(errors + [f"L<M<H violated: {L:.3f} {M:.3f} {H:.3f}"])
     A, B = cut_points(L, M, H)
-    v_ms = ms_increment_v_opt(inp, pe_core["m"])
-    v_sofc = sofc_v_opt(inp, pe_core["h"])
-    v_aft = aftermarket_v_opt(inp, pe_core["m"])
-    v_opt = v_ms + v_sofc + v_aft
-    # M world: units frozen at the measured 13,400 (anchor = the interim
-    # report) and SOFC still at MW-scale verification -> nothing vests.
-    p_k = (0.0, 0.0, 1.0)
-    adj_band = [S[t]["anchor"] + pk * v_opt for t, pk in zip(TIERS, p_k)]
-    if abs(adj_band[0] - L) > 1e-9 or abs(adj_band[1] - M) > 1e-9:
-        errors.append(f"p leaked into the base: 表3 L/M {adj_band[0]:.4f}/{adj_band[1]:.4f} != {L:.4f}/{M:.4f}")
-    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
-    if leaked:
-        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
-    if inp["bloom_cap_mw"] <= 0 or inp["sofc_mw_h"] <= 0:
-        errors.append("SOFC capacity inputs must be positive")
-    if inp["sofc_mw_h"] >= inp["bloom_cap_mw"]:
-        errors.append(
-            f"sofc_mw_h {inp['sofc_mw_h']:.0f} MW is not below Bloom's "
-            f"{inp['bloom_cap_mw']:.0f} MW plant — the ceiling is no longer a "
-            "fraction of a realised trajectory"
-        )
-    be_errors, be = bloom_crosscheck(inp)
-    errors += be_errors
-    missing_ref = [k for k in NOT_FORMULA if k not in inp]
-    if missing_ref:
-        errors.append(f"reference rows missing from Inputs: {missing_ref}")
-
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    # --- report --------------------------------------------------------------
+    # shape (裁决顺序 ⑤): the cyclical core leg must be reverse or flat
+    if not (pe_l > rows["m"]["pe_c"] and abs(rows["h"]["pe_c"] - rows["m"]["pe_c"]) < 1e-9):
+        errors.append("core multiple shape is not reverse/flat (cyclical, 裁决顺序 ⑤)")
+    # flat-multiple ladder: every tier on the M-tier multiples
+    flat_l = (core_l * rows["m"]["pe_c"] + kion_l * inp["pe_kion"] + pw_ni_l * rows["m"]["pe_p"]) / sh
+    flat = [flat_l] + [(rows[t]["core"] * rows["m"]["pe_c"] / disc + kion * inp["pe_kion"]
+                        + pw_ni * rows["m"]["pe_p"] / disc) / sh for t in ("m", "h")]
+    errors += ladder("flat-multiple", *flat)
+
+    # --- V_opt: aftermarket only ------------------------------------------------
+    rev_ms = inp["ms_units_m"] * inp["ms_price"]
+    v_aft_t = rev_ms * inp["aft_share_peer"] * npm * rows["m"]["pe_p"] / sh
+    v_opt = v_aft_t / (1 + r) ** (inp["t_aft"] - NUM_YEAR) / disc
+    said = stated_v_opt(md)
+    if said is None or abs(said - v_opt) > TOL:
+        errors.append(f"V_opt stated {said} vs recomputed {v_opt:.4f}")
+    if [k for k in inp if k == "p" or k.startswith("p_")]:
+        errors.append("p-class fields must not appear in Inputs")
+    adj = [a + p * v_opt for a, p in zip((L, M, H), P_TIERS)]
+    A2, B2 = cut_points(*adj)
+
+    # --- ③ band test: n/a without same-earnings months --------------------------
+    same_eps_months = 0 if eps_ttm < 0.88 * mean28 else None   # record TTM EPS = the all-time high
+    if same_eps_months is None:
+        errors.append("TTM EPS is now within 12% of the FY2028 numerator — run the ③ band test")
+
+    # --- 周期票中枢 check on the core leg ---------------------------------------
+    core_mid = inp["np_mid5"] - kion - pw_ni_l
+    mid_ratio = rows["m"]["core"] / core_mid
+    m_mid = (core_mid * rows["m"]["pe_c"] + kion * inp["pe_kion"]) / sh + rows["m"]["parts"][2]
+
+    # --- correction reconciliation gate ------------------------------------------
+    e_m = mean28
+    coords = {
+        "① 上一版 M (v5)": 15.37,
+        "② E_M/r": e_m / r / disc,
+        "③ D_M/(r-g)": inp["payout_obs"] * e_m / (r - inp["g2_core"]) / disc,
+        "⑥ BPS x PB低点": inp["bps"] * inp["pb_own_min"],
+    }
+    inside = [k for k, v in coords.items() if not k.startswith("①") and abs(M / v - 1) <= GATE_BAND]
+    if not inside:
+        errors.append("correction gate: new M is >20% away from every independent coordinate — BLOCKED")
+    missing_ref = [k for k in NOT_FORMULA if k not in inp]
+    if missing_ref:
+        errors.append(f"reference rows missing: {missing_ref}")
+
+    # --- report -------------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print(f"{'档':<3}{'归母':>10}{'凯傲腿':>9}{'大缸径台数':>12}{'大缸径净利':>11}"
-          f"{'核心盘':>10}{'ROE':>8}{'核心PE':>8}{'市值':>11}{'锚点':>8}")
-    for t in TIERS:
-        s = S[t]
-        print(f"{t.upper():<3}{inp[f'np_{t}'] / YI:10.1f}{s['kion'] / YI:9.2f}"
-              f"{s['units']:12.0f}{s['ms_np'] / YI:11.2f}{s['core'] / YI:10.1f}"
-              f"{roe[t]:8.1%}{pe_core[t]:8.2f}{s['mv'] / YI:11.0f}{s['anchor']:8.2f}")
-    print(f"表1 per-share: " + " | ".join(
-        f"{t.upper()} core {S[t]['core_ps']:.2f} + KION {S[t]['kion_ps']:.2f} + MS {S[t]['ms_ps']:.2f}" for t in TIERS))
-    cap = g_cap(r)
-    print(f"倍数生成 (A14): r={r:.0%} (篮 {baskets['r_perp']}); 同业反解 g2_core_peer={inp['g2_core_peer']:+.2%} -> PE_M/H "
-          f"{pe_peer['m']:.2f}/{pe_peer['h']:.2f} < 护栏下沿 {inp['pe_own_min']} -> 裁决顺序 ③ 带边反解 "
-          f"g2 M {g_edge['m']:+.2%} / H {g_edge['h']:+.2%} (自身实测带反解, cap {cap:.0%}) -> "
-          f"PE_M/H {pe_core['m']:.2f}/{pe_core['h']:.2f}; 护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓")
-    g_hi = {t: min(implied_g(inp["pe_own_max"], roe[t], r)[0], cap) for t in ("m", "h")}
-    print(f"带即证据: 带边 g 区间 M [{g_edge['m']:+.2%}, {g_hi['m']:+.2%}] | H [{g_edge['h']:+.2%}, {g_hi['h']:+.2%}] (上沿反解截 cap)")
-    print(f"谷底档 L (valuation-rules「谷底档」): ROE_L {roe['l']:.1%} < r; g1 = ({inp['np_m'] / YI:.2f}/{inp['np_l'] / YI:.1f})^(1/{n_rec:g}) - 1 = {g1:+.2%}, "
-          f"n = {n_rec:g}, 段二 ROE_M {roe['m']:.1%} + g2 {inp['g2_m']:+.2%} -> recovery_two_stage_pe = {pe_core['l']:.2f}x "
-          f"(谷底 x 1/r = {inp['np_l'] / inp['shares'] * 10:.2f}/股 压力坐标)")
-    # A2e-3: trough year = t=1; 表1 reports the leg on the post-recovery numerator.
-    grown = (1.0 + g1) ** n_rec
-    print(f"  估值时点 t=1 = 谷底年; 回归后中枢分子口径: 核心盘 {S['l']['core'] * grown / YI:.2f}亿 x {pe_core['l'] / grown:.2f}x "
-          f"(= 中枢 Gordon {pe_core['m']:.2f}x 折 {n_rec:g} 年 {pe_core['m'] / (1 + r) ** n_rec:.2f} + 回归路径派息 {(pe_core['l'] - pe_core['m'] * grown / (1 + r) ** n_rec) / grown:.2f}); "
-          f"谷底分子口径 {pe_core['l']:.2f}x 只对护栏 (TTM 带同基)")
-    print(f"形状结果检查 (裁决顺序 ⑤): PE {pe_core['l']:.2f} > {pe_core['m']:.2f} ≈ {pe_core['h']:.2f} (M->H {pe_core['h'] / pe_core['m'] - 1:+.2%} ROE 机械); "
-          f"g M {inp['g2_m']:+.2%} >= H {inp['g2_h']:+.2%} ✓")
-    print(f"KION leg = {kion_share:.1%} of M numerator (band {lo:.0%}-{hi:.0%}) — "
-          f"35% of revenue, so the SOTP is warranted")
-    print(f"flat-multiple @PE_M={pe_core['m']:.2f}: L={flat['l']:.2f} M={flat['m']:.2f} H={flat['h']:.2f}")
-
-    num_l, num_h = inp["np_l"] / inp["np_m"], inp["np_h"] / inp["np_m"]
+    print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus legs ÷{disc:.2f}; "
+          f"g2 core {inp['g2_core']:g} (Sinotruk A/H fPE {inp['pe_sinotruk_a']}/{inp['pe_sinotruk_h']} < 1/r; "
+          f"US cluster {inp['g2_core_us']:.2%} control only); g2 power median({', '.join(f'{g:.2%}' for g in peer_g)}) = {g_pw:.2%}")
+    print(f"②-b: FY28 mean {mean28} in [TTM {eps_ttm:.3f}, Q2x4 {eps_q2:.3f}]? {b2_i}; TTM dev {b2_dev:+.1%} -> consensus three points")
+    print(f"power leg: rev {inp['lb_rev_fy28'] / YI:.2f}亿 (CMBI) x margin {inp['seg_margin']:.1%}x(1-{inp['seg_tax']:.1%}) = {npm:.2%} "
+          f"-> NI {pw_ni / YI:.2f}亿; public cross {inp['power_np_share_h1']:.0%} x 1H NP / {inp['power_rev_h1'] / YI:.1f}亿 = {npm_pub:.1%}; "
+          f"诚通 新兴业务 {inp['lb_rev_fy28_ct'] / YI:.0f}亿 (含 SOFC, cross only); L = FY2025 {inp['ms_units_l']:.0f} units -> {pw_ni_l / YI:.2f}亿")
+    print(f"KION run-rate {kion / YI:.2f}亿 = {kion_share:.1%} of TTM NP; pe_kion {inp['pe_kion']}")
+    for t in ("m", "h"):
+        x = rows[t]
+        print(f"{t.upper()}: NP {x['np'] / YI:.1f} core {x['core'] / YI:.1f} | BPS28 {x['bps']:.3f} ROE {x['roe']:.2%} | "
+              f"PE core {x['pe_c']:.2f} power {x['pe_p']:.2f} | per share core {x['parts'][0]:.2f} + KION {x['parts'][1]:.2f} "
+              f"+ power {x['parts'][2]:.2f} = {x['anchor']:.2f}")
+    print(f"L: trough {inp['np_l'] / YI:.1f} core {core_l / YI:.2f} x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
+          f"段二 ROE {roe_mid:.1%} g2 0) + KION {kion_l / YI:.2f}x{inp['pe_kion']} + power {pw_ni_l / YI:.2f}x{pe_p_l:.2f} "
+          f"-> {parts_l[0]:.2f} + {parts_l[1]:.2f} + {parts_l[2]:.2f} = {L:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}"
-          f" V_opt/M={v_opt / M:.1%}")
-    ni_usd = inp["sofc_mw_h"] * (inp["bloom_ni_fy26"] / inp["bloom_cap_mw"])
-    print(f"SOFC  {inp['sofc_mw_h']:.0f} MW x ${inp['bloom_ni_fy26'] / inp['bloom_cap_mw']:,.0f}/MW"
-          f" = ${ni_usd / 1e6:.0f}M NI x 核心盘 H 档 {pe_core['h']:.2f}x  ->  V_sofc={v_sofc:.2f}  ({inp['t_sofc']:g} -> {inp['t_num']:g})")
-    print(f"表3  V_opt={v_opt:.2f} (ms {v_ms:.2f} = {inp['aidc_cap_2027'] - inp['aidc_units_2026']:.0f} 台 x {pe_core['m']:.2f}x 折 {inp['t_ms'] - inp['t_num']:g} 年"
-          f" + sofc {v_sofc:.2f} + aftermarket {v_aft:.2f} @ {inp['aft_share_peer']:.0%} of M-series rev 折 {inp['t_aft'] - inp['t_num']:g} 年 无时点锚)"
-          f"  p_k={p_k[0]:.2f}/{p_k[1]:.2f}/{p_k[2]:.2f}  "
-          + "  ".join(
-              f"{n}:{S[t]['anchor']:.2f}+{pk:.2f}xV={a:.2f}"
-              for n, t, pk, a in zip("LMH", TIERS, p_k, adj_band)))
-    print(f"分子比 L/M={num_l:.2f} H/M={num_h:.2f} | "
-          f"倍数比 L/M={(L / M) / num_l:.2f} H/M={(H / M) / num_h:.2f}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M={v_opt / M:.1%} | "
+          f"分子比 L/M {inp['np_l'] / rows['m']['np']:.2f} H/M {rows['h']['np'] / rows['m']['np']:.2f}")
+    print(f"flat-multiple (M-tier multiples): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"V_opt = aftermarket {rev_ms / YI:.2f}亿 x {inp['aft_share_peer']:.0%} x {npm:.2%} x PE {rows['m']['pe_p']:.2f} "
+          f"@{inp['t_aft']:g} ÷1.1^{inp['t_aft'] - NUM_YEAR + inp['disc_years']:g} = {v_opt:.2f} (AIDC increment 0, SOFC 0: inside consensus)")
+    print("表3 " + " / ".join(f"{n} {b:.2f}+{p:g}x{v_opt:.2f}={a:.2f}" for n, b, p, a in zip("LMH", (L, M, H), P_TIERS, adj))
+          + f"  A'={A2:.2f} B'={B2:.2f}")
+    print(f"③ band test n/a: TTM EPS {eps_ttm:.4f} (all-time high) < 0.88 x FY28 {mean28} — no same-earnings months; "
+          f"L trough-basis PE {pe_l:.2f} vs own monthly band [{inp['pe_own_min']}, {inp['pe_own_max']}] (L disclosed only)")
+    print(f"周期中枢: core FY28 M {rows['m']['core'] / YI:.1f}亿 vs core 中枢 {core_mid / YI:.1f}亿 "
+          f"(5y mean {inp['np_mid5'] / YI:.1f} - KION - power FY25) = {mid_ratio:.2f}x "
+          f"({'> 1.15: rule not met, kept by user ruling' if mid_ratio > MID_MAX else 'ok'}); M with core at 中枢 {m_mid:.2f}")
+    print("gate: M 15.37 -> " + f"{M:.2f} ({M / 15.37 - 1:+.0%}); "
+          + "; ".join(f"{k} {v:.2f} (M {M / v - 1:+.0%})" for k, v in coords.items())
+          + f"; ④ same-earnings months none; ⑤ n/a -> {'PASS (' + ', '.join(inside) + ')' if inside else 'BLOCKED'}")
+    print(f"gate neutral [{A:.2f}, {B:.2f}) as PE: TTM {eps_ttm:.3f} {A / eps_ttm:.1f}-{B / eps_ttm:.1f}x; "
+          f"FY26E {inp['cons_fy26_m']} {A / inp['cons_fy26_m']:.1f}-{B / inp['cons_fy26_m']:.1f}x; "
+          f"FY28E {mean28} {A / mean28:.1f}-{B / mean28:.1f}x")
+    mod, gap = payout_gap(inp["g2_power"] * pw_ni / rows["m"]["np"], rows["m"]["roe"], inp["payout_obs"])
+    excess = 1 - inp["payout_obs"] - (1 - mod)
+    win = (inp["cons_fy26_m"] - inp["eps_h1"]) + inp["cons_fy27_m"]
+    print(f"payout: model {mod:.1%} vs observed {inp['payout_obs']:.0%} (gap {gap:+.1%}); 视同派出 = {excess:.1%} x window EPS "
+          f"{win:.2f} = {excess * win:.2f}/sh (B 桶 net cash, k=0)")
 
-    # 校验步骤 11: cross-rulers, printed and never anchored.
-    own = {t: legs(inp, t, inp[f"pe_ownyear_{t}"], inp["pe_ownyear_m"])["anchor"] for t in TIERS}
-    print(f"交叉尺① own-year 反向带 {inp['pe_ownyear_l']}/{inp['pe_ownyear_m']}/{inp['pe_ownyear_h']} (A2): "
-          f"{own['l']:.2f}/{own['m']:.2f}/{own['h']:.2f}")
-    zero = {t: legs(inp, t, 1.0 / r, 1.0 / r)["anchor"] for t in TIERS}
-    print(f"交叉尺② 零增长 1/r={1 / r:.0f}x (L = 谷底永续): {zero['l']:.2f}/{zero['m']:.2f}/{zero['h']:.2f}")
-    sens = {}
-    for dg in (-0.01, 0.01):
-        pe2 = {
-            "l": recovery_two_stage_pe(g1, n_rec, inp["g2_m"] + dg, roe["m"], r),
-            "m": perpetual_pe(inp["g2_m"] + dg, roe["m"], r),
-            "h": perpetual_pe(inp["g2_h"] + dg, roe["h"], r),
-        }
-        band2 = [legs(inp, t, pe2[t], pe2["m"])["anchor"] for t in TIERS]
-        v2 = (v_ms + v_aft) * pe2["m"] / pe_core["m"] + v_sofc * pe2["h"] / pe_core["h"]
-        sens[dg] = (band2, band2[2] + v2)
-    print("敏感性: g2 ±1pp -> "
-          + " | ".join(f"{dg:+.0%}: {b[0]:.2f}/{b[1]:.2f}/{b[2]:.2f} (H+V {hv:.2f})" for dg, (b, hv) in sens.items()))
+    def band_at(g_pw: float | None = None, g_core: float | None = None, kion_pe: float | None = None):
+        gp = inp["g2_power"] if g_pw is None else g_pw
+        gc = inp["g2_core"] if g_core is None else g_core
+        kp = inp["pe_kion"] if kion_pe is None else kion_pe
+        out = []
+        for t in ("m", "h"):
+            x = rows[t]
+            out.append((x["core"] * perpetual_pe(gc, x["roe"], r) / disc + kion * kp
+                        + pw_ni * perpetual_pe(gp, x["roe"], r) / disc) / sh)
+        ll = (core_l * recovery_two_stage_pe(g1, inp["n_rec_l"], gc, roe_mid, r) + kion_l * kp
+              + pw_ni_l * perpetual_pe(gp, roe_mid, r)) / sh
+        return "/".join(f"{v:.2f}" for v in [ll] + out)
+
+    print(f"敏感性: g2_power {inp['g2_pw_cmi']:.2%} {band_at(g_pw=inp['g2_pw_cmi'])} | {inp['g2_pw_gnrc']:.2%} {band_at(g_pw=inp['g2_pw_gnrc'])} "
+          f"| power ±1pp {band_at(g_pw=inp['g2_power'] - 0.01)} / {band_at(g_pw=inp['g2_power'] + 0.01)} "
+          f"| core +1pp {band_at(g_core=0.01)} | core = US 4.74% {band_at(g_core=inp['g2_core_us'])} | pe_kion 9.97 {band_at(kion_pe=9.97)}")
+    own = [(core_l * inp["pe_ownyear_l"] + kion_l * inp["pe_kion"] + pw_ni_l * pe_p_l) / sh] + [
+        (rows[t]["core"] * inp[f"pe_ownyear_{t}"] / disc + kion * inp["pe_kion"] + pw_ni * rows[t]["pe_p"] / disc) / sh
+        for t in ("m", "h")]
+    print(f"交叉尺 own-year 反向带 {inp['pe_ownyear_l']}/{inp['pe_ownyear_m']}/{inp['pe_ownyear_h']} on core: "
+          + "/".join(f"{v:.2f}" for v in own))
+    print(f"FY2028 共识下沿 {inp['cons_fy28_l']} 作 M 分子 -> core {(inp['cons_fy28_l'] * sh - kion - pw_ni) / YI:.1f}亿 -> M "
+          f"{((inp['cons_fy28_l'] * sh - kion - pw_ni) * rows['m']['pe_c'] / disc + kion * inp['pe_kion'] + pw_ni * rows['m']['pe_p'] / disc) / sh:.2f}")
+    print(f"压力坐标 谷底 x 1/r = {inp['np_l'] / sh / r:.2f}; 地板 PB 1.0 x BPS = {inp['bps']:.2f}")
     fx = inp["fx_hkdcny"]
-    print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f}")
-
-    # Disclosure lines (never anchors): the PB floor (disclosed, not max()'d
-    # into L), the pre-migration V_opt, and the SOFC option re-read on a
-    # would-be peer-group leg g2 (BE's power-equipment cluster) at this
-    # ticker's own ROE_H and r — a suggestion, not a ruler.
-    print(f"地板 (只披露, 不 max): PB 1.0 x BPS = {inp['bps']:.2f} vs L {L:.2f}")
-    if be:
-        pe_grp = perpetual_pe(be["g2"], roe["h"], r)
-        v_sofc_grp = v_sofc * pe_grp / pe_core["h"]
-        print(f"对照 (若建 SOFC 同业组、腿 g2 取 BE 簇 {be['g2']:.0%}, 本票 ROE_H {roe['h']:.1%} / r {r:.0%}): "
-              f"pe {pe_grp:.2f}x -> SOFC {v_sofc_grp:.2f}, V_opt {v_ms + v_sofc_grp + v_aft:.2f} (只披露)")
-
+    print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f} A={A / fx:.2f} B={B / fx:.2f}")
     return report(errors)
 
 
