@@ -42,9 +42,11 @@ FY2028 sell-side consensus.
              (trough year = t=1).
   ③          the own PE band is trailing and the FY2028 numerator was never
              printed (no same-earnings months) -> band test n/a, printed.
-  中枢        cyclical core: the FY2028 core is checked against the 5-year mean
-             (rule「周期票的中枢分子」); far above it -> kept by user ruling,
-             disclosed with a 中枢 coordinate and a falsification trigger.
+  中枢        demand-cycle core (trucks / engines): rule「周期票的中枢分子」does
+             not apply (scope set 2026-10-04: commodity-price cyclicals only),
+             so M stays on consensus; the FY2028 core vs the 5-year mean is
+             disclosed with a 中枢 coordinate and a falsification trigger
+             (trigger -> back to conversation, no automatic switch).
   gate       correction reconciliation gate printed and enforced.
 
 V_opt: AIDC capacity increment and SOFC are zero (their vesting year 2027 is
@@ -83,7 +85,7 @@ P_TIERS = (0.0, 0.0, 1.0)
 TOL = 0.05
 KION_SHARE_BAND = (0.08, 0.12)   # 属性 A, on the measured TTM numerator
 B2_MAX_DEV = 0.20                # ②-b (ii)
-MID_MAX = 1.15                   # 周期票中枢: >15% above 中枢 = not a 中枢 numerator
+MID_MAX = 1.15                   # 周期票中枢 threshold; disclosure only here (demand-cycle, rule n/a)
 GATE_BAND = 0.20
 MARGIN_XCHK = 0.25               # sell-side leg margin vs public cross-check
 
@@ -293,7 +295,7 @@ def main() -> int:
           f"L trough-basis PE {pe_l:.2f} vs own monthly band [{inp['pe_own_min']}, {inp['pe_own_max']}] (L disclosed only)")
     print(f"周期中枢: core FY28 M {rows['m']['core'] / YI:.1f}亿 vs core 中枢 {core_mid / YI:.1f}亿 "
           f"(5y mean {inp['np_mid5'] / YI:.1f} - KION - power FY25) = {mid_ratio:.2f}x "
-          f"({'> 1.15: rule not met, kept by user ruling' if mid_ratio > MID_MAX else 'ok'}); M with core at 中枢 {m_mid:.2f}")
+          f"({'> 1.15: demand-cycle, 中枢 rule n/a (2026-10-04), disclosed + trigger' if mid_ratio > MID_MAX else 'ok'}); M coordinate with core at 中枢 {m_mid:.2f} (disclosure only)")
     print("gate: M 15.37 -> " + f"{M:.2f} ({M / 15.37 - 1:+.0%}); "
           + "; ".join(f"{k} {v:.2f} (M {M / v - 1:+.0%})" for k, v in coords.items())
           + f"; ④ same-earnings months none; ⑤ n/a -> {'PASS (' + ', '.join(inside) + ')' if inside else 'BLOCKED'}")

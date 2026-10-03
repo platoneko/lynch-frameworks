@@ -6,7 +6,17 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v7
+formula_id: dec_three_leg_fy28_consensus_g50_g200_vopt_perpetual_g_hk_anchored_v8
+
+v8 (2026-10-04, valuation-rules「周期票的中枢分子」适用范围): DEC is a
+demand-cycle manufacturer (it prices its own equipment; the cycle is order
+volume), so the mid-cycle-M rule does not apply and M / H follow the data
+priority table: FY2028E consensus (东方财富 F10, 4 post-interim houses with a
+range) mean / high, discounted one year (FY2028 = current FY + 2).  L stays the
+FY2025 realised year (消化年).  The consensus sits far above the own 5-year mean
+— disclosed with a falsification trigger, not reverted to 中枢.  The old ②-b
+walk (own run-rate ladder kept because the FY2027 mean fell inside [M, H]) is
+retired; leg weights and the JV split still use each tier's measured period.
 
 v7 (2026-10-03, valuation-rules「未建模期权」): the G50/G200 option is valued on
 the gas-turbine leg's own ruler — g = leg C's g2 (0%), not the old unanchored
@@ -98,7 +108,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORKS = Path(__file__).resolve().parents[2] / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
-FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v7"
+FORMULA_ID = "dec_three_leg_fy28_consensus_g50_g200_vopt_perpetual_g_hk_anchored_v8"
 LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")
@@ -106,7 +116,8 @@ LEGS = ("a", "b", "c")
 LEG_CN = {"a": "周期装备", "b": "两翼", "c": "燃机"}
 
 REQUIRED = (
-    ["ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
+    ["ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "ni_cons_fy28_lo", "ni_ttm",
+     "ni_mid5", "disc_years", "payout_obs", "pb_own_min", "m_prev", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
      "net_cash", "tp_street", "leg_c_weight_cap", "ni_trough_fy2024",
      "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
      "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
@@ -190,10 +201,17 @@ def to_hkd(inp: dict[str, float], cny: float) -> float:
     return cny * 1e8 / inp["shares"] / inp["fx_hkdcny"]
 
 
+def disc(inp: dict[str, float], tag: str) -> float:
+    """Discount factor of a tier's numerator: M / H are FY2028E consensus
+    (current FY + 2) -> back one year at the basket r; L is the realised FY2025
+    year and is not discounted (A1 / A9)."""
+    return 1.0 if tag == "l" else (1.0 + inp["r_perp"]) ** inp["disc_years"]
+
+
 def incumbent_cny(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
-    """存量三腿 CNY 市值（亿元）。G50 不进底牌（A2e-7）。"""
+    """存量三腿 CNY 市值（亿元，已折现）。G50 不进底牌（A2e-7）。"""
     pe = flat_pe if flat_pe is not None else multiple(inp, tag)
-    return inp[f"ni_{tag}"] * pe
+    return inp[f"ni_{tag}"] * pe / disc(inp, tag)
 
 
 def anchor(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
@@ -277,7 +295,7 @@ def variant_band(inp: dict[str, float], mode: str) -> tuple[list[float], list[fl
         w = variant_weights(inp, t, mode)
         g = sum(w[leg] * inp[f"g2_{leg}_{t}"] for leg in LEGS)
         pe = perpetual_pe(g, forward_roe(inp, t), inp["r_perp"])
-        anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe))
+        anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe / disc(inp, t)))
         wc.append(w["c"])
     return anchors, wc
 
@@ -495,15 +513,35 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    # 裁决顺序 ②-b (valuation-rules): own realised numerators may stand in for
-    # the FY2027 consensus three points only while the consensus mean sits inside
-    # [ni_m, ni_h] and M is within 20% of it (A19).
-    if not (inp["ni_m"] <= inp["ni_cons_fy27_mean"] <= inp["ni_h"]):
-        errors.append(f"②-b: consensus FY27 mean {inp['ni_cons_fy27_mean']} outside [ni_m {inp['ni_m']}, ni_h {inp['ni_h']}]")
-    cons_dev = inp["ni_m"] / inp["ni_cons_fy27_mean"] - 1.0
-    if abs(cons_dev) > 0.20 and "②-b" not in md:
-        errors.append(f"②-b: M deviates {cons_dev:+.1%} from consensus with no ②-b named-variable row")
-    print(f"②-b: consensus FY27 NI {inp['ni_cons_fy27_lo']}/{inp['ni_cons_fy27_mean']}/{inp['ni_cons_fy27_hi']} vs tiers {inp['ni_l']}/{inp['ni_m']}/{inp['ni_h']}; M dev {cons_dev:+.1%}")
+    # Data priority (valuation-rules「数据优先级」, 2026-10-04 scope of「周期票的中枢
+    # 分子」): M / H are the FY2028E consensus mean / high; the low is a coordinate.
+    if not (inp["ni_cons_fy28_lo"] <= inp["ni_m"] < inp["ni_h"]):
+        errors.append(f"FY2028E consensus ladder lo {inp['ni_cons_fy28_lo']} <= M {inp['ni_m']} < H {inp['ni_h']} violated")
+    if inp["disc_years"] != 1:
+        errors.append(f"disc_years={inp['disc_years']} — FY2028 = FY2026 + 2 -> back one year")
+    mid_ratio = inp["ni_m"] / inp["ni_mid5"]
+    print(f"数据优先级: M/H = FY2028E consensus {inp['ni_cons_fy28_lo']}/{inp['ni_m']}/{inp['ni_h']} 亿 ÷{disc(inp, 'm'):.2f}; "
+          f"FY2027E {inp['ni_cons_fy27_lo']}/{inp['ni_cons_fy27_mean']}/{inp['ni_cons_fy27_hi']} (cross); TTM {inp['ni_ttm']}")
+    print(f"周期位置（需求周期型，中枢规则不适用，只披露）: FY2028E mean {inp['ni_m']} = {mid_ratio:.2f}x own 5y mean {inp['ni_mid5']}; "
+          f"M coordinate at 中枢 {to_hkd(inp, inp['ni_mid5'] * multiple(inp, 'm')):.2f}")
+
+    # 纠正对账门 (valuation-rules): M moved > 25% -> print the coordinates and
+    # fail if the new M sits > 20% outside every independent one.
+    coords = {
+        "② E_M/r": to_hkd(inp, inp["ni_m"] / r / disc(inp, "m")),
+        "③ D_M/(r-0)": to_hkd(inp, inp["payout_obs"] * inp["ni_m"] / r / disc(inp, "m")),
+        "⑥ BPS x PB低点": inp["bps"] * inp["pb_own_min"] / inp["fx_hkdcny"],
+    }
+    inside = [k for k, v in coords.items() if abs(M / v - 1) <= 0.20]
+    if abs(M / inp["m_prev"] - 1) > 0.25 and not inside:
+        errors.append("correction gate: new M is >20% away from every independent coordinate — BLOCKED")
+    print(f"gate: M {inp['m_prev']} -> {M:.2f} ({M / inp['m_prev'] - 1:+.0%}); "
+          + "; ".join(f"{k} {v:.2f} (M {M / v - 1:+.0%})" for k, v in coords.items())
+          + f"; ④ same-earnings months none; ⑤ n/a -> {'PASS (' + ', '.join(inside) + ')' if inside else 'BLOCKED'}")
+    fxa = inp["fx_hkdcny"] * inp["shares"] / 1e8
+    print(f"gate neutral [{A:.2f}, {B:.2f}) as PE: TTM {A * fxa / inp['ni_ttm']:.1f}-{B * fxa / inp['ni_ttm']:.1f}x; "
+          f"中枢 {A * fxa / inp['ni_mid5']:.1f}-{B * fxa / inp['ni_mid5']:.1f}x; "
+          f"FY27E {A * fxa / inp['ni_cons_fy27_mean']:.1f}-{B * fxa / inp['ni_cons_fy27_mean']:.1f}x")
 
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]
@@ -554,7 +592,7 @@ def main() -> int:
     w_m = w["m"]
     g_stress = (w_m["a"] * inp["g2_a_m"] + w_m["b"] * inp["g2_b_m"] + w_m["c"] * stress)
     pe_stress = perpetual_pe(g_stress, forward_roe(inp, "m"), r)
-    m_stress = inp["ni_m"] * pe_stress * 1e8 / inp["shares"] / fx
+    m_stress = inp["ni_m"] * pe_stress / disc(inp, "m") * 1e8 / inp["shares"] / fx
     print(f"腿 C 压力测试：g_C {inp['g2_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
           f"({m_stress / M - 1:+.1%})")
 
@@ -564,7 +602,7 @@ def main() -> int:
         band = []
         for t in TIERS:
             g_d = sum(w[t][leg] * (inp[f"g2_{leg}_{t}"] + delta) for leg in LEGS)
-            band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r)))
+            band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r) / disc(inp, t)))
         print(f"敏感区 三腿 g₂ {delta:+.0%}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}"
               f"  H+V={band[2] + v_opt:.2f}")
 
@@ -592,7 +630,7 @@ def main() -> int:
         gt = sum(w[t][leg] * tiered[leg][i] for leg in LEGS)
         pe_tier.append(perpetual_pe(gt, forward_roe(inp, t), r))
     print(f"被否决口径 分档 g（A −6/−4/−2, B 0/+3/+5, C 0/0/+2）→ PE {pe_tier[0]:.2f}/{pe_tier[1]:.2f}/{pe_tier[2]:.2f} 同向 "
-          f"→ 带 {to_hkd(inp, inp['ni_l'] * pe_tier[0]):.2f}/{to_hkd(inp, inp['ni_m'] * pe_tier[1]):.2f}/{to_hkd(inp, inp['ni_h'] * pe_tier[2]):.2f}"
+          f"→ 带 {to_hkd(inp, inp['ni_l'] * pe_tier[0]):.2f}/{to_hkd(inp, inp['ni_m'] * pe_tier[1] / disc(inp, 'm')):.2f}/{to_hkd(inp, inp['ni_h'] * pe_tier[2] / disc(inp, 'h')):.2f}"
           f"（cyclical 同向倍数，裁决顺序 ⑤ 不采用）")
     print(f"谷底压力坐标 (A1): FY2024 {inp['ni_trough_fy2024']:.2f} 亿 x 1/r = {to_hkd(inp, inp['ni_trough_fy2024'] / r):.2f} HKD")
     print(f"flat-multiple @PE={pe['m']:.2f}: {flat['l']:.2f}/{flat['m']:.2f}/{flat['h']:.2f}")
@@ -604,23 +642,23 @@ def main() -> int:
     # What the street and book are each paying for, in g terms.  ROE sits on r
     # here, so a price well above 1/r comes back ill-conditioned — the flag is
     # the point, not the number (A9).
-    roe_m = forward_roe(inp, "m")
+    roe_m = inp["ni_ttm"] / inp["equity"]
     for label, cny in (("卖方 TP", inp["tp_street"] * fx * inp["shares"] / 1e8),
                        ("账面 PB=1.0", inp["bps"] * inp["shares"] / 1e8)):
-        p = cny / inp["ni_m"]
+        p = cny / inp["ni_ttm"]
         gi, ok = implied_g(p, roe_m, r)
         print(f"  {label:<10} 隐含 PE={p:6.2f}x → g={gi:+.2%}"
               f"{'' if ok else '  ⚠ ROE≈r，只能当方向读 (A9)'}")
 
     # A12 — the open question this framework hands back to research.
-    tp_pe = inp["tp_street"] * fx * inp["shares"] / 1e8 / inp["ni_m"]
+    tp_pe = inp["tp_street"] * fx * inp["shares"] / 1e8 / inp["ni_ttm"]
     print(f"A12 未解释项：卖方 TP {inp['tp_street']} HKD 对 TTM 隐含 {tp_pe:.2f}x = "
           f"own-year 带顶 {hi} 的 {tp_pe / hi:.1f} 倍 — 分歧在倍数，不在盈利年份；逐机构口径仍 待补")
 
     # What the framework itself gives the gas-turbine business at M (交叉备注).
     ni_ab = inp["ni_m"] * (w_m["a"] + w_m["b"])
-    gas_framework = inp["ni_m"] * w_m["c"] * pe["m"] + option_mv(inp, "m")
-    print(f"  M 档 腿AB@{pe['m']:.2f}x {ni_ab * pe['m']:.1f} 亿；燃机业务 腿C+腿D {gas_framework:.1f} 亿")
+    gas_framework = inp["ni_m"] * w_m["c"] * pe["m"] / disc(inp, "m") + option_mv(inp, "m")
+    print(f"  M 档 腿AB@{pe['m']:.2f}x ÷{disc(inp, 'm'):.2f} {ni_ab * pe['m'] / disc(inp, 'm'):.1f} 亿；燃机业务 腿C+腿D {gas_framework:.1f} 亿")
     print(f"净现金 {inp['net_cash']:.2f} 亿 = 每股 {inp['net_cash'] * 1e8 / inp['shares']:.2f} CNY "
           f"/ {inp['net_cash'] * 1e8 / inp['shares'] / fx:.2f} HKD（不进主公式，A11）")
     print(f"BPS {inp['bps']:.2f} CNY = {inp['bps'] / fx:.2f} HKD")
