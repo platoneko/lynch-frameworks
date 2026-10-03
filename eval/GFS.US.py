@@ -1,48 +1,33 @@
 #!/usr/bin/env python3
 """GFS.US valuation eval — recompute anchors from frameworks/GFS.US.md.
 
-formula_id: gfs_gordon_two_stage_2027_opeq_v2
+formula_id: gfs_gordon_twoleg_2027_v3
 
-Whole-company Gordon PE on the FY2027 consensus (21 houses; the furthest year
-with a >=2-house *range*, valuation-rules 裁决顺序 ②).  Numerators are the
-street non-GAAP figures less after-tax SBC (the AEHR.US / LITE.US economic-EPS
-convention, A9) and less the after-tax interest the cash pile earns (A6); the
-net cash comes back per share as a closing item.  The L numerator is the
-digestion year — FY2027 held at the FY2026 consensus mean — because for a
-`cyclical` the consensus low is too narrow to be "the measured bad" (②-b);
-M/H are the consensus mean / high.
+Two-leg Gordon on the FY2027 consensus (21 houses; the furthest year with a
+>=2-house *range*, valuation-rules 裁决顺序 ②), under the peer-group ruler
+`_PEER.specialty-foundry` (frameworks/peers/specialty-foundry.md; valuation-
+rules「数据优先级与同业同尺」, 2026-10-03).  Company numerators are the street
+non-GAAP figures less after-tax SBC (A9) and after-tax net interest (A6); the
+net cash comes back per share.  L = the digestion year (FY2027 held at the
+FY2026 consensus mean, A3).
 
-Multiples are generated, not borrowed: tier ROE = FY2027 economic EPS over
-the FY2027 OPENING *operating* book (book less net cash, A6): the 2Q26
-operating book rolled over the 2H26 earnings not yet booked (FY26 consensus
-minus 1H26 actual, on the same economic basis) at the growth-required
-retention b1 = g/ROE — g1 for M/H (the FY2028 window), g2 for L (no window);
-valuation-rules 2026-09-21, A20.  b1 > 1 on M/H is the cash-pool / external
-funding the negative stage-1 payout already prices, so it is printed, not
-failed; only a diverging roll stops.  r = the basket rate — the whole company is one leg in
-basket 4 龙头制造 (10%, A19; the Inputs row names the basket and `check_r`
-holds the value to it), M/H carry the FY2028 consensus year as a one-year
-transition (`two_stage_pe`, g1 = 2028E / 2027E on the same GAAP consensus
-line, n = 1; A4) and L does not.  g2 = the foundry cluster's reverse-solved
-median (tier-1 source, A5), capped at g_cap(r) — NOT reverse-solved to the own
-band.  The own realised forward-PE band [15.6, 46.2] is the 裁决顺序 ③
-guardrail (A7): M sits below its floor, but the band was judged *distorted* at
-step 1b (its floor is the IPO month over FY22 *realised* EPS, and 2022 priced
-multi-year growth that never came), so ③ is indeterminate — the ruler stays in
-basket 4 (already the floor), no band-edge r is solved, the anchors stand
-(A18).  This eval therefore WARNs on the band breach instead of failing.  The
-realised PB low is printed as a floor coordinate, never max()'d in (A8).  The
-g2 +-1pp bands are printed (L/M/H only).  The doc carries no current price
-(AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is derived live by
-the daily digest and the app, so nothing here reads a price.
+Leg split (group ruler, A21):
+- SiPho profit share = SiPho revenue x (group SiPho gross margin, borrowed
+  from TSEM's own inference - own opex ratio) / company pre-tax economic
+  profit; the rest leg is the residual.  L uses FY2026 revenue, M the FY2027
+  path; H keeps the M share.
+- Capital share = SiPho share of revenue in the numerator year.
+- Leg g1 (M/H, 2028): SiPho = its revenue growth; rest = the residual that
+  closes to the company g1 (2028E / 2027E GAAP consensus).
+- Leg g2: SiPho = optical cluster capped; rest = foundry cluster.
+- Leg ROE = leg earnings / (opening-2027 operating book x capital share); the
+  book is rolled the A20 way at the company g (L: share-weighted g2).
 
-V_opt = 1 x a Tower-sized silicon-photonics leg (peer realised unit, A10) at
-the H-tier perpetual multiple.  Candidate band swaps the consensus 2028 g1 for
-the company's Analyst Day 2028 model (single source, A17).  Probabilities live
-only in the zone+V table.
-
-Cross-file: `sipho_unit_rev` must equal the same field in TSEM.US.md — the
-one realised unit both frameworks price against (A12).
+The own forward-PE band is the ③ guardrail on the company multiple; it was
+judged distorted at step 1b (A18), so a breach WARNs.  V_opt = the company's
+2030 SiPho target above the 2028 path, valued on the SiPho leg's ruler in 2030
+and discounted to FY2027 (A10).  Candidate band swaps the consensus company g1
+for the Analyst Day 2028 model (A17).  No current price is read here.
 
 Run:  python3 frameworks/eval/GFS.US.py
 """
@@ -78,44 +63,23 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "GFS.US.md"
-MIRROR = REPO_ROOT / "frameworks" / "TSEM.US.md"
-FORMULA_ID = "gfs_gordon_two_stage_2027_opeq_v2"
+PEER = REPO_ROOT / "frameworks" / "peers" / "specialty-foundry.md"
+FORMULA_ID = "gfs_gordon_twoleg_2027_v3"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
+NUM_YEAR = 2027
 P_TIERS = (0.0, 0.25, 1.0)  # A10 — table 3 only, never an input
-# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
 LISTING_CCY = "USD"
+SHARED = ("g2_sipho_src", "g2_rest_src", "gm_sipho", "t_align")
 
 REQUIRED = [
-    "shares",
-    "equity",
-    "net_cash",
-    "nii_4q",
-    "sbc_annual",
-    "tax",
-    "eps_2026_m",
-    "eps_1h26_a",
-    "payout_3y",
-    "eps_2027_l",
-    "eps_2027_m",
-    "eps_2027_h",
-    "eps_2027_gaap_m",
-    "eps_2028_gaap_m",
-    "n_stage",
-    "n_consensus",
-    "g2",
-    "g_peer_median",
-    "r_perp",
-    "pe_own_min",
-    "pe_own_max",
-    "bvps",
-    "pb_own_min",
-    "rev_2025",
-    "cagr_model",
-    "opm_model_2028",
-    "sipho_unit_rev",
-    "npm_unit",
-    "v_opt_units",
+    "shares", "equity", "net_cash", "nii_4q", "sbc_annual", "tax",
+    "eps_2026_m", "eps_1h26_a", "payout_3y",
+    "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2027_gaap_m", "eps_2028_gaap_m",
+    "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_own_min",
+    "rev_2025", "cagr_model", "opm_model_2028",
+    "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
+    *SHARED, "opt_rev", "t_opt",
 ]
 TIERS = ("L", "M", "H")
 
@@ -147,32 +111,26 @@ def stated_candidate(md: str) -> tuple[float, float, float] | None:
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     errs: list[str] = []
-    # A19: the leg names its basket in the Inputs row; the value must be that basket's.
     if "r_perp" not in baskets:
         errs.append("r_perp: Inputs source cell names no 篮 N (A19)")
-    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
-    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
-    # A5: g2 is the peer cluster median (tier-1 source) truncated to the cap — no band reverse-solve.
-    cap = g_cap(inp["r_perp"])
-    if abs(inp["g2"] - min(inp["g_peer_median"], cap)) > 5e-5:
-        errs.append(f"g2={inp['g2']:.4f} != min(peer median {inp['g_peer_median']:.4f}, cap {cap:.3f}) — A5")
-    gap = inp["r_perp"] - inp["g2"]
-    if gap <= 0:
-        errs.append("perpetuity diverges: g2 >= r")
-    elif gap < MIN_R_MINUS_G:
-        errs.append(f"r - g2 = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    r = inp["r_perp"]
+    errs += check_r(r, "r_perp", baskets.get("r_perp"))
+    for leg in ("sipho", "rest"):
+        g = min(inp[f"g2_{leg}_src"], g_cap(r))
+        errs += check_g_cap(g, r, f"g2_{leg}")
+        if r - g < MIN_R_MINUS_G:
+            errs.append(f"r - g2_{leg} = {r - g:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
-    # 裁决顺序 ④ 同世界门: the 2028 consensus year is up, so a g2 > 0 source is admissible.
     if not inp["eps_2027_gaap_m"] < inp["eps_2028_gaap_m"]:
         errs.append("2028E GAAP consensus not above 2027E: same-world gate for g2 > 0 no longer holds (A4/A5)")
-    if inp["g_peer_median"] < 0:
-        errs.append("peer median < 0 contradicts an upward 2027->2028 consensus (同世界门)")
-    # A3: one consensus range (2.40 / 2.62 / 3.63) with the digestion year below its low end.
     errs += ladder("consensus range", inp["eps_2027_l"], inp["eps_2027_m"], inp["eps_2027_h"])
     if not inp["eps_2026_m"] < inp["eps_2027_l"]:
-        errs.append("digestion-year numerator is not below the FY27 consensus low — L is no longer the measured-bad tier (A3)")
+        errs.append("digestion-year numerator is not below the FY27 consensus low (A3)")
+    errs += ladder("SiPho revenue path", inp["sipho_rev_2026"], inp["sipho_rev_2027"], inp["sipho_rev_2028"])
     if inp["equity"] - inp["net_cash"] <= 0:
         errs.append("operating equity (equity - net_cash) is not positive (A6)")
+    if inp["t_opt"] <= NUM_YEAR:
+        errs.append("option year must lie after the numerator year (A10)")
     p_fields = [k for k in inp if k.startswith("p_")]
     if p_fields:
         errs.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
@@ -190,87 +148,88 @@ def main() -> int:
         return report(errors)
     errors = sanity_checks(inp, parse_baskets(md))
 
-    r, g2, n = inp["r_perp"], inp["g2"], int(inp["n_stage"])
+    # ---- Peer group (_PEER.specialty-foundry): shared rows must match the group file ----
+    if PEER.is_file():
+        peer = parse_inputs(PEER.read_text(encoding="utf-8"))
+        for k in SHARED:
+            if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
+                errors.append(f"{k} {inp[k]:g} != _PEER.specialty-foundry {peer.get(k)} — the group ruler drifted")
+    else:
+        errors.append("frameworks/peers/specialty-foundry.md missing — group ruler unchecked")
+
+    r, n = inp["r_perp"], int(inp["n_stage"])
+    g2s, g2r = min(inp["g2_sipho_src"], g_cap(r)), min(inp["g2_rest_src"], g_cap(r))
     g1 = inp["eps_2028_gaap_m"] / inp["eps_2027_gaap_m"] - 1.0
     street = {"L": inp["eps_2026_m"], "M": inp["eps_2027_m"], "H": inp["eps_2027_h"]}
 
-    # ---- Step 1: economic EPS = street non-GAAP less after-tax SBC and after-tax net interest (A9, A6) ----
+    # ---- Step 1: company economic EPS (A9, A6) ----
     sbc_ps = inp["sbc_annual"] * (1.0 - inp["tax"]) / inp["shares"]
     nii_ps = inp["nii_4q"] * (1.0 - inp["tax"]) / inp["shares"]
-    ops = {t: street[t] - sbc_ps - nii_ps for t in TIERS}
-
-    # ---- Step 2: tier ROE = E_{2027} / opening-2027 operating book; Gordon (L) / two-stage (M, H) ----
-    # The 2Q26 operating book is rolled over the 2H26 earnings not yet booked
-    # (FY26 consensus less 1H26 actual, less the 2H26 half of SBC and interest
-    # so it is on the numerator's economic basis) at the growth-required
-    # retention b1 = g/ROE: g1 for M/H, g2 for L (A20).  ROE and BPS depend on
-    # each other; closed form BPS = BPS0 / (1 - g·N/eps).  b1 > 1 (M/H) is the
-    # external funding stage-1 payout < 0 already prices.  Every contrast band
-    # below rolls the same way with its own g and numerator.
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] / inp["shares"]
     bps_op_2q26 = equity_op / inp["shares"]
     unbooked = (inp["eps_2026_m"] - inp["eps_1h26_a"]) - 0.5 * sbc_ps - 0.5 * nii_ps
 
-    def opening_bps(eps_x: float, g: float, n_unbooked: float = unbooked) -> float:
-        share = g * n_unbooked / eps_x
-        if share >= 1.0:
-            raise ValueError(f"book roll diverges: g·N/eps = {share:.2f} >= 1 (BLOCKED-by-rule)")
-        return bps_op_2q26 / (1.0 - share)
+    def deck(num: dict[str, float] | None = None, gm: float = inp["gm_sipho"], g2s_: float = g2s, g2r_: float = g2r,
+             cap_mult: float = 1.0, g1_: float = g1, rr: float | None = None, unb: float = unbooked):
+        num = {t: street[t] - sbc_ps - nii_ps for t in TIERS} if num is None else num
+        rr = r if rr is None else rr
+        oi = {y: inp[f"sipho_rev_{y}"] * (gm - inp["opex_ratio"]) for y in (2026, 2027)}
+        pre = {t: num[t] * inp["shares"] / (1.0 - inp["tax"]) for t in TIERS}
+        sh = {"L": oi[2026] / pre["L"], "M": oi[2027] / pre["M"]}
+        sh["H"] = sh["M"]
+        cap = {"L": inp["sipho_rev_2026"] / inp["rev_2026"], "M": inp["sipho_rev_2027"] / inp["rev_2027"]}
+        cap["H"] = cap["M"]
+        cap = {t: min(cap[t] * cap_mult, 0.95) for t in TIERS}
+        g1s = inp["sipho_rev_2028"] / inp["sipho_rev_2027"] - 1.0
+        g1r = (g1_ - sh["M"] * g1s) / (1.0 - sh["M"])
+        out = {}
+        for t in TIERS:
+            g_roll = sh[t] * g2s_ + (1.0 - sh[t]) * g2r_ if t == "L" else g1_
+            frac = g_roll * unb / num[t]
+            if frac >= 1.0:
+                raise ValueError(f"{t}: book roll diverges, g·N/eps = {frac:.2f} >= 1 (BLOCKED-by-rule)")
+            bps = bps_op_2q26 / (1.0 - frac)
+            es, er = num[t] * sh[t], num[t] * (1.0 - sh[t])
+            roe_s, roe_r = es / (bps * cap[t]), er / (bps * (1.0 - cap[t]))
+            if t == "L":
+                pe_s, pe_r = perpetual_pe(g2s_, roe_s, rr), perpetual_pe(g2r_, roe_r, rr)
+            else:
+                pe_s, pe_r = two_stage_pe(g1s, n, g2s_, roe_s, rr), two_stage_pe(g1r, n, g2r_, roe_r, rr)
+            out[t] = dict(bps=bps, b1=g_roll / (num[t] / bps), sh=sh[t], cap=cap[t], es=es, er=er, roe_s=roe_s, roe_r=roe_r,
+                          pe_s=pe_s, pe_r=pe_r, v_s=es * pe_s, v_r=er * pe_r, val=es * pe_s + er * pe_r + cash_ps)
+        return out, g1s, g1r
 
-    def rolled_roe(num: dict[str, float], g: float, g1_: float, n_unbooked: float = unbooked) -> dict[str, float]:
-        g_roll = {"L": g, "M": g1_, "H": g1_}
-        return {t: num[t] / opening_bps(num[t], g_roll[t], n_unbooked) for t in TIERS}
-
-    roe = rolled_roe(ops, g2, g1)
-    b1 = {t: g / roe[t] for t, g in zip(TIERS, (g2, g1, g1))}
-    roe_2q26 = {t: ops[t] * inp["shares"] / equity_op for t in TIERS}  # old basis, printed only
-    ret_actual = 1.0 - inp["payout_3y"]
-    excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
-
-    def deck(g: float, g1_: float) -> tuple[dict[str, float], dict[str, float]]:
-        roe_ = rolled_roe(ops, g, g1_)
-        pe = {
-            "L": perpetual_pe(g, roe_["L"], r),
-            "M": two_stage_pe(g1_, n, g, roe_["M"], r),
-            "H": two_stage_pe(g1_, n, g, roe_["H"], r),
-        }
-        return pe, {t: ops[t] * pe[t] + cash_ps for t in TIERS}
-
-    pes, anchors = deck(g2, g1)
-    p1 = {t: 1.0 - g1 / roe[t] for t in ("M", "H")}
-    L, M, H = anchors["L"], anchors["M"], anchors["H"]
+    ops = {t: street[t] - sbc_ps - nii_ps for t in TIERS}
+    base, g1s, g1r = deck()
+    L, M, H = (base[t]["val"] for t in TIERS)
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
         return report(errors)
-
-    # ---- A2e-2c flat ladder + A2e-5 decomposition ----
+    pe_co = {t: (base[t]["val"] - cash_ps) / ops[t] for t in TIERS}
     if not (ops["L"] < ops["M"] < ops["H"]):
         errors.append("numerator ladder broken (A2e-2c)")
-    flat = [ops[t] * pes["M"] + cash_ps for t in TIERS]
+    flat = [ops[t] * pe_co["M"] + cash_ps for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
+    ret_actual = 1.0 - inp["payout_3y"]
+    excess_cash = {t: (ret_actual - base[t]["b1"]) * unbooked for t in TIERS}  # disclosure only
 
-    # ---- ③ guardrail (A7) on the band's own basis (anchor / street FY27 mean); breach WARNs, not fails (A18) ----
-    band_basis = {t: anchors[t] / inp["eps_2027_m"] for t in TIERS}
-    # ---- Floor disclosure (A8): realised PB low is a coordinate, never max()'d into L ----
+    # ---- ③ guardrail (A7) on the band's basis (anchor / street FY27 mean); breach WARNs (A18) ----
+    band_basis = {t: base[t]["val"] / inp["eps_2027_m"] for t in TIERS}
     pb_low_coord = inp["pb_own_min"] * inp["bvps"]
 
-    # ---- g2 leverage: both ends printed, L/M/H only (A5) ----
-    lo = deck(g2 - 0.01, g1)[1]
-    hi = deck(g2 + 0.01, g1)[1] if g2 + 0.01 <= g_cap(r) + 1e-9 else None
+    # ---- Option (A10): 2030 target above the 2028 path, SiPho leg ruler, discounted to FY2027 ----
+    inc_ps = inp["opt_rev"] * (inp["gm_sipho"] - inp["opex_ratio"]) * (1.0 - inp["tax"]) / inp["shares"]
+    v_opt = inc_ps * perpetual_pe(g2s, base["H"]["roe_s"], r) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
 
-    # ---- Option ceiling (A10): one Tower-sized SiPho leg at the H-tier perpetual multiple ----
-    unit_ni_ps = inp["sipho_unit_rev"] * inp["npm_unit"] / inp["shares"]
-    v_opt = inp["v_opt_units"] * unit_ni_ps * perpetual_pe(g2, roe["H"], r)
-
-    # ---- Candidate band (A17): company Analyst Day 2028 model swapped into g1 (single source) ----
+    # ---- Candidate band (A17): Analyst Day 2028 model swapped into the company g1 (single source) ----
     rev_2028 = inp["rev_2025"] * (1.0 + inp["cagr_model"]) ** 3
     ni_2028 = rev_2028 * inp["opm_model_2028"] * (1.0 - inp["tax"])
     econ_2028 = ni_2028 / inp["shares"] - sbc_ps - nii_ps
     g1_cand = econ_2028 / ops["M"] - 1.0
-    cand = deck(g2, g1_cand)[1]
-    cand_band = (L, cand["M"], cand["H"])  # L carries no transition, copied from the base deck
+    cand = deck(g1_=g1_cand)[0]
+    cand_band = (L, cand["M"]["val"], cand["H"]["val"])
     if not (cand_band[0] < cand_band[1] < cand_band[2]):
         errors.append(f"candidate band ladder broken: {cand_band}")
 
@@ -287,75 +246,61 @@ def main() -> int:
     elif any(abs(s - c) > TOL for s, c in zip(said_c, cand_band)):
         errors.append(f"candidate band: stated {said_c} vs recomputed {tuple(round(x, 2) for x in cand_band)}")
 
-    # ---- Cross-file (A12): both frameworks price against the same realised SiPho unit ----
-    if MIRROR.is_file():
-        mirror = parse_inputs(MIRROR.read_text(encoding="utf-8"))
-        if abs(mirror.get("sipho_unit_rev", -1) - inp["sipho_unit_rev"]) > 1.0:
-            errors.append(f"sipho_unit_rev {inp['sipho_unit_rev']:g} != TSEM.US {mirror.get('sipho_unit_rev')} — the shared realised unit drifted (A12)")
-    else:
-        errors.append("frameworks/TSEM.US.md missing — mirror-state check impossible (A12)")
+    # ---- Contrasts (printed only) ----
+    def whole_company(g: float) -> tuple[float, ...]:
+        res = []
+        for t in TIERS:
+            g_roll = g if t == "L" else g1
+            roe = ops[t] / (bps_op_2q26 / (1.0 - g_roll * unbooked / ops[t]))
+            pe = perpetual_pe(g, roe, r) if t == "L" else two_stage_pe(g1, n, g, roe, r)
+            res.append(ops[t] * pe + cash_ps)
+        return tuple(res)
 
-    # ---- Contrast bands (printed only; each rolls its own book the A20 way) ----
-    roe_no_tr = rolled_roe(ops, g2, g2)  # no window anywhere -> every tier rolls at g2
-    no_tr = tuple(ops[t] * perpetual_pe(g2, roe_no_tr[t], r) + cash_ps for t in TIERS)
-    roe_tot = {t: (street[t] - sbc_ps) * inp["shares"] / inp["equity"] for t in TIERS}  # 2Q26 total book, not rolled (A15)
-    tot = ((street["L"] - sbc_ps) * perpetual_pe(g2, roe_tot["L"], r), (street["M"] - sbc_ps) * two_stage_pe(g1, n, g2, roe_tot["M"], r), (street["H"] - sbc_ps) * two_stage_pe(g1, n, g2, roe_tot["H"], r))
+    def trio(d: dict) -> str:
+        return f"{d['L']['val']:.2f}/{d['M']['val']:.2f}/{d['H']['val']:.2f}"
+
+    v2 = whole_company(g2r)
     nosbc = {t: street[t] - nii_ps for t in TIERS}
-    roe_nosbc = rolled_roe(nosbc, g2, g1, unbooked + 0.5 * sbc_ps)
-    nosbc_deck = (nosbc["L"] * perpetual_pe(g2, roe_nosbc["L"], r) + cash_ps, nosbc["M"] * two_stage_pe(g1, n, g2, roe_nosbc["M"], r) + cash_ps, nosbc["H"] * two_stage_pe(g1, n, g2, roe_nosbc["H"], r) + cash_ps)
-    r_contrast = {rr: tuple(ops[t] * (perpetual_pe(g2, roe[t], rr) if t == "L" else two_stage_pe(g1, n, g2, roe[t], rr)) + cash_ps for t in TIERS) for rr in (0.09, 0.08)}
-    cap_deck = deck(g_cap(r), g1)[1]
+    nosbc_deck = deck(num=nosbc, unb=unbooked + 0.5 * sbc_ps)[0]
+    r_contrast = {rr: deck(rr=rr)[0] for rr in (0.09, 0.08)}
+    no_tr = deck(g1_=0.0)[0]
+    rest_lo, rest_hi = deck(g2r_=g2r - 0.01)[0], deck(g2r_=g2r + 0.01)[0]
+    sip_lo = deck(g2s_=g2s - 0.01)[0]
+    cap_hi, cap_hi2 = deck(cap_mult=1.35)[0], deck(cap_mult=1.62)[0]
+    gm_hi = deck(gm=0.555)[0]
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"r={r:g} (篮 4 龙头制造, A19) g1(2028)={g1:.4f} n={n} g2={g2:.4f} (foundry cluster median {inp['g_peer_median']:.4f}, tier-1 source, cap {g_cap(r):.3f}; own band NOT used to solve g2)")
-    print(f"operating equity {equity_op / 1e9:.3f}B = book {inp['equity'] / 1e9:.3f}B - net cash {inp['net_cash'] / 1e9:.3f}B; SBC stripped {sbc_ps:.4f}/sh; interest stripped {nii_ps:.4f}/sh; cash added back {cash_ps:.4f}/sh")
+    print(f"r={r:g} (篮 4, A19) g1 company {g1:.4f} -> SiPho {g1s:.4f} / rest {g1r:.4f} (residual) n={n}; g2 SiPho {g2s:.4f} (src {inp['g2_sipho_src']:.4f}) / rest {g2r:.4f}")
+    print(f"econ EPS {ops['L']:.4f}/{ops['M']:.4f}/{ops['H']:.4f} (SBC {sbc_ps:.4f}, interest {nii_ps:.4f} stripped); cash {cash_ps:.4f}/sh; opex ratio {inp['opex_ratio']:g}; SiPho GM {inp['gm_sipho']:g}")
     for t in TIERS:
-        extra = f"  stage-1 payout {p1[t]:+.2f} (cash/external-funded growth)" if t in p1 else ""
-        print(f"{t}: street {street[t]:.4f} -> econ {ops[t]:.4f}  ROE_op {roe[t]:.4f}  PE {pes[t]:.4f}x -> {ops[t] * pes[t]:.4f} + cash = {anchors[t]:.4f}{extra}")
-    print(f"ROE basis (A20): BPS_op opening-2027 = {opening_bps(ops['L'], g2):.2f}/{opening_bps(ops['M'], g1):.2f}/{opening_bps(ops['H'], g1):.2f} "
-          f"(2Q26 op book {bps_op_2q26:.2f} rolled over 2H26 unbooked {unbooked:.3f}/sh at b1 = g/ROE = {b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}, "
-          f"g_roll {g2:.2%}/{g1:.2%}/{g1:.2%}); 2Q26-book basis would read ROE {roe_2q26['L']:.4f}/{roe_2q26['M']:.4f}/{roe_2q26['H']:.4f}; "
-          f"ROE_M - r = {roe['M'] - r:+.4f} (病态区, multiple pinned near 1/r)")
-    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
-          f"(L positive = cash the model deems distributed but the company keeps; M/H negative = external/cash-pool funding the model books; disclosure only, not a leg, not in BPS)")
+        d = base[t]
+        print(f"{t}: BPS_op {d['bps']:.2f} (b1 {d['b1']:.2f}) share {d['sh']:.3f} cap {d['cap']:.3f} | SiPho E {d['es']:.4f} ROE {d['roe_s']:.4f} PE {d['pe_s']:.2f}x = {d['v_s']:.2f} | "
+              f"rest E {d['er']:.4f} ROE {d['roe_r']:.4f} PE {d['pe_r']:.2f}x = {d['v_r']:.2f} | +cash = {d['val']:.2f} (company PE {pe_co[t]:.2f}x)")
+    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (disclosure only)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat ladder @ PE_M {pes['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"L/M {L / M:.3f} (= num {ops['L'] / ops['M']:.3f} x pe {pes['L'] / pes['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pes['H'] / pes['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"③ guardrail own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on anchor/street-FY27 basis: L {band_basis['L']:.1f}x M {band_basis['M']:.2f}x H {band_basis['H']:.1f}x "
-          f"({sum(1 for t in TIERS if band_basis[t] < inp['pe_own_min'])} of 3 below the floor; A7)")
+    print(f"flat ladder @ PE_M {pe_co['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"L/M {L / M:.3f} (num {ops['L'] / ops['M']:.3f} x pe {pe_co['L'] / pe_co['M']:.3f}) | H/M {H / M:.3f} (num {ops['H'] / ops['M']:.3f} x pe {pe_co['H'] / pe_co['M']:.3f}) | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
+    print(f"③ guardrail own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on anchor/street-FY27 basis: L {band_basis['L']:.1f}x M {band_basis['M']:.2f}x H {band_basis['H']:.1f}x")
     if band_basis["M"] < inp["pe_own_min"]:
-        print(f"WARN (A18): PE_M {band_basis['M']:.2f}x < pe_own_min {inp['pe_own_min']:g} — ③ breach, but the band was judged distorted at step 1b "
-              f"(IPO-month perfect-foresight floor; 2022 priced growth that never came) → ③ indeterminate: ruler stays in 篮 4 (already the floor), no band-edge r, anchors stand")
-    print(f"FLOOR (disclosure only, not max()'d): realised PB low {inp['pb_own_min']:g}x x BVPS {inp['bvps']:g} = {pb_low_coord:.2f} {'ABOVE M' if pb_low_coord > M else 'below M'} (A8)")
-    print(f"g2 leverage: -1pp ({g2 - 0.01:.4f}) -> {lo['L']:.2f}/{lo['M']:.2f}/{lo['H']:.2f}; "
-          + (f"+1pp ({g2 + 0.01:.4f}) -> {hi['L']:.2f}/{hi['M']:.2f}/{hi['H']:.2f}" if hi else "+1pp exceeds cap"))
-    print(f"contrast no-transition: {no_tr[0]:.2f}/{no_tr[1]:.2f}/{no_tr[2]:.2f} | SBC not deducted: {nosbc_deck[0]:.2f}/{nosbc_deck[1]:.2f}/{nosbc_deck[2]:.2f} | total-equity ROE {roe_tot['L']:.3f}/{roe_tot['M']:.3f}/{roe_tot['H']:.3f} (2Q26, not rolled) no cash add-back: {tot[0]:.2f}/{tot[1]:.2f}/{tot[2]:.2f}")
-    print(f"contrast r 9% / 8% (not a path, A18): {r_contrast[0.09][0]:.2f}/{r_contrast[0.09][1]:.2f}/{r_contrast[0.09][2]:.2f} | {r_contrast[0.08][0]:.2f}/{r_contrast[0.08][1]:.2f}/{r_contrast[0.08][2]:.2f}; "
-          f"g2 at cap {g_cap(r):.0%}: {cap_deck['L']:.2f}/{cap_deck['M']:.2f}/{cap_deck['H']:.2f} (M/FY27 street {cap_deck['M'] / inp['eps_2027_m']:.2f}x)")
-    print(f"V_opt={v_opt:.2f} (1 x Tower-sized SiPho leg: NI/sh {unit_ni_ps:.4f} x PE_H perp {perpetual_pe(g2, roe['H'], r):.2f}x); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
-    print(f"candidate (Analyst Day 2028 model: rev {rev_2028 / 1e9:.3f}B x OpM {inp['opm_model_2028']:g} -> NI {ni_2028 / 1e9:.3f}B -> econ EPS {econ_2028:.3f} -> g1' {g1_cand:.4f} vs consensus {g1:.4f}): "
-          f"L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
+        print(f"WARN (A18): PE_M {band_basis['M']:.2f}x < pe_own_min {inp['pe_own_min']:g} — ③ breach, band judged distorted at step 1b → ③ indeterminate, anchors stand")
+    print(f"FLOOR (disclosure only): PB low {inp['pb_own_min']:g}x x BVPS {inp['bvps']:g} = {pb_low_coord:.2f} {'ABOVE M' if pb_low_coord > M else 'below M'} (A8)")
+    print(f"contrast whole-company v2 (g2 {g2r:.4f}): {v2[0]:.2f}/{v2[1]:.2f}/{v2[2]:.2f} | no transition {trio(no_tr)} | SBC not deducted {trio(nosbc_deck)}")
+    print(f"contrast r 9% {trio(r_contrast[0.09])} / 8% {trio(r_contrast[0.08])}")
+    print(f"g2 rest -1pp {trio(rest_lo)} / +1pp {trio(rest_hi)} | g2 SiPho -1pp {trio(sip_lo)}")
+    print(f"capital share x1.35 {trio(cap_hi)} / x1.62 {trio(cap_hi2)} | SiPho GM 0.555 {trio(gm_hi)}")
+    print(f"V_opt={v_opt:.2f} ({inp['opt_rev'] / 1e9:.2f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio']:g}) x (1-t) = {inc_ps:.4f}/sh x SiPho perp PE "
+          f"{perpetual_pe(g2s, base['H']['roe_s'], r):.2f}x / 1.1^{int(inp['t_opt']) - NUM_YEAR}); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
+    print(f"candidate (Analyst Day 2028: econ EPS {econ_2028:.3f} -> company g1' {g1_cand:.4f}): L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
 
-    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # r_perp 1:1 through deck() (L perpetual, M/H two-stage); g1, g2, the rolled
-    # ROE, numerators and cash stay put.  Disclosure only — the anchors above are
-    # the 中枢 column; the r 9%/8% contrast is a separate reading.
     def band_at(dr: float) -> tuple[float, float, float]:
-        nonlocal r
-        saved = r
-        r = r + dr
-        try:
-            a_ = deck(g2, g1)[1]
-            return a_["L"], a_["M"], a_["H"]
-        finally:
-            r = saved
+        d = deck(rr=r + dr)[0]
+        return d["L"]["val"], d["M"]["val"], d["H"]["val"]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    # Only a clean run feeds the daily digest.
     if not errors:
         write_rf_readings("GFS.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
