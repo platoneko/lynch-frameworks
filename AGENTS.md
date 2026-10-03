@@ -14,7 +14,7 @@
 | 标的池 | 扫 `frameworks/*.md`（排除 `_TEMPLATE.md` 及 `_` 前缀，以及本仓文档 `AGENTS.md` / `README.md`） |
 | 模板 | `frameworks/_TEMPLATE.md` |
 | 共享情景轴 | `frameworks/axes/<轴名>.md`（逻辑 id 仍写 `_AXIS.<轴名>`；不进标的池） |
-| 同业组 | `frameworks/peers/<组名>.md`（逻辑 id `_PEER.<组名>`；组内同一把尺：腿拆法、腿 \(g_2\)、借用过渡年、\(V_{opt}\) 单位；不进标的池） |
+| 同业尺轴 | `frameworks/axes/<轴名>.md`，轴类型 `peer_ruler_axis`（逻辑 id `_AXIS.<轴名>`；按具体业务划分，同一块业务同一把尺：腿拆法、腿 \(g_2\)、借用过渡年、腿经济性、\(V_{opt}\) 取法；不进标的池） |
 | 演算（后置） | `frameworks/eval/<TICKER>.py`（本仓）；库 `eval/lib/`（代码仓库） |
 | 跨票口径体检 | `scripts/calibration.py`（代码仓库） |
 
@@ -67,7 +67,7 @@
 
 ### 行契约与写作细则
 
-只在写或改标的文档、轴文件时用，全文在 skill `references/contracts.md`（同名小节）：Ticker 文件名、框架文档题头与 Changelog、跨票可比性、篮子声明 — 行契约、BLOCKED 只在落盘前、未建模期权（\(V_{opt}\)）— 行契约、共识升级候选带（candidate）— 行契约、共享情景轴与共识行、同业组 — 行契约、现价禁写的允许清单与机器守卫、日报与 \(r_f\) 读数行。
+只在写或改标的文档、轴文件时用，全文在 skill `references/contracts.md`（同名小节）：Ticker 文件名、框架文档题头与 Changelog、跨票可比性、篮子声明 — 行契约、BLOCKED 只在落盘前、未建模期权（\(V_{opt}\)）— 行契约、共识升级候选带（candidate）— 行契约、共享情景轴与共识行、同业尺轴 — 行契约、现价禁写的允许清单与机器守卫、日报与 \(r_f\) 读数行。
 
 ## 不要做的事
 

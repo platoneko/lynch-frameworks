@@ -8,9 +8,9 @@ here reads a price.
 formula_id: tsem_gordon_twoleg_2027_v3
 
 Two-leg Gordon on the FY2027 consensus (the furthest year with a >=2-house
-*range*, valuation-rules 裁决顺序 ②), under the peer-group ruler
-`_PEER.specialty-foundry` (frameworks/peers/specialty-foundry.md; valuation-
-rules「数据优先级与同业同尺」, 2026-10-03).  Company numerators are the street
+*range*, valuation-rules 裁决顺序 ②), with the SiPho leg on the peer-ruler axis
+`_AXIS.sipho-wafer` (frameworks/axes/sipho-wafer.md; valuation-rules
+「数据优先级与同业同尺」, 2026-10-03).  Company numerators are the street
 adjusted figures less the GAAP-vs-adjusted gap (A8) and the after-tax interest
 the cash pile earns (A6); the net cash comes back per share.  L = the
 digestion year (FY2027 held at the FY2026 consensus mean).
@@ -32,7 +32,7 @@ the group value GFS borrows.  V_opt = Track 2 sized as one own realised SiPho
 leg (snapshot lower bound: the x4 Japan capacity has no revenue base), valued
 on the SiPho leg's ruler at its year and discounted to FY2027 (A9).
 
-Cross-file: shared rows must equal frameworks/peers/specialty-foundry.md.
+Cross-file: shared rows must equal frameworks/axes/sipho-wafer.md.
 
 Run:  python3 frameworks/eval/TSEM.US.py
 """
@@ -68,14 +68,14 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSEM.US.md"
-PEER = REPO_ROOT / "frameworks" / "peers" / "specialty-foundry.md"
+PEER = REPO_ROOT / "frameworks" / "axes" / "sipho-wafer.md"
 FORMULA_ID = "tsem_gordon_twoleg_2027_v3"
 LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 NUM_YEAR = 2027
 P_TIERS = (0.0, 0.25, 1.0)  # A9 — table 3 only, never an input
-SHARED = ("g2_sipho_src", "g2_rest_src", "gm_sipho", "t_align")
+SHARED = ("g2_sipho_src", "gm_sipho", "t_align")
 
 REQUIRED = [
     "shares", "equity", "net_cash", "nii_4q", "gaap_gap_ps", "tax",
@@ -141,14 +141,14 @@ def main() -> int:
         return report(errors)
     errors = sanity_checks(inp, parse_baskets(md))
 
-    # ---- Peer group (_PEER.specialty-foundry): shared rows must match the group file ----
+    # ---- Peer-ruler axis (_AXIS.sipho-wafer): shared rows must match the axis file ----
     if PEER.is_file():
         peer = parse_inputs(PEER.read_text(encoding="utf-8"))
         for k in SHARED:
             if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
-                errors.append(f"{k} {inp[k]:g} != _PEER.specialty-foundry {peer.get(k)} — the group ruler drifted")
+                errors.append(f"{k} {inp[k]:g} != _AXIS.sipho-wafer {peer.get(k)} — the leg ruler drifted")
     else:
-        errors.append("frameworks/peers/specialty-foundry.md missing — group ruler unchecked")
+        errors.append("frameworks/axes/sipho-wafer.md missing — leg ruler unchecked")
 
     r, n = inp["r_perp"], int(inp["n_stage"])
     g2s, g2r = min(inp["g2_sipho_src"], g_cap(r)), min(inp["g2_rest_src"], g_cap(r))
