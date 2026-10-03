@@ -7,7 +7,18 @@ doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zon
 falls in is derived live by the daily digest and the app, so nothing here reads
 a price.
 
-formula_id: qcom_sotp_base4_qtl_evebit_vopt_fy27_v1
+formula_id: qcom_sotp_base4_qtl_evebit_vopt_fy27_v2
+
+v2 (2026-10-03 migration, valuation-rules「未建模期权」/「增长的表达顺序」):
+- V_opt is recomputed here, no longer an external constant.  Units = the
+  company's named FY29 Data Center target less what consensus already holds
+  (the FY27 guidance); unit economics = the only leg-level sell-side number
+  (HSBC's FY27 incremental DC margin); valued on this ticker's ruler (basket r,
+  ROE_M, the DC leg's g2 from the semis cross-section, capped) in FY29 and
+  discounted to the FY27 numerator year.  HSBC's 17x target multiple is gone
+  (borrow quantity, not price).
+- g2_auto comes from the auto/analog cross-section (NXPI / TXN, AVGO A18),
+  not a self-set 6% at the cap carrying the near-term growth.
 
 Three things here are specific to this ticker:
 
@@ -36,6 +47,7 @@ Run:  python3 frameworks/eval/QCOM.US.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -61,7 +73,9 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "QCOM.US.md"
 # One annuity ladder for the asset class (A2e-5b): NOK's Technology Standards
 # leg prices on the same three rungs.  Pattern: eval/603799.SH.py SHARED_LADDER.
 PEER = REPO_ROOT / "frameworks" / "NOK.US.md"
-FORMULA_ID = "qcom_sotp_base4_qtl_evebit_vopt_fy27_v1"
+FORMULA_ID = "qcom_sotp_base4_qtl_evebit_vopt_fy27_v2"
+NUM_YEAR = 2027  # FY27 = t=1, the numerator year (A12)
+MIN_R_MINUS_G = 0.02
 MM = 1e6  # revenue inputs are $M; shares and equity are absolute
 LISTING_CCY = "USD"
 
@@ -76,7 +90,8 @@ SHARED_LADDER = {f"ev_ebit_ts_{t}": f"ev_ebit_ts_{t}" for t in TIERS}
 P_K = (0.00, 0.35, 1.00)
 
 REQUIRED = (
-    ["shares", "tax_rate", "equity", "v_opt", "r_op", "pe_own_min", "pe_own_max"]
+    ["shares", "tax_rate", "equity", "r_op", "pe_own_min", "pe_own_max"]
+    + ["dc_target_rev", "dc_cons_rev", "hsbc_eps_fy27", "hsbc_dc_uplift", "hsbc_dc_drev", "g2_dc_src", "t_opt"]
     + ["eps_fy26_cons", "eps_9m_fy26", "payout_3y"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -114,6 +129,28 @@ def tier_legs(
     ebt = {leg: v * scale for leg, v in gross_ebt.items()}
     eps = {leg: ebt[leg] * net for leg in LEGS}
     return ebt, eps, sum(eps.values())
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
+    return float(m.group(1)) if m else None
+
+
+def option_value(inp: dict[str, float], roe_m: float, g2_dc: float, r: float) -> tuple[float, float, float, float]:
+    """A10: Data Center option, closed by public data (valuation-rules 2026-10-03).
+
+    Units: company FY29 DC target minus the FY27 guidance consensus already
+    carries.  Unit economics: HSBC's FY27 DC sensitivity, read as after-tax EPS
+    per dollar of DC revenue (no multiple taken from it).  Ruler: this ticker's
+    Gordon PE at r_op, ROE_M and the DC leg's g2, struck in the target year and
+    discounted to FY27.  Returns (V_opt, income/share, pre-tax margin, PE).
+    """
+    opt_rev = (inp["dc_target_rev"] - inp["dc_cons_rev"]) * MM
+    eps_per_rev = inp["hsbc_eps_fy27"] * inp["hsbc_dc_uplift"] / (inp["hsbc_dc_drev"] * MM)
+    inc = opt_rev * eps_per_rev
+    margin = eps_per_rev * inp["shares"] / (1.0 - inp["tax_rate"])
+    pe = perpetual_pe(g2_dc, roe_m, r)
+    return inc * pe / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR), inc, margin, pe
 
 
 def check_no_p_leak(base_l: float, row_l: float) -> list[str]:
@@ -170,9 +207,9 @@ def main() -> int:
         base.append(sum(vals.values()))
     L, M, H = base
     A, B = cut_points(L, M, H)
-    # A10: an external residual (HSBC's DC sensitivity x the FY29 target), not a
-    # leg of this model -- so it is an Input, not something recomputed from one.
-    v_opt = inp["v_opt"]
+    # A10: recomputed on this ticker's ruler (v2); see option_value.
+    g2_dc = min(inp["g2_dc_src"], g_cap(inp["r_op"]))
+    v_opt, opt_inc, dc_margin, pe_dc = option_value(inp, roe_m, g2_dc, inp["r_op"])
     adj = [base[i] + P_K[i] * v_opt for i in range(3)]
 
     print(f"formula_id: {FORMULA_ID}")
@@ -199,6 +236,11 @@ def main() -> int:
         tuple(base), tuple(base[i] / eps_by_tier[i] for i in range(3)), tuple(eps_by_tier)
     ):
         print(line)
+    print(f"V_opt chain: ({inp['dc_target_rev']:g} - {inp['dc_cons_rev']:g}) $M DC rev x HSBC FY27 incremental "
+          f"pre-tax margin {dc_margin:.2%} x (1-t) -> {opt_inc:.4f}/sh x PE {pe_dc:.2f}x (r {inp['r_op']:.0%}, "
+          f"g2_dc {g2_dc:.2%} from src {inp['g2_dc_src']:.2%}, ROE_M {roe_m:.1%}) / 1.1^{int(inp['t_opt']) - NUM_YEAR} = {v_opt:.2f}")
+    v_alt = option_value(inp, roe_m, 0.04, inp["r_op"])[0]
+    print(f"V_opt sensitivity: g2_dc 4% (AVGO XPU mega-hardware cap) -> {v_alt:.2f}; undiscounted {v_opt * (1 + inp['r_op']) ** (inp['t_opt'] - NUM_YEAR):.2f}")
     print(f"表3  V_opt={v_opt:.2f}  " + "  ".join(
         f"{n}:{base[i]:.2f}+{P_K[i]:.2f}xV={adj[i]:.2f}" for i, n in enumerate("LMH")))
 
@@ -226,6 +268,8 @@ def main() -> int:
     for label, shift in (
         ("all -1pp", {leg: -0.01 for leg in OP_LEGS}),
         ("hs/iot +1pp", {leg: +0.01 for leg in OP_LEGS if inp[f"g2_{leg}"] + 0.01 <= cap + 1e-9}),
+        ("auto -1pp", {"auto": -0.01}),
+        ("auto @cap 6%", {"auto": cap - inp["g2_auto"]}),  # v1 value / broad-semis cluster capped
     ):
         lmh = anchors_at(inp["r_op"], shift)
         print(f"g2 lever {label:12} L={lmh[0]:.2f} M={lmh[1]:.2f} H={lmh[2]:.2f}")
@@ -282,6 +326,18 @@ def main() -> int:
         errors += check_g_cap(inp[f"g2_{leg}"], inp["r_op"], f"g2_{leg}")
     if not P_K[0] <= P_K[1] <= P_K[2]:
         errors += [f"p_k must be non-decreasing, got {P_K}"]
+    errors += check_g_cap(g2_dc, inp["r_op"], "g2_dc")
+    if inp["r_op"] - g2_dc < MIN_R_MINUS_G:
+        errors += [f"r - g2_dc = {inp['r_op'] - g2_dc:.2%} < 2% — at the pole"]
+    if inp["t_opt"] <= NUM_YEAR:
+        errors += ["option year must lie after the numerator year (A10)"]
+    if inp["dc_target_rev"] <= inp["dc_cons_rev"]:
+        errors += ["DC target does not exceed what consensus already holds — no option units (A10)"]
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v - v_opt) > 0.05:
+        errors += [f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}"]
+    if FORMULA_ID not in md:
+        errors += [f"formula_id {FORMULA_ID} missing from framework"]
     if v_opt < 0:
         errors += [f"V_opt must be >= 0, got {v_opt:.2f}"]
     # A2e-7a also bars p from the Inputs table itself.

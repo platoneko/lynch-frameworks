@@ -11,7 +11,7 @@ enforcement layer that keeps its number chain honest:
                           -> diff against the numbers printed in §3 Outputs
                           -> exit 1 on any mismatch or invariant violation
 
-formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v2
+formula_id: 9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v4
 
 gordon_v2 (valuation-rules「构造规则冲突的裁决顺序」②): the numerator is the
 furthest fiscal year >= 2 houses can see — FY2028E (March-2028 year-end,
@@ -35,7 +35,19 @@ growth is single-house, so `check_transition_years` does not apply; the
 candidate band reruns the same formula with the cloud leg on
 two_stage_pe(g1_cloud_cand, n_cloud_cand) (A6').  The loss leg of gordon_v1 is
 gone: consensus FY28E EPS already carries every segment's loss path (A7).
-AI Labs upside stays outside the deck as V_opt = ALA revenue x ala_ps (A19).
+gordon_v3 (2026-10-03 migration, valuation-rules「数据优先级与同业同尺」/
+「未建模期权」): the cloud leg's retention return is the sell-side leg-level
+marginal ROIC (roic_cloud: JPM ~20% / MS 13.2% midpoint, A14), not the
+company ROE -- leg-level sell-side data outrank the "all legs alike" rule; the
+book roll charges each leg its own b (cloud g/roic_cloud is constant, e-com
+g/ROE solves with the book): BPS = (BPS0 + N w_c g_c / roic) / (1 - w_e g_e N / EPS).
+AI Labs upside stays outside the deck: V_opt = one own realised ALA leg
+(annualised June-quarter revenue, snapshot lower bound) x the own e-commerce
+EBITA margin (shared rule, 拍值) after tax, valued on its own ruler (basket 4
+r_ala, g2_ecom, H-tier company ROE) in the aligned year + 2 (no timing anchor)
+and discounted back to FY2028 (A19).  No peer multiple is borrowed.  r_ala
+was basket 7 until 2026-10-03 (loss-making / unproven monetisation is no
+basket-7 reason; A20).
 
 Checks beyond the anchor comparison:
   1. A9b closure: non-operating pre-tax equals the announcement's bridge value
@@ -70,7 +82,7 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "9988.HK.md"
-FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v2"
+FORMULA_ID = "9988_sotp_ecom_pe_cloud_ps_nav_v2_gordon_v4"
 TOL = 0.05  # Outputs are rounded to 2 decimals
 YI = 1e8  # 亿, for human-readable reporting
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
@@ -85,7 +97,7 @@ REQUIRED = (
     "eps28_l_cny", "eps28_m_cny", "eps28_h_cny",
     "nonop_pretax_q_cny", "eq_method_q_cny", "tax_rate",
     "ebita_aeg_q_cny", "ebita_cloud_q_cny",
-    "rev_ala_q_cny", "ala_ps",
+    "rev_ala_q_cny", "rev_aeg_q_cny", "r_ala", "t_opt", "t_num", "roic_cloud",
     "r_perp", "bps_hkd", "g2_ecom", "g2_cloud", "g1_cloud_cand", "n_cloud_cand",
     "pe_own_min", "pe_own_max", "eps_ttm_gaap",
     "nav_cny", "d_l", "d_m", "d_h",
@@ -179,7 +191,6 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     w_cloud = 1.0 - w_ecom
     nav_ps = v["nav_cny"] * fx / v["shares"]
     cash_ps = (v["net_cash_cny"] * fx + v["placement_hkd"]) / v["shares"]
-    v_opt = v["rev_ala_q_cny"] * 4 * v["ala_ps"] * fx / v["shares"]
 
     e_full = {k: v[f"eps28_{k}_cny"] * fx for k in SCENARIOS}
     e_ops = {k: (v[f"eps28_{k}_cny"] - nonop_ps) * fx for k in SCENARIOS}
@@ -197,16 +208,27 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     g_cloud_roll = v["g1_cloud_cand"] if candidate else v["g2_cloud"]
     g_roll = w_ecom * v["g2_ecom"] + w_cloud * g_cloud_roll
     unbooked = (v["eps27_m_cny"] - v["eps_1q27_cny"]) * fx  # HKD/share, 2Q–4Q FY27 only
-    bps_open = {k: v["bps_hkd"] / (1.0 - g_roll * unbooked / e_full[k]) for k in SCENARIOS}
+    # each leg charged its own b: e-com g/ROE (ROE = E/B_open, solved), cloud
+    # g/roic_cloud (sell-side leg-level marginal ROIC, constant; A14)
+    b_cloud = w_cloud * g_cloud_roll / v["roic_cloud"]
+    bps_open = {k: (v["bps_hkd"] + unbooked * b_cloud) / (1.0 - w_ecom * v["g2_ecom"] * unbooked / e_full[k])
+                for k in SCENARIOS}
     roe = {k: e_full[k] / bps_open[k] for k in SCENARIOS}
-    b1 = {k: g_roll / roe[k] for k in SCENARIOS}
+    b1 = {k: w_ecom * v["g2_ecom"] / roe[k] + b_cloud for k in SCENARIOS}
     excess_cash = {k: ((1.0 - v["payout_3y"]) - b1[k]) * unbooked for k in SCENARIOS}  # B bucket, disclosure only
     pe_ecom = {k: perpetual_pe(v["g2_ecom"], roe[k], r) for k in SCENARIOS}
     if candidate:
-        pe_cloud = {k: two_stage_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], roe[k], r)
+        pe_cloud = {k: two_stage_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], v["roic_cloud"], r)
                     for k in SCENARIOS}
     else:
-        pe_cloud = {k: perpetual_pe(v["g2_cloud"], roe[k], r) for k in SCENARIOS}
+        pe_cloud = {k: perpetual_pe(v["g2_cloud"], v["roic_cloud"], r) for k in SCENARIOS}
+
+    # V_opt (A19): one own realised ALA leg (snapshot lower bound) x own AEG
+    # EBITA margin (shared rule, 拍值) x (1 - t), own ruler, timed + discounted.
+    margin_ala = v["ebita_aeg_q_cny"] / v["rev_aeg_q_cny"]
+    ala_np = v["rev_ala_q_cny"] * 4 * margin_ala * (1.0 - v["tax_rate"])
+    pe_ala = perpetual_pe(v["g2_ecom"], roe["h"], v["r_ala"])
+    v_opt = ala_np * pe_ala / (1.0 + v["r_ala"]) ** (v["t_opt"] - v["t_num"]) * fx / v["shares"]
 
     legs: dict[str, dict[str, float]] = {}
     anchors: dict[str, float] = {}
@@ -226,6 +248,7 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     return {
         "nonop_ps": nonop_ps, "w_ecom": w_ecom, "w_cloud": w_cloud,
         "nav_ps": nav_ps, "cash_ps": cash_ps, "legs": legs, "V_opt": v_opt,
+        "margin_ala": margin_ala, "ala_np": ala_np, "pe_ala": pe_ala,
         "e_full": e_full, "e_ops": e_ops, "roe": roe, "pe_ecom": pe_ecom, "pe_cloud": pe_cloud,
         "g_roll": g_roll, "unbooked": unbooked, "bps_open": bps_open, "b1": b1, "excess_cash": excess_cash,
         "blend": {k: w_ecom * pe_ecom[k] + w_cloud * pe_cloud[k] for k in SCENARIOS},
@@ -266,7 +289,9 @@ def main() -> int:
         checks.append((False, "r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"))
     for msg in (check_r(v["r_perp"], "r_perp", baskets.get("r_perp"))
                 + check_g_cap(v["g2_ecom"], v["r_perp"], "g2_ecom")
-                + check_g_cap(v["g2_cloud"], v["r_perp"], "g2_cloud")):
+                + check_g_cap(v["g2_cloud"], v["r_perp"], "g2_cloud")
+                + check_r(v["r_ala"], "r_ala", baskets.get("r_ala"))
+                + check_g_cap(v["g2_ecom"], v["r_ala"], "g2_ecom@r_ala")):
         checks.append((False, msg))
     for name in ("g2_ecom", "g2_cloud"):
         checks.append((v["r_perp"] - v[name] >= MIN_R_MINUS_G - 1e-9,
@@ -276,7 +301,7 @@ def main() -> int:
     for k in SCENARIOS:
         checks.append((c["pe_ecom"][k] > 0 and c["pe_cloud"][k] > 0,
                        f"ROE_{k}={c['roe'][k]:.4f} -> pe_ecom {c['pe_ecom'][k]:.2f} / pe_cloud {c['pe_cloud'][k]:.2f} "
-                       f"(payout {1 - v['g2_ecom'] / c['roe'][k]:.2f} / {1 - v['g2_cloud'] / c['roe'][k]:.2f}) positive"))
+                       f"(payout {1 - v['g2_ecom'] / c['roe'][k]:.2f} / {1 - v['g2_cloud'] / v['roic_cloud']:.2f}) positive"))
         # b1 in (0,1): the deck has no negative stage-1 payout, so b1 >= 1 would be an unpriced equity raise
         checks.append((0.0 < c["b1"][k] < 1.0 and 0.0 < cand["b1"][k] < 1.0,
                        f"ROE basis {k}: roll converges, b1 = g/ROE = {c['b1'][k]:.3f} (candidate {cand['b1'][k]:.3f}) in (0,1)"))
@@ -373,7 +398,9 @@ def main() -> int:
         pe_edge = (edge * v["eps_ttm_gaap"] - c["legs"]["m"]["nav"] - c["legs"]["m"]["cash"]) / c["e_ops"]["m"]
         g_edge, ok = implied_g(pe_edge, c["roe"]["m"], v["r_perp"])
         print(f"  band edge {edge}x -> ops PE {pe_edge:.2f} -> g {g_edge:+.2%}{'' if ok else ' (ill-conditioned)'}")
-    print(f"V_opt     : {c['V_opt']:.2f} HKD (ALA rev×4×PS {v['ala_ps']:.0f})  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
+    print(f"V_opt     : {c['V_opt']:.2f} HKD (ALA rev x4 {v['rev_ala_q_cny'] * 4 / YI:.2f}亿 x AEG margin {c['margin_ala']:.4f} x (1-t)"
+          f" = {c['ala_np'] / YI:.2f}亿 x PE {c['pe_ala']:.2f} (r {v['r_ala']}, g {v['g2_ecom']}, ROE_H {c['roe']['h']:.3f})"
+          f" / {1 + v['r_ala']}^{v['t_opt'] - v['t_num']:.0f})  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
           f"  V_opt/M={c['V_opt'] / c['M']:.1%}")
     print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
           f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")
@@ -393,6 +420,9 @@ def main() -> int:
     for g in (v["g2_ecom"] - 0.01, v["g2_ecom"] + 0.01):
         alt = compute(dict(v, g2_ecom=g))
         print(f"  g2_ecom={g:.4f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
+    for roic in (0.132, 0.20):
+        alt = compute(dict(v, roic_cloud=roic))
+        print(f"  roic_cloud={roic:.3f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
     alt = compute(dict(v, g2_cloud=v["g2_cloud"] - 0.01))
     print(f"  g2_cloud={v['g2_cloud'] - 0.01:.2f}: {alt['L']:.2f} / {alt['M']:.2f} / {alt['H']:.2f}")
     alt = compute(dict(v, ebita_cloud_q_cny=v["ebita_aeg_q_cny"] / 3))  # w_cloud = 25%

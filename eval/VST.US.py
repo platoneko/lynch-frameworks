@@ -6,7 +6,12 @@ cut points, the option credit, the candidate band and the 表2′ band-edge band
 from the §3 Inputs table and exits 1 on mismatch.  The doc carries no current
 price (AGENTS.md「现价 — 禁写契约」), so nothing here reads one.
 
-formula_id: vst_sotp_retail_gen_mfcf_gordon_v1
+formula_id: vst_sotp_retail_gen_mfcf_gordon_v2
+
+v2 (2026-10-03, valuation-rules「未建模期权」时点折现): the PPA premia are an
+annuity at basket 1 from the realisation year t_opt (2028, first contracted
+delivery year), valued one period before its first flow, then carried back to
+the numerator year at the base basket r (r_gen), not at the contract rate.
 
 Main ruler: two-leg SOTP on 2027 unlevered maintenance free cash flow
 (Ongoing Ops adjusted EBITDA − maintenance capex incl. nuclear fuel − tax at a
@@ -59,7 +64,8 @@ from eval.lib.inputs import (  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "VST.US.md"
-FORMULA_ID = "vst_sotp_retail_gen_mfcf_gordon_v1"
+FORMULA_ID = "vst_sotp_retail_gen_mfcf_gordon_v2"
+NUM_YEAR = 2027  # numerator year = t1
 TOL = 0.05
 TIERS = ("l", "m", "h")
 MIN_R_MINUS_G = 0.02
@@ -78,7 +84,7 @@ REQUIRED = [
     "growth_capex", "window_years", "k_l", "k_m", "k_h",
     "fwd_band_min", "ebitda_2028_gs",
     "cp_fcfbg_base", "cp_accretion", "cp_mw", "cp_term", "meta_mw", "meta_2027_ebitda",
-    "meta_term", "p_l", "p_m", "p_h",
+    "meta_term", "p_l", "p_m", "p_h", "t_opt",
 ]
 CP_RAMP = (0.0, 0.25, 0.50, 0.70, 0.85)  # 2027..2031 share of 1.2 GW, then 1.0 (A13)
 
@@ -175,9 +181,16 @@ def main() -> int:
     cp_full = inp["cp_accretion"] * inp["cp_fcfbg_base"] * (1 - t)
     term = int(inp["cp_term"])
     ramp = list(CP_RAMP) + [1.0] * (term + 1 - len(CP_RAMP))
-    cp_pv = sum(cp_full * ramp[i] / (1 + r1) ** (i + 1) for i in range(len(ramp)))
+    # ramp[i] is year NUM_YEAR + i; flows start at t_opt.  Annuity valued at
+    # t_opt − 1 on basket 1, then discounted (t_opt − NUM_YEAR) years at r_gen.
+    t_opt = int(inp["t_opt"])
+    lag = t_opt - NUM_YEAR
+    if any(ramp[i] for i in range(lag)):
+        errors.append("CP ramp has flows before t_opt")
+    back = (1 + inp["r_gen"]) ** lag
+    cp_pv = sum(cp_full * ramp[i] / (1 + r1) ** (i - lag + 1) for i in range(lag, len(ramp))) / back
     meta_full = cp_full / inp["cp_mw"] * inp["meta_mw"] - inp["meta_2027_ebitda"] * (1 - t)
-    meta_pv = sum(meta_full / (1 + r1) ** yr for yr in range(2, 2 + int(inp["meta_term"])))
+    meta_pv = sum(meta_full / (1 + r1) ** k for k in range(1, 1 + int(inp["meta_term"]))) / back
     v_opt = (cp_pv + meta_pv) / sh
     ps = (inp["p_l"], inp["p_m"], inp["p_h"])
     plus_v = [x + p * v_opt for x, p in zip((L, M, H), ps)]

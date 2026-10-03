@@ -6,7 +6,7 @@ anchors, candidate band and V_opt from its §3 Inputs table and exits 1 on
 mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
 nothing here computes a zone for the price or a market-implied reading — the
 digest and the app zone on live quotes.
-formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v1
+formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v2
 
 Ganfeng does not disclose lithium sales volumes or its self-supplied feed
 share, so the lithium leg (salts + mining + JV share, all inside the reported
@@ -19,13 +19,19 @@ rungs.  The base deck keeps the line's own 2026H1 volume structure (2026E
 (A2e-7h): the same formula with the leg scaled by vol_2027e/vol_2026e and
 discounted one year.  The battery leg is its annualised segment result
 (current, undiscounted) and also supplies the first V_opt component,
-solid-state (k=1 x today's battery leg, A2e-7c).  The second component is
-volume growth beyond the base: no per-project unit economics, so it is valued
-as k=1 x the company's own REALISED step (2024 -> 2025 sales, +42.5%, 2025
-annual report) read on the two-point line at the axis M rung, discounted two
-years (A12).  Per-tier credits for both components are hard-coded here and
-never enter Inputs (A2e-7a); a value-weighted blend is also stated in the doc
-for the daily digest, which only reads one p triple.
+solid-state: the named 12 GWh cannot be converted to revenue (no battery
+shipments / price disclosed), so one share of today's battery leg, a
+snapshot lower bound, realised in 2029 (aligned year 2027 + 2, no named date)
+and discounted back to the numerator year 2026 at the basket r.  The second
+component is volume growth beyond the base, sized ONLY from the company's own
+named quantity (valuation-rules「未建模期权」, 2026-10-03): the 2030 design
+capacity target 60 万吨 vs today's ~30 万吨 nameplate = one more 2026
+structure, read on the two-point line at the axis M rung (unit economics of
+this ticker's own lithium leg), valued at this ticker's own post-realisation
+multiple and discounted 2030 -> 2026 (A12).  Per-tier credits for both
+components are hard-coded here and never enter Inputs (A2e-7a); a
+value-weighted blend is also stated in the doc for the daily digest, which
+only reads one p triple.
 
 Multiples: Gordon at the leg's basket r (篮 6 周期商品, both legs share it,
 A14) with ONE flat g2 = the commodity-leg tier default 0 (§13: lithium's
@@ -60,7 +66,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1772.HK.md"
-FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v1"
+FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v2"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 # The single perpetual r leg (both business legs share the basket, A14); r_disc
@@ -69,10 +75,10 @@ LEG_R = ("r_perp",)
 # _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
 LISTING_CCY = "HKD"
 
-# Per-tier option credits (A9): solid-state is a judgement call, the volume step
-# is anchored on Dongwu's 2028E/2027E (+12.5% / one realised 42.5% step ~ 0.29).
+# Per-tier option credits (A9): both p_M are judgement calls (no probability
+# anchor; per-project start dates are not disclosed).
 P_SS = {"l": 0.0, "m": 0.25, "h": 1.0}
-P_VOL = {"l": 0.0, "m": 0.29, "h": 1.0}
+P_VOL = {"l": 0.0, "m": 0.25, "h": 1.0}
 # A13: the company's own realised trough→recovery path (Longbridge annual parent NI,
 # HKD: FY2024 −22.45 亿 loss trough; FY2025 17.63 亿 → 2026H1 42.6 亿 CNY × 2 × fx).
 RECOVERY_MEASURED = {"FY2025→2026H1×2": (17.63, 42.6 * 2 * 1.136, 1)}
@@ -81,7 +87,8 @@ REQUIRED = [
     "shares", "bps", "fx_hkd_per_cny",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "cal_p0", "cal_li_pretax_0", "cal_p1", "cal_li_pretax_1",
-    "vol_2026e", "vol_2027e", "vol_2024a", "vol_2025a", "r_disc", "n_disc",
+    "vol_2026e", "vol_2027e", "cap_now", "cap_2030", "r_disc", "n_disc",
+    "t_num", "t_opt_ss", "t_opt_vol",
     "batt_pretax", "net_finance",
     "tax_rate", "nci_share",
     "r_perp", "g2", "axis_g2_li",
@@ -117,16 +124,25 @@ def li_2026(inp: dict[str, float], li2co3: float) -> float:
     return inp["cal_li_pretax_0"] + (li2co3 - inp["cal_p0"]) * slope
 
 
-def realised_step(inp: dict[str, float]) -> float:
-    """The company's own last realised volume step: 2024 -> 2025 sales (A12, 7c-1)."""
-    return (inp["vol_2025a"] - inp["vol_2024a"]) / inp["vol_2024a"]
+def option_share(inp: dict[str, float]) -> float:
+    """Shares of the 2026 structure in the named 2030 design-capacity target (A12, 7c-1)."""
+    return (inp["cap_2030"] - inp["cap_now"]) / inp["cap_now"]
 
 
-def v_opt_vol(inp: dict[str, float], li2co3: float, pe_m: float) -> float:
-    """One more realised-sized volume step at the given rung, 2028 run-rate, at the M-tier multiple (A12)."""
-    disc2 = (1.0 + inp["r_disc"]) ** (-2 * inp["n_disc"])
-    pretax = li_2026(inp, li2co3) * realised_step(inp) * disc2
-    return per_share_hkd(parent_from_pretax(pretax, inp), inp) * pe_m
+def disc_to_num(inp: dict[str, float], t_opt: float) -> float:
+    """Realisation year -> numerator year (2026 structure) at the basket r (7c-1 时点)."""
+    return (1.0 + inp["r_disc"]) ** (-(t_opt - inp["t_num"]))
+
+
+def post_pe(inp: dict[str, float], eps_h: float, d_eps: float) -> float:
+    """This ticker's own ruler after realisation: Gordon at the H-tier ROE plus the increment."""
+    return perpetual_pe(inp["g2"], (eps_h + d_eps) / inp["bps"], inp["r_perp"])
+
+
+def v_opt_vol(inp: dict[str, float], li2co3: float, eps_h: float) -> float:
+    """Named 2030 capacity target beyond today's nameplate, read at the given rung, discounted (A12)."""
+    d_eps = per_share_hkd(parent_from_pretax(li_2026(inp, li2co3) * option_share(inp), inp), inp)
+    return d_eps * post_pe(inp, eps_h, d_eps) * disc_to_num(inp, inp["t_opt_vol"])
 
 
 def scenario(inp: dict[str, float], tag: str, scale: float = 1.0, g2: float | None = None) -> dict[str, float]:
@@ -177,8 +193,10 @@ def main() -> int:
         errors.append("calibration points must be ordered (trough below platform)")
     if not inp["vol_2027e"] > inp["vol_2026e"]:
         errors.append("2027E volume must exceed 2026E (the candidate scale is a growth factor)")
-    if not inp["vol_2025a"] > inp["vol_2024a"]:
-        errors.append("realised 2024->2025 step must be positive (V_opt unit)")
+    if not inp["cap_2030"] > inp["cap_now"]:
+        errors.append("2030 capacity target must exceed today's nameplate (V_opt share)")
+    if not (inp["t_opt_ss"] >= inp["t_num"] and inp["t_opt_vol"] >= inp["t_num"]):
+        errors.append("option realisation years must not precede the numerator year")
     errors += check_li2co3_mount(
         (inp["li2co3_l"], inp["li2co3_m"], inp["li2co3_h"])
     )
@@ -200,10 +218,14 @@ def main() -> int:
     H = S["h"]["px"]
     A, B = (L + M) / 2, (M + H) / 2
 
-    # Option components: solid-state (k=1 x today's battery leg) and one more
-    # realised-sized volume step at the axis M rung (A12).  Both at the M-tier multiple.
-    v_ss = per_share_hkd(parent_from_pretax(inp["batt_pretax"], inp), inp) * pe_m
-    v_vol = v_opt_vol(inp, inp["li2co3_m"], pe_m)
+    # Option components (valuation-rules「未建模期权」2026-10-03): solid-state = one
+    # share of today's battery leg (snapshot lower bound) realised 2029; volume =
+    # the named 2030 capacity target beyond today's nameplate at the axis M rung,
+    # realised 2030.  Both on this ticker's own post-realisation Gordon multiple,
+    # discounted to the numerator year at the basket r.
+    d_eps_ss = per_share_hkd(parent_from_pretax(inp["batt_pretax"], inp), inp)
+    v_ss = d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(inp, inp["t_opt_ss"])
+    v_vol = v_opt_vol(inp, inp["li2co3_m"], S["h"]["eps"])
     v_opt = v_ss + v_vol
 
     if not (L < M < H):
@@ -307,11 +329,13 @@ def main() -> int:
           f"scenario_L/M={scenario_L / M:.3f}  floor vs band: {zone_of(floor, L, M, H)}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  "
           f"V_opt={v_opt:.2f} = ss {v_ss:.2f} + vol {v_vol:.2f} "
-          f"(one realised step {realised_step(inp):.1%} = {inp['vol_2024a']:g}→{inp['vol_2025a']:g} 万吨 @axis M, δ², PE_M)")
+          f"(vol: {option_share(inp):.2f} x 2026 structure = {inp['cap_now']:g}→{inp['cap_2030']:g} 万吨 nameplate @axis M, "
+          f"disc {disc_to_num(inp, inp['t_opt_vol']):.4f} ({inp['t_opt_vol']:g}→{inp['t_num']:g}); "
+          f"ss disc {disc_to_num(inp, inp['t_opt_ss']):.4f} ({inp['t_opt_ss']:g}→{inp['t_num']:g}, 无时点锚·拍值))")
     print("zone+V: " + "  ".join(
         f"{k}={adj[k]:.2f}(p_ss={P_SS[t]:g},p_vol={P_VOL[t]:g})" for k, t in zip("LMH", "lmh")
     ) + f"  A′={(adj['L'] + adj['M']) / 2:.2f} B′={(adj['M'] + adj['H']) / 2:.2f}"
-        f"  vol step @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], pe_m):.2f}/{v_opt_vol(inp, inp['li2co3_h'], pe_m):.2f}")
+        f"  vol option @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], S['h']['eps']):.2f}/{v_opt_vol(inp, inp['li2co3_h'], S['h']['eps']):.2f}")
     print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}")
     print(f"gordon: r={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2={inp['g2']:g} flat [§13 commodity-leg tier default] "
           f"(axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "

@@ -5,7 +5,7 @@ frameworks/NEM.US.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: nem_fed_gold_fwd6moz_two_stage_v1
+formula_id: nem_fed_gold_fwd6moz_two_stage_v2
 
 Price axis: the shared Fed-path gold/copper USD ladder (_AXIS.fed-path-gold-copper),
 checked cell by cell against the axis file and against the peer mount
@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
-from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
 
@@ -52,7 +52,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NEM.US.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
-FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v1"
+FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v2"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
 TIERS = ("l", "m", "h")
@@ -74,7 +74,33 @@ REQUIRED = [
     "payout_actual", "n_transition", "growth_capex_26_28",
     "k_l", "k_m", "k_h",
     "r_perp", "r_pbzn", "g2_metal", "g2_pbzn", "axis_g2_aucu", "pe_own_min", "pe_own_max",
+    "rc_au_oz", "rc_cu_t", "rc_share", "t_num", "t_opt",
 ]
+# 表3 only — never Inputs, never the base band (A2e-7a).  p_M: FID pending, no anchor.
+P_K = (0.0, 0.25, 1.0)
+
+
+def red_chris_option(inp: dict[str, float], th: dict) -> dict[str, float]:
+    """V_opt — Red Chris block cave (A15, valuation-rules「未建模期权」2026-10-03).
+
+    Size: the named PFS run-rate (100%) x Newmont's 70% share, read at the M
+    rungs with today's realisation.  Unit economics: this ticker's own M-tier
+    current operating margin before fixed costs, own tax rate.  Ruler: own
+    steady-state Gordon on the metal leg (g2_metal, basket r) at the H-tier
+    ROE28 lifted by the increment; valued in the first-ore year and discounted
+    to the numerator year at the basket r.  No peer multiple.
+    """
+    cur_m = year(inp, "m", False)
+    margin = (cur_m["sales"] - inp["cas"] - inp["da"]) / cur_m["sales"]
+    s_inc = (inp["rc_au_oz"] * inp["lme_au_m"] * inp["realization_au"]
+             + inp["rc_cu_t"] * inp["lme_cu_m"] * inp["realization_cu"]) * inp["rc_share"] / 1e6
+    d_np = s_inc * margin * (1 - inp["tax_rate"])
+    d_eps = d_np / inp["shares"]
+    roe_post = (th["fwd"]["parent"] + d_np) / th["b27"]
+    pe_post = perpetual_pe(inp["g2_metal"], roe_post, inp["r_perp"])
+    disc = (1 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    return {"margin": margin, "s_inc": s_inc, "d_np": d_np, "d_eps": d_eps, "roe_post": roe_post,
+            "pe_post": pe_post, "disc": disc, "v_opt": d_eps * pe_post * disc}
 _AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%", re.MULTILINE)
 
 
@@ -221,11 +247,27 @@ def main() -> int:
     A, B = (L + M) / 2, (M + H) / 2
     net_cash_ps = -inp["net_debt"] / inp["shares"]
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
+    opt = red_chris_option(inp, T["h"])
+    if inp["t_opt"] < inp["t_num"] or opt["v_opt"] < 0:
+        errors.append("V_opt: realisation year before numerator year, or negative option")
+    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
                                  ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
+    got = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
+    if got is None or abs(got - opt["v_opt"]) > TOL:
+        errors.append(f"V_opt: stated {got} vs recomputed {opt['v_opt']:.4f}")
+    for k, v in zip("LMH", band3):
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        if m3 is None or abs(float(m3.group(1)) - v) > TOL:
+            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
+    for label, want, rx in (("A′", (band3[0] + band3[1]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
+                            ("B′", (band3[1] + band3[2]) / 2, r"B′ = \*\*([0-9.]+)\*\*")):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > TOL:
             errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
     print(f"formula_id={FORMULA_ID}")
@@ -245,6 +287,12 @@ def main() -> int:
         f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
         for t in TIERS))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"V_opt Red Chris（A15）：PFS {inp['rc_au_oz'] / 1e3:.0f} koz + {inp['rc_cu_t'] / 1e3:.0f} kt × {inp['rc_share']:.0%} @M "
+          f"= {opt['s_inc']:,.0f} $M × 毛利率 {opt['margin']:.1%} × (1−t) = {opt['d_np']:,.0f} $M（ΔEPS {opt['d_eps']:.3f}）"
+          f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_metal']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}）"
+          f" × {opt['disc']:.4f}（{inp['t_opt']:g}→{inp['t_num']:g}）= {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
+          f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
     print(f"flat-multiple ladder @ metal PE_M {T['m']['pe']['metal']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)

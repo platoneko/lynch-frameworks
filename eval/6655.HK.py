@@ -7,7 +7,7 @@ no current price (AGENTS.md「现价 — 禁写契约」), so nothing here compu
 or a market-implied r — the digest and the app zone on live quotes.  The δ
 readings printed below are for price-free coordinates only (sell-side TP, book).
 
-formula_id: huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4
+formula_id: huaxin_dom_ovs_split_perpetual_g_hk_anchored_v5
 
 Main ruler: split the NUMERATOR by leg, let each tier name a PERPETUAL GROWTH
 RATE for each leg, price each leg on its own Gordon multiple at its BASKET r
@@ -46,6 +46,14 @@ numerator.  This deviates from skill A2e-2b by explicit user decision
 (2026-09-09); the measured band survives as a fence, and every tier's
 company-level multiple (anchor / group EPS) has to land inside it.
 
+V_opt (A15, valuation-rules「未建模期权」2026-10-03): the signed Holcim
+Philippines (HPI) stage-1 purchase is the only named quantity beyond consensus.
+Units = HPI 2025 revenue x the overseas leg's own FY2025 segment after-tax
+margin x the stake, less after-tax interest on the consideration at this
+ticker's own debt cost; priced at the overseas leg's H multiple (own basket r,
+axis g, own leg ROE -- no peer multiple) and discounted from the realisation
+year back to the numerator year.  p_k lives in table 3 only.
+
 Guards:
 
   * the zero-growth floor on the overseas leg's H (A10): g_ovs_H >= 0.
@@ -59,6 +67,7 @@ Run:  python3 frameworks/eval/6655.HK.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -77,7 +86,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "6655.HK.md"
-FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v4"
+FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_hk_anchored_v5"
 
 TIERS = ("l", "m", "h")
 # Perpetual-g inputs carry the `g2_` prefix so scripts/calibration.py reports
@@ -88,6 +97,10 @@ R_ROWS = {"dom": "r_dom", "ovs": "r_ovs"}
 MONOTONIC_GAP = 0.03        # |ROE - r| threshold of the domain table (gordon._ROE_NEAR_R)
 # _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
 LISTING_CCY = "HKD"
+NUM_YEAR = 2026             # numerator year of M/H (FY2026E consensus)
+P_TIERS = (0.0, 0.25, 1.0)  # A15 — table 3 only, never an input
+TOL = 0.05
+H1_OVS_REV = 85.42         # 2026H1 overseas revenue 亿 (§0 snapshot); V_opt sensitivity print only
 
 REQUIRED = [
     "shares", "bps", "fx_hkdcny",
@@ -101,7 +114,38 @@ REQUIRED = [
     "g2_ovs_l", "g2_ovs_m", "g2_ovs_h",
     "pe_own_lo", "pe_own_hi", "pe_own_mid",
     "eps_consensus_low", "pe_a_mid",
+    "rev_ovs", "opt_rev_usd", "opt_stake", "opt_price_usd", "fx_usdcny", "int_cost", "t_opt",
 ]
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
+    return float(m.group(1)) if m else None
+
+
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(
+        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
+        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
+        md,
+    )
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
+
+
+def opt_delta_ni(inp: dict[str, float], margin: float | None = None, int_cost: float | None = None) -> float:
+    """A15: HPI stage-1 incremental 归母, 亿元 CNY.
+
+    Revenue (USD 亿 -> CNY) x the overseas leg's FY2025 segment after-tax margin
+    (before NCI) x the stake, less after-tax interest on the consideration at
+    this ticker's own debt cost (the numerator is 归母 after interest, A11).
+    """
+    if margin is None:
+        margin = inp["pretax_ovs"] * (1.0 - inp["tax_eff"]) / inp["rev_ovs"]
+    rate = inp["int_cost"] if int_cost is None else int_cost
+    fx = inp["fx_usdcny"]
+    earn = inp["opt_rev_usd"] * fx * margin * inp["opt_stake"]
+    carry = inp["opt_price_usd"] * fx * rate * (1.0 - inp["tax_eff"])
+    return earn - carry
 
 
 def domain(roe: float, r: float) -> str:
@@ -357,6 +401,30 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
+    # --- Step 7: V_opt (A15) — own ruler, discounted from the realisation year --
+    if inp["t_opt"] <= NUM_YEAR:
+        errors.append("option year must lie after the numerator year (A15)")
+    p_fields = [k for k in inp if k.startswith("p_")]
+    if p_fields:
+        errors.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
+    disc = (1.0 + r["ovs"]) ** (inp["t_opt"] - NUM_YEAR)
+    pe_ovs_h = m.pe["h"]["ovs"]
+
+    def v_opt_of(delta_ni: float) -> float:
+        return delta_ni * 1e8 / inp["shares"] / inp["fx_hkdcny"] * pe_ovs_h / disc
+
+    d_ni = opt_delta_ni(inp)
+    v_opt = v_opt_of(d_ni)
+    if d_ni <= 0:
+        errors.append(f"HPI incremental NI {d_ni:.2f} <= 0 — financing cost exceeds the unit (A15, 回对话)")
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v - v_opt) > TOL:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    if stated_p_tiers(md) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {stated_p_tiers(md)} vs A15 {P_TIERS}")
+    opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
+    a2, b2 = cut_points(*opt)
+
     # --- report --------------------------------------------------------------
     fx = inp["fx_hkdcny"]
     print(f"formula_id={FORMULA_ID}")
@@ -389,7 +457,21 @@ def main() -> int:
     print(f"flat-multiple @PE_M (国内 {m.pe['m']['dom']:.2f}× / 海外 {m.pe['m']['ovs']:.2f}×): "
           f"L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} V_opt/M={v_opt / M:.1%}")
+    margin = inp["pretax_ovs"] * (1.0 - inp["tax_eff"]) / inp["rev_ovs"]
+    fxu = inp["fx_usdcny"]
+    print(f"V_opt={v_opt:.2f} (HPI {inp['opt_rev_usd']:g} 亿美元 x {fxu:g} = {inp['opt_rev_usd'] * fxu:.2f} 亿 x 海外腿利润率 "
+          f"{margin:.2%} x {inp['opt_stake']:g} = {inp['opt_rev_usd'] * fxu * margin * inp['opt_stake']:.2f} − 对价 "
+          f"{inp['opt_price_usd'] * fxu:.2f} 亿 x {inp['int_cost']:.2%} x (1−t) = "
+          f"{inp['opt_price_usd'] * fxu * inp['int_cost'] * (1 - inp['tax_eff']):.2f} → ΔNI {d_ni:.2f} 亿 = "
+          f"{d_ni * 1e8 / inp['shares'] / inp['fx_hkdcny']:.4f} HKD/股 x PE_ovs_H {pe_ovs_h:.2f} / "
+          f"{1 + r['ovs']:.2f}^{int(inp['t_opt']) - NUM_YEAR})")
+    print(f"zone+V (p {P_TIERS[0]:g}/{P_TIERS[1]:g}/{P_TIERS[2]:g}): {opt[0]:.2f} / {opt[1]:.2f} / {opt[2]:.2f} "
+          f"A'={a2:.2f} B'={b2:.2f}")
+    infer_margin = inp["ni_group_m"] * (m.ni_l["ovs"] / inp["ni_group_l"]) / (2 * H1_OVS_REV)
+    print(f"敏感区 V_opt: 债务成本 5% → {v_opt_of(opt_delta_ni(inp, int_cost=0.05)):.2f}; "
+          f"单位利润率 {infer_margin:.1%}（2026 共识 mean × 份额 ÷ H1 海外收入 85.42 × 2）→ "
+          f"{v_opt_of(opt_delta_ni(inp, margin=infer_margin)):.2f}")
     num_l = inp["ni_group_l"] / inp["ni_group_m"]
     num_h = inp["ni_group_h"] / inp["ni_group_m"]
     print(f"分子比 L/M={num_l:.2f} H/M={num_h:.2f} | 公司口径倍数比 "

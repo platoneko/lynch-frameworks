@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: eve_core_excl_smoore_perpetual_g_plus_listed_stake_v1
+formula_id: eve_core_excl_smoore_perpetual_g_plus_listed_stake_v2
 
 Main ruler: an asymmetric SOTP.
 
@@ -65,19 +65,20 @@ Run:  python3 frameworks/eval/300014.SZ.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import check_g_cap, check_r, g_cap, payout, perpetual_pe  # noqa: E402
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report, outputs_section,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300014.SZ.md"
-FORMULA_ID = "eve_core_excl_smoore_perpetual_g_plus_listed_stake_v1"
+FORMULA_ID = "eve_core_excl_smoore_perpetual_g_plus_listed_stake_v2"
 
 TIERS = ("l", "m", "h")
 
@@ -92,6 +93,7 @@ FORMULA_FIELDS = frozenset({
 # convergence option MUST NOT reach the base band or any zone boundary.
 VOPT_FIELDS = frozenset({
     "vol_power_fy2025", "ugm_catl_power", "ugm_eve_power", "tax_conv",
+    "t_num", "t_opt",
 })
 
 # 表3 only — never Inputs, never the base band (A2e-7a).
@@ -157,7 +159,11 @@ def convergence_option(inp: dict[str, float], base_h: float) -> dict[str, float]
     return {
         "gap": gap, "delta_gp": delta_gp, "delta_ni": delta_ni,
         "nic_conv": nic_conv, "roe_conv": roe_conv, "pe_conv": pe_conv,
-        "anchor_conv": anchor_conv, "v_opt": anchor_conv - base_h,
+        "anchor_conv": anchor_conv, "v_undisc": anchor_conv - base_h,
+        # valuation-rules「未建模期权」2026-10-03 时点: value in the realisation
+        # year, discounted back to the numerator year at the basket r.
+        "disc": (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"])),
+        "v_opt": (anchor_conv - base_h) * (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"])),
     }
 
 
@@ -271,6 +277,16 @@ def main() -> int:
         )
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
+    if inp["t_opt"] < inp["t_num"]:
+        errors.append("t_opt must not precede the numerator year t_num")
+    out_sec = outputs_section(md)
+    vm = re.search(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
+    if vm is None or abs(float(vm.group(1)) - opt["v_opt"]) > 0.05:
+        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {opt['v_opt']:.4f}")
+    for k, v in zip("LMH", band3):
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        if m3 is None or abs(float(m3.group(1)) - v) > 0.05:
+            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
 
     # --- report -------------------------------------------------------------
     cap = g_cap(r)
@@ -311,7 +327,9 @@ def main() -> int:
     print(f"      → nic_h {inp['nic_h']:.2f} + {opt['delta_ni']:.2f} = "
           f"{opt['nic_conv']:.2f} 亿，ROEcore {opt['roe_conv']:.2%}、PE "
           f"{opt['pe_conv']:.2f} → 兑现后锚点 {opt['anchor_conv']:.2f}"
-          f"（含 ROE 抬升带来的倍数重估）")
+          f"（含 ROE 抬升带来的倍数重估）；− H = {opt['v_undisc']:.2f}，"
+          f"× (1+r)^-({inp['t_opt']:g}−{inp['t_num']:g}) = {opt['disc']:.4f} → V_opt {opt['v_opt']:.2f}"
+          f"（兑现年无时点锚·拍值）")
     print(f"  p_M={P_K[1]:.2f} 的锚是**反向**的：2026H1 动力单位毛利 "
           f"{inp['ugm_eve_power_h1']:.2f} vs FY2025 {inp['ugm_eve_power']:.1f} 元/kWh"
           f"（{inp['ugm_eve_power_h1'] / inp['ugm_eve_power'] - 1:+.1%}）"

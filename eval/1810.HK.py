@@ -12,7 +12,7 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so no
 computes a zone for the price or a market-implied reading — the digest and the
 app zone on live quotes.
 
-formula_id: xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v2
+formula_id: xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v4
 
 gordon_v2 (valuation-rules「构造规则冲突的裁决顺序」②): the operating numerator is
 the furthest fiscal year with a >=2-house RANGE -- FY2027E (calendar FY, FY+1,
@@ -42,7 +42,16 @@ Main ruler (four legs, summed — no hand-written total is ever consumed):
   3. EV leg     : FY26E segment revenue x realised peer PS cluster p25/p50/p75 (A9).
   4. closing    : net cash (never discounted) + investment portfolio x (1 - d).
   Overlay (NOT in L/M/H):
-  5. V_opt      : DeepSeek peer API revenue annualized x mimo_ps (A18).
+  5. V_opt      : EV deliveries the company targets beyond what the FY26E
+                  consensus carries (opt_units = 2026 target 550k - 450k), x
+                  own ASP x own 1H26 EV-segment gross margin, after tax, valued
+                  on the EV leg's own ruler (basket 4 r_ev, g2 = 0 -> 1/r; was basket 7
+                  until 2026-10-03 -- single product is no basket-7 reason) and
+                  discounted from the target year to FY2027 (exponent floored
+                  at 0: the target year precedes the numerator year) (A18;
+                  valuation-rules「未建模期权」2026-10-03: borrow quantity not
+                  price, own named quantity, own ruler, timed).  MiMo has no own
+                  revenue or target -> 待补, no V_opt.
 
 The 1H26 segment recompute (A3) is kept for reconciliation, the leg weights and
 the A4' add-back upper bound; the run-rate worlds are pressure coordinates only.
@@ -50,7 +59,8 @@ the A4' add-back upper bound; the run-rate worlds are pressure coordinates only.
 Discount rate: r_perp is a basket value (gordon.BASKET_R); the framework's
 Inputs source cell names the basket (篮 4 龙头制造, A23) and `check_r` requires
 r to equal that basket's value; both perpetual g2 are capped at g_cap(r).  The
-EV leg is a PS ruler (篮 7 by nature, no r in its formula).
+EV leg is a PS ruler (no r in its bottom-card formula); its basket (篮 4 since
+2026-10-03, was 篮 7) only prices V_opt via r_ev.
 
 Guardrail: every tier's whole-ticker multiple (anchor / GAAP-TTM EPS) must sit
 inside the realised 5-year band [pe_own_min, pe_own_max] (A21, weak band).
@@ -75,7 +85,7 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "1810.HK.md"
-FORMULA_ID = "xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v2"
+FORMULA_ID = "xiaomi_sotp_phone_eco_ev_ps_cash_v3_gordon_v4"
 
 TOL = 0.05  # Outputs are rounded to 2 decimals
 YI = 1e8  # 亿 -> unit
@@ -94,7 +104,7 @@ REQUIRED = (
     "cash_like", "debt", "invest_cny",
     "d_invest_l", "d_invest_m", "d_invest_h",
     "pe_own_min", "pe_own_max", "eps_ttm_gaap",
-    "mimo_peer_rev_7m", "mimo_peer_months", "mimo_ps",
+    "opt_units", "rev_ev_h1", "r_ev", "g2_ev_opt", "t_opt", "t_num",
 )
 
 BANDS = ("l", "m", "h")
@@ -259,8 +269,15 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         }
 
     L, M, H = (tiers[b]["total"] for b in BANDS)
-    mimo_rev_ann = v["mimo_peer_rev_7m"] * 12.0 / v["mimo_peer_months"]
-    v_opt = mimo_rev_ann * v["mimo_ps"] * per_share
+    # A18: own named quantity (2026 delivery target minus the consensus already
+    # in the EV leg) x own unit economics (1H26 EV segment gross margin, taxed),
+    # on the EV leg's own ruler (basket 4 since 2026-10-03, g2 = 0 -> 1/r), timed and discounted.
+    gm_ev = v["gp_ev_h1"] / v["rev_ev_h1"]
+    opt_rev = v["opt_units"] * v["ev_asp_cny"] / YI  # 亿 CNY / yr
+    opt_np = opt_rev * gm_ev * (1.0 - v["tax_rate"])
+    pe_opt = perpetual_pe(v["g2_ev_opt"], 1.0, v["r_ev"])  # g2 = 0 -> 1/r, ROE not consumed
+    disc_years = max(0.0, v["t_opt"] - v["t_num"])
+    v_opt = opt_np * pe_opt / (1.0 + v["r_ev"]) ** disc_years * per_share
 
     return {
         "opex_core_h1": opex_core_h1, "opex_ev_h1": opex_ev_h1,
@@ -269,7 +286,8 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         "w_phone": w_phone, "equity_op": equity_op, "eq_eco": eq_eco, "unbooked": unbooked, "g_roll": g_roll,
         "rev_ev": rev_ev, "net_cash": net_cash, "per_share": per_share,
         "tiers": tiers, "L": L, "M": M, "H": H, "A": (L + M) / 2, "B": (M + H) / 2,
-        "mimo_rev_ann": mimo_rev_ann, "V_opt": v_opt,
+        "gm_ev": gm_ev, "opt_rev": opt_rev, "opt_np": opt_np, "pe_opt": pe_opt,
+        "disc_years": disc_years, "V_opt": v_opt,
     }
 
 
@@ -294,7 +312,9 @@ def main() -> int:
         checks.append((False, "r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)"))
     for msg in (check_r(v["r_perp"], "r_perp", baskets.get("r_perp"))
                 + check_g_cap(v["g2_phone"], v["r_perp"], "g2_phone")
-                + check_g_cap(v["g2_eco"], v["r_perp"], "g2_eco")):
+                + check_g_cap(v["g2_eco"], v["r_perp"], "g2_eco")
+                + check_r(v["r_ev"], "r_ev", baskets.get("r_ev"))
+                + check_g_cap(v["g2_ev_opt"], v["r_ev"], "g2_ev_opt")):
         checks.append((False, msg))
     checks.append((True, f"r_perp={v['r_perp']} (篮 {baskets.get('r_perp')}) g2_phone={v['g2_phone']} "
                          f"g2_eco={v['g2_eco']} ≤ g_cap(r); "
@@ -396,7 +416,9 @@ def main() -> int:
     print(f"guardrail : anchors / GAAP-TTM EPS {v['eps_ttm_gaap']} = "
           + " / ".join(f"{c[k] / v['eps_ttm_gaap']:.2f}x" for k in ("L", "M", "H"))
           + f"  band [{v['pe_own_min']}, {v['pe_own_max']}]")
-    print(f"V_opt     : {c['V_opt']:.2f} HKD  (mimo_rev_ann={c['mimo_rev_ann']:.2f}亿 × PS {v['mimo_ps']:.0f})"
+    print(f"V_opt     : {c['V_opt']:.2f} HKD  ({v['opt_units']:.0f} units x ASP -> {c['opt_rev']:.2f}亿 x GM {c['gm_ev']:.4f}"
+          f" x (1-t) = {c['opt_np']:.2f}亿 x PE {c['pe_opt']:.2f} (r_ev {v['r_ev']}, g {v['g2_ev_opt']})"
+          f" / (1+r)^{c['disc_years']:.0f})"
           f"  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}  V_opt/M={c['V_opt'] / c['M']:.1%}")
     print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
           f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")

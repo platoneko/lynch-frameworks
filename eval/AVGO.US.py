@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AVGO.US valuation eval — recompute anchors from frameworks/AVGO.US.md.
 
-formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v4
+formula_id: avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v5
 
 Five legs on FY27 numerators (XPU-underwritten / XPU-lab / AI networking /
 non-AI semi / software).  The tier ladder lives in the numerator: the two
@@ -80,11 +80,12 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
-FORMULA_ID = "avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v4"
+FORMULA_ID = "avgo_sotp_xpu2tier_net_nonai_sw_fy27_gordon_v5"
 LISTING_CCY = "USD"
 TOL = 0.15
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A8: guidance bridge vs consensus
+OM_INFER_TOL = 0.005  # A9: leg OM inputs vs the public-data inference
 
 REQUIRED = [
     "shares",
@@ -128,6 +129,17 @@ REQUIRED = [
     "eps_fy26_cons",
     "eps_9m_fy26",
     "payout_3y",
+    "semi_rev_q3_26",
+    "semi_oi_q3_26",
+    "ai_rev_q3_26",
+    "semi_rev_q3_25",
+    "semi_oi_q3_25",
+    "ai_rev_q3_25",
+    "rev_q4_guide",
+    "om_q4_guide",
+    "ai_rev_q4_guide",
+    "nonai_rev_q4_guide",
+    "sw_rev_q4_guide",
 ]
 TIERS = ("L", "M", "H")
 LEGS = ("uw", "lab", "net", "nonai", "sw")
@@ -156,6 +168,29 @@ def stated_v_opt(md: str) -> float | None:
 
 def eps_leg(rev: float, om: float, tax_rate: float, shares: float) -> float:
     return rev * om * (1.0 - tax_rate) / shares
+
+
+def infer_leg_margins(inp: dict[str, float]) -> dict[str, float]:
+    """A9 public-data inference (valuation-rules「公开数据推断」, 2026-10-03).
+
+    Two periods (FY25Q3 / FY26Q3), two unknowns: the semiconductor segment
+    operating income = AI revenue x m_ai + non-AI revenue x m_nonai, margins held
+    constant across the two periods (operating leverage on the growing AI leg is
+    then attributed to AI -- m_ai biased up, m_nonai down).  Cross-checks: the
+    incremental margin (the delta is ~all AI) and the FY26Q4 guide-implied AI
+    margin (company OM guide, software and non-AI at their inferred margins) as
+    the low side.
+    """
+    a1, n1 = inp["ai_rev_q3_25"], inp["semi_rev_q3_25"] - inp["ai_rev_q3_25"]
+    a2, n2 = inp["ai_rev_q3_26"], inp["semi_rev_q3_26"] - inp["ai_rev_q3_26"]
+    o1, o2 = inp["semi_oi_q3_25"], inp["semi_oi_q3_26"]
+    det = a1 * n2 - a2 * n1
+    m_ai = (o1 * n2 - o2 * n1) / det
+    m_nonai = (a1 * o2 - a2 * o1) / det
+    incr = (o2 - o1) / (inp["semi_rev_q3_26"] - inp["semi_rev_q3_25"])
+    oi_q4 = inp["om_q4_guide"] * inp["rev_q4_guide"]
+    ai_q4 = (oi_q4 - inp["sw_rev_q4_guide"] * inp["om_sw"] - inp["nonai_rev_q4_guide"] * m_nonai) / inp["ai_rev_q4_guide"]
+    return {"ai": m_ai, "nonai": m_nonai, "incr": incr, "ai_q4": ai_q4}
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -188,6 +223,13 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errs.append("FY28 consensus below FY27: the transition year has no growth to name")
     # Quota states must be ordered the AVGO way (γ < β < α); the axis check confirms the values.
     errs += ladder("cowos quota (γ<β<α)", inp["cowos_quota_l"], inp["cowos_quota_m"], inp["cowos_quota_h"])
+    # Leg OM inputs must sit on the public-data inference (A9; R4 不准拍值覆盖有来源的数).
+    inf = infer_leg_margins(inp)
+    om_ai = inp["xpu_share_ai"] * inp["om_xpu"] + (1.0 - inp["xpu_share_ai"]) * inp["om_net"]
+    if abs(om_ai - inf["ai"]) > OM_INFER_TOL:
+        errs.append(f"AI-leg OM blend {om_ai:.4f} off the inferred {inf['ai']:.4f} (> {OM_INFER_TOL:.1%})")
+    if abs(inp["om_nonai"] - inf["nonai"]) > OM_INFER_TOL:
+        errs.append(f"om_nonai {inp['om_nonai']:.4f} off the inferred {inf['nonai']:.4f} (> {OM_INFER_TOL:.1%})")
     p_fields = [k for k in inp if k == "p" or k.startswith("p_")]
     if p_fields:
         errs.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
@@ -396,6 +438,14 @@ def main() -> int:
         f" -> AI legs g1_ai = {g1_ai:.4f} (n={n}; software / non-AI flat)  r={r:g} / lab {inp['r_lab']:g}"
         f"->{inp['r_lab_t']:g} (basket pair) k_lab {inp['k_lab']:g}"
         f"  g2 xpu/net/nonai/sw = {inp['g2_xpu']:.4f}/{inp['g2_net']:.4f}/{inp['g2_nonai']:.4f}/{inp['g2_sw']:.4f}"
+    )
+    inf = infer_leg_margins(inp)
+    print(
+        f"A9 leg OM inference (FY25Q3 / FY26Q3 two-period, constant margins): AI {inf['ai']:.2%} / non-AI {inf['nonai']:.2%}"
+        f"  | incremental {inf['incr']:.2%} | FY26Q4 guide-implied AI {inf['ai_q4']:.2%} (low side)"
+        f"  -> AI range [{inf['ai_q4']:.1%}, {max(inf['ai'], inf['incr']):.1%}]; model blend "
+        f"{inp['xpu_share_ai'] * inp['om_xpu'] + (1 - inp['xpu_share_ai']) * inp['om_net']:.2%} "
+        f"(xpu {inp['om_xpu']:g} / net {inp['om_net']:g}, 15pp spread = 拍值) / non-AI {inp['om_nonai']:g}"
     )
     print(f"tier EPS (FY27, after below-line) L/M/H = {eps_total['L']:.3f}/{eps_total['M']:.3f}/{eps_total['H']:.3f}"
           f"  quota scale {quota_scale['L']:.4f}/1/{quota_scale['H']:.4f}")

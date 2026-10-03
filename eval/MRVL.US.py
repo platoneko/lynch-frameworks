@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MRVL.US valuation eval — recompute anchors from frameworks/MRVL.US.md.
 
-formula_id: mrvl_sotp_gordon_two_stage_fy28_v3
+formula_id: mrvl_sotp_gordon_two_stage_fy28_v4
 
 Three legs (Custom / Connectivity / Comm) on the FY28 consensus EPS split by
 revenue weight.  Multiples are generated, not borrowed: each leg reads the
@@ -81,7 +81,7 @@ from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "MRVL.US.md"
 AVGO_FRAMEWORK = REPO_ROOT / "frameworks" / "AVGO.US.md"
-FORMULA_ID = "mrvl_sotp_gordon_two_stage_fy28_v3"
+FORMULA_ID = "mrvl_sotp_gordon_two_stage_fy28_v4"
 TOL = 0.05
 LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
@@ -105,6 +105,7 @@ REQUIRED = [
     "w_comm",
     "d_eps_per_bn",
     "v_opt_units",
+    "t_opt",
     "pe_own_min",
     "pe_own_max",
 ]
@@ -287,7 +288,13 @@ def main() -> int:
     dec = decompose((L, M, H), (blended["L"], blended["M"], blended["H"]))
 
     # ---- Step 4: option ceiling and the zone+V band (probabilities only here) ----
-    v_opt = inp["v_opt_units"] * inp["d_eps_per_bn"] * pes["M"]["cu"]
+    # valuation-rules「未建模期权」(2026-10-03): value the unit on this ticker's own
+    # ruler at the realisation year -- perpetual_pe(Custom g2, H-tier ROE, r), no
+    # second two-stage at realisation -- then discount back to the FY28 numerator
+    # year at the basket r.  No named year -> aligned year (FY29) + 2 = FY31.
+    pe_opt = perpetual_pe(inp["g2_cu"], roe["H"], r)
+    disc_opt = (1.0 + r) ** -(inp["t_opt"] - 2028)
+    v_opt = inp["v_opt_units"] * inp["d_eps_per_bn"] * pe_opt * disc_opt
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     said_v = stated_v_opt(md)
@@ -346,7 +353,7 @@ def main() -> int:
     )
     no_tr = {t: eps[t] * sum(weights[k] * leg_pes(t, transition=False)[k] for k in LEGS) for t in TIERS}
     print(f"cross-check, no transition year: {no_tr['L']:.2f}/{no_tr['M']:.2f}/{no_tr['H']:.2f}")
-    print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x dEPS {inp['d_eps_per_bn']:g} x cu M-PE {pes['M']['cu']:.2f})")
+    print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x dEPS {inp['d_eps_per_bn']:g} x perpetual_pe(g2_cu, ROE_H {roe['H']:.3f}) {pe_opt:.2f} / {1 / disc_opt:.3f} [FY{int(inp['t_opt'])} -> FY28]); old M-tier two-stage way {inp['v_opt_units'] * inp['d_eps_per_bn'] * pes['M']['cu']:.2f}")
     if p_tiers:
         opt = tuple(anchors[t] + p * v_opt for t, p in zip(TIERS, p_tiers))
         a2, b2 = cut_points(*opt)

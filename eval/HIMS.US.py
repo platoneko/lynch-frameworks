@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: hims_fy27_gaap_consensus_gordon_b7_v1
+formula_id: hims_fy27_gaap_consensus_gordon_b7_v2
 
 Earnings scale on the FY2027E GAAP EPS consensus band (11 analysts, −0.09 /
 0.42 / 1.44), basket 7 r 15%, perpetual g2 = G_cap 6% (the company's 2030
@@ -15,11 +15,13 @@ consensus-low world is a loss year, so the earnings-scale L does not exist:
 L = asset floor (BPS), scenario_L = 0 reported beside it (construction §1).
 ROE is capped at 60% (H tier: 1.44 ÷ BPS 1.39 = 104%).
 
-V_opt is computed, not assumed: 2030 revenue target × the company's own
-measured FY2025 GAAP net margin → 2030 EPS → perpetual PE at the ROE cap →
-discounted 3 years at r → minus H.  It comes out ≤ 0 because the consensus
-high already prices a margin above anything Hims has printed, so 表3 is not
-printed and v_opt must be 0.
+V_opt (valuation-rules「未建模期权」, 2026-10-03): the count comes only from
+the company's own named quantity — the 2030 revenue target minus the FY2027
+revenue consensus already inside the deck; the unit economics are the FY2027
+consensus net margin (company-level consensus, mean EPS × shares ÷ mean
+revenue), not the FY2025 snapshot; valued on this ticker's own ruler
+(perpetual PE at g2, ROE cap, basket r) in the target year and the increment
+discounted back to FY2027 at r.  p_k 0 / 0.25 / 1.0 live in table 3 only.
 
 Candidate band (A2e-7h): Barclays 2027E adjusted EPS (single house) on the
 same multiple.  Cross (not a scale): EV/EBITDA per sell-side (Barclays 17×,
@@ -31,6 +33,7 @@ Run:  python3 frameworks/eval/HIMS.US.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -44,18 +47,34 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "HIMS.US.md"
-FORMULA_ID = "hims_fy27_gaap_consensus_gordon_b7_v1"
+FORMULA_ID = "hims_fy27_gaap_consensus_gordon_b7_v2"
 REQUIRED = [
     "shares", "equity", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
-    "r_perp", "g2", "roe_cap", "rev_2030_target", "nm_2025_gaap", "n_opt_years",
+    "r_perp", "g2", "roe_cap", "rev_2030_target", "nm_2025_gaap", "t_opt",
     "eps_adj_fy27_house", "ebitda_fy27_jpm", "ebitda_fy27_barc", "m_ev_jpm", "m_ev_barc",
-    "rev_fy27e", "ebitda_margin_house", "net_debt", "net_debt_ebitda", "interest_ebit", "v_opt",
+    "rev_fy27e", "ebitda_margin_house", "net_debt", "net_debt_ebitda", "interest_ebit",
 ]
 CAND_TOL = 0.05
+NUM_YEAR = 2027  # numerator year (FY2027 = t=1, not discounted)
+P_TIERS = (0.0, 0.25, 1.0)  # A7 — table 3 only, never an input
 # _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
 LISTING_CCY = "USD"
 # band_at(0) must reproduce the anchors; they are compared unrounded.
 RF_TOL = 1e-9
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"^- \\\(V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md, re.MULTILINE)
+    return float(m.group(1)) if m else None
+
+
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(
+        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
+        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
+        md,
+    )
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
 
 
 def tier_pe(eps: float, bps: float, roe_cap: float, g2: float, r: float) -> tuple[float, float, float]:
@@ -98,13 +117,27 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    # V_opt chain (construction §7c-7): 2030 target × measured margin → EPS → PE at cap → PV → − H.
-    eps_2030 = inp["rev_2030_target"] * inp["nm_2025_gaap"] / inp["shares"]
-    pe_2030 = perpetual_pe(g2, inp["roe_cap"], r)
-    pv_opt = eps_2030 * pe_2030 / (1 + r) ** int(inp["n_opt_years"])
-    v_opt = max(pv_opt - H, 0.0)
-    if abs(inp["v_opt"] - v_opt) > 0.01:
-        errors.append(f"v_opt stated {inp['v_opt']} vs computed {v_opt:.2f}")
+    # V_opt chain (construction §7c-1 / §7c-7, 2026-10-03): count = named target − consensus already in the deck;
+    # unit = FY2027 consensus net margin; own ruler at the target year; increment discounted to the numerator year.
+    t_opt = int(inp["t_opt"])
+    if t_opt <= NUM_YEAR:
+        errors.append("t_opt must lie after the numerator year (A7)")
+    opt_rev = inp["rev_2030_target"] - inp["rev_fy27e"]
+    nm_cons = inp["eps_fy27e_consensus"] * inp["shares"] / inp["rev_fy27e"]
+    pe_opt = perpetual_pe(g2, inp["roe_cap"], r)
+    disc = (1 + r) ** (t_opt - NUM_YEAR)
+
+    def v_at(nm: float) -> float:
+        return opt_rev * nm / inp["shares"] * pe_opt / disc
+
+    v_opt = v_at(nm_cons)
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v - v_opt) > CAND_TOL:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    if stated_p_tiers(md) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {stated_p_tiers(md)} vs A7 {P_TIERS}")
+    opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
+    a2, b2 = cut_points(*opt)
 
     # Candidate band: same formula, adjusted-EPS single-house numerator (M′ only; L′/H′ copy the deck).
     pe_c, _, roe_c = tier_pe(inp["eps_adj_fy27_house"], bps, inp["roe_cap"], g2, r)
@@ -123,8 +156,15 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  scenario_L/M = {scenario_l / M:.2f} (floor wins; <0.3 → construction §1 回对话)")
     print(f"L/M={L / M:.3f} (floor: 分子比 n/a) H/M={H / M:.3f} (分子比 {inp['eps_fy27e_high'] / inp['eps_fy27e_consensus']:.2f} × 倍数比 {pe_h / pe_m:.3f}) width={(H - L) / (2 * M):.3f}")
     print(
-        f"V_opt chain: 2030 rev {inp['rev_2030_target']:.0f}M × NM {inp['nm_2025_gaap']:.2%} ÷ {inp['shares']:.1f}M = EPS {eps_2030:.2f} "
-        f"× PE {pe_2030:.2f} (g2 {g2:g}, ROE cap, r {r:g}) = {eps_2030 * pe_2030:.2f} @2029 → PV {pv_opt:.2f} − H {H:.2f} → V_opt = {v_opt:.2f}"
+        f"V_opt chain: ({inp['rev_2030_target']:.0f} − FY27E {inp['rev_fy27e']:.0f})M = {opt_rev:.0f}M × FY27E consensus NM {nm_cons:.2%} "
+        f"÷ {inp['shares']:.1f}M = EPS {opt_rev * nm_cons / inp['shares']:.3f} × PE {pe_opt:.2f} (g2 {g2:g}, ROE cap, r {r:g}) @{t_opt} "
+        f"÷ {disc:.4f} → V_opt = {v_opt:.2f}"
+    )
+    print(f"  zone+V (p {P_TIERS}): {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
+    print(
+        f"  V_opt sensitivity: unit = FY2025 GAAP snapshot NM {inp['nm_2025_gaap']:.2%} → {v_at(inp['nm_2025_gaap']):.2f}; "
+        f"H-tier NM {inp['eps_fy27e_high'] * inp['shares'] / inp['rev_fy27e']:.2%} → {v_at(inp['eps_fy27e_high'] * inp['shares'] / inp['rev_fy27e']):.2f}; "
+        f"realised 2031 → {v_opt * disc / (1 + r) ** (t_opt + 1 - NUM_YEAR):.2f}"
     )
     print(f"candidate band (Barclays adj EPS {inp['eps_adj_fy27_house']}): M′ = {M_c:.2f} (PE {pe_c:.2f}, ROE {roe_c:.0%}); L′ = {L:.2f}, H′ = {H:.2f} → check L′<M′: {L < M_c}")
     print(f"EV/EBITDA cross: JPM {cross['JPM']:.2f}  Barclays {cross['Barclays']:.2f}  | 2027E EBITDA on consensus revenue × Barclays margin {ebitda_cons:.0f}M")

@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on any mismatch.  The doc
 carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls
 in is derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: nvda_fy28_scenario_rev_gm_gordon_v2
+formula_id: nvda_fy28_scenario_rev_gm_gordon_v3
 
 Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     eps_i = (rev_i * gm_i - opex_fy28) * (1 - tax_rate) / shares_fy28
@@ -37,9 +37,14 @@ band (`pe_own_min/max`, normal-earnings segment); the band-edge Δg printed
 below is the shift of g2 that would take the M-tier multiple to either edge --
 evidence of what the market has paid for, not an input.
 
-V_opt (A14): the China data-center reopening priced as k=1 × the H20 quarterly
-run-rate the company actually booked in Q1 FY26 ($4.6B, 8-K Ex.99), at the
-M-tier gross margin and Gordon multiple.  Probabilities live only in table 3.
+V_opt (A14, valuation-rules「未建模期权」2026-10-03): the China data-center
+reopening priced as k=1 × the H20 quarterly run-rate the company actually
+booked in Q1 FY26 ($4.6B, 8-K Ex.99) -- a snapshot lower bound, since the
+company names no China target, capacity or contract -- at the aligned-year
+(FY2028) H-tier operating margin (gm_h - opex/rev_h) and the ticker's own
+H-tier Gordon multiple (no peer multiple), realised in t_opt (aligned year + 2,
+no named date) and discounted back to FY2028 at the basket r.  Probabilities
+live only in table 3.
 
 Sanity checks beyond the anchor comparison:
   * scenario ordering  rev_l < rev_m <= rev_h, gm_l < gm_m <= gm_h,
@@ -83,11 +88,12 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NVDA.US.md"
-FORMULA_ID = "nvda_fy28_scenario_rev_gm_gordon_v2"
+FORMULA_ID = "nvda_fy28_scenario_rev_gm_gordon_v3"
 LISTING_CCY = "USD"
 TOL = 0.05  # outputs are stated to 2 decimals
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 BRIDGE_TOL = 0.15  # A17: max allowed deviation from consensus EPS
+NUM_YEAR = 2028  # numerator / aligned fiscal year (A20); V_opt discounts back to it
 B = 1e9
 
 REQUIRED = [
@@ -122,6 +128,7 @@ REQUIRED = [
     "v_opt_units",
     "eps_1h_fy27",
     "payout_3y",
+    "t_opt",
 ]
 
 _ANCHORS = re.compile(
@@ -337,9 +344,14 @@ def main() -> int:
     acie_m = split["M"][1]
 
     # --- Step 4b: option ceiling (A14) -- probabilities only in table 3 ---
-    v_opt = (
-        inp["v_opt_units"] * inp["china_dc_rev_unit"] * inp["gm_m"] * (1.0 - tax) / shares * pe_m
-    )
+    # V_opt = (post-realisation anchor - H) discounted from t_opt to the
+    # numerator year; approximated as ΔEPS × H-tier multiple (TSEM / GFS form).
+    om_h = inp["gm_h"] - opex / inp["rev_h"]
+    d_eps_opt = inp["v_opt_units"] * inp["china_dc_rev_unit"] * om_h * (1.0 - tax) / shares
+    if inp["t_opt"] <= NUM_YEAR:
+        errors.append(f"t_opt {inp['t_opt']:g} must lie after the numerator year {NUM_YEAR}")
+    disc = (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    v_opt = d_eps_opt * pe_h / disc
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -394,7 +406,8 @@ def main() -> int:
     )
     print(
         f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x China DC unit ${inp['china_dc_rev_unit'] / B:.1f}B/yr "
-        f"x gm_m {inp['gm_m']:.3f} x (1-tax) / shares x PE_M {pe_m:.2f})  V_opt/M {v_opt / M:.3f}"
+        f"[snapshot lower bound] x OM_H {om_h:.4f} x (1-tax) / shares = dEPS {d_eps_opt:.3f} x PE_H {pe_h:.2f} "
+        f"/ {1.0 + r:g}^{int(inp['t_opt']) - NUM_YEAR})  V_opt/M {v_opt / M:.3f}"
     )
     if p_tiers:
         opt = tuple(a + p * v_opt for a, p in zip((L, M, H), p_tiers))

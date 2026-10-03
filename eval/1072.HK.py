@@ -6,7 +6,11 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6
+formula_id: dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v7
+
+v7 (2026-10-03, valuation-rules「未建模期权」): the G50/G200 option is valued on
+the gas-turbine leg's own ruler — g = leg C's g2 (0%), not the old unanchored
++5%; growth after realisation can only enter as more units.
 
 v6 (2026-09-14, 裁决顺序 walk): (1) L is FY2025, the latest complete year, not
 the FY2024 trough — a trough numerator paired with a steady g2 counts the cycle
@@ -94,7 +98,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORKS = Path(__file__).resolve().parents[2] / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
-FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v6"
+FORMULA_ID = "dec_three_leg_plus_g50_g200_vopt_perpetual_g_hk_anchored_v7"
 LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")

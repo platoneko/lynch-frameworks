@@ -7,7 +7,7 @@ no current price (AGENTS.md「现价 — 禁写契约」): this script neither r
 price nor derives or checks a zone -- the daily digest derives the zone from
 live quotes.
 
-formula_id: dongyue_quota_sotp_actual_year_flat_v2
+formula_id: dongyue_quota_sotp_actual_year_flat_v3
 
 Main ruler: four-leg segment SOTP.  The refrigerant leg's three tiers are
 **named price scenarios** (L = R32 45,000 / M = 2025 average 53,600 / H = Q3
@@ -34,10 +34,18 @@ tiered multiples reward bigger losses.
 Reporting currency is CNY, the listing currency is HKD: fx_cny_hkd is an
 explicit Input and is applied once, at step 5.
 
-The PB floor is disclosed only, never max()-ed into L (A16).  The candidate
-band (consensus-2027E price deck, A4) swaps only the refrigerant prices into
-H' and is recomputed against the Outputs 候选带 line; V_opt (PTFE-AI, 1.86)
-stays out of the deck.
+H is the farthest >=2-house consensus year with a range (FY2027E high, 5
+houses; valuation-rules「数据优先级与同业同尺」2026-10-03, A5): the H-world leg
+mix (Q3 contract held flat + 26H1 annualised) is scaled pro rata so that
+attributable EPS equals eps_2027_h -- the old consensus-2027E candidate band is
+thereby upgraded into the deck and deleted.
+
+The PB floor is disclosed only, never max()-ed into L (A16).  V_opt (PTFE-AI /
+semiconductor grade, §1) = one snapshot share of today's fluoropolymer leg
+(26H1 annualised revenue x reported segment margin), valued on this name's own
+fluoropolymer multiple and discounted at the basket r from t_opt (aligned year
++ 2, no named date) back to t_num (valuation-rules「未建模期权」2026-10-03);
+it stays out of the deck.
 
 Sanity checks beyond the anchor comparison:
   * r_perp must be the basket the Inputs row names (parse_baskets + check_r);
@@ -82,7 +90,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "0189.HK.md"
-FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v2"
+FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v3"
 LISTING_CCY = "HKD"
 TOL = 0.05  # outputs are rounded to 2 decimals
 YI = 1e5  # 亿, from RMB thousand
@@ -107,6 +115,9 @@ REPORTED = {
     "h": {"poly": 877146.0, "sil": 471612.0, "dcm": 119206.0},
 }
 SAME_SOURCE_TOL = 0.001
+
+# V_opt one-share snapshot (A25): fluoropolymer leg, 2026 interim segment table.
+POLY_26H1 = {"revenue": 2140549.0, "result": 438573.0}
 
 # A4 price bridge.  Products in bridge order; 其他 HFC (152a etc.) has no price
 # series and rides R125's price and cash cost.
@@ -139,7 +150,8 @@ REQUIRED = [
     "upt_l", "upt_m", "upt_h",
     "px_r32_l", "px_r32_m", "px_r32_h", "px_r125_l", "px_r125_m", "px_r125_h",
     "px_r134a_l", "px_r134a_m", "px_r134a_h", "px_r22_l", "px_r22_m", "px_r22_h",
-    "px_r32_c", "px_r125_c", "px_r134a_c", "px_r22_c",
+    "eps_2027_l", "eps_2027_m", "eps_2027_h",
+    "opt_rev", "opt_margin", "t_opt", "t_num",
     "c_r32", "c_r125", "c_r134a", "c_r22", "bridge_k",
     "res_poly_l", "res_poly_m", "res_poly_h",
     "res_sil_l", "res_sil_m", "res_sil_h",
@@ -300,14 +312,15 @@ def main() -> int:
         """By-product leg (A8): dichloromethane + recurring other ops + impairment."""
         return inp[f"dcm_{x}"] + inp["oth_recur"] + inp[f"oth_imp_{x}"] + inp["nonseg"]
 
-    def scenario(x: str, upt: float, pe: dict[str, float]) -> dict[str, float]:
-        """Tier x with refrigerant unit result `upt` and multiples `pe`."""
+    def scenario(x: str, upt: float, pe: dict[str, float], s: float = 1.0) -> dict[str, float]:
+        """Tier x with refrigerant unit result `upt` and multiples `pe`; every leg's
+        attributable profit scaled by `s` (H only: pro rata onto consensus, A5)."""
         res_ref = inp["quota_t"] * upt / 1000.0
         res_oth = res_oth_of(x)
-        np_legs = attributable_np(
+        np_legs = tuple(s * n for n in attributable_np(
             res_ref, inp[f"res_poly_{x}"], inp[f"res_sil_{x}"], res_oth,
             inp["tax"], inp["own_poly"], inp["own_sil"], inp["own_oth"],
-        )
+        ))
         ps = {leg: n * pe[leg] * scale for leg, n in zip(("ref", "poly", "sil", "oth"), np_legs)}
         # Segment total excludes non-segment items, to compare with reported totals.
         seg_total = res_ref + inp[f"res_poly_{x}"] + inp[f"res_sil_{x}"] + inp[f"dcm_{x}"] \
@@ -317,7 +330,16 @@ def main() -> int:
             **ps, "cash": cash_ps, "value": sum(ps.values()) + cash_ps,
         }
 
-    tiers = {x: scenario(x, inp[f"upt_{x}"], gen) for x in "lmh"}
+    # H = FY2027E consensus high (A5): scale the H-world leg mix pro rata.
+    hworld = scenario("h", inp["upt_h"], gen)
+    eps_hworld = hworld["np"] * scale
+    s_h = inp["eps_2027_h"] / eps_hworld
+    scale_of = {"l": 1.0, "m": 1.0, "h": s_h}
+    tiers = {x: scenario(x, inp[f"upt_{x}"], gen, scale_of[x]) for x in "lmh"}
+    if not inp["eps_2027_l"] < inp["eps_2027_m"] < inp["eps_2027_h"]:
+        errors.append("eps_2027 l/m/h not ascending")
+    if s_h < 1.0:
+        errors.append(f"H scale {s_h:.4f} < 1: consensus high below the H-world run-rate")
     L, M, H = (tiers[x]["value"] for x in "lmh")
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
@@ -334,20 +356,26 @@ def main() -> int:
     # --- floor: disclosed only (A16) ------------------------------------------
     floor = inp["pb_floor"] * inp["bvps_cny"] * inp["fx_cny_hkd"]
 
-    # --- candidate band (A4): consensus-2027E prices into the refrigerant leg of H only
-    px_c = px_of(*(inp[f"px_{p}_c"] for p in ("r32", "r125", "r134a", "r22")))
-    upt_c = bridge_unit(px_c, inp["bridge_k"])
-    cand = scenario("h", upt_c, gen)
-    cand_band = (L, M, cand["value"])
-    if not cand_band[0] < cand_band[1] < cand_band[2]:
-        errors.append(f"candidate band not ordered: {cand_band}")
+    eps = {x: tiers[x]["np"] * scale for x in "lmh"}
+    # ②-b: farthest band-consensus year mean must sit in [EPS_M, EPS_H].
+    if not eps["m"] <= inp["eps_2027_m"] <= eps["h"] + 1e-9:
+        errors.append(f"②-b: consensus FY2027E mean {inp['eps_2027_m']} outside [EPS_M {eps['m']:.3f}, EPS_H {eps['h']:.3f}]")
+
+    # The consensus-2027E candidate band was upgraded into H (A5) and must be gone.
     meta = load_framework(FRAMEWORK)
-    if meta.candidate is None:
-        errors.append("候选带 line missing from Outputs (A4)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), meta.candidate, cand_band):
-            if abs(said - got) > TOL:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+    if meta.candidate is not None:
+        errors.append("候选带 line still in Outputs — consensus FY2027E is now the H numerator (A5)")
+
+    # --- V_opt (A25): one snapshot share of today's fluoropolymer leg -------------
+    if abs(inp["opt_rev"] - 2 * POLY_26H1["revenue"]) > 1.0:
+        errors.append(f"opt_rev {inp['opt_rev']:,.0f} != 26H1 fluoropolymer revenue x 2")
+    if abs(inp["opt_margin"] - POLY_26H1["result"] / POLY_26H1["revenue"]) > 0.0005:
+        errors.append(f"opt_margin {inp['opt_margin']} != 26H1 fluoropolymer segment margin")
+    if inp["t_opt"] <= inp["t_num"]:
+        errors.append("t_opt must be after t_num")
+    opt_np = inp["opt_rev"] * inp["opt_margin"] * inp["own_poly"] * (1.0 - inp["tax"])
+    v_at_t = opt_np * gen["poly"] * scale
+    v_opt = v_at_t / (1.0 + r) ** (inp["t_opt"] - inp["t_num"])
 
     # --- compare against the stated Outputs ---------------------------------
     out_sec = outputs_section(md)
@@ -356,6 +384,8 @@ def main() -> int:
         errors.append(f"### Outputs must state the L/M/H triple exactly once, found {len(triples)}")
     if meta.v_opt is None:
         errors.append("V_opt must be stated in Outputs (PTFE-AI option, §1)")
+    elif abs(meta.v_opt - v_opt) > TOL:
+        errors.append(f"V_opt stated {meta.v_opt} vs recomputed {v_opt:.4f}")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -389,7 +419,9 @@ def main() -> int:
           + f"  guard: L >= FY2023 actual {FY23_SEGMENT_TOTAL / YI:.2f}亿 OK")
     print("res_ref(亿CNY)=" + "/".join(f"{tiers[x]['res_ref'] / YI:.2f}" for x in "lmh")
           + "  attribNP(亿CNY)=" + "/".join(f"{tiers[x]['np'] / YI:.2f}" for x in "lmh"))
-    eps = {x: tiers[x]["np"] * scale for x in "lmh"}
+    print(f"H = consensus FY2027E high {inp['eps_2027_h']} (mean {inp['eps_2027_m']}, low {inp['eps_2027_l']}): "
+          f"H-world EPS {eps_hworld:.3f} (value {hworld['value']:.2f}) x scale {s_h:.4f}; "
+          f"M vs consensus mean {inp['eps_2027_m'] / eps['m'] - 1:+.1%} (cyclical 中枢, A5 trigger)")
     print("attribEPS(HKD)=" + "/".join(f"{eps[x]:.3f}" for x in "lmh"))
     for x in "lmh":
         t = tiers[x]
@@ -408,22 +440,25 @@ def main() -> int:
           + ("③ 出带 (M/H below band min, disclosed)" if M / eps["m"] < OWN_PE_BAND_MIN else "in band"))
     for label, r_alt in (("r +50bp", r + 0.005), ("r -50bp", r - 0.005), ("篮 7 15%", 0.15), ("篮 4 10%", 0.10)):
         pe_alt = gordon(r_alt)
-        band = [scenario(x, inp[f"upt_{x}"], pe_alt)["value"] for x in "lmh"]
+        band = [scenario(x, inp[f"upt_{x}"], pe_alt, scale_of[x])["value"] for x in "lmh"]
         print(f"  sens {label}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
-    print(f"candidate (A4, consensus-2027E prices R32 {px_c['r32']:,.0f} -> H' only): "
-          f"upt {upt_c:,.0f} 元/吨, L'/M'/H' = {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
     fy24_px, fy24_unit = BRIDGE_REGIME_BREAK["FY2024"]
     print(f"deep_discount pressure coordinate (FY2024 actual unit {fy24_unit:,.0f}, other legs FY2024): "
           f"{scenario('l', fy24_unit, gen)['value']:.2f}")
-    if meta.v_opt is not None:
-        print(f"V_opt={meta.v_opt:.2f} (not in deck) p_tiers={meta.p_tiers}  zone+V: M+p·V={M + (meta.p_tiers[1] if meta.p_tiers else 0) * meta.v_opt:.2f}"
-              f" H+V={H + meta.v_opt:.2f}")
+    print(f"V_opt: {inp['opt_rev']:,.0f}k x {inp['opt_margin']:.4f} = {inp['opt_rev'] * inp['opt_margin']:,.0f}k segment result"
+          f" -> attrib {opt_np:,.0f}k x pe_poly {gen['poly']:.3f} = {v_at_t:.3f} HKD @ {inp['t_opt']:.0f}"
+          f" / {1 + r}^{inp['t_opt'] - inp['t_num']:.0f} = {v_opt:.3f}")
+    for t_alt in (inp["t_opt"] - 1, inp["t_opt"] + 1):
+        print(f"  sens t_opt {t_alt:.0f}: V_opt {v_at_t / (1.0 + r) ** (t_alt - inp['t_num']):.2f}")
+    if meta.v_opt is not None and meta.p_tiers:
+        print(f"V_opt={meta.v_opt:.2f} (not in deck) p_tiers={meta.p_tiers}  zone+V: "
+              + "/".join(f"{b + p * meta.v_opt:.2f}" for b, p in zip((L, M, H), meta.p_tiers)))
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # the one basket r all four legs share 1:1; price scenarios, g2, ROE, ownership
     # and fx stay put.  Disclosure only — the anchors above are the 中枢 column.
     def band_rf(dr: float) -> tuple[float, float, float]:
         pe_rf = gordon(r + dr)
-        return tuple(scenario(x, inp[f"upt_{x}"], pe_rf)["value"] for x in "lmh")
+        return tuple(scenario(x, inp[f"upt_{x}"], pe_rf, scale_of[x])["value"] for x in "lmh")
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

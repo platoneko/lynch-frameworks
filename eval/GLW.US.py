@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries 
 current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: glw_sotp_core_segment_pe_gordon_v6
+formula_id: glw_sotp_core_segment_pe_gordon_v7
 
 Main ruler (base hand, zero probability): FY2028 segment SOTP whose tier ladder
 lives in the numerator. M-tier leg numerators come from the leg bridge
@@ -71,7 +71,16 @@ RATE, capitalised as a zero-growth annuity over contract_years at r_disc (the
 deal has a fixed term; Gordon would assume T=∞). Renewal past 2032 is an option,
 not an annuity: k=1 more identical cycle discounted by contract_years, with its
 own p_k. Everything past 2038 is worth zero here. The two segments sum to the
-12-year annuity by construction; the guard below asserts it. Tier realisation
+12-year annuity by construction; the guard below asserts it.
+v7 (valuation-rules「未建模期权」2026-10-03): the unit economic is the OC leg's
+net margin in the ALIGNED year (FY28, own farthest consensus year), not the
+Q2'26 print — no sell-side OC margin exists, so it is inferred from disclosed
+segment data (A32): the OC incremental margin over Q2'25 -> Q2'26 (same segment
+definition) carries today's run-rate to the M-tier FY28 OC NI, and margin =
+NI_FY28 / implied revenue; FY24 -> FY25 and Q1 -> Q2'26 pairs bound the
+interval.  Timing: the annuity is valued at its start year t_opt (2027, value
+at the start of 2027) and moved to the numerator year by (1 + r)^-(t_opt - 2028)
+— one year forward, because H is a start-of-FY28 value.  Tier realisation
 p_k is hard-coded on purpose: p-class fields must never appear in §3 Inputs
 (A2e-7a).
 
@@ -106,7 +115,8 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GLW.US.md"
-FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v6"
+FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v7"
+NUM_YEAR = 2028  # numerator year (FY2028); anchors are start-of-FY28 values
 TOL = 0.05
 PE_OC_HARD_CAP = 30.0  # strict: generated OC PE and H/eps_fy28_l must be < this
 MM = 1e6
@@ -219,7 +229,17 @@ def main() -> int:
         "lta_anchor",
         "lta_years",
         "contract_years",
+        "t_opt",
         "r_disc",
+        "sales_oc_q",
+        "sales_oc_q_yago",
+        "ni_oc_q_yago",
+        "sales_oc_q1",
+        "ni_oc_q1",
+        "sales_oc_fy24",
+        "ni_oc_fy24",
+        "sales_oc_fy25",
+        "ni_oc_fy25",
         "capex_l",
         "capex_m",
         "capex_h",
@@ -456,14 +476,41 @@ def main() -> int:
     # ratios (A2e-7a).
     r_disc, n_yrs = inp["r_disc"], inp["contract_years"]
     lta_rate = inp["lta_anchor"] / inp["lta_years"]
+
+    # A32: aligned-year (FY28) OC net margin, inferred from disclosed segment
+    # data. Incremental margin dNI/dSales carries today's run-rate to the
+    # M-tier FY28 OC NI; margin = NI_FY28 / implied FY28 revenue.
+    def fy28_oc_margin(d_ni: float, d_sales: float) -> tuple[float, float]:
+        inc = d_ni / d_sales
+        rev28 = inp["sales_oc_q"] * 4 + (ni_oc["m"] - inp["ni_oc_q"] * 4) / inc
+        return inc, ni_oc["m"] / rev28
+
+    pairs = {
+        "Q2'25->Q2'26": (inp["ni_oc_q"] - inp["ni_oc_q_yago"], inp["sales_oc_q"] - inp["sales_oc_q_yago"]),
+        "FY24->FY25": (inp["ni_oc_fy25"] - inp["ni_oc_fy24"], inp["sales_oc_fy25"] - inp["sales_oc_fy24"]),
+        "Q1->Q2'26": (inp["ni_oc_q"] - inp["ni_oc_q1"], inp["sales_oc_q"] - inp["sales_oc_q1"]),
+    }
+    margins = {lab: fy28_oc_margin(*p) for lab, p in pairs.items()}
+    inc_main, opt_margin = margins["Q2'25->Q2'26"]
+    if not (inp["pp_margin"] < opt_margin < 1):
+        errors.append(f"aligned-year OC margin {opt_margin:.4f} not above the Q2'26 print {inp['pp_margin']} (A32)")
+    if not (inp["t_opt"] < NUM_YEAR < inp["t_opt"] + n_yrs):
+        errors.append(f"t_opt {inp['t_opt']:g} + {n_yrs:g}y must straddle the numerator year {NUM_YEAR} (A23a)")
+    # Annuity valued at the start of t_opt, then moved to the numerator year
+    # (start of FY28) at the basket r: (1 + r)^-(t_opt - NUM_YEAR).
+    shift = (1.0 + r_disc) ** (NUM_YEAR - inp["t_opt"])
+
+    def v_signed_at(rate: float, margin: float, rr: float) -> float:
+        return rate * margin * annuity_factor(0.0, rr, n_yrs) * (1.0 + rr) ** (NUM_YEAR - inp["t_opt"]) / sh
+
     ann_n = annuity_factor(0.0, r_disc, n_yrs)
-    v_signed = lta_rate * inp["pp_margin"] * ann_n / sh
+    v_signed = v_signed_at(lta_rate, opt_margin, r_disc)
     v_renew = v_signed / (1.0 + r_disc) ** n_yrs
     v_opt = v_signed + v_renew
 
     # The two segments are one 2n-year annuity split at year n. If a later edit
     # touches one side alone they stop summing, and this catches it.
-    v_two_cycle = lta_rate * inp["pp_margin"] * annuity_factor(0.0, r_disc, 2 * n_yrs) / sh
+    v_two_cycle = lta_rate * opt_margin * annuity_factor(0.0, r_disc, 2 * n_yrs) * shift / sh
     if abs(v_opt - v_two_cycle) > 1e-9:
         errors.append(
             f"V_opt segments sum to {v_opt:.6f} but the "
@@ -600,17 +647,30 @@ def main() -> int:
     )
 
     print(
+        "aligned-year OC margin (A32, FY28 M-tier OC NI "
+        f"{ni_oc['m']:,.0f}): "
+        + "  ".join(f"{lab} inc {inc:.1%} -> {mg:.2%}" for lab, (inc, mg) in margins.items())
+        + f"  | used {opt_margin:.2%} (Q2'26 print {inp['pp_margin']:.2%} = lower-bound disclosure only)"
+    )
+    print(
         f"V_opt={v_opt:.2f}/sh = signed {v_signed:.2f} + renew {v_renew:.2f}  "
-        f"(rate {lta_rate:,.0f}M/y x {inp['pp_margin']:.4f} x "
-        f"ann(g=0, r={r_disc:.0%}, n={n_yrs:.0f})={ann_n:.3f}; "
+        f"(rate {lta_rate:,.0f}M/y x {opt_margin:.4f} = {lta_rate * opt_margin:,.1f}M NI/y x "
+        f"ann(g=0, r={r_disc:.0%}, n={n_yrs:.0f})={ann_n:.3f} x (1+r)^({NUM_YEAR}-{inp['t_opt']:.0f})={shift:.2f}; "
         f"renew = signed/(1+r)^{n_yrs:.0f})  V_opt/M={v_opt / M * 100:.1f}%"
     )
+    for lab, (_, mg) in margins.items():
+        vs_ = v_signed_at(lta_rate, mg, r_disc)
+        print(f"sensitivity opt margin {lab} {mg:.2%}: V_opt {vs_ * (1 + (1 + r_disc) ** -n_yrs):.2f}")
+    v_doubled = v_opt * 2
+    print(f"sensitivity lta_anchor x2 ($12B): V_opt {v_doubled:.2f}, table3 H {H + v_doubled:.2f}")
     print(
         "zone+V (table3, NOT used for any verdict): "
         + " ".join(
             f"{lab}={zone_v[k]:.2f}(p_sig={P_SIGNED[k]:g},p_ren={P_RENEW[k]:g})"
             for k, lab in (("l", "L"), ("m", "M"), ("h", "H"))
         )
+        + f"  A'={(zone_v['l'] + zone_v['m']) / 2:.2f} B'={(zone_v['m'] + zone_v['h']) / 2:.2f}"
+        + f"  effective p_M={(P_SIGNED['m'] * v_signed + P_RENEW['m'] * v_renew) / v_opt:.2f}"
     )
 
     # Sensitivities the doc quotes. g2_oc: ±1pp and the untruncated peer
@@ -637,7 +697,7 @@ def main() -> int:
     # A23a upgrade path: r_disc in the fixed-contract annuity basket. The
     # annuity form is what keeps this small; a perpetuity would swing ~43%.
     r_c = basket_r(CONTRACT_ANNUITY_BASKET)
-    vs_c = lta_rate * inp["pp_margin"] * annuity_factor(0.0, r_c, n_yrs) / sh
+    vs_c = v_signed_at(lta_rate, opt_margin, r_c)
     vo_c = vs_c * (1 + 1 / (1.0 + r_c) ** n_yrs)
     print(
         f"sensitivity r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: signed {vs_c:.2f} "

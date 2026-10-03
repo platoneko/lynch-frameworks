@@ -5,7 +5,7 @@ frameworks/603993.SH.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on any mismatch.  The doc
 states no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: cmoc_fed_path_fwd2028_two_stage_v1
+formula_id: cmoc_fed_path_fwd2028_two_stage_v2
 
 Scenario axis is the Fed rate path (L hiking / M hold / H cutting without
 recession, A19); the recession-cut case is deliberately NOT an anchor.
@@ -42,13 +42,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
-from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
-FORMULA_ID = "cmoc_fed_path_fwd2028_two_stage_v1"
+FORMULA_ID = "cmoc_fed_path_fwd2028_two_stage_v2"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
 YI = 1e8
@@ -62,6 +62,7 @@ BASE_NP_PARENT_YI = 323.0437
 BASE_NP_TOL_YI = 0.5
 
 REQUIRED = [
+    "vol_au_2029_oz", "t_num", "t_opt",
     "shares", "fx_usd_cny", "vol_cu", "p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_oz", "cost_au_oz", "price_au_m_oz",
     "realization_cu", "royalty_cu", "cogs_cu", "gp_cu_base", "gp_co_l", "gp_co_m", "gp_co_h",
@@ -157,6 +158,27 @@ def tier(inp: dict[str, float], tag: str, r_over: dict[str, float] | None = None
             "issue": b1 > (1 - inp["payout_actual"])}
 
 
+# 表3 only — never Inputs, never the base band (A2e-7a).  p_M: no anchor (judgement).
+P_K = (0.0, 0.25, 1.0)
+
+
+def gold_target_option(inp: dict[str, float], th: dict) -> dict[str, float]:
+    """V_opt — the part of the company's named 2029 gold target (>20 t) beyond the
+    FY28 path already in the numerator (A33, valuation-rules「未建模期权」2026-10-03).
+    Unit economics: this ticker's own gold leg at the M rung (2026H1 unit price
+    and cost), own NCI and tax; ruler: own copper-gold leg steady-state Gordon at
+    the H-tier ROE28 lifted by the increment; valued in 2029, discounted to the
+    numerator year at the basket r.  No peer multiple."""
+    d_oz = inp["vol_au_2029_oz"] - inp["vol_au_2028_oz"]
+    d_np = d_oz * (inp["price_au_m_oz"] - inp["cost_au_oz"]) / YI * (1 - inp["mi_rate"]) * (1 - inp["tax_rate"])
+    d_eps = d_np * YI / inp["shares"]
+    roe_post = (th["fwd"]["np"] + d_np) / th["b27"]
+    pe_post = perpetual_pe(inp["g2_aucu"], roe_post, inp["r_perp"])
+    disc = (1 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    return {"d_oz": d_oz, "d_np": d_np, "d_eps": d_eps, "roe_post": roe_post, "pe_post": pe_post,
+            "disc": disc, "v_opt": d_eps * pe_post * disc}
+
+
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -248,6 +270,22 @@ def main() -> int:
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
             errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
+    opt = gold_target_option(inp, T["h"])
+    if opt["d_oz"] <= 0 or inp["t_opt"] < inp["t_num"]:
+        errors.append("gold option: target must exceed the FY28 path and t_opt ≥ t_num")
+    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
+    got = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
+    if got is None or abs(got - opt["v_opt"]) > TOL:
+        errors.append(f"V_opt: stated {got} vs recomputed {opt['v_opt']:.4f}")
+    for k, v in zip("LMH", band3):
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        if m3 is None or abs(float(m3.group(1)) - v) > TOL:
+            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
+    for label, want, rx in (("A′", (band3[0] + band3[1]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
+                            ("B′", (band3[1] + band3[2]) / 2, r"B′ = \*\*([0-9.]+)\*\*")):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > TOL:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
     print(f"formula_id={FORMULA_ID}")
     print("shared Au/Cu OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH)")
@@ -267,6 +305,12 @@ def main() -> int:
         f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
         for t in TIERS))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"V_opt 金 2029 目标（A33）：{inp['vol_au_2029_oz']:,.0f} − FY28 路径 {inp['vol_au_2028_oz']:,.0f} = {opt['d_oz']:,.0f} oz × "
+          f"({inp['price_au_m_oz']:,.0f} − {inp['cost_au_oz']:,.0f}) 元/oz × (1−MI)(1−t) = {opt['d_np']:.2f} 亿（ΔEPS {opt['d_eps']:.4f}）"
+          f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_aucu']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}） × {opt['disc']:.4f}"
+          f"（{inp['t_opt']:g}→{inp['t_num']:g}）= {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
+          f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
     print(f"flat-multiple ladder @ 铜金 PE_M {T['m']['pe']['铜金']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)

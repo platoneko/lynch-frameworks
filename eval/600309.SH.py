@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: wanhua_segment_margin_ladder_gp_bridge_gordon_v3
+formula_id: wanhua_segment_margin_ladder_gp_bridge_gordon_v5_print_opt
 
 The scenario variable is the *spread*, not volume.  Revenue is frozen at the
 2026H1 level in all three scenarios; only the three segment gross margins move,
@@ -68,6 +68,13 @@ must stay under 7.85 in the numerator AND under 1.25 x 88.34 as an anchor
 (with v4 H is itself generated from those prints, so this is a tautology kept
 as a tripwire for future edits).
 
+v5 (2026-10-03 rule migration, A9): the one named, revenue-convertible
+in-construction quantity — Wanhua Fujian MDI +700kt (80 -> 150kt/yr) — is an
+option, not zero: capacity x 2026H1 polymeric MDI price ex-VAT x (PU leg
+margin - opex ratio) x conv / shares, valued on this ticker's own H ruler
+(PE_H, basket r, g2_h) and discounted from the realisation year t_opt to the
+FY2026 numerator.  No peer multiple is borrowed.  p_k lives in table 3 only.
+
 No two-stage transition is run (the FY2027 consensus sits inside [L, H], A9 /
 口径), so `check_transition_years` does not apply.  No shared axis.
 
@@ -77,6 +84,7 @@ Run:  python3 frameworks/eval/600309.SH.py
 from __future__ import annotations
 
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -91,7 +99,7 @@ from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600309.SH.md"
-FORMULA_ID = "wanhua_segment_margin_ladder_gp_bridge_gordon_v4_print"
+FORMULA_ID = "wanhua_segment_margin_ladder_gp_bridge_gordon_v5_print_opt"
 YI = 1e8
 TIERS = ("L", "M", "H")
 
@@ -115,6 +123,8 @@ GUARDRAIL_SLACK = 0.01    # 校验步骤 5: generated multiples inside the reali
 GAMMA_TOL = 1e-3          # 校验步骤 6: H-side implied gamma equals gamma_pe up to g2 rounding
 MIN_PRINT_MONTHS = 6      # A15: an EPS-matched median needs at least this many months
 PEER_G_H_STEP = -0.01     # tier-1 cross-print: H pairs the post-peak g (A15 / v1 §A7)
+NUM_YEAR = 2026           # numerator year (2026H1 annualised)
+P_TIERS = (0.0, 0.5, 1.0) # A9 — table 3 only, never an input
 
 REQUIRED = [
     "shares", "rev_h1", "gm_rate_h1", "op_h1", "np_h1",
@@ -126,6 +136,7 @@ REQUIRED = [
     "g_peer_median", "pe_own_min", "pe_own_max",
     "pe_own_p75", "pe_own_med", "pe_own_p25", "gamma_pe", "gamma_pe_se",
     "eps_trough_fy2020",
+    "opt_cap", "opt_price", "vat", "t_opt",
 ]
 # Reference-only rows (校验步骤 11): present in Inputs, never in an anchor path.
 NOT_FORMULA = (
@@ -133,6 +144,20 @@ NOT_FORMULA = (
     "mdi_spot", "mdi_peak_season", "g_peer_median", "g_print_m", "eps_trough_fy2020",
     "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi",
 )
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
+    return float(m.group(1)) if m else None
+
+
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(
+        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
+        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
+        md,
+    )
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
 
 
 def main() -> int:
@@ -312,6 +337,25 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
+    # 校验步骤 12 / A9: Fujian MDI +700kt option, own H ruler, discounted to FY2026.
+    if inp["t_opt"] <= NUM_YEAR:
+        errors.append("t_opt must lie after the numerator year (A9)")
+    p_fields = [k for k in inp if k.startswith("p_")]
+    if p_fields:
+        errors.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
+    opex_ratio = opex / inp["rev_h1"]
+    opt_rev_yi = inp["opt_cap"] * 1e4 * inp["opt_price"] / (1.0 + inp["vat"]) / YI
+    opt_np_yi = opt_rev_yi * (inp["gm_m_pu"] - opex_ratio) * inp["conv"]
+    opt_eps = opt_np_yi * YI / inp["shares"]
+    v_opt = opt_eps * pe["H"] / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    said_v = stated_v_opt(md)
+    if said_v is None or abs(said_v - v_opt) > 0.05:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f} (A9)")
+    if stated_p_tiers(md) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {stated_p_tiers(md)} vs A9 {P_TIERS}")
+    opt_band = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
+    a2, b2 = cut_points(*opt_band)
+
     # 裁决顺序 ②-b (valuation-rules): the margin ladder may stand in for the
     # consensus three points only while the FY2027 consensus mean sits inside
     # [EPS_M, EPS_H] and M is within 20% of it (A9).
@@ -392,6 +436,12 @@ def main() -> int:
     print("g 杠杆 (7b): " + " | ".join(
         f"g_M {g:+.2%}: {l_g:.1f}/{m_g:.1f}/{H:.1f} A {a_g:.1f} B {b_g:.1f}" for g, l_g, m_g, a_g, b_g in lever
     ))
+    print(
+        f"V_opt (A9) = {inp['opt_cap']:.0f}万吨 x {inp['opt_price']:.0f}/(1+{inp['vat']}) = {opt_rev_yi:.2f}亿 x "
+        f"(GM_pu {inp['gm_m_pu']:.0%} - opex {opex_ratio:.2%}) x conv {inp['conv']} = {opt_np_yi:.2f}亿 -> EPS {opt_eps:.4f} "
+        f"x PE_H {pe['H']:.3f} / 1.1^{int(inp['t_opt']) - NUM_YEAR} = {v_opt:.2f}; V_opt/M {v_opt / M:.3f}; "
+        f"zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f} A'={a2:.2f} B'={b2:.2f}"
+    )
     print(f"H 两侧越顶: EPS_H {eps['H']:.4f} <= {EPS_PEAK_FY2021} ✓; H {H:.2f} <= {h_cap:.2f} ✓")
 
     # 校验步骤 10: cross-rulers, printed and never anchored.

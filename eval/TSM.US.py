@@ -5,7 +5,7 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which
 quote falls in is derived live by the daily digest and the app, so nothing
 here reads a price.
 
-formula_id: tsm_sotp_2027_two_stage_gordon_v9
+formula_id: tsm_sotp_2027_two_stage_gordon_v10
 
 Numerators: 2027E consensus EPS range (low/mean/high, 13 houses, USD/ADR).
 
@@ -47,7 +47,11 @@ assigned to (valuation-rules「§r 篮子」) -- both legs sit in 篮 4 龙头�
 value equal that basket's, and `check_g_cap(g, r)` caps every perpetual g at
 min(6%, r - 4%) (A25).
 
-COUPE: V_opt = H-tier OE×$450×share×npm×platform PE; p_k = V_k/V_H.
+COUPE (v10, valuation-rules「未建模期权」2026-10-03): every tier values its
+2028 axis volume (OE×$450×share×npm) in 2028 on the platform leg's steady
+ruler perpetual_pe(g2, ROE_k, r) -- no stage-1 step at the realisation year --
+and discounts (1+r)^-(t_coupe - 2027) to the numerator year.  V_opt = V_H;
+p_k = V_k/V_H.
 
 Run:  python3 frameworks/eval/TSM.US.py
 """
@@ -90,11 +94,12 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSM.US.md"
-FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v9"
+FORMULA_ID = "tsm_sotp_2027_two_stage_gordon_v10"
 LISTING_CCY = "USD"
 TOL = 0.15
 P_TOL = 0.0005
 MIN_R_MINUS_G = 0.02
+NUM_YEAR = 2027  # numerator year (A20 / A21)
 NPM_TOL = 0.03
 
 _V_OPT = re.compile(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*")
@@ -143,6 +148,7 @@ REQUIRED = [
     "coupe_share_m",
     "coupe_share_h",
     "npm_coupe",
+    "t_coupe",
     "fx_twd",
     "eps_2026_m",
     "ni_1h26_twd",
@@ -206,6 +212,8 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     for key in ("g_mat_wafer", "g_b2"):
         if inp[key] > inp["g2"] + 1e-9:
             errs.append(f"{key}={inp[key]:.4f} > g2={inp['g2']:.4f} — non-bottleneck leg cannot outgrow platform")
+    if inp["t_coupe"] <= NUM_YEAR:
+        errs.append(f"t_coupe={inp['t_coupe']:g} must be after the numerator year {NUM_YEAR}")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errs.append(f"p-class fields must not appear in Inputs: {leaked}")
@@ -339,15 +347,21 @@ def main() -> int:
     coupe_rev = {t: inp[f"oe_{t}"] * inp["asp_oe"] * inp[f"coupe_share_{t}"] for t in TIERS}
     errors += [f"COUPE narrow: {e}" for e in check_optical_narrow_attach({t.upper(): coupe_rev[t] for t in TIERS})]
 
-    # The axis tiers are all 2028 volume.  M values its 2028 COUPE NI on the
-    # steady g2 and discounts it one year to the platform's 2027 numerator --
-    # the platform PE would let the wafer business's +33% 2028 step stand in
-    # for COUPE's own.  L and H keep the platform PE (A19).
+    # The axis tiers are all 2028 volume.  Every tier values its 2028 COUPE NI
+    # in 2028 on the platform leg's steady ruler (g2, the tier's ROE, basket r)
+    # and discounts to the 2027 numerator year (valuation-rules「未建模期权」,
+    # construction §7c-1, 2026-10-03).  The platform PE would carry the
+    # wafer business's +33% 2028 step into the realisation year -- a stage-1
+    # opened at realisation, which the rule forbids (v9 did that for L and H).
     ni_per_adr = lambda oe, share: oe * inp["asp_oe"] * share * inp["npm_coupe"] / inp["shares_adr"]  # noqa: E731
-    v_k = {
-        "l": ni_per_adr(inp["oe_l"], inp["coupe_share_l"]) * pe["l"],
-        "m": ni_per_adr(inp["oe_m"], inp["coupe_share_m"]) * perpetual_pe(g2, roe["m"], r) / (1.0 + r),
-        "h": ni_per_adr(inp["oe_h"], inp["coupe_share_h"]) * pe["h"],
+    disc_coupe = (1.0 + r) ** (inp["t_coupe"] - NUM_YEAR)
+    ni_coupe = {t: ni_per_adr(inp[f"oe_{t}"], inp[f"coupe_share_{t}"]) for t in TIERS}
+    pe_coupe = {t: perpetual_pe(g2, roe[t], r) for t in TIERS}
+    v_k = {t: ni_coupe[t] * pe_coupe[t] / disc_coupe for t in TIERS}
+    v_k_v9 = {
+        "l": ni_coupe["l"] * pe["l"],
+        "m": ni_coupe["m"] * pe_coupe["m"] / (1.0 + r),
+        "h": ni_coupe["h"] * pe["h"],
     }
     v_opt = v_k["h"]
     p_k = {t: v_k[t] / v_opt for t in TIERS}
@@ -485,6 +499,12 @@ def main() -> int:
         f"COUPE V_opt={v_opt:.2f} p_k={p_k['l']:.3f}/{p_k['m']:.3f}/{p_k['h']:.1f}  "
         f"zone+V={L + v_k['l']:.1f}/{M + v_k['m']:.1f}/{H + v_k['h']:.1f}  "
         f"A'={(L + v_k['l'] + M + v_k['m']) / 2:.1f} B'={(M + v_k['m'] + H + v_k['h']) / 2:.1f}"
+    )
+    print(
+        f"COUPE chain: NI/ADR {ni_coupe['l']:.3f}/{ni_coupe['m']:.3f}/{ni_coupe['h']:.3f} x perpetual_pe(g2 {g2:.2%}, ROE_k) "
+        f"{pe_coupe['l']:.2f}/{pe_coupe['m']:.2f}/{pe_coupe['h']:.2f}x / 1.1^{int(inp['t_coupe']) - NUM_YEAR} "
+        f"= {v_k['l']:.2f}/{v_k['m']:.2f}/{v_k['h']:.2f} | v9 (L/H x platform PE, undiscounted) "
+        f"{v_k_v9['l']:.2f}/{v_k_v9['m']:.2f}/{v_k_v9['h']:.2f}"
     )
     print(
         f"ROE basis: BPS_2027 = {bps_open_2027['l']:.1f}/{bps_open_2027['m']:.1f}/{bps_open_2027['h']:.1f} USD/ADR (opening 2027 = end-2026) "

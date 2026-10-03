@@ -5,7 +5,7 @@ frameworks/601899.SH.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: zijin_fed_li_dual_axis_fwd2028_two_stage_v1
+formula_id: zijin_fed_li_dual_axis_fwd2028_two_stage_v2
 
 Two orthogonal price axes (unchanged):
   * Fed rate path → gold / copper USD ladder (_AXIS.fed-path-gold-copper)
@@ -48,13 +48,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.axes import AXIS_AU_CU, AXIS_LI2CO3, check_au_cu_mount, check_li2co3_mount  # noqa: E402
-from lib.gordon import check_g_cap, check_r, two_stage_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
-FORMULA_ID = "zijin_fed_li_dual_axis_fwd2028_two_stage_v1"
+FORMULA_ID = "zijin_fed_li_dual_axis_fwd2028_two_stage_v2"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
 YI = 1e8
@@ -88,6 +88,7 @@ LI_ASP_H1 = LI_REV_H1 / LI_VOL_H1
 LI_COST_H1 = (LI_REV_H1 - LI_GP_H1) / LI_VOL_H1
 
 REQUIRED = [
+    "jl3_cu_t", "jl2_cu_t", "nci_julong", "t_num", "t_opt",
     "shares", "bps", "fx_usd_cny", "realization_au", "realization_cu",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_g", "cost_au",
     "lme_cu_l", "lme_cu_m", "lme_cu_h", "vol_cu_t", "cost_cu",
@@ -210,6 +211,31 @@ def tier(inp: dict[str, float], tag: str, r_over: dict[str, float] | None = None
     }
 
 
+# 表3 only — never Inputs, never the base band (A2e-7a).  p_M: no anchor (phase 3 unapproved).
+P_K = (0.0, 0.25, 1.0)
+
+
+def julong3_option(inp: dict[str, float], th: dict) -> dict[str, float]:
+    """V_opt — Julong phase 3 (A34, valuation-rules「未建模期权」2026-10-03).
+
+    Size: the named post-phase-3 copper run-rate minus the phase-2 run-rate (the
+    2028 plan already holds phase 2).  Unit economics: this ticker's own copper
+    leg at the M rung (2026H1 realisation and unit cost, levy), own tax, Julong's
+    own NCI.  Ruler: own metal-leg steady-state Gordon at the H-tier ROE28 lifted
+    by the increment; valued in the realisation year, discounted to the numerator
+    year at the basket r.  No peer multiple."""
+    _, p_cu, _, _ = prices(inp, "m")
+    d_cu = inp["jl3_cu_t"] - inp["jl2_cu_t"]
+    pretax = d_cu * (p_cu - inp["cost_cu"]) - d_cu * p_cu * inp["levy_rate"]
+    d_parent = pretax * (1 - inp["tax_rate"]) * (1 - inp["nci_julong"])
+    d_eps = d_parent / inp["shares"]
+    roe_post = (th["fwd"]["parent"] + d_parent) / th["b27"]
+    pe_post = perpetual_pe(inp["g2_aucu"], roe_post, inp["r_perp"])
+    disc = (1 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    return {"d_cu": d_cu, "d_parent": d_parent, "d_eps": d_eps, "roe_post": roe_post,
+            "pe_post": pe_post, "disc": disc, "v_opt": d_eps * pe_post * disc}
+
+
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -326,6 +352,22 @@ def main() -> int:
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
             errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
+    opt = julong3_option(inp, T["h"])
+    if opt["d_cu"] <= 0 or inp["t_opt"] < inp["t_num"]:
+        errors.append("Julong-3 option: phase-3 run-rate must exceed phase 2 and t_opt ≥ t_num")
+    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
+    got = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
+    if got is None or abs(got - opt["v_opt"]) > TOL:
+        errors.append(f"V_opt: stated {got} vs recomputed {opt['v_opt']:.4f}")
+    for k, v in zip("LMH", band3):
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        if m3 is None or abs(float(m3.group(1)) - v) > TOL:
+            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
+    for label, want, rx in (("A′", (band3[0] + band3[1]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
+                            ("B′", (band3[1] + band3[2]) / 2, r"B′ = \*\*([0-9.]+)\*\*")):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > TOL:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
     print(f"formula_id={FORMULA_ID}")
     print("shared Au/Cu OK vs _AXIS.fed-path-gold-copper (+ peer 603993.SH); Li2CO3 OK vs _AXIS.lithium-carbonate")
@@ -347,6 +389,12 @@ def main() -> int:
         f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
         for t in TIERS))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"V_opt 巨龙三期（A34）：{inp['jl3_cu_t']:,.0f} − {inp['jl2_cu_t']:,.0f} = {opt['d_cu']:,.0f} t 铜 @M、单位成本 {inp['cost_cu']:,.0f}、"
+          f"税金及附加、(1−t)(1−NCI 巨龙 {inp['nci_julong']:.2%}) = {opt['d_parent'] / YI:.2f} 亿（ΔEPS {opt['d_eps']:.4f}）"
+          f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_aucu']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}） × {opt['disc']:.4f}"
+          f"（{inp['t_opt']:g}→{inp['t_num']:g}，无时点锚·拍值）= {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
+          f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
     print(f"flat-multiple ladder @ metal PE_M {T['m']['pe']['metal']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
         print(line)

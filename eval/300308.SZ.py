@@ -7,7 +7,7 @@ L/M/H / A/B and the NPO option from the §3 Inputs table and exits 1 on
 mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
 nothing here reads a quote.
 
-formula_id: zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v1
+formula_id: zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v2
 
 Main ruler: the pluggable-module business only (NPO is carved out into V_opt).
 Numerator year FY2027 — the furthest year with a >=2-house consensus range
@@ -24,9 +24,15 @@ H-share net proceeds - interim dividend + the unbooked H2 FY26 consensus
 profit retained at the growth-required b = g/ROE (g1 for M/H, g2 for L);
 solved as a fixed point.  Anchors carry the retention haircut k (x (1 - k)).
 
-Option (A13): NPO FY28 net profit = UBS FY28 revenue x NPO share x FY25
-realised net margin, capitalised at the M-tier ROE with g_npo and discounted
-one year (FY28 is t = 2).  p_L / p_M / p_H are constants here, never Inputs.
+Option (A13, valuation-rules「未建模期权」2026-10-03): NPO FY28 net profit =
+UBS FY28 revenue x NPO share (count still a single-house forecast: no company-
+named NPO quantity — declared deviation) x the aligned-year (FY28, furthest
+year with >=2 houses) company-level consensus net margin (mean of UBS derived
+on A shares and Citi stated; a shared plug — no leg-level data), valued in the
+realisation year t_opt (company-named: 2028 larger-scale shipments) on this
+ticker's ruler — basket r, H-tier ROE, g_npo from the optical cross-section
+(LITE.US A16 6.64% capped at 6%) — and discounted back (1+r)^-(t_opt - 2027).
+p_L / p_M / p_H are constants here, never Inputs.
 
 Run:  python3 frameworks/eval/300308.SZ.py
 """
@@ -62,11 +68,12 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "300308.SZ.md"
-FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v1"
+FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v2"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 N_STAGE = 1  # FY28 is the only year beyond the numerator with >=2 stated houses
 CONSENSUS_YEARS_BEYOND = 1
+NUM_YEAR = 2027  # numerator year FY2027 = t 1, not discounted
 MACRO_G = 0.04  # valuation-rules「6% 的含义」: named long-run nominal growth
 P_TIERS = (0.3, 0.6, 1.0)  # A13: 无概率锚·拍值; p_H default 1.0
 TIERS = ("L", "M", "H")
@@ -103,6 +110,7 @@ REQUIRED = [
     "eps_fy26_cons", "rev_fy26_cons", "nm_fy25", "rev_cut_l",
     "eps_fy27_l", "eps_fy27_m", "eps_fy27_h", "shares_a", "shares_total",
     "ubs_eps27", "ubs_eps28", "citi_ni27", "citi_ni28", "npo_share_28", "ubs_rev28",
+    "citi_nm28", "t_opt",
     "equity_h1", "h_shares", "h_price_hkd", "hkdcny", "h_fee", "dps_interim",
     "shares_div", "ni_h2_cons", "r_perp", "g2", "g_npo", "k_l", "k_m", "k_h",
     "payout_obs", "pe_own_min", "pe_own_max", "rev_fy27_cons", "usdcny",
@@ -131,6 +139,10 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         e.append("k must satisfy 0 <= k_L <= k_M <= k_H < 1 (cyclical, 留存去向审计)")
     if inp["shares_a"] >= inp["shares_total"]:
         e.append("shares_a must be below shares_total (H-share dilution)")
+    if inp["t_opt"] <= NUM_YEAR:
+        e.append("option realisation year must lie after the numerator year (A13)")
+    if not 0 < inp["citi_nm28"] < 1:
+        e.append("citi_nm28 must be a fraction")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         e.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -209,11 +221,14 @@ def main() -> int:
     if not (inp["pe_own_min"] <= pe["M"] <= inp["pe_own_max"]):
         errors.append(f"M multiple {pe['M']:.2f}x outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — ③ 出带")
 
-    # ---- Step 5: NPO option (A13) ----
-    npo_ni = inp["ubs_rev28"] * inp["npo_share_28"] * inp["nm_fy25"]
+    # ---- Step 5: NPO option (A13): aligned-year margin, own ruler, timed discount ----
+    nm_ubs28 = inp["ubs_eps28"] * inp["shares_a"] / inp["ubs_rev28"]
+    nm_opt = (nm_ubs28 + inp["citi_nm28"]) / 2
+    npo_ni = inp["ubs_rev28"] * inp["npo_share_28"] * nm_opt
     eps_npo = npo_ni / sh
-    pe_npo = perpetual_pe(inp["g_npo"], roe["M"], r)
-    v_opt = eps_npo * pe_npo / (1 + r)
+    pe_npo = perpetual_pe(inp["g_npo"], roe["H"], r)
+    disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR)
+    v_opt = eps_npo * pe_npo / disc
     plus_v = tuple(x + p * v_opt for x, p in zip((L, M, H), P_TIERS))
 
     # ---- A2e-2c flat ladder + decomposition ----
@@ -265,8 +280,11 @@ def main() -> int:
               f" -> {pre[t]:.2f} x (1-k {k[t]:.2f}) = {pre[t] * (1 - k[t]):.2f}"
               f"  [perpetual payout {payout(g2, roe[t]):.3f}{f', stage-1 b1 {g1 / roe[t]:.3f}' if stage[t] else ''}]")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"NPO option: NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f} x PE {pe_npo:.2f} (g {inp['g_npo']:.0%}, ROE_M {roe['M']:.3f})"
-          f" / {1 + r:g} = V_opt {v_opt:.2f}; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
+    print(f"NPO option: FY28 net margin UBS {nm_ubs28:.4f} / Citi {inp['citi_nm28']:.4f} -> {nm_opt:.4f}"
+          f" (FY25 realised {inp['nm_fy25']:.4f}, lower-bound disclosure only)")
+    print(f"NPO option: NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f} x PE {pe_npo:.2f} (g {inp['g_npo']:.0%}, ROE_H {roe['H']:.3f},"
+          f" payout {payout(inp['g_npo'], roe['H']):.3f}) = {eps_npo * pe_npo:.2f} in {int(inp['t_opt'])}"
+          f" / {disc:.4f} = V_opt {v_opt:.2f}; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
           f" A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}")
     print(f"guardrail: M {pe['M']:.2f}x (after k {pe['M'] * (1 - k['M']):.2f}x) vs own band "
           f"[{inp['pe_own_min']}, {inp['pe_own_max']}]; L {pe['L']:.2f}x H {pe['H']:.2f}x")

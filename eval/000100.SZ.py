@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """000100.SZ (TCL科技) valuation eval — recompute anchors from frameworks/000100.SZ.md.
 
-formula_id: tcl_sotp_display_pv_flat_pe_v1
+formula_id: tcl_sotp_display_pv_flat_pe_v2
 
 Asymmetric SOTP on flat multiples: display attributable-NI ladder x flat PE,
 PV leg at a low multiple (0 in L/M), distribution at a thin multiple.  V_opt
-(glass substrate / InP) is an explicit 拍值, never in the base.
+(glass substrate / InP) is 0 since the 2026-10-03 migration (A6): no named
+capacity, revenue target or contract to close the ceiling on; the old 0.80
+拍值 is retired, so there is no 表3 and no p_k row.
 
 Discount rate: no leg is Gordon-generated, so no basket r enters the formula.
 The Inputs table still names each leg's basket (显示 / 光伏 篮 6, 分销 篮 4, A8)
@@ -41,7 +43,7 @@ from eval.lib.inputs import (  # noqa: E402
 from eval.lib.zones import cut_points, zone_of  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "000100.SZ.md"
-FORMULA_ID = "tcl_sotp_display_pv_flat_pe_v1"
+FORMULA_ID = "tcl_sotp_display_pv_flat_pe_v2"
 TICKER = "000100.SZ"
 
 TIERS = ("l", "m", "h")
@@ -52,7 +54,7 @@ REQUIRED = (
     "ni_pv_l", "ni_pv_m", "ni_pv_h", "pe_pv",
     "ni_dist", "pe_dist",
     *R_LEGS,
-    "v_opt", "p_l", "p_m", "p_h",
+    "v_opt",
 )
 
 # Disclosure coordinates from §0 / A8 (not Inputs: they drive no anchor).
@@ -94,9 +96,19 @@ def main() -> int:
     print(f"L/M={L/M:.2f} = num {inp['ni_display_l']/inp['ni_display_m']:.2f} x pe 1.00 | "
           f"H/M={H/M:.2f} = num {inp['ni_display_h']/inp['ni_display_m']:.2f} x pe 1.00 (+PV leg at H) | "
           f"width={(H-L)/(2*M):.2f} V_opt/M={inp['v_opt']/M:.2f}")
-    p_k = {"l": inp["p_l"], "m": inp["p_m"], "h": inp["p_h"]}
-    for t, a in zip(TIERS, (L, M, H)):
-        print(f"  zone+V {t.upper()}: {a:.2f} + {p_k[t]}*{inp['v_opt']} = {a + p_k[t] * inp['v_opt']:.2f}")
+    # A6: V_opt = 0 (ceiling not closed); a nonzero value must come back with p_k rows.
+    leaked = sorted(k for k in inp if k.startswith("p_"))
+    if inp["v_opt"] == 0:
+        if leaked:
+            errors += [f"V_opt = 0 (A6) but p rows still in Inputs: {leaked}"]
+    elif not {"p_l", "p_m", "p_h"} <= set(inp):
+        errors += ["V_opt > 0 needs p_l / p_m / p_h"]
+    else:
+        p_k = {"l": inp["p_l"], "m": inp["p_m"], "h": inp["p_h"]}
+        for t, a in zip(TIERS, (L, M, H)):
+            print(f"  zone+V {t.upper()}: {a:.2f} + {p_k[t]}*{inp['v_opt']} = {a + p_k[t] * inp['v_opt']:.2f}")
+        if not (p_k["l"] <= p_k["m"] <= p_k["h"]):
+            errors += ["p_k must be non-decreasing"]
 
     # Step 2: disclosure only (A8) — basket r never reaches the base.
     r_disp = inp["r_display"]
@@ -116,8 +128,6 @@ def main() -> int:
     errors += ladder("ni_display", inp["ni_display_l"], inp["ni_display_m"], inp["ni_display_h"])
     if not (inp["ni_pv_l"] <= inp["ni_pv_m"] <= inp["ni_pv_h"]):
         errors += ["ni_pv must be non-decreasing across tiers (A3)"]
-    if not (inp["p_l"] <= inp["p_m"] <= inp["p_h"]):
-        errors += ["p_k must be non-decreasing"]
     # valuation-rules「§r 篮子」: every r row must name a basket and equal that basket's r.
     for leg in R_LEGS:
         if leg not in baskets:

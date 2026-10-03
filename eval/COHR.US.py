@@ -41,7 +41,8 @@ Sanity checks beyond the L<M<H / Outputs reconciliation:
   - scenario monotonicity on revenue and margins; m_dcc_h hard cap
   - numerator ladder + flat-multiple ladder (A2e-2c), decomposition (A2e-5)
   - the M-scenario bottom-up economic EPS must land within +/-20% of the
-    FY2028 street consensus non-GAAP EPS (the A2d cross-constraint, mechanised)
+    FY2028 street consensus non-GAAP EPS (the A2d cross-constraint, mechanised),
+    and that consensus mean must sit inside [eps_M, eps_H] (裁决表 ②-b (i))
   - shared-axis rungs (ai-capex, optical-comms) match the axis files
   - option: stated V_opt and 表3 reconcile; p never leaks into the base
 
@@ -271,6 +272,15 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    # 裁决表 ②-b (i): the bottom-up ladder may stand beside the consensus three
+    # points only if the farthest banded consensus mean sits inside [M, H].
+    if not (s["M"]["eps"] <= inp["eps_cons_fy28"] <= s["H"]["eps"]):
+        print(
+            f"FAIL: street FY2028 consensus mean {inp['eps_cons_fy28']} outside"
+            f" [eps_M {s['M']['eps']:.2f}, eps_H {s['H']['eps']:.2f}] (裁决表 ②-b (i))",
+            file=sys.stderr,
+        )
+        return 1
 
     # --- Step 3: discount to today, then close with net debt --------------
     disc = (1.0 + inp["r_disc"]) ** (-inp["t_disc"])
@@ -364,7 +374,7 @@ def main() -> int:
     )
     print(
         f"econ EPS FY28  L/M/H = {s['L']['eps']:.2f}/{s['M']['eps']:.2f}/{s['H']['eps']:.2f}"
-        f"   (street non-GAAP {inp['eps_cons_fy28']}, M dev {dev:+.1%})"
+        f"   (street non-GAAP {inp['eps_cons_fy28']}, M dev {dev:+.1%}; ②-b mean in [M, H] ok)"
     )
     print(
         f"tier ROE L/M/H = {s['L']['roe']:.4f}/{s['M']['roe']:.4f}/{s['H']['roe']:.4f} "

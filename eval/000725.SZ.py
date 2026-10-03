@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """000725.SZ (BOE) valuation eval — recompute anchors from frameworks/000725.SZ.md.
 
-formula_id: boe_midcycle_eps_flat_pe_v1
+formula_id: boe_midcycle_eps_flat_pe_v2
 
-Illustrative: consolidated mid-cycle NI ladder x flat PE.  V_opt is read
-from the framework and priced tier by tier in 表3 only; probabilities never
-enter the base deck.
+Illustrative: consolidated mid-cycle NI ladder x flat PE.  V_opt is 0 since
+the 2026-10-03 migration (B5): the option ceiling must close on BOE's own named
+quantities x leg unit economics, and the glass-core substrate line has no unit
+price or revenue base yet.  The old 4.00 (Citi PB target gap) is retired, so
+there is no 表3 and no p_k row; a nonzero v_opt must come back with p_k stated.
 
 The basket r (篮 6, 13%) does not enter the flat-PE deck (B8).  It is a
 disclosure-only `r_perp` row: the script checks the basket tag and value agree
@@ -16,10 +18,9 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so no
 here computes a zone or a market-implied r / p — the digest and the app zone
 on live quotes.
 
-Known Class B debt (the ticker is queued for a rebuild, not patched here):
-the §3 Inputs table still carries p_l / p_m / p_h rows, which A2e-7a forbids.
-That is reported as a warning below rather than a failure so the anchor
-recomputation stays runnable until the rebuild lands.
+Known debt (queued for a rebuild, not patched here): M is a single house and
+H an annualised half-year actual, against the ≥2-house range-consensus rule
+(see §4 2026-10-03).
 
 Run:  python3 frameworks/eval/000725.SZ.py
 """
@@ -39,7 +40,7 @@ from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000725.SZ.md"
-FORMULA_ID = "boe_midcycle_eps_flat_pe_v1"
+FORMULA_ID = "boe_midcycle_eps_flat_pe_v2"
 REQUIRED = ["shares", "bps", "ni_l", "ni_m", "ni_h", "pe", "v_opt", "pb_floor", "r_perp"]
 TIERS = ("l", "m", "h")
 
@@ -86,8 +87,10 @@ def main() -> int:
 
     floor = inp["pb_floor"] * inp["bps"]
     p = stated_p_tiers(md)
-    if p is None:
+    if inp["v_opt"] != 0 and p is None:
         errors.append("p_L/p_M/p_H not stated in Outputs")
+    if inp["v_opt"] == 0 and (p is not None or leaked):
+        errors.append("V_opt = 0 (B5) but p_k still stated — drop 表3 / p rows")
 
     print(f"formula_id={FORMULA_ID}")
     for t, a in zip(TIERS, (L, M, H)):

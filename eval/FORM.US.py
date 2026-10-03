@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FORM.US valuation eval — recompute anchors from frameworks/FORM.US.md.
 
-formula_id: form_fy27_cons_gordon_opeq_v1
+formula_id: form_fy27_cons_gordon_opeq_v2
 
 One operating leg on the FY27 consensus EPS range (8 houses; the furthest year
 with a >=2-house *range*, valuation-rules 裁决顺序 ②; FY28 exists only as
@@ -19,15 +19,16 @@ growth-required retention b1 = g2/ROE (A6).  The after-tax net interest is
 stripped from the numerator and the net cash added back per share as a closing
 item (A5, the 1810.HK A15 treatment).  FY27 = current FY + 1: no discount.
 
-V_opt = two named items outside consensus, each one realised unit at the M-tier
-multiple: co-packaged optics (2026 revenue x the Systems segment's measured
-operating margin, A15) and GPU probe cards as Nvidia's second qualified source
-(sized on FORM's own realised HBM probe-card business x the Probe Cards
-segment's measured operating margin, A19).  The
-management 2030 target model is a candidate band (company single source, A16):
-same ruler, FY30 numerator, compounded book, discounted t years — on time (M′)
-and three years late like the 2020 model (L′); H′ copies H.  Probabilities
-live only in the zone+V table.
+V_opt (v2, 2026-10-03 rules — valuation-rules「未建模期权」): the size comes
+only from a quantity FORM itself named — the management 2030 revenue target
+less the FY27 consensus revenue already priced in H (A16).  Unit economics are
+the aligned year's own consensus: FY27 core earnings per dollar of FY27 mean
+consensus revenue (borrow quantity, never price).  The increment is valued on
+this ticker's ruler at the H-tier multiple in the target year and discounted
+back to the numerator year at the basket r.  GPU probe cards and CPO are the
+named drivers inside that increment, no longer separate units (A15 / A19).
+No candidate band: the 2030 target is the option's count and may not be
+written twice.  Probabilities live only in the zone+V table.
 
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
 here reads one.
@@ -59,23 +60,22 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "FORM.US.md"
-FORMULA_ID = "form_fy27_cons_gordon_opeq_v1"
+FORMULA_ID = "form_fy27_cons_gordon_opeq_v2"
 LISTING_CCY = "USD"
 TOL = 0.05
 MILLION = 1e6  # money inputs are in $M, share counts are absolute
 MIN_R_MINUS_G = 0.02
 HAIRCUT_ROUNDING = 0.01  # A4: haircut may be rounded up by at most 1pp over the derived value
 QUARTERS_IN_GAP = 3  # A4: the GAAP-vs-adjusted gap spans three consensus quarters
-P_TIERS = (0.0, 0.25, 1.0)  # A15 — table 3 only, never an input
+P_TIERS = (0.0, 0.25, 1.0)  # A16 — table 3 only, never an input
 
 REQUIRED = [
     "shares", "shares_out", "equity", "cash", "net_cash", "int_q", "tax",
     "eps_fy26_m", "eps_h1_26", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
     "cons_q_adj", "cons_q_gaap", "amort_fy25", "sbc_fy25", "sbc_haircut",
     "payout_3y", "r_perp", "g2", "g_peer_median", "k_l", "k_m", "k_h",
-    "mgmt_eps_2030", "mgmt_years", "mgmt_delay",
-    "unit_rev", "unit_margin", "v_opt_units",
-    "gpu_unit_rev", "gpu_unit_margin", "v_opt_gpu", "pb_low",
+    "mgmt_rev_2030", "mgmt_eps_2030", "rev_fy27_m", "rev_fy27_h", "t_opt", "t_num", "mgmt_delay",
+    "pb_low",
 ]
 TIERS = ("L", "M", "H")
 
@@ -134,6 +134,12 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     ks = (inp["k_l"], inp["k_m"], inp["k_h"])
     if not all(0.0 <= k < 1.0 for k in ks) or not ks[0] <= ks[1] <= ks[2]:
         errs.append(f"k_l/k_m/k_h = {ks} must lie in [0,1) with k_H >= k_M >= k_L (A10)")
+
+    # A16: the option counts only what the target adds above consensus already in H.
+    if not inp["mgmt_rev_2030"] > inp["rev_fy27_h"] >= inp["rev_fy27_m"] > 0:
+        errs.append("mgmt_rev_2030 must exceed FY27 consensus revenue (H >= M > 0) — nothing left to count (A16)")
+    if not inp["t_opt"] > inp["t_num"]:
+        errs.append("t_opt must fall after the numerator year t_num (A16)")
 
     # A2e-7a: probabilities stay in the zone+V table.
     p_fields = [k for k in inp if k.startswith("p_")]
@@ -223,15 +229,19 @@ def main() -> int:
     lo_ok = lo["L"] < lo["M"] < lo["H"]
 
     # ---- Option ceiling and zone+V (probabilities only here) ----
-    # Two named items, each on its own realised unit (A15 CPO, A19 GPU probe cards
-    # sized on FORM's own realised HBM probe-card business), at the M-tier multiple.
-    def unit(rev: float, margin: float) -> tuple[float, float]:
-        d = rev * margin * (1.0 - inp["tax"]) * MILLION / inp["shares"]
-        return d, d * pes["M"]
+    # A16: count = 2030 revenue target - FY27 consensus revenue already in H;
+    # unit economics = FY27 mean-consensus core earnings per revenue dollar;
+    # valued at the H multiple in the target year, discounted to the numerator year.
+    d_rev = inp["mgmt_rev_2030"] - inp["rev_fy27_h"]
+    core_margin = core["M"] * inp["shares"] / (inp["rev_fy27_m"] * MILLION)
+    d_core = d_rev * MILLION * core_margin / inp["shares"]
+    years = inp["t_opt"] - inp["t_num"]
 
-    d_eps, unit_value = unit(inp["unit_rev"], inp["unit_margin"])
-    d_gpu, gpu_value = unit(inp["gpu_unit_rev"], inp["gpu_unit_margin"])
-    v_opt = inp["v_opt_units"] * unit_value + inp["v_opt_gpu"] * gpu_value
+    def option_at(t: float) -> float:
+        return d_core * pes["H"] / (1.0 + r) ** t
+
+    v_opt = option_at(years)
+    v_opt_late = option_at(years + inp["mgmt_delay"])
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     meta = load_framework(FRAMEWORK)
@@ -242,25 +252,9 @@ def main() -> int:
     opt = tuple(anchor + p * v_opt for anchor, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
 
-    # ---- A16 candidate band: management 2030 target on the same ruler ----
-    c30 = inp["mgmt_eps_2030"] * (1.0 - inp["sbc_haircut"]) - int_ps
-
-    def mgmt_value(t: float) -> tuple[float, float, float]:
-        roe_t = c30 / (bps["M"] * (1.0 + g2) ** t)
-        pe_t = perpetual_pe(g2, roe_t, r)
-        return c30 * pe_t / (1.0 + r) ** t + cash_ps, roe_t, pe_t
-
-    on_time, roe_on, pe_on = mgmt_value(inp["mgmt_years"])
-    late, roe_late, pe_late = mgmt_value(inp["mgmt_years"] + inp["mgmt_delay"])
-    cand = (late, on_time, H)
-    if not (cand[0] < cand[1] < cand[2]):
-        errors.append(f"candidate band needs L′ < M′ < H′, got {cand}")
-    if meta.candidate is None:
-        errors.append("候选带 line missing from Outputs (A16)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), meta.candidate, cand):
-            if abs(said - got) > TOL:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+    # The 2030 target is the option's count (A16); a candidate band on it would count it twice.
+    if meta.candidate is not None:
+        errors.append("候选带 line present — the 2030 target now sizes V_opt and may not be written twice (A16)")
 
     # ---- Report ----
     derived, sbc_annual = derived_haircut(inp)
@@ -290,12 +284,15 @@ def main() -> int:
     for rr, tag in ((0.13, "篮 6 13% (not adopted)"), (0.15, "篮 7 15% (not adopted)")):
         _, _, _, s = deck(g2, rr, inp["sbc_haircut"])
         print(f"contrast r {tag}: {s['L']:.2f}/{s['M']:.2f}/{s['H']:.2f}")
-    print(f"V_opt={v_opt:.2f} = CPO {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} = {inp['unit_rev']:g}M x {inp['unit_margin']:.2%} after tax "
-          f"x PE_M {pes['M']:.2f} = {unit_value:.2f}] + GPU {inp['v_opt_gpu']:g} x [dEPS {d_gpu:.4f} = {inp['gpu_unit_rev']:g}M x "
-          f"{inp['gpu_unit_margin']:.2%} after tax x PE_M = {gpu_value:.2f}]")
+    print(f"V_opt={v_opt:.2f} = (target {inp['mgmt_rev_2030']:g}M - FY27 H consensus {inp['rev_fy27_h']:g}M = {d_rev:g}M) "
+          f"x core margin {core_margin:.2%} (FY27 core M {core['M']:.4f} x shares / mean revenue {inp['rev_fy27_m']:g}M) "
+          f"= dEPS {d_core:.4f} x PE_H {pes['H']:.2f}x = {d_core * pes['H']:.2f} / {1 + r:g}^{years:g}")
+    print(f"V_opt timing sensitivity: target {inp['mgmt_delay']:g}y late like the 2020 model -> {v_opt_late:.2f}; "
+          f"post-realisation core EPS H + dEPS = {core['H'] + d_core:.4f}")
+    c30 = inp["mgmt_eps_2030"] * (1.0 - inp["sbc_haircut"]) - int_ps
+    print(f"V_opt cross-check on the target EPS (company margin, not used): core {c30:.4f} - H {core['H']:.4f} "
+          f"= {c30 - core['H']:.4f} x PE_H / {1 + r:g}^{years:g} = {(c30 - core['H']) * pes['H'] / (1.0 + r) ** years:.2f}")
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    print(f"candidate (A16, mgmt FY30 core {c30:.4f}): on time ROE {roe_on:.4f} PE {pe_on:.2f}x -> {on_time:.2f}; "
-          f"+{inp['mgmt_delay']:g}y ROE {roe_late:.4f} PE {pe_late:.2f}x -> {late:.2f}; H′ = H {H:.2f}")
     for tp in (64.0, 157.5, 175.0, 200.0):
         g_tp, ok = implied_g((tp - cash_ps) / core["M"], roe["M"], r)
         print(f"street TP {tp:g} on this ruler (A17): implied perpetual g {g_tp:.4f}{'' if ok else ' (ill-conditioned)'}")

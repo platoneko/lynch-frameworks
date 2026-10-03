@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: ytn_realized_earnings_regime_gordon_v4
+formula_id: ytn_realized_earnings_regime_gordon_v5
 
 Main ruler: three *already-printed or already-consensus* annual net profits,
 each at the same flat multiple 1/(r - g2):
@@ -38,6 +38,12 @@ definition and tier numbering are shared, and the ladder is cross-checked
 against both the axis file and the peer mount 002895.SZ), but its numerator
 comes from the other transmission path of the same regime.
 
+V_opt (A9): the 35% stake in the Wanchang phosphate mine (1,000万吨/年, total
+capex 81.69亿, company-stated after-tax IRR 12.81%), valued with this ticker's
+own ruler — stake x capex x (IRR x PE - 1) at the same 1/(r - g2) — in the
+first full year after completion (2032) and discounted back to FY2026 at the
+basket r.  Borrow quantity, never price (valuation-rules「未建模期权」2026-10-03).
+
 The beta guard below is what keeps that honest: if the measured elasticity ever
 climbs above 0.20, the "does not transmit" premise has failed and the ruler has
 to be rebuilt rather than quietly re-fitted.
@@ -47,6 +53,7 @@ Run:  python3 frameworks/eval/600096.SH.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -62,15 +69,33 @@ from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
-FORMULA_ID = "ytn_realized_earnings_regime_gordon_v4"
+FORMULA_ID = "ytn_realized_earnings_regime_gordon_v5"
 YI = 1e8
 
 NP_PEAK_FY2022_YI = 60.21  # highest annual net profit the company has printed
+NUM_YEAR = 2026  # numerator year of M (FY2026E consensus)
+P_TIERS = (0.0, 0.25, 1.0)  # table 3; p_M 无概率锚·拍值 (A9)
+TOL = 0.05
+
+
+def stated_v_opt(md: str) -> float | None:
+    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
+    return float(m.group(1)) if m else None
+
+
+def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
+    m = re.search(
+        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
+        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
+        md,
+    )
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
 
 REQUIRED = [
     "shares", "np_l", "eps_m_consensus", "np_h",
     "equity", "r_perp", "g2_l", "g2_m", "g2_h", "eps_fy27_single",
     "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map", "bps",
+    "opt_capex", "opt_stake", "opt_irr", "t_opt",
 ]
 
 
@@ -152,6 +177,26 @@ def main() -> int:
     if not (L < m_cand < H):
         errors.append(f"candidate band collapsed: L {L:.2f} < M' {m_cand:.2f} < H {H:.2f} fails (A17)")
 
+    # V_opt (A9): own ruler, discounted from the realisation year to the numerator year.
+    if inp["t_opt"] <= NUM_YEAR:
+        errors.append(f"t_opt {inp['t_opt']:g} must lie after the numerator year {NUM_YEAR} (A9)")
+    p_fields = [k for k in inp if k.startswith("p_")]
+    if p_fields:
+        errors.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
+    k_share = inp["opt_stake"] * inp["opt_capex"]
+    dni_opt = k_share * inp["opt_irr"]
+    v_at_t = (dni_opt * pe["M"] - k_share) * YI / inp["shares"]
+    disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR)
+    v_opt = v_at_t / disc
+    v_g0 = (dni_opt / r - k_share) * YI / inp["shares"] / disc
+    said_v = stated_v_opt(md[md.find("### Outputs"):])
+    if said_v is None or abs(said_v - v_opt) > TOL:
+        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    if stated_p_tiers(md[md.find("### Outputs"):]) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {stated_p_tiers(md)} vs {P_TIERS}")
+    opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
+    A_v, B_v = cut_points(*opt)
+
     # --- report ----------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
     print(
@@ -177,13 +222,17 @@ def main() -> int:
           f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}")
     print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}): L'={L:.2f} M'={m_cand:.2f} H'={H:.2f} "
           f"(disclosed, not judged)")
+    print(f"V_opt={v_opt:.4f} (stake {inp['opt_stake']:g} x capex {inp['opt_capex']:g}亿 = {k_share:.3f}亿; "
+          f"ΔNI {dni_opt:.4f}亿 x {pe['M']:.3f}x - K -> {v_at_t:.4f}/sh @{inp['t_opt']:g}, ÷{disc:.4f}); g=0 contrast {v_g0:.4f}; V_opt/M {v_opt / M:.4f}")
+    print("table3: " + " / ".join(f"{t} {b:.2f}+{p:g}x{v_opt:.2f}={o:.2f}" for t, b, p, o in zip("LMH", (L, M, H), P_TIERS, opt))
+          + f"  A'={A_v:.2f} B'={B_v:.2f}")
     per_yi = YI / inp["shares"] * pe["M"]
     print(f"sensitivity: +1亿 net profit -> M anchor {per_yi:+.2f} CNY")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
         f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} "
         f"| 分子比 L={rows[0][2] / rows[1][2]:.4f} H={rows[2][2] / rows[1][2]:.4f} "
-        f"| 倍数比 L={pe['L'] / pe['M']:.4f} H={pe['H'] / pe['M']:.4f} | V_opt/M 0"
+        f"| 倍数比 L={pe['L'] / pe['M']:.4f} H={pe['H'] / pe['M']:.4f} | V_opt/M {v_opt / M:.4f}"
     )
     return report(errors)
 

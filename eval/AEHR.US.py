@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AEHR.US valuation eval — recompute anchors from frameworks/AEHR.US.md.
 
-formula_id: aehr_fy28_cons_gordon_opeq_v5
+formula_id: aehr_fy28_cons_gordon_opeq_v6
 
 One operating leg on the FY28 consensus EPS range (3 houses; the furthest year
 with a >=2-house *range*, valuation-rules 裁决顺序 ②).  Street EPS is the
@@ -32,10 +32,17 @@ close by the *current-FY* consensus, so anchors are compared to it on that
 same basis (anchor / FY27 consensus) — only the lower edge binds, the upper
 edge is meaningless (2025-26 consensus EPS ~ 0).
 
-V_opt = k FY2024 realised single-customer fill units (k = 2: the unsigned
-second AI processor customer and a return of SiC to its FY24 peak, both named
-outside the consensus by the covering houses, A14), priced at the M-tier
-multiple.  Probabilities live only in the zone+V table.
+V_opt (valuation-rules「未建模期权」2026-10-03, A14): two items the covering
+houses name as outside the consensus, each sized from this company's own named
+quantity — the unsigned second AI processor customer = one snapshot of today's
+lead wafer-level AI customer (its signed orders over the last 12 months, a
+floor), and SiC back to its FY24 peak = FY24 EV/power revenue less the FY26
+level the consensus is taken to carry.  Unit economics = the FY28 (aligned
+year) consensus core net margin, M tier — the company is one leg, so company
+consensus is the leg consensus; the FY24 realised margin is only a floor.
+Priced on this ticker's own ruler (perpetual_pe at g2, H-tier ROE, basket r)
+in the realisation year — none is named, so FY28 + 2 = FY30 — and discounted
+back to the FY28 numerator at r.  Probabilities live only in the zone+V table.
 
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
 quote falls in is derived live by the daily digest and the app, so nothing
@@ -76,7 +83,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "AEHR.US.md"
-FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v5"
+FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v6"
 LISTING_CCY = "USD"
 TOL = 0.05
 MILLION = 1e6  # money inputs are in $M, share counts are absolute
@@ -85,6 +92,7 @@ FLOOR_RATIO_MIN = 0.3  # A2e-1: scenario below the floor AND scenario_L / M belo
 HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the derived value
 P_TIERS = (0.0, 0.25, 1.0)  # A14 — table 3 only, never an input
 CAND_DISC_YEARS = 2  # A19: FY30 sits two years past the undiscounted FY28 numerator
+NUM_YEAR = 2028  # FY28 numerator (t = 1, undiscounted); the option is discounted from t_opt back to here (A14)
 
 REQUIRED = [
     "shares",
@@ -118,7 +126,11 @@ REQUIRED = [
     "unit_rev",
     "unit_gp",
     "unit_opex",
-    "v_opt_units",
+    "opt_rev_ai",
+    "sic_share_fy24",
+    "rev_fy26",
+    "sic_share_fy26",
+    "t_opt",
     "capex_l",
     "capex_m",
     "capex_h",
@@ -194,6 +206,12 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errs.append(f"net_cash {inp['net_cash']} must be positive and <= cash {inp['cash']} (A15)")
     if inp["equity"] - inp["net_cash"] <= 0:
         errs.append("operating equity (equity - net_cash) is not positive (A15)")
+
+    # A14: the option is realised after the numerator year; the SiC item must be positive.
+    if inp["t_opt"] <= NUM_YEAR:
+        errs.append("option year must lie after the FY28 numerator year (A14)")
+    if inp["unit_rev"] * inp["sic_share_fy24"] <= inp["rev_fy26"] * inp["sic_share_fy26"]:
+        errs.append("SiC item: FY24 peak not above the FY26 level the consensus carries (A14)")
 
     # A2e-7a: probabilities stay in the zone+V table.
     p_fields = [k for k in inp if k.startswith("p_")]
@@ -301,10 +319,26 @@ def main() -> int:
 
     lo_l, lo_m, lo_h, lo_ok = deck_at(g2 - 0.01)
 
-    # ---- Option ceiling and zone+V (probabilities only here) ----
-    d_eps = (inp["unit_gp"] - inp["unit_opex"]) * (1.0 - inp["tax"]) * MILLION / inp["shares"]
-    unit_value = d_eps * pes["M"]
-    v_opt = inp["v_opt_units"] * unit_value
+    # ---- Option ceiling and zone+V (probabilities only here; A14) ----
+    # Sizes come from own named quantities; unit economics = FY28 consensus core
+    # net margin (M); priced at perpetual_pe(g2, ROE_H, r) in t_opt, discounted to FY28.
+    rev28m = inp["rev_fy28_m"]
+    margin = {t: core[t] * inp["shares"] / MILLION / rv for t, rv in
+              (("L", inp["rev_fy28_l"]), ("M", rev28m), ("H", inp["rev_fy28_h"]))}
+    sic_peak = inp["unit_rev"] * inp["sic_share_fy24"]
+    sic_in = inp["rev_fy26"] * inp["sic_share_fy26"]
+    opt_rev = {"ai": inp["opt_rev_ai"], "sic": sic_peak - sic_in}
+    opt_rev_tot = sum(opt_rev.values())
+    disc_n = int(inp["t_opt"]) - NUM_YEAR
+
+    def v_opt_at(m: float, rr: float = r, roe_h: float | None = None) -> float:
+        pe = perpetual_pe(g2, roe["H"] if roe_h is None else roe_h, rr)
+        return opt_rev_tot * m * MILLION / inp["shares"] * pe / (1.0 + rr) ** disc_n
+
+    d_eps = opt_rev_tot * margin["M"] * MILLION / inp["shares"]
+    pe_opt = perpetual_pe(g2, roe["H"], r)
+    v_opt = v_opt_at(margin["M"])
+    hist_margin = (inp["unit_gp"] - inp["unit_opex"]) * (1.0 - inp["tax"]) / inp["unit_rev"]  # FY24 realised, floor only
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     said_v = stated_v_opt(md)
@@ -362,7 +396,7 @@ def main() -> int:
           f"(cash the model deems distributed but the company keeps; disclosure only, not a leg, not in BPS)")
     for rr, tag in ((0.13, "篮 6 13% (former basket)"), (0.15, "篮 7 15%")):
         alt = {t: core[t] * perpetual_pe(g2, roe[t], rr) + cash_ps for t in TIERS}
-        print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_opt {inp['v_opt_units'] * d_eps * perpetual_pe(g2, roe['M'], rr):.2f})")
+        print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_opt {v_opt_at(margin['M'], rr):.2f})")
     print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
           f"{'BELOW' if below_floor else 'above'} floor by {abs(scen['L'] - floor):.2f}  "
           f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if below floor)")
@@ -379,7 +413,11 @@ def main() -> int:
           f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
     print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} "
           f"{'(ladder broken)' if not lo_ok else ''}; +1pp exceeds cap {cap:.3f} (①, unusable)")
-    print(f"V_opt={v_opt:.2f} (units {inp['v_opt_units']:g} x [dEPS {d_eps:.4f} (FY24 unit EBIT {inp['unit_gp'] - inp['unit_opex']:.3f}M after tax) x PE_M {pes['M']:.2f} = {unit_value:.2f}/unit])")
+    print(f"V_opt={v_opt:.2f} (rev AI {opt_rev['ai']:.2f}M [lead WLBI customer 12m orders, snapshot floor] + SiC {opt_rev['sic']:.2f}M "
+          f"[FY24 {sic_peak:.2f} - FY26 {sic_in:.2f}] = {opt_rev_tot:.2f}M x FY28 core margin M {margin['M']:.4f} = {d_eps:.4f}/sh "
+          f"x perp PE {pe_opt:.2f}x (g2 {g2:g}, ROE_H {roe['H']:.4f}, r {r:g}) / {1 + r:g}^{disc_n} (FY{int(inp['t_opt']) % 100} -> FY28))")
+    print(f"V_opt margin readings: L {margin['L']:.4f} -> {v_opt_at(margin['L']):.2f} | H {margin['H']:.4f} -> {v_opt_at(margin['H']):.2f} | "
+          f"FY24 realised after-tax EBIT {hist_margin:.4f} (floor only) -> {v_opt_at(hist_margin):.2f} | undiscounted {v_opt * (1 + r) ** disc_n:.2f}")
     opt = tuple(anchor + p * v_opt for anchor, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")

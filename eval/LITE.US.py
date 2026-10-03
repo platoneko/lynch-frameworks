@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v3
+formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v4
 
 Main ruler (valuation-rules.md「增长的表达顺序」, 裁决顺序 ②): the numerator year
 is FY28 — the furthest year with a >=2-house consensus — as one axis, three
@@ -26,6 +26,14 @@ SBC haircut.  No g1 window, so every tier rolls at g2.
 Candidate band (A2e-7h, A19): the company's FY28 EPS target ($40, company
 guidance, above the consensus high) replaces only the H numerator -> H'.
 Never in the base band.
+
+Option (A22; valuation-rules「未建模期权」2026-10-03): Greensboro, the fifth
+InP fab, is the only named quantity outside FY28 consensus.  Its capacity is
+undisclosed, so one fab = today's output per InP fab (Q4 FY26 Components
+annualised / inp_fabs; snapshot floor).  Unit economics = the company-level
+FY28 consensus net margin (placeholder, SBC haircut applied); valued on this
+ticker's own ruler (perpetual_pe at g2, ROE_H, r) in the realisation year
+t_opt and discounted back to the FY28 numerator year at r.  zone+V only.
 
 Guardrail (valuation-rules 裁决顺序 ③): the M multiple must sit inside the
 ticker's own realised current-FY forward-PE band [pe_own_min, pe_own_max];
@@ -70,12 +78,14 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "LITE.US.md"
-FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v3"
+FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v4"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
 # _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
 LISTING_CCY = "USD"
+NUM_YEAR = 2028  # numerator fiscal year (FY28)
+P_TIERS = (0.0, 0.5, 1.0)  # A22 — table 3 only, never an input
 
 TIERS = ("L", "M", "H")
 
@@ -149,6 +159,10 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errors.append("perpetuity diverges: g2 >= r")
     elif gap < MIN_R_MINUS_G:
         errors.append(f"r - g2 = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
+    if inp["t_opt"] <= NUM_YEAR:
+        errors.append("option year must lie after the FY28 numerator year (A22)")
+    if inp["inp_fabs"] < 1 or inp["comp_q4_fy26"] <= 0 or inp["rev_fy28_cons"] <= 0:
+        errors.append("option unit inputs must be positive (A22)")
     if inp["equity"] <= 0 or inp["shares_dil"] <= 0:
         errors.append("equity and shares_dil must be positive")
     # A2e-7a: probabilities never enter the base deck.
@@ -189,6 +203,10 @@ def main() -> int:
         "capex_l",
         "capex_m",
         "capex_h",
+        "comp_q4_fy26",
+        "inp_fabs",
+        "rev_fy28_cons",
+        "t_opt",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -276,6 +294,15 @@ def main() -> int:
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not ordered: {cand}")
 
+    # ---- Step 6b: option (A22) — one Greensboro fab at today's per-fab output ----
+    fab_rev = inp["comp_q4_fy26"] * 4.0 / inp["inp_fabs"]  # USD / yr, snapshot floor
+    inc_ps = fab_rev / (inp["rev_fy28_cons"] * 1e6) * eps["M"]  # FY28 consensus net margin, after SBC
+    pe_opt = pe["H"]  # own ruler: perpetual_pe(g2, ROE_H, r)
+    v_opt = inc_ps * pe_opt / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    opt_band = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
+    a_opt = (opt_band[0] + opt_band[1]) / 2
+    b_opt = (opt_band[1] + opt_band[2]) / 2
+
     # ---- A2e-2c flat ladder + A2e-5 decomposition ----
     _, flat = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pe["M"])
     if not (flat[0] < flat[1] < flat[2]):
@@ -298,11 +325,17 @@ def main() -> int:
             errors.append(f"stated {k} not found in Outputs")
         elif abs(s - v) > TOL:
             errors.append(f"{k}: stated {s} vs recomputed {v:.4f}")
-    vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
-    if vo is None or abs(float(vo.group(1))) > 1e-9:
-        errors.append(f"V_opt must be stated as 0 (no realised option unit), got {vo.group(1) if vo else None}")
+    fw = load_framework(FRAMEWORK)
+    if fw.v_opt is None or abs(fw.v_opt - v_opt) > TOL:
+        errors.append(f"V_opt: stated {fw.v_opt} vs recomputed {v_opt:.4f} (A22)")
+    if fw.p_tiers is None or tuple(fw.p_tiers) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {fw.p_tiers} vs A22 {P_TIERS}")
+    for lab, val in (("A'", a_opt), ("B'", b_opt)):
+        said = first_float(re.escape(lab) + r" = \*\*([0-9.]+)\*\*", out_sec)
+        if said is None or abs(said - val) > TOL:
+            errors.append(f"zone+V {lab}: stated {said} vs recomputed {val:.4f}")
     # Candidate band line: the digest reads it through frameworks.py; compare ±TOL.
-    stated_cand = load_framework(FRAMEWORK).candidate
+    stated_cand = fw.candidate
     if stated_cand is None:
         errors.append("候选带 line missing from Outputs (A19)")
     else:
@@ -360,7 +393,13 @@ def main() -> int:
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f}"
         f" | H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f}"
-        f" | width {(H - L) / (2 * M):.3f} | V_opt/M 0.000"
+        f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
+    )
+    print(
+        f"V_opt={v_opt:.2f} (1 fab x ${fab_rev / 1e6:.1f}M [Q4 FY26 Components x4 / {inp['inp_fabs']:g} fabs]"
+        f" x FY28 cons net margin {eps['M'] / haircut * inp['shares_dil'] / inp['rev_fy28_cons']:.3f} x (1-SBC) = {inc_ps:.4f}/sh"
+        f" x own H perp PE {pe_opt:.2f}x / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR});"
+        f" p_k {P_TIERS} -> zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f} A'={a_opt:.2f} B'={b_opt:.2f}"
     )
     fy27_axis = {
         "L": eps["L"] * pe["L"],

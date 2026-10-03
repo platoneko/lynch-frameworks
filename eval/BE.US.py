@@ -5,7 +5,13 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which
 quote falls in is derived live by the daily digest and the app, so nothing here
 reads a price.
 
-formula_id: be_fy2_eps_pe_order_gate_v1_gordon_v2
+formula_id: be_fy2_eps_pe_order_gate_v1_gordon_v3
+
+v3 (2026-10-03, valuation-rules「未建模期权」): V_opt is recomputed here.  Units =
+the company's named contracts (Oracle MSA up to 2.8 GW + AEP up to 1 GW) minus
+the ~2 GW the FY28 consensus bridge already carries; unit economics = FY28
+consensus EPS per GW; valued on this ticker's own ruler (g2, H-tier ROE,
+terminal basket, × (1 − k)) at t_opt, discounted to FY27 at the journey basket.
 
 Single earnings ruler on the FY2027 Non-GAAP EPS consensus (28 houses): the
 tier ladder lives in the numerator only — L = consensus low, M = mean, H = high,
@@ -87,7 +93,8 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "BE.US.md"
-FORMULA_ID = "be_fy2_eps_pe_order_gate_v1_gordon_v2"
+FORMULA_ID = "be_fy2_eps_pe_order_gate_v1_gordon_v3"
+NUM_YEAR = 2027  # numerator year = t1
 LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # below this the multiple sits at the pole
@@ -121,6 +128,9 @@ REQUIRED = [
     "customer_deposits",
     "revenue_next_12m",
     "cover",
+    "opt_gw_named",
+    "opt_gw_cons",
+    "t_opt",
 ]
 TIERS = ("L", "M", "H")
 
@@ -277,13 +287,20 @@ def main() -> int:
     # Option (A16): V_opt is a stated input of the framework (its four elements
     # live in A16, not in Inputs); the script checks the corrected band and its
     # cut-points reproduce.
+    opt_gw = inp["opt_gw_named"] - inp["opt_gw_cons"]
+    opt_eps = opt_gw * inp["eps_fy28_cons"] / inp["opt_gw_cons"]
+    opt_pe = perpetual_pe(g2, roe["H"], r_t)
+    v_opt = opt_eps * opt_pe * (1.0 - k["H"]) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
     said_v = stated_v_opt(md)
     p_tiers = stated_p_tiers(md)
     if said_v is None or p_tiers is None:
         errors.append("V_opt / p_L/p_M/p_H not found in Outputs (A16 option)")
-        v_opt, p_tiers = 0.0, (0.0, 0.0, 0.0)
-    else:
-        v_opt = said_v
+        p_tiers = (0.0, 0.0, 0.0)
+    elif abs(said_v - v_opt) > TOL:
+        errors.append(f"V_opt stated {said_v} vs recomputed {v_opt:.2f} (A16)")
+    print(f"option (A16): {opt_gw:.1f} GW named beyond consensus x EPS {inp['eps_fy28_cons'] / inp['opt_gw_cons']:.3f}/GW "
+          f"= {opt_eps:.3f} x PE {opt_pe:.2f} (g2 {g2:.0%}, ROE_H {roe['H']:.1%}, r_t {r_t:.0%}) x (1-k) "
+          f"/ {1 + r:.2f}^{inp['t_opt'] - NUM_YEAR:.0f} = {v_opt:.2f}")
     band_v = tuple(a + p * v_opt for a, p in zip((L, M, H), p_tiers))
     A_v, B_v = cut_points(*band_v)
     said_a_v, said_b_v = stated_option_cuts(md)

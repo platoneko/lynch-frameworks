@@ -7,7 +7,7 @@ no current price, A or H (AGENTS.md「现价 — 禁写契约」), so nothing he
 computes a zone, an A/H ratio or a market-implied reading — the digest and the
 app zone on live quotes.
 
-formula_id: catl_group_ni_fy27_consensus_perpetual_gordon_v2
+formula_id: catl_group_ni_fy27_consensus_perpetual_gordon_v3
 
 Main ruler: one numerator (group EPS) and a Gordon multiple from a named
 perpetual g, one stage, no transition:
@@ -52,6 +52,7 @@ Run:  python3 frameworks/eval/300750.SZ.py
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -60,13 +61,13 @@ from lib.gordon import (  # noqa: E402
     check_g_cap, check_r, g_cap, implied_g, payout, perpetual_pe, two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
+    check_against_stated, check_missing, ladder, outputs_section, parse_baskets, parse_inputs, report,
 )
 from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300750.SZ.md"
-FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v2"
+FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v3"
 
 TIERS = ("l", "m", "h")
 MIN_SPREAD = 0.02          # r - g2 floor (valuation-rules ①)
@@ -90,7 +91,39 @@ REQUIRED = sorted(FORMULA_FIELDS | {
     "net_cash", "unit_profit_h1", "unit_profit_fy2025",
     "px_low_2026", "px_low_2025", "gp_other_rate",
     "buyback_lo", "buyback_hi", "treasury_shares", "opt_outstanding",
+    "cap_now_ann", "cap_build", "util_h1", "t_num", "t_opt",
 })
+
+# 表3 only — never Inputs, never the base band (A2e-7a).
+P_K = (0.0, 0.25, 1.0)
+
+
+def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
+    """V_opt — the named in-construction capacity beyond what the H tier already
+    implies (A18, valuation-rules「未建模期权」2026-10-03).
+
+    Size: (today's annualised capacity + in-construction) x 2026H1 utilisation
+    = volume once built; minus the volume the FY2027E consensus HIGH already
+    implies at the 2026H1 unit net profit.  Unit economics: this ticker's own
+    2026H1 unit net profit.  Ruler: this ticker's own Gordon at the H tier
+    (g2_h, H-tier opening BPS), valued in the realisation year and discounted
+    back to the numerator year at the basket r.
+    """
+    vol_full = (inp["cap_now_ann"] + inp["cap_build"]) * inp["util_h1"]          # GWh
+    vol_in_h = inp["eps_h"] * inp["shares"] / (inp["unit_profit_h1"] * 1e6)    # GWh
+    d_vol = vol_full - vol_in_h
+    d_ni = d_vol * inp["unit_profit_h1"] / 100.0                               # 亿
+    d_eps = d_ni * 1e8 / inp["shares"]
+    bps_h = bps_open_2027(inp, inp["eps_h"], inp["g2_h"])
+    eps_post = inp["eps_h"] + d_eps
+    roe_post = eps_post / bps_h
+    pe_post = perpetual_pe(inp["g2_h"], roe_post, inp["r_perp"])
+    anchor_post = eps_post * pe_post
+    disc = (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    return {"vol_full": vol_full, "vol_in_h": vol_in_h, "d_vol": d_vol, "d_ni": d_ni,
+            "d_eps": d_eps, "roe_post": roe_post, "pe_post": pe_post,
+            "anchor_post": anchor_post, "disc": disc,
+            "v_opt": (anchor_post - base_h) * disc}
 
 
 def unbooked_eps(inp: dict[str, float]) -> float:
@@ -241,6 +274,29 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
+    # Step 7: V_opt (A18) — held outside the base band; stated values must reproduce.
+    opt = capacity_option(inp, H)
+    if opt["d_vol"] <= 0 or opt["v_opt"] < 0:
+        errors.append(f"capacity option non-positive: d_vol={opt['d_vol']:.1f} V_opt={opt['v_opt']:.2f}")
+    if inp["t_opt"] < inp["t_num"]:
+        errors.append("t_opt must not precede the numerator year t_num")
+    if any(k.startswith("p_") for k in inp):
+        errors.append("probability fields present in §3 Inputs (A2e-7a)")
+    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
+    out_sec = outputs_section(md)
+    vm = re.search(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
+    if vm is None or abs(float(vm.group(1)) - opt["v_opt"]) > 0.05:
+        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {opt['v_opt']:.4f}")
+    for k, v in zip("LMH", band3):
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        if m3 is None or abs(float(m3.group(1)) - v) > 0.05:
+            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
+    a3, b3 = cut_points(*band3)
+    for label, want, rx in (("A′", a3, r"A′ = \*\*([0-9.]+)\*\*"), ("B′", b3, r"B′ = \*\*([0-9.]+)\*\*")):
+        mm = re.search(rx, out_sec)
+        if mm is None or abs(float(mm.group(1)) - want) > 0.05:
+            errors.append(f"{label}: stated {mm.group(1) if mm else None} vs recomputed {want:.4f}")
+
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, "
           f"零增长={1 / r:.1f}x, 单段永续，无过渡段)")
@@ -252,6 +308,13 @@ def main() -> int:
         print(f"{t.upper():<3}{inp[f'eps_{t}']:10.3f}{ni:11.2f}{roe[t]:10.2%}"
               f"{g2:7.1%}{payout(g2, roe[t]):9.3f}{pe[t]:8.2f}{anchor(inp, t):10.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"V_opt（A18）：建成后量 ({inp['cap_now_ann']:.0f}+{inp['cap_build']:.0f}) GWh × 利用率 "
+          f"{inp['util_h1']:.2%} = {opt['vol_full']:.1f} GWh − H 档共识隐含量 {opt['vol_in_h']:.1f} GWh "
+          f"= {opt['d_vol']:.1f} GWh × {inp['unit_profit_h1']:.2f} 元/kWh = {opt['d_ni']:.2f} 亿（ΔEPS {opt['d_eps']:.3f}）"
+          f" → ROE {opt['roe_post']:.2%}、PE {opt['pe_post']:.2f} → 兑现后锚点 {opt['anchor_post']:.2f} − H "
+          f"= {opt['anchor_post'] - H:.2f} × {opt['disc']:.4f}（{inp['t_opt']:g}→{inp['t_num']:g}，无时点锚·拍值）"
+          f" = {opt['v_opt']:.2f}；V_opt/M={opt['v_opt'] / M:.1%}")
+    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}  A′={a3:.2f} B′={b3:.2f}")
     bps_2q26 = inp["equity"] * 1e8 / inp["shares"]
     print(
         f"ROE basis (A21): BPS_2027 年初 = {bps_open['l']:.2f}/{bps_open['m']:.2f}/{bps_open['h']:.2f} "

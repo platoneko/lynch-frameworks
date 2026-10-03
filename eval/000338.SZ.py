@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: weichai_asymmetric_sotp_runrate_gordon_v4
+formula_id: weichai_asymmetric_sotp_runrate_gordon_v5
 
 Main ruler: an asymmetric three-leg SOTP.
   * core     = attributable NP - KION equity NP - large-bore engine NP,
@@ -47,24 +47,30 @@ How the core multiple is generated (A14):
     the script also prints the multiple on the post-recovery (mid-cycle)
     numerator, which is how 表1 reports a two-stage leg.
 
-V_opt is three named options, none of which enters the base:
-  * the 2,600 M-series units beyond the measured 13.4k run-rate (JPM's 2027
-    capacity extrapolation), on the core M multiple.  The 13.4k units already
-    in the leg are NOT re-rated (A2e-7c-4/5).
-  * SOFC at the 2027 200 MW capacity ceiling x Bloom's realised NI/MW x the
-    steady-state Gordon on BE.US's own g2 / roe_m (re-derived cross-file from
-    BE's Inputs) at THIS ticker's basket r — the option is Weichai's own 200 MW
-    plant, so it carries Weichai's 篮 4 rate, not BE's 篮 7 15% — discounted one
-    year.  BE's own M multiple is two_stage_pe and carries Bloom's FY28 +60%
-    transition year; a capacity CEILING does not grow a further 60%, so only
-    the stage-2 Gordon is borrowed.  The 篮 7 reading (9.40x) is printed as a
-    disclosure line only.
+V_opt is three named options, none of which enters the base (valuation-rules
+「未建模期权」2026-10-03: units only from this ticker's named quantities, borrow
+volume never price, value at the vesting year on this ticker's own ruler and
+discount back to the numerator year at the basket r):
+  * AIDC units beyond what the base already holds: the company's named
+    end-2027 AIDC engine capacity (8,000-10,000, midpoint) minus its 2026 AIDC
+    shipment guidance (3,500-4,000, midpoint) x realised M-series unit price x
+    net margin, on the leg-C multiple (core M tier), vesting 2027 -> one year
+    back to the numerator year.  The 13.4k units already in the leg are NOT
+    re-rated (A2e-7c-4/5).
+  * SOFC at the company's 2027 200 MW capacity x Bloom's realised NI/MW (unit
+    economics only, cross-checked against BE.US's Inputs) on THIS ticker's
+    ruler: there is no SOFC leg and no peer group, so the profit sits on the
+    core H tier (r 篮 4 10%, g2_h, ROE_H) — BE's g2 / ROE are no longer
+    borrowed.  Vests 2027 -> one year back.
   * M-series aftermarket at k=1 x own realised M-series revenue x Cummins'
-    realised aftermarket share (26%), on the core M multiple.
+    realised aftermarket share (26%), on the leg-C multiple.  No named year:
+    alignment year (this ticker's farthest band consensus year) + 2, flagged
+    无时点锚·拍值.
 
 The former own-year inverse band (18.42 / 12.34 / 11.47, A2) is a cross-ruler:
-printed, never an anchor.  Consensus is deliberately unused in the base: no
-year has >= 2 named houses (A13).
+printed, never an anchor.  Consensus is unused in the base; 2026-10-03 review
+found a 13-house banded FY2027E on 2338.HK — whether M / H move to it is
+pending the conversation (A13), and FY2027 only serves as t_align here.
 
 Guards beyond the anchor comparison: band-edge re-derivation, tier-1-still-
 outside proof, guardrail, trough-tier precondition (ROE_L < r), shape check,
@@ -91,7 +97,7 @@ from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000338.SZ.md"
 BE_FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "BE.US.md"
-FORMULA_ID = "weichai_asymmetric_sotp_runrate_gordon_v4"
+FORMULA_ID = "weichai_asymmetric_sotp_runrate_gordon_v5"
 YI = 1e8
 TIERS = ("l", "m", "h")
 
@@ -108,11 +114,12 @@ REQUIRED = [
     "shares", "bps", "fx_hkdcny", "fx_eurcny",
     "np_l", "np_m", "np_h",
     "kion_np_h1_eur", "kion_stake", "kion_l_factor", "pe_kion",
-    "ms_units_l", "ms_units_m", "ms_units_h", "ms_price", "ms_npm",
+    "ms_units_l", "ms_units_m", "ms_price", "ms_npm",
     "equity", "r_perp", "g2_core_peer", "g2_m", "g2_h", "n_rec_l",
     "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h",
-    "pe_sofc", "sofc_mw_h", "bloom_ni_fy26", "bloom_cap_mw", "fx_usdcny",
-    "r_disc", "sofc_lag", "aft_share_peer",
+    "sofc_mw_h", "bloom_ni_fy26", "bloom_cap_mw", "fx_usdcny",
+    "r_disc", "aft_share_peer", "aidc_cap_2027", "aidc_units_2026",
+    "t_num", "t_ms", "t_sofc", "t_align", "t_aft",
 ]
 # Reference-only rows (校验步骤 11): in Inputs, never in an anchor path.
 NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_peer")
@@ -141,40 +148,43 @@ def legs(inp: dict[str, float], tag: str, pe_core: float, pe_ms: float) -> dict[
             "ms_ps": ms_np * pe_ms / inp["shares"]}
 
 
+def disc(inp: dict[str, float], t_vest: float) -> float:
+    """Back from the vesting year to the numerator year at the basket r (R1)."""
+    return (1.0 + inp["r_disc"]) ** -(t_vest - inp["t_num"])
+
+
 def ms_increment_v_opt(inp: dict[str, float], pe_m: float) -> float:
-    """Units beyond the measured run-rate, on the core M multiple (A4)."""
-    extra = inp["ms_units_h"] - inp["ms_units_m"]
-    return extra * inp["ms_price"] * inp["ms_npm"] * pe_m / inp["shares"]
+    """Named AIDC capacity beyond the 2026 AIDC guidance, on the leg-C multiple (A4)."""
+    extra = inp["aidc_cap_2027"] - inp["aidc_units_2026"]
+    v_t = extra * inp["ms_price"] * inp["ms_npm"] * pe_m / inp["shares"]
+    return v_t * disc(inp, inp["t_ms"])
 
 
 def aftermarket_v_opt(inp: dict[str, float], pe_m: float) -> float:
     """k=1 x own measured M-series revenue x Cummins' realised aftermarket share (A8)."""
     rev = inp["ms_units_m"] * inp["ms_price"]
-    return rev * inp["aft_share_peer"] * inp["ms_npm"] * pe_m / inp["shares"]
+    v_t = rev * inp["aft_share_peer"] * inp["ms_npm"] * pe_m / inp["shares"]
+    return v_t * disc(inp, inp["t_aft"])
 
 
-def sofc_v_opt(inp: dict[str, float]) -> float:
-    """2027 200 MW ceiling x Bloom FY26 NI/MW x BE.US pe_m, discounted sofc_lag years."""
+def sofc_v_opt(inp: dict[str, float], pe_h: float) -> float:
+    """2027 200 MW ceiling x Bloom FY26 NI/MW, on this ticker's core H-tier multiple (A12)."""
     ni_usd = inp["sofc_mw_h"] * (inp["bloom_ni_fy26"] / inp["bloom_cap_mw"])
-    v_t = ni_usd * inp["fx_usdcny"] * inp["pe_sofc"] / inp["shares"]
-    return v_t / (1.0 + inp["r_disc"]) ** inp["sofc_lag"]
+    v_t = ni_usd * inp["fx_usdcny"] * pe_h / inp["shares"]
+    return v_t * disc(inp, inp["t_sofc"])
 
 
-def bloom_crosscheck(inp: dict[str, float], r: float) -> tuple[list[str], dict[str, float]]:
-    """SOFC unit economics and multiple both come from BE.US's framework (A12).
+def bloom_crosscheck(inp: dict[str, float]) -> tuple[list[str], dict[str, float]]:
+    """SOFC unit economics (NI per MW) come from BE.US's framework (A12).
 
-    BE's Inputs carry no multiple (its tiers are Gordon-generated), so the
-    borrowed multiple is re-derived from BE's own g2 / roe_m with the repo's
-    perpetual_pe at this ticker's basket r — BE's stage-2 steady state on
-    Weichai's own plant, stated to 2 dp in `pe_sofc`.  Reading BE's Outputs
-    anchor instead would import BE's FY28 transition year and BE's 篮 7 rate,
-    and go stale whenever BE republishes.  Returns BE's inputs too, so the
-    caller can print the 篮 7 reading as a disclosure.
+    Only the unit economics are borrowed; the multiple is this ticker's own
+    (valuation-rules「未建模期权」: borrow volume, never price).  Returns BE's
+    inputs so the caller can print the would-be peer-group g2 as a sensitivity.
     """
     if not BE_FRAMEWORK.exists():
-        return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no peer trajectory"], {}
+        return [f"missing {BE_FRAMEWORK.name} — SOFC ceiling has no unit economics"], {}
     be = parse_inputs(BE_FRAMEWORK.read_text(encoding="utf-8"))
-    missing = [k for k in ("eps_fy26_m", "shares", "g2", "roe_m", "r_journey") if k not in be]
+    missing = [k for k in ("eps_fy26_m", "shares", "g2") if k not in be]
     if missing:
         return [f"BE.US missing {missing} — cannot cross-check the SOFC option"], {}
     errors: list[str] = []
@@ -183,12 +193,6 @@ def bloom_crosscheck(inp: dict[str, float], r: float) -> tuple[list[str], dict[s
         errors.append(
             f"bloom_ni_fy26 {inp['bloom_ni_fy26']:.3e} vs BE.US "
             f"eps_fy26_m×shares {peer:.3e} (>{BLOOM_NI_TOL:.0%})"
-        )
-    be_pe_m = round(perpetual_pe(be["g2"], be["roe_m"], r), 2)
-    if abs(be_pe_m - inp["pe_sofc"]) > 1e-9:
-        errors.append(
-            f"pe_sofc {inp['pe_sofc']} != BE.US steady-state M Gordon at this ticker's r {be_pe_m} "
-            f"(perpetual_pe(g2 {be['g2']:.2%}, roe_m {be['roe_m']:.2%}, r {r:.0%})) — re-read the source framework (A12)"
         )
     return errors, be
 
@@ -229,8 +233,14 @@ def main() -> int:
 
     # --- Step 1: numerator ladders ------------------------------------------
     errors += ladder("numerator (np)", inp["np_l"], inp["np_m"], inp["np_h"])
-    if not (inp["ms_units_l"] <= inp["ms_units_m"] <= inp["ms_units_h"]):
+    if not (inp["ms_units_l"] <= inp["ms_units_m"]):
         errors.append("M-series unit ladder violated")
+    if not (0 < inp["aidc_units_2026"] < inp["aidc_cap_2027"]):
+        errors.append("AIDC capacity must exceed the 2026 AIDC guidance already in the base (A4)")
+    if not (inp["t_num"] <= min(inp["t_ms"], inp["t_sofc"], inp["t_aft"])):
+        errors.append("vesting years must not precede the numerator year (R1)")
+    if inp["t_aft"] != inp["t_align"] + 2:
+        errors.append(f"t_aft {inp['t_aft']:g} != t_align + 2 (no named year -> alignment year + 2, 无时点锚·拍值)")
     if errors:
         return report(errors, "FAIL (ladders)")
 
@@ -329,7 +339,7 @@ def main() -> int:
         return 1
     A, B = cut_points(L, M, H)
     v_ms = ms_increment_v_opt(inp, pe_core["m"])
-    v_sofc = sofc_v_opt(inp)
+    v_sofc = sofc_v_opt(inp, pe_core["h"])
     v_aft = aftermarket_v_opt(inp, pe_core["m"])
     v_opt = v_ms + v_sofc + v_aft
     # M world: units frozen at the measured 13,400 (anchor = the interim
@@ -349,7 +359,7 @@ def main() -> int:
             f"{inp['bloom_cap_mw']:.0f} MW plant — the ceiling is no longer a "
             "fraction of a realised trajectory"
         )
-    be_errors, be = bloom_crosscheck(inp, r)
+    be_errors, be = bloom_crosscheck(inp)
     errors += be_errors
     missing_ref = [k for k in NOT_FORMULA if k not in inp]
     if missing_ref:
@@ -395,8 +405,9 @@ def main() -> int:
           f" V_opt/M={v_opt / M:.1%}")
     ni_usd = inp["sofc_mw_h"] * (inp["bloom_ni_fy26"] / inp["bloom_cap_mw"])
     print(f"SOFC  {inp['sofc_mw_h']:.0f} MW x ${inp['bloom_ni_fy26'] / inp['bloom_cap_mw']:,.0f}/MW"
-          f" = ${ni_usd / 1e6:.0f}M NI  ->  V_sofc={v_sofc:.2f}  (lag {inp['sofc_lag']:.0f}y)")
-    print(f"表3  V_opt={v_opt:.2f} (ms {v_ms:.2f} = {inp['ms_units_h'] - inp['ms_units_m']:.0f} 台 x {pe_core['m']:.2f}x + sofc {v_sofc:.2f} @ BE.US 稳态 M Gordon {inp['pe_sofc']:g}x + aftermarket {v_aft:.2f} @ {inp['aft_share_peer']:.0%} of M-series rev)"
+          f" = ${ni_usd / 1e6:.0f}M NI x 核心盘 H 档 {pe_core['h']:.2f}x  ->  V_sofc={v_sofc:.2f}  ({inp['t_sofc']:g} -> {inp['t_num']:g})")
+    print(f"表3  V_opt={v_opt:.2f} (ms {v_ms:.2f} = {inp['aidc_cap_2027'] - inp['aidc_units_2026']:.0f} 台 x {pe_core['m']:.2f}x 折 {inp['t_ms'] - inp['t_num']:g} 年"
+          f" + sofc {v_sofc:.2f} + aftermarket {v_aft:.2f} @ {inp['aft_share_peer']:.0%} of M-series rev 折 {inp['t_aft'] - inp['t_num']:g} 年 无时点锚)"
           f"  p_k={p_k[0]:.2f}/{p_k[1]:.2f}/{p_k[2]:.2f}  "
           + "  ".join(
               f"{n}:{S[t]['anchor']:.2f}+{pk:.2f}xV={a:.2f}"
@@ -418,7 +429,7 @@ def main() -> int:
             "h": perpetual_pe(inp["g2_h"] + dg, roe["h"], r),
         }
         band2 = [legs(inp, t, pe2[t], pe2["m"])["anchor"] for t in TIERS]
-        v2 = (v_ms + v_aft) * pe2["m"] / pe_core["m"] + v_sofc
+        v2 = (v_ms + v_aft) * pe2["m"] / pe_core["m"] + v_sofc * pe2["h"] / pe_core["h"]
         sens[dg] = (band2, band2[2] + v2)
     print("敏感性: g2 ±1pp -> "
           + " | ".join(f"{dg:+.0%}: {b[0]:.2f}/{b[1]:.2f}/{b[2]:.2f} (H+V {hv:.2f})" for dg, (b, hv) in sens.items()))
@@ -426,14 +437,15 @@ def main() -> int:
     print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f}")
 
     # Disclosure lines (never anchors): the PB floor (disclosed, not max()'d
-    # into L) and the SOFC option re-read at BE.US's own 篮 7 rate.
+    # into L), the pre-migration V_opt, and the SOFC option re-read on a
+    # would-be peer-group leg g2 (BE's power-equipment cluster) at this
+    # ticker's own ROE_H and r — a suggestion, not a ruler.
     print(f"地板 (只披露, 不 max): PB 1.0 x BPS = {inp['bps']:.2f} vs L {L:.2f}")
     if be:
-        pe_sofc_be = perpetual_pe(be["g2"], be["roe_m"], be["r_journey"])
-        v_sofc_be = v_sofc * pe_sofc_be / inp["pe_sofc"]
-        v_opt_be = v_ms + v_sofc_be + v_aft
-        print(f"对照 BE.US 过渡篮 r {be['r_journey']:.0%}: pe_sofc {pe_sofc_be:.2f}x -> SOFC {v_sofc_be:.2f}, V_opt {v_opt_be:.2f}, "
-              f"H+V {H + v_opt_be:.2f} (只披露, 表3 按 pe_sofc {inp['pe_sofc']:g}x)")
+        pe_grp = perpetual_pe(be["g2"], roe["h"], r)
+        v_sofc_grp = v_sofc * pe_grp / pe_core["h"]
+        print(f"对照 (若建 SOFC 同业组、腿 g2 取 BE 簇 {be['g2']:.0%}, 本票 ROE_H {roe['h']:.1%} / r {r:.0%}): "
+              f"pe {pe_grp:.2f}x -> SOFC {v_sofc_grp:.2f}, V_opt {v_ms + v_sofc_grp + v_aft:.2f} (只披露)")
 
     return report(errors)
 

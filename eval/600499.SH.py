@@ -5,7 +5,7 @@ frameworks/600499.SH.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: keda_lanke_axis_afr_mac_perpetual_g_v3
+formula_id: keda_lanke_axis_afr_mac_perpetual_g_v4
 
 Three legs, each on its own basket r, added per share (SOTP):
 
@@ -76,7 +76,7 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600499.SH.md"
-FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_v3"
+FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_v4"
 MIN_R_MINUS_G = 0.02
 # A18: realised trough→recovery paths — the company's (Longbridge annual parent NI,
 # FY2024 10.06 亿 → FY2025 13.09 亿, mostly Africa growth) and Lanke's own (net profit
@@ -106,7 +106,37 @@ REQUIRED = [
     "ni_ttm", "ni_fy2024", "ni_exli_fy2025", "ni_2026e_street", "tp_street",
     "pe_own_hi", "pe_own_lo",
     "capex_anode", "stake_anode", "roic_anode_l", "roic_anode_m", "roic_anode_h",
+    "afr_rev_fy2025", "afr_cogs_fy2025", "afr_rev_h1", "afr_cogs_h1",
+    "tf_np_fy2025", "tf_uplift_fy2025", "stake_tf", "nci_fy2025", "nci_h1",
 ]
+# A5 (valuation-rules「公开数据推断」, 2026-10-03): w_afr is inferred, not a placeholder.
+W_TOL = 1e-5
+
+
+def afr_weight(inp: dict[str, float]) -> dict[str, float]:
+    """A5 Africa-leg share of the ex-Lanke numerator, from disclosed numbers only.
+
+    Point (gross-profit route, two periods): Twyford's FY2025 net profit / segment
+    gross profit, applied to the 2026H1 segment gross profit; Twyford's parent
+    share from the restructuring pro forma (uplift / 51.55%); Keda's share 48.45%.
+    Assumption: net / gross ratio unchanged FY2025 -> 2026H1 (operating leverage
+    makes this the low side).  Bracket (NCI route): consolidated minority P&L less
+    the non-Africa minority share (FY2025 residual, at full-year or half-year level).
+    """
+    out: dict[str, float] = {}
+    gp25 = inp["afr_rev_fy2025"] - inp["afr_cogs_fy2025"]
+    gph1 = inp["afr_rev_h1"] - inp["afr_cogs_h1"]
+    s = inp["stake_tf"]
+    tf_attr25 = inp["tf_uplift_fy2025"] / (1.0 - s)
+    attr = tf_attr25 / inp["tf_np_fy2025"]
+    exli_h1 = inp["ni_exli"] / 2.0
+    out["FY2025 披露"] = tf_attr25 * s / inp["ni_exli_fy2025"]
+    out["2026H1 毛利路径"] = gph1 * inp["tf_np_fy2025"] / gp25 * attr * s / exli_h1
+    local25 = inp["tf_np_fy2025"] - tf_attr25
+    other25 = inp["nci_fy2025"] - inp["tf_uplift_fy2025"] - local25
+    for label, other in (("2026H1 少数股东路径·其余按全年", other25), ("2026H1 少数股东路径·其余按半年", other25 / 2.0)):
+        out[label] = (inp["nci_h1"] - other - local25 / 2.0) * s / (1.0 - s) / exli_h1
+    return out
 
 
 def lanke_ni(inp: dict[str, float], tag: str) -> float:
@@ -231,6 +261,9 @@ def main() -> int:
         errors.append(f"Lanke NI_L={ni['l']['lk']:.2f} <= 0 — leg does not clear cost at axis L")
 
     # --- Step 3: non-Li legs — weights, growth ladders, Africa axis ------------
+    w_inf = afr_weight(inp)
+    if abs(inp["w_afr"] - w_inf["2026H1 毛利路径"]) > W_TOL:
+        errors.append(f"w_afr={inp['w_afr']} vs A5 inference {w_inf['2026H1 毛利路径']:.6f}")
     w_sum = inp["w_afr"] + inp["w_mac"]
     if abs(w_sum - 1.0) > 1e-6:
         errors.append(f"leg weights must sum to 1: {w_sum}")
@@ -332,6 +365,11 @@ def main() -> int:
           f" — H 档高估 {naive['h'] / real['h'] - 1:.0%}（留存成本，A16）")
     print(f"非洲腿 g 取自 _AXIS.africa-corridor.md ✓ "
           f"({inp['g2_afr_l']:.0%}/{inp['g2_afr_m']:.0%}/{inp['g2_afr_h']:.0%}，本票按永续落地)")
+    print("非洲腿权重 A5 公开数据推断: " + " · ".join(f"{k} {v:.1%}" for k, v in w_inf.items())
+          + f" → 取毛利路径 {inp['w_afr']:.4f}")
+    for label, w in w_inf.items():
+        alt = {**inp, "w_afr": w, "w_mac": 1.0 - w}
+        print(f"敏感区 w_afr {label}: " + " / ".join(f"{anchor(alt, t):.2f}" for t in TIERS))
     print(f"③ 出带: 整公司隐含 PE {pe_company['l']:.2f}/{pe_company['m']:.2f}/{pe_company['h']:.2f} "
           f"落在 own-year 实测带 [{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}] 内 ✓")
     roe_m = forward_roe(inp, "m")
