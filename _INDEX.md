@@ -41,7 +41,7 @@
 - [TSM.US](./TSM.US.md) — 篮子：篮 4 10%
 - [VIAV.US](./VIAV.US.md) — 篮子：篮 4 10%
 - [VST.US](./VST.US.md) — 篮子：r_retail 篮 4 10% · r_gen 篮 4 10% · r_contract 篮 1 6.5%
-- [WOLF.US](./WOLF.US.md) — 篮子：篮 7 15%
+- [WOLF.US](./WOLF.US.md) — 篮子：篮 4 10%
 
 ## 港股
 
@@ -57,7 +57,7 @@
 - [1772.HK](./1772.HK.md) — 赣锋锂业 · 篮子：篮 6 13%
 - [1810.HK](./1810.HK.md) — 小米集团 · 篮子：篮 4 10%
 - [1898.HK](./1898.HK.md) — 中煤能源 · 篮子：篮 6 13%
-- [2631.HK](./2631.HK.md) — 天岳先进 · 篮子：篮 7 15%
+- [2631.HK](./2631.HK.md) — 天岳先进 · 篮子：篮 4 10%
 - [6655.HK](./6655.HK.md) — 华新建材 · 篮子：篮 6 13%
 - [9696.HK](./9696.HK.md) — 天齐锂业 · 篮子：篮 6 13%
 - [9988.HK](./9988.HK.md) — 阿里巴巴集团 · 篮子：篮 4 10%
@@ -108,4 +108,6 @@
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 - [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ ｜ 参照：600096.SH
 - [`_AXIS.rates`](./axes/rates.md) — 无风险利率轴（按上市货币分段） · 挂载票：全部 USD 段票（美股；港股经联系汇率跟 USD 段）——只出 \(r_f\) 敏感性读数，不进锚点
+- [`_AXIS.sic`](./axes/sic.md) — 碳化硅（衬底 → 外延 → 功率器件）同业尺轴 · 挂载票：— ｜ 参照：WOLF.US · 2631.HK
+- [`_AXIS.sipho-wafer`](./axes/sipho-wafer.md) — 硅光晶圆代工 · 挂载票：— ｜ 参照：TSEM.US · GFS.US | 候选：TSM.US（COUPE 期权；本票未入轴，见其敏感性行）
 - [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：— ｜ 参照：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`
