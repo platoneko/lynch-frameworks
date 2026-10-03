@@ -21,6 +21,7 @@
 - [GLW.US](./GLW.US.md) — 篮子：篮 4 10%
 - [GOOG.US](./GOOG.US.md) — 篮子：r_perp 篮 4 10% · r_cld_lab 篮 7 15% · r_cld_lab_t 篮 4 10%
 - [HIMS.US](./HIMS.US.md) — 篮子：篮 7 15%
+- [HOCPY.US](./HOCPY.US.md) — 篮子：篮 4 10%
 - [HOOD.US](./HOOD.US.md) — 篮子：篮 4 10%
 - [INTC.US](./INTC.US.md) — 篮子：篮 4 10%
 - [LITE.US](./LITE.US.md) — 篮子：篮 4 10%
