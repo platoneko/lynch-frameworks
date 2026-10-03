@@ -33,6 +33,7 @@
 - [NVO.US](./NVO.US.md) — 篮子：篮 4 10%
 - [ORCL.US](./ORCL.US.md) — 篮子：r_perp 篮 4 10% · r_oci_non 篮 4 10% · r_oci_open 篮 7 15% · r_oci_open_t 篮 4 10%
 - [QCOM.US](./QCOM.US.md) — 篮子：篮 4 10%
+- [RKLB.US](./RKLB.US.md) — 篮子：篮 4 10%
 - [SOFI.US](./SOFI.US.md) — 篮子：篮 6 13%
 - [SPCX.US](./SPCX.US.md) — 篮子：r_starlink 篮 4 10% · r_space 篮 4 10% · r_compute 篮 7 15%
 - [TSEM.US](./TSEM.US.md) — 篮子：篮 4 10%
