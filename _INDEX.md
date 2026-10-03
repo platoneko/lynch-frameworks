@@ -38,6 +38,7 @@
 - [TSEM.US](./TSEM.US.md) — 篮子：篮 4 10%
 - [TSM.US](./TSM.US.md) — 篮子：篮 4 10%
 - [VIAV.US](./VIAV.US.md) — 篮子：篮 4 10%
+- [VST.US](./VST.US.md) — 篮子：r_retail 篮 4 10% · r_gen 篮 4 10% · r_contract 篮 1 6.5%
 - [WOLF.US](./WOLF.US.md) — 篮子：篮 7 15%
 
 ## 港股
