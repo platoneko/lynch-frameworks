@@ -7,7 +7,7 @@ no current price (AGENTS.md「现价 — 禁写契约」), so nothing here compu
 or a market-implied r — the digest and the app zone on live quotes.  The δ
 readings printed below are for price-free coordinates only (sell-side TP, book).
 
-formula_id: huaxin_dom_ovs_split_perpetual_g_fy2028_rolledbook_hk_anchored_v6
+formula_id: huaxin_dom_ovs_split_perpetual_g_m26_h28_rolledbook_hk_anchored_v7
 
 Main ruler: split the NUMERATOR by leg, let each tier name a PERPETUAL GROWTH
 RATE for each leg, price each leg on its own Gordon multiple at its BASKET r
@@ -16,24 +16,30 @@ and its OWN ROE, and add the legs up (SOTP).
   L numerator per leg  = FY2025 segment note (境内 / 境外 pre-tax profit, one
                          effective tax rate, NCI profit allocated by the same
                          rule as NCI equity) -> overseas 19.70 / domestic 8.83
-  M / H numerator      = 同花顺 FY2028 consensus mean / the high once the lone
-                         outlier house (中泰) is dropped, x the FY2025 realised
-                         overseas share (constant across tiers); FY2028 = FY+2,
-                         so each leg is discounted one year at its basket r
-  ROE_leg              = NI_leg / start-of-FY2028 leg 归母 book: end-FY2025
-                         segment net assets (assets - liabilities, parent's
-                         investment in overseas subs eliminated, NCI
+  M numerator          = 同花顺 FY2026 consensus mean (the NEAREST qualifying
+                         year: FY+0, undiscounted)
+  H numerator          = 同花顺 FY2028 consensus mean (the furthest >=2-house
+                         year, carrying price recovery and new capacity:
+                         FY+2, discounted one year at each leg's basket r)
+                         Both split by the FY2025 realised overseas share
+                         (constant across tiers).
+  ROE_leg              = NI_leg / start-of-numerator-year leg 归母 book:
+                         end-FY2025 segment net assets (assets - liabilities,
+                         parent's investment in overseas subs eliminated, NCI
                          subtracted -- valuation-rules「分腿 ROE 来源优先序」①),
-                         less the FY2025 dividend paid in 2026, plus FY2026 and
-                         FY2027 consensus NI x the model retention g / ROE
-                         (valuation-rules ③ step 2: roll to the year before
-                         the numerator year)
+                         less the FY2025 dividend paid in 2026, plus each
+                         consensus year before the numerator year x the model
+                         retention g / ROE (valuation-rules ③ step 2).  M
+                         (FY2026) rolls no year; H (FY2028) rolls FY2026-27.
 
 Cement is a commodity-price cyclical (篮 6 判据), so M would normally be the
 cycle centre; the 2025 Lafarge Africa purchase and the domestic step-down
 change the asset base, so the centre is taken from forward consensus
 (valuation-rules「中枢 MUST 不落在低谷…资产基数变动时取前瞻共识」, 样板
-600011.SH; user ruling 2026-10-04).
+600011.SH; user ruling 2026-10-04) -- and, per the same clause's 2026-10-04
+addition, from the nearest qualifying year, not the furthest.  Price
+guardrail: M must not exceed the highest close since listing
+(`close_hi_listing`) unless Assumptions name the profit that supports it.
   PE_leg               = min(1, 1 - g_leg/ROE_leg) / (r_leg - g_leg)
   V                    = NI_dom x PE_dom + NI_ovs x PE_ovs
 
@@ -100,7 +106,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "6655.HK.md"
-FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_fy2028_rolledbook_hk_anchored_v6"
+FORMULA_ID = "huaxin_dom_ovs_split_perpetual_g_m26_h28_rolledbook_hk_anchored_v7"
 
 TIERS = ("l", "m", "h")
 # Perpetual-g inputs carry the `g2_` prefix so scripts/calibration.py reports
@@ -128,7 +134,8 @@ REQUIRED = [
     "pe_own_lo", "pe_own_hi", "pe_own_mid",
     "eps_consensus_low", "pe_a_mid",
     "rev_ovs", "opt_rev_usd", "opt_stake", "opt_price_usd", "fx_usdcny", "t_opt", "t_opt_pay",
-    "num_year", "div_fy2025", "ni_2026_m", "ni_2026_h", "ni_2027_m", "ni_2027_h", "ni_2028_zt",
+    "num_year_m", "num_year_h", "div_fy2025", "ni_2026", "ni_2027", "ni_2028_hi", "ni_2028_zt",
+    "close_hi_listing",
 ]
 
 
@@ -213,14 +220,14 @@ def leg_pe(inp: dict[str, float], leg: str, tag: str, roe: float, r_shift: float
 
 
 def roll_book(inp: dict[str, float], equity25: dict[str, float], share: float, tag: str) -> dict[str, float]:
-    """Start-of-FY2028 leg book (valuation-rules ③ step 2): end-FY2025 book less the
-    FY2025 dividend paid in 2026 (split by NI share), plus FY2026 and FY2027
-    consensus NI (same tier, same source) x the model retention max(0, g/ROE)."""
+    """Start-of-numerator-year leg book (valuation-rules ③ step 2): end-FY2025 book
+    less the FY2025 dividend paid in 2026 (split by NI share), plus each consensus
+    year before the numerator year (同花顺 mean) x the model retention max(0, g/ROE)."""
     split = {"ovs": share, "dom": 1.0 - share}
     book = {leg: equity25[leg] - inp["div_fy2025"] * split[leg] for leg in LEGS}
-    for year in ("2026", "2027"):
+    for year in range(2026, int(inp[f"num_year_{tag}"])):
         for leg in LEGS:
-            ni = inp[f"ni_{year}_{tag}"] * split[leg]
+            ni = inp[f"ni_{year}"] * split[leg]
             book[leg] += ni * max(0.0, 1.0 - payout(inp[f"g2_{leg}_{tag}"], ni / book[leg]))
     return book
 
@@ -238,7 +245,8 @@ class Model:
         self.ni = {t: legs(inp, t, self.ni_l) for t in TIERS}
         self.roe = {t: {leg: self.ni[t][leg] / self.book[t][leg] for leg in LEGS} for t in TIERS}
         self.pe = {t: {leg: leg_pe(inp, leg, t, self.roe[t][leg]) for leg in LEGS} for t in TIERS}
-        self.n = {"l": 0, "m": int(inp["num_year"]) - BASIS_YEAR, "h": int(inp["num_year"]) - BASIS_YEAR}
+        # FY+0 / FY+1 undiscounted, FY+2 one year (construction.md §3).
+        self.n = {"l": 0, **{t: max(0, int(inp[f"num_year_{t}"]) - BASIS_YEAR) for t in ("m", "h")}}
 
     def value_cny(self, tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
         """Leg values discounted from the numerator year to the deck basis at each leg's r."""
@@ -422,6 +430,15 @@ def main() -> int:
         return 1
     A, B = cut_points(L, M, H)
 
+    # Price guardrail (valuation-rules「中枢…」2026-10-04): an M above every close
+    # since listing needs a named profit that did not exist then.
+    guard_hit = M > inp["close_hi_listing"]
+    if guard_hit and "价格护栏" not in md:
+        errors.append(f"M={M:.2f} > highest close since listing {inp['close_hi_listing']} and "
+                      "Assumptions name no supporting profit (价格护栏) — back to dialogue")
+    if not inp["num_year_m"] <= inp["num_year_h"]:
+        errors.append("num_year_m must not be later than num_year_h (M takes the nearest qualifying year)")
+
     # flat-multiple: each leg held at its own PE_M across the three tiers.
     flat = m.band({t: m.pe["m"] for t in TIERS})
     errors += ladder("flat-multiple", *flat)
@@ -484,16 +501,25 @@ def main() -> int:
           f"L={flat[0]:.2f} M={flat[1]:.2f} H={flat[2]:.2f} — 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} V_opt/M={v_opt / M:.1%}")
-    print("期初账面(FY2028 初): " + " | ".join(f"{t.upper()} 海外 {m.book[t]['ovs']:.2f} 国内 {m.book[t]['dom']:.2f}" for t in TIERS))
+    print("期初账面(分子年初): " + " | ".join(f"{t.upper()} 海外 {m.book[t]['ovs']:.2f} 国内 {m.book[t]['dom']:.2f}" for t in TIERS))
     # H with the outlier house kept (disclosure only)
-    zt = Model({**inp, 'ni_group_h': inp['ni_2028_zt']})
-    print(f"H 含中泰离群单家（{inp['ni_2028_zt']:.2f} 亿，账面按本档滚）: {zt.anchor('h'):.2f}")
-    # 对账门 coordinates (M moved > 25%)
+    for lab, key in (("剔除中泰后上沿（财通）", "ni_2028_hi"), ("中泰离群单家", "ni_2028_zt")):
+        alt_h = Model({**inp, 'ni_group_h': inp[key]})
+        print(f"H 换 {lab} {inp[key]:.2f} 亿（账面按本档滚）: {alt_h.anchor('h'):.2f}")
+    print(f"价格护栏: M {M:.2f} vs 上市以来最高收盘 {inp['close_hi_listing']:g} → "
+          f"{'超出，须具名利润支撑' if guard_hit else '未超出'}; H {H:.2f} "
+          f"{'高于' if H > inp['close_hi_listing'] else '不高于'}该值（H 不受本护栏约束）")
+    # 对账门 coordinates
     e_m = inp['ni_group_m']; g_d = sum(m.ni['m'][leg] * inp[f'g2_{leg}_m'] for leg in LEGS) / e_m
     c2 = e_m / r['ovs'] / (1 + r['ovs']) ** m.n['m'] * to_hkd
     c3 = 0.40 * e_m / (r['ovs'] - g_d) / (1 + r['ovs']) ** m.n['m'] * to_hkd
     print(f"对账门: ② E_M/r = {c2:.2f} ({M / c2 - 1:+.1%}); ③ 派息 40% 股息尺 g_d {g_d:+.2%} = {c3:.2f} ({M / c3 - 1:+.1%})")
-    for lab, eps in (('FY2026 共识均值', inp['ni_2026_m']), ('FY2028 共识均值', inp['ni_group_m']), ('FY2025 实测', inp['ni_group_l'])):
+    ttm = inp["ni_ttm"] if "ni_ttm" in inp else None
+    rows = [('FY2026 共识均值（中枢 = M 分子）', inp['ni_group_m']), ('FY2027 共识均值（FY+1）', inp['ni_2027']),
+            ('FY2025 实测', inp['ni_group_l'])]
+    if ttm:
+        rows.insert(0, ('TTM', ttm))
+    for lab, eps in rows:
         e = eps * to_hkd
         print(f"  中性带 [{A:.2f}, {B:.2f}) 对 {lab} = {A / e:.2f}–{B / e:.2f}×")
     margin = inp["pretax_ovs"] * (1.0 - inp["tax_eff"]) / inp["rev_ovs"]
@@ -502,7 +528,7 @@ def main() -> int:
           f"{margin:.2%} x {inp['opt_stake']:g} → ΔNI {d_ni:.2f} 亿 = {d_ni * to_hkd:.4f} HKD/股 x PE_ovs_H {pe_ovs_h:.2f} "
           f"/ {1 + r['ovs']:.2f}^{int(inp['t_opt']) - BASIS_YEAR} = 毛值 {gross:.2f}；对价 {inp['opt_price_usd'] * fxu:.2f} 亿 "
           f"({int(inp['t_opt_pay'])} 付) = {capex:.2f} HKD/股 → 净值 {net:+.2f} → V_opt 记 {v_opt:.2f}")
-    infer_margin = inp["ni_2026_m"] * (m.ni_l["ovs"] / inp["ni_group_l"]) / (2 * H1_OVS_REV)
+    infer_margin = inp["ni_2026"] * (m.ni_l["ovs"] / inp["ni_group_l"]) / (2 * H1_OVS_REV)
     print(f"敏感区 HPI 净值: 单位利润率 {infer_margin:.1%}（2026 共识均值 × 份额 ÷ H1 海外收入 × 2）→ "
           f"{gross_of(opt_delta_ni(inp, margin=infer_margin)) - capex:+.2f}; 盈亏平衡所需归母 "
           f"{capex / to_hkd / pe_ovs_h * (1.0 + r['ovs']) ** (inp['t_opt'] - BASIS_YEAR):.2f} 亿/年")
