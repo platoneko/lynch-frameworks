@@ -8,8 +8,8 @@ and V_opt, and exits 1 on mismatch with stated Outputs.  The doc carries no
 current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id (CPU):     intc_cpu_product_gordon_v4
-formula_id (Foundry): intc_foundry_named_option_v3  (ceiling only; the pre-breakeven loss is in the base, A21)
+formula_id (CPU):     intc_cpu_product_gordon_v5
+formula_id (Foundry): intc_foundry_named_option_v4  (ceiling only; the pre-breakeven loss is in the base, A21)
 
 CPU leg (A2e-1 / AGENTS.md 永续增长口径; 2026-10-03 data priority + leg economics):
   numerators  L = FY2025 full-year Intel Products operating income (realised
@@ -46,8 +46,9 @@ CPU leg (A2e-1 / AGENTS.md 永续增长口径; 2026-10-03 data priority + leg ec
 Foundry in the base (A21, 2026-10-04): the leg's FY2027 loss is computable --
 FY2027 company EPS consensus (>=2 ranged houses) minus the inferred product EPS
 through the A5b bridge -- so it enters every tier for the years until the
-current management's breakeven year (M/H: end-2027; L: the named slip to
-end-2028, FY2028 at the FY2027 amount, discounted at r).  After breakeven the
+current management's breakeven year (H: end-2027; L and M: the named slip to
+end-2028, FY2028 at the FY2027 amount, discounted at r -- M added 2026-10-04 by
+user decision, since consensus shows no narrowing).  After breakeven the
 leg is 0 in the base; anything above breakeven is the option.
 
 Foundry option, closed by public data (valuation-rules「未建模期权」): count =
@@ -57,9 +58,10 @@ read at its floor $2B (CFO, 2026-08-26); the 2024 $15B-by-2030 external target
 and the 2030 30% Foundry margin are not restated by current management and are
 out; internal foundry revenue is out (a transfer from the product leg, whose
 margin already prices it).  Unit economics = the same CFO's 30% operating
-margin for that business at run-rate (2028).  Valued on Intel's own ruler
-(basket r, company-ROE 口径, foundry-cluster g2) in 2028, discounted to FY2027
-at r.  表3 = base_k + p_k × V_opt with P_K an eval constant, never an Input
+margin for that business once it "hits its stride" (2029, user decision).
+Valued on Intel's own ruler (basket r, company-ROE 口径, foundry-cluster g2) in
+2029, discounted to FY2027 at r, minus the capital not yet spent on the named
+packaging capacity (Penang; valuation-rules 2026-10-04 capacity-option rule).  表3 = base_k + p_k × V_opt with P_K an eval constant, never an Input
 (A2e-7a).
 
 Run:  python3 frameworks/eval/INTC.US.py
@@ -96,8 +98,8 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "INTC.US.md"
 FORMULA_IDS = (
-    "intc_cpu_product_gordon_v4",
-    "intc_foundry_named_option_v3",
+    "intc_cpu_product_gordon_v5",
+    "intc_foundry_named_option_v4",
 )
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
@@ -122,7 +124,7 @@ REQUIRED = [
     *(f"{k}_{q}" for k in ("prod_rev", "prod_oi", "cons_rev") for q in QTRS),
     "prod_rev_fy25", "cons_rev_fy25",
     "r_perp", "g2_cpu", "pe_own_min", "pe_own_max", "eps_fy27_hsbc",
-    "cons_eps_fy27_low", "cons_eps_fy27_m", "cons_eps_fy27_h", "oi_products_trough", "bridge_other_eps", "sbc_acq_eps", "be_year_l", "be_year_mh",
+    "cons_eps_fy27_low", "cons_eps_fy27_m", "cons_eps_fy27_h", "oi_products_trough", "bridge_other_eps", "sbc_acq_eps", "be_year_l", "be_year_m", "be_year_h", "pkg_capex_budget", "pkg_capex_done",
     "foundry_oi_h1", "foundry_oi_q2",
     "opt_rev_pkg", "foundry_rev_h1", "foundry_ext_h1", "foundry_ext_q2", "opt_opm", "g2_foundry", "t_opt", "t_num",
     "corp_other_eps", *ADJ_PS,
@@ -211,14 +213,14 @@ def main() -> int:
     if loss_fy27 <= 0:
         errors.append(f"consensus implies no FY2027 foundry loss ({loss_fy27:.3f}) — recheck A21 bridge")
     t0 = inp["t_num"]
-    be = {"L": inp["be_year_l"], "M": inp["be_year_mh"], "H": inp["be_year_mh"]}
+    be = {"L": inp["be_year_l"], "M": inp["be_year_m"], "H": inp["be_year_h"]}
 
     def foundry_at(r_: float) -> dict[str, float]:
         return {t: -loss_fy27 * sum((1 + r_) ** -(y - t0) for y in range(int(t0), int(be[t]) + 1)) for t in TIERS}
 
     fdy = foundry_at(r)
-    if not all(be[t] >= t0 for t in TIERS) or be["L"] < be["M"]:
-        errors.append(f"breakeven years {be} must be >= t_num {t0} and L >= M/H (A21)")
+    if not all(be[t] >= t0 for t in TIERS) or not be["L"] >= be["M"] >= be["H"]:
+        errors.append(f"breakeven years {be} must be >= t_num {t0} and L >= M >= H (A21)")
     base = {t: cpu[t] + adj + fdy[t] for t in TIERS}
     L, M, H = (base[t] for t in TIERS)
     A, B = cut_points(L, M, H)
@@ -253,7 +255,12 @@ def main() -> int:
         return ni_ / sh, roe_, pe_, ni_ / sh * pe_ * (1 + r) ** -yrs
 
     opt_rev = inp["opt_rev_pkg"]
-    eps_opt, roe_post, pe_f, v_opt = option(opt_rev)
+    eps_opt, roe_post, pe_f, v_gross = option(opt_rev)
+    # valuation-rules「未建模期权」2026-10-04: a capacity option deducts the capital
+    # not yet spent (budget - spent).  The only named packaging budget is Penang;
+    # its remainder is spent in 2026, before the numerator year -> no discounting.
+    unspent_ps = inp["pkg_capex_budget"] * (1 - inp["pkg_capex_done"]) / sh
+    v_opt = v_gross - unspent_ps
     df = (1 + r) ** -years
     p_k = P_K
     adj_band = [base[t] + p_k[i] * v_opt for i, t in enumerate(TIERS)]
@@ -286,7 +293,7 @@ def main() -> int:
     print(f"foundry leg (A21): FY2027 loss implied by consensus EPS {inp['cons_eps_fy27_m']:g} = "
           f"{eps['M']:.3f} {inp['bridge_other_eps']:+.3f} {inp['corp_other_eps']:+.3f} {inp['sbc_acq_eps']:+.3f} - {inp['cons_eps_fy27_m']:g}"
           f" = {loss_fy27:.3f}/sh after tax (${loss_fy27 * sh / keep / 1e9:.2f}B pre-tax); snapshot H1'26 run-rate "
-          f"${-inp['foundry_oi_h1'] * 2 / 1e3:.2f}B; breakeven L {be['L']:.0f} / M,H {be['M']:.0f} -> "
+          f"${-inp['foundry_oi_h1'] * 2 / 1e3:.2f}B; breakeven L {be['L']:.0f} / M {be['M']:.0f} / H {be['H']:.0f} -> "
           + " ".join(f"{t} {fdy[t]:+.2f}" for t in TIERS))
     print(f"closure {adj:+.2f} = " + " ".join(f"{k}={inp[k]:+.2f}" for k in ADJ_PS)
           + f" corp_other={corp_ps:+.2f} ({inp['corp_other_eps']:+.3f}/yr x M-PE {pe['M']:.2f})")
@@ -306,7 +313,9 @@ def main() -> int:
     print(f"internal foundry revenue {rev_int / 1e9:.2f}B/yr (H1'26 x2) excluded from the count (transfer from the product leg)")
     print(f"foundry option: {opt_rev / 1e9:.1f}B (1 named packaging customer, per-customer floor) x OPM {inp['opt_opm']:.0%}"
           f" x (1-t) / shares = {eps_opt:.4f}/sh; ROE_post {roe_post:.3f} -> PE {pe_f:.2f}x (g2 {g2f:.2%}, r {r:g})"
-          f" -> {eps_opt * pe_f:.2f} @{inp['t_opt']:.0f} x df {df:.4f} ({years:.0f}y) = V_opt {v_opt:.2f}")
+          f" -> {eps_opt * pe_f:.2f} @{inp['t_opt']:.0f} x df {df:.4f} ({years:.0f}y) = {v_gross:.4f}"
+          f" - unspent capital {unspent_ps:.4f} (Penang {inp['pkg_capex_budget'] / 1e9:.2f}B x {1 - inp['pkg_capex_done']:.0%})"
+          f" = V_opt {v_opt:.2f}; unspent capital that zeroes it {v_gross * sh / 1e9:.2f}B")
     print(f"表3  V_opt={v_opt:.2f}  p_k={p_k[0]:.2f}/{p_k[1]:.2f}/{p_k[2]:.2f}  "
           + "  ".join(f"{t}:{base[t]:.2f}+{p_k[i]:.2f}xV={adj_band[i]:.2f}" for i, t in enumerate(TIERS))
           + f"  A'={a2:.2f} B'={b2:.2f}")
@@ -324,8 +333,8 @@ def main() -> int:
     for g in (g2 - 0.01, g2 + 0.01):
         print(f"sensitivity g2={g:.2%}: L/M/H " + "/".join(f"{v:.2f}" for v in band_with(g_=g)))
     print(f"sensitivity margin FY25 {margin_fy25:.4f}: L/M/H " + "/".join(f"{v:.2f}" for v in band_with(m_=margin_fy25)))
-    print(f"sensitivity df at 15% (篮 7 leg r, not adopted): V_opt {eps_opt * pe_f * 1.15 ** -years:.2f}")
-    print(f"sensitivity V_opt: run-rate 2029 {option(opt_rev, yrs=years + 1)[3]:.2f}; 3 customers {option(3 * opt_rev)[3]:.2f}; "
+    print(f"sensitivity df at 15% (篮 7 leg r, not adopted): V_opt {eps_opt * pe_f * 1.15 ** -years - unspent_ps:.2f}")
+    print(f"sensitivity V_opt (before unspent capital {unspent_ps:.3f}): run-rate one year earlier {option(opt_rev, yrs=years - 1)[3]:.2f}; 3 customers {option(3 * opt_rev)[3]:.2f}; "
           f"snapshot floor (Q2'26 external x4 = {inp['foundry_ext_q2'] * 4 / 1e3:.2f}B) {option(inp['foundry_ext_q2'] * 4 * MM)[3]:.2f}; "
           f"g2 = g2_cpu {option(opt_rev, g_=g2)[3]:.2f}; internal revenue at 30% (not adopted, double count) "
           f"{option(rev_int, yrs=3)[3]:.2f}")
