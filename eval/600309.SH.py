@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: wanhua_segment_margin_ladder_gp_bridge_gordon_v5_print_opt
+formula_id: wanhua_segment_margin_ladder_gp_bridge_gordon_v6_print_opt_k
 
 The scenario variable is the *spread*, not volume.  Revenue is frozen at the
 2026H1 level in all three scenarios; only the three segment gross margins move,
@@ -75,6 +75,15 @@ margin - opex ratio) x conv / shares, valued on this ticker's own H ruler
 (PE_H, basket r, g2_h) and discounted from the realisation year t_opt to the
 FY2026 numerator.  No peer multiple is borrowed.  p_k lives in table 3 only.
 
+v6 (2026-10-04, valuation-rules「未建模期权」新建产能型期权扣未投资本): the
+option is new capacity, so V_opt nets out the capital still to be spent —
+(opt_budget - opt_spent) x opt_eq (this ticker's 51.2% look-through stake in
+the project company), charged once in the realisation year t_opt and
+discounted on the same basket r as the value side (optimistic: the spend
+actually lands in 2026H2-2027).  opt_spent is the 2026-06-30 closing CIP
+balance of the whole 「异氰酸酯新建及配套项目」 line — an upper bound on what
+this one project has absorbed, so the deduction is a lower bound.
+
 No two-stage transition is run (the FY2027 consensus sits inside [L, H], A9 /
 口径), so `check_transition_years` does not apply.  No shared axis.
 
@@ -99,7 +108,7 @@ from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600309.SH.md"
-FORMULA_ID = "wanhua_segment_margin_ladder_gp_bridge_gordon_v5_print_opt"
+FORMULA_ID = "wanhua_segment_margin_ladder_gp_bridge_gordon_v6_print_opt_k"
 YI = 1e8
 TIERS = ("L", "M", "H")
 
@@ -136,7 +145,7 @@ REQUIRED = [
     "g_peer_median", "pe_own_min", "pe_own_max",
     "pe_own_p75", "pe_own_med", "pe_own_p25", "gamma_pe", "gamma_pe_se",
     "eps_trough_fy2020",
-    "opt_cap", "opt_price", "vat", "t_opt",
+    "opt_cap", "opt_price", "vat", "t_opt", "opt_budget", "opt_spent", "opt_eq",
 ]
 # Reference-only rows (校验步骤 11): present in Inputs, never in an anchor path.
 NOT_FORMULA = (
@@ -337,7 +346,7 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    # 校验步骤 12 / A9: Fujian MDI +700kt option, own H ruler, discounted to FY2026.
+    # 校验步骤 12 / A9: Fujian MDI +700kt option, own H ruler, less unspent capital, discounted to FY2026.
     if inp["t_opt"] <= NUM_YEAR:
         errors.append("t_opt must lie after the numerator year (A9)")
     p_fields = [k for k in inp if k.startswith("p_")]
@@ -347,7 +356,13 @@ def main() -> int:
     opt_rev_yi = inp["opt_cap"] * 1e4 * inp["opt_price"] / (1.0 + inp["vat"]) / YI
     opt_np_yi = opt_rev_yi * (inp["gm_m_pu"] - opex_ratio) * inp["conv"]
     opt_eps = opt_np_yi * YI / inp["shares"]
-    v_opt = opt_eps * pe["H"] / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    opt_k_yi = inp["opt_budget"] - inp["opt_spent"]          # unspent capital, 100% basis
+    if opt_k_yi < 0 or not (0.0 < inp["opt_eq"] <= 1.0):
+        errors.append(f"A9 unspent capital {opt_k_yi:.4f}亿 / opt_eq {inp['opt_eq']} out of range")
+    opt_k_ps = opt_k_yi * inp["opt_eq"] * YI / inp["shares"]  # this ticker's share, CNY/share
+    disc_opt = (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    v_opt_gross = opt_eps * pe["H"] / disc_opt
+    v_opt = (opt_eps * pe["H"] - opt_k_ps) / disc_opt
     said_v = stated_v_opt(md)
     if said_v is None or abs(said_v - v_opt) > 0.05:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f} (A9)")
@@ -439,7 +454,10 @@ def main() -> int:
     print(
         f"V_opt (A9) = {inp['opt_cap']:.0f}万吨 x {inp['opt_price']:.0f}/(1+{inp['vat']}) = {opt_rev_yi:.2f}亿 x "
         f"(GM_pu {inp['gm_m_pu']:.0%} - opex {opex_ratio:.2%}) x conv {inp['conv']} = {opt_np_yi:.2f}亿 -> EPS {opt_eps:.4f} "
-        f"x PE_H {pe['H']:.3f} / 1.1^{int(inp['t_opt']) - NUM_YEAR} = {v_opt:.2f}; V_opt/M {v_opt / M:.3f}; "
+        f"x PE_H {pe['H']:.3f} / 1.1^{int(inp['t_opt']) - NUM_YEAR} = {v_opt_gross:.2f} gross; "
+        f"未投资本 ({inp['opt_budget']:.2f} - {inp['opt_spent']:.4f}) = {opt_k_yi:.2f}亿 x {inp['opt_eq']:.3f} "
+        f"= {opt_k_yi * inp['opt_eq']:.2f}亿 = {opt_k_ps:.4f}/股 / 1.1^{int(inp['t_opt']) - NUM_YEAR} = {opt_k_ps / disc_opt:.2f} "
+        f"-> V_opt {v_opt:.2f}; V_opt/M {v_opt / M:.3f}; "
         f"zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f} A'={a2:.2f} B'={b2:.2f}"
     )
     print(f"H 两侧越顶: EPS_H {eps['H']:.4f} <= {EPS_PEAK_FY2021} ✓; H {H:.2f} <= {h_cap:.2f} ✓")
