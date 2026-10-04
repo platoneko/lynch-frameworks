@@ -6,7 +6,7 @@ A/B, the Neutron option and the candidate band from its §3 Inputs table and
 exits 1 on mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」):
 which zone a quote falls in is derived live by the daily digest and the app.
 
-formula_id: rklb_sotp_fy27_mature_margin_iridium_evebit_v3
+formula_id: rklb_sotp_fy27_mature_margin_iridium_evebit_v4
 
 Pro-forma (Iridium closed) unlevered SOTP, USD bn → per share:
 
@@ -33,8 +33,13 @@ multiple.  Unit economics are launch economics: the company-stated Neutron
 gross margin (unit cost vs price) less the deck's H-tier opex ratio; the
 multiple is this ticker's ruler (perpetual_pe at g2, marginal ROIC = option
 margin × (1 − tax) / cap_int, basket r).  Valued in the fleet year and
-discounted back to FY2027.  Remaining Neutron spend is deducted in full (not
-probability-weighted) in table 3.
+discounted back to FY2027.  Capacity-option rule (valuation-rules「未建模期权」
+2026-10-04): the option deducts its own unspent capital — the reusable booster
+fleet that the named cadence needs (fleet_n boosters × booster_cost, one built
+per year from t_fleet0, each discounted from its build year to FY2027).
+Pre-first-flight spend (neutron_carry) is spent win or lose, so it stays
+outside the option and is deducted in full (not probability-weighted) in
+table 3.
 
 Candidate band: growth-rate linear fade (self-derived, no sell-side source —
 a recorded rule exception, A15) on the Space + Electron leg only; L′ = L.
@@ -58,7 +63,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "RKLB.US.md"
-FORMULA_ID = "rklb_sotp_fy27_mature_margin_iridium_evebit_v3"
+FORMULA_ID = "rklb_sotp_fy27_mature_margin_iridium_evebit_v4"
 TIERS = ("l", "m", "h")
 REQUIRED = [
     "shares_base", "shares_sep", "irdm_shares", "exch_ratio", "tax",
@@ -67,7 +72,7 @@ REQUIRED = [
     "ir_nd", "ir_cash_ps",
     "cash", "sep_raise", "debt",
     "neutron_price", "neutron_cadence", "neutron_unit", "t_unit", "t_opt", "neutron_carry",
-    "neutron_gm", "neutron_opex",
+    "neutron_gm", "neutron_opex", "fleet_n", "fleet_unit_n", "booster_cost", "t_fleet0",
     "g_fade0", "fade_step", "n_fade",
 ]
 TOL = 0.05
@@ -176,15 +181,27 @@ def main() -> int:
 
     m_opt, roic_opt, pe_opt = opt_ruler(inp["neutron_gm"])
 
-    def v_at(year: int, n: float, price: float | None = None, gm: float | None = None) -> float:
+    def fleet_pv(n_boosters: float, cost: float | None = None) -> float:
+        """Unspent booster capital, one per year from t_fleet0, PV at FY2027 (USD bn)."""
+        c = inp["booster_cost"] if cost is None else cost
+        return sum(c / (1 + r) ** (int(inp["t_fleet0"]) + i - NUM_YEAR) for i in range(int(n_boosters)))
+
+    def v_gross(year: int, n: float, price: float | None = None, gm: float | None = None) -> float:
         m, _, pe = opt_ruler(inp["neutron_gm"] if gm is None else gm)
         rev = n * (inp["neutron_price"] if price is None else price)
         return rev * m * (1 - inp["tax"]) * pe / (1 + r) ** (year - NUM_YEAR) / sh
 
+    def v_at(year: int, n: float, price: float | None = None, gm: float | None = None,
+             boosters: float | None = None, cost: float | None = None) -> float:
+        b = inp["fleet_n"] if boosters is None else boosters
+        return v_gross(year, n, price, gm) - fleet_pv(b, cost) / sh
+
     opt_rev = inp["neutron_price"] * inp["neutron_cadence"]
     opt_nopat = opt_rev * m_opt * (1 - inp["tax"])
     v_opt = v_at(t_opt, inp["neutron_cadence"])
-    v_unit = v_at(t_unit, inp["neutron_unit"])
+    v_unit = v_at(t_unit, inp["neutron_unit"], boosters=inp["fleet_unit_n"])
+    if int(inp["t_fleet0"]) < NUM_YEAR or int(inp["t_fleet0"]) + int(inp["fleet_n"]) - 1 >= t_opt:
+        errors.append("booster builds must start in/after FY2027 and finish before t_opt (A11)")
     carry = inp["neutron_carry"] / sh
     said = stated(md, r"\(V_{opt}\)")
     if said is None:
@@ -225,8 +242,12 @@ def main() -> int:
     print(f"V_opt chain: {inp['neutron_cadence']:g}/yr (k = {k_units:.2f} × unit {inp['neutron_unit']:g}/yr) × {inp['neutron_price']:g}bn"
           f" = rev {opt_rev:.3f}bn × margin {m_opt:.3f} (GM {inp['neutron_gm']:g} − opex {inp['neutron_opex']:g}) × (1-t)"
           f" = NOPAT {opt_nopat:.4f} × PE {pe_opt:.2f} (g2 {inp['g2']:g}, ROIC {roic_opt:.1%}, r {r:g}) @{t_opt}"
-          f" ÷ {(1 + r) ** (t_opt - NUM_YEAR):.4f} ÷ shares → {v_opt:.2f}")
-    print(f"  unit ({inp['neutron_unit']:g}/yr @{t_unit}) → {v_unit:.2f};"
+          f" ÷ {(1 + r) ** (t_opt - NUM_YEAR):.4f} ÷ shares = {v_gross(t_opt, inp['neutron_cadence']):.2f}"
+          f" − unspent fleet {inp['fleet_n']:g} × {inp['booster_cost']:g}bn from {int(inp['t_fleet0'])}"
+          f" (PV {fleet_pv(inp['fleet_n']):.4f}bn = {fleet_pv(inp['fleet_n']) / sh:.2f}/sh) → {v_opt:.2f}")
+    print(f"  booster cost 0.03 / 0.10 → {v_at(t_opt, inp['neutron_cadence'], cost=0.03):.2f}"
+          f" / {v_at(t_opt, inp['neutron_cadence'], cost=0.10):.2f}")
+    print(f"  unit ({inp['neutron_unit']:g}/yr @{t_unit}, {inp['fleet_unit_n']:g} boosters) → {v_unit:.2f};"
           f" one-year slip → {v_at(t_opt + 1, inp['neutron_cadence']):.2f};"
           f" Morgan Stanley 12/yr @{t_opt} → {v_at(t_opt, 12):.2f};"
           f" price 0.055 → {v_at(t_opt, inp['neutron_cadence'], price=0.055):.2f}")
