@@ -6,7 +6,7 @@ anchors, candidate band and V_opt from its §3 Inputs table and exits 1 on
 mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
 nothing here computes a zone for the price or a market-implied reading — the
 digest and the app zone on live quotes.
-formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v2
+formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v3
 
 Ganfeng does not disclose lithium sales volumes or its self-supplied feed
 share, so the lithium leg (salts + mining + JV share, all inside the reported
@@ -28,7 +28,14 @@ named quantity (valuation-rules「未建模期权」, 2026-10-03): the 2030 desi
 capacity target 60 万吨 vs today's ~30 万吨 nameplate = one more 2026
 structure, read on the two-point line at the axis M rung (unit economics of
 this ticker's own lithium leg), valued at this ticker's own post-realisation
-multiple and discounted 2030 -> 2026 (A12).  Per-tier credits for both
+multiple and discounted 2030 -> 2026 (A12).  Both components are new
+capacity, so each nets out this ticker's equity share of the capital not yet
+spent (valuation-rules「未建模期权」2026-10-04; budget less spent, spread
+evenly over t_num+1 .. realisation year and discounted at the basket r):
+solid-state = the Chongqing 20 GWh solid-state base (budget 96 亿, 12.5%
+spent, 64.52% via Ganfeng LiEnergy); volume = PPGS stage 1 (67%) + Cauchari
+stage 2 (46.67%, RIGI amount) + the unnamed remainder of the 30 万吨 increment
+at the company's own Fengcheng conversion budget per ton (A9 / A12).  Per-tier credits for both
 components are hard-coded here and never enter Inputs (A2e-7a); a
 value-weighted blend is also stated in the doc for the daily digest, which
 only reads one p triple.
@@ -66,7 +73,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1772.HK.md"
-FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v2"
+FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v3"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 # The single perpetual r leg (both business legs share the basket, A14); r_disc
@@ -89,11 +96,18 @@ REQUIRED = [
     "cal_p0", "cal_li_pretax_0", "cal_p1", "cal_li_pretax_1",
     "vol_2026e", "vol_2027e", "cap_now", "cap_2030", "r_disc", "n_disc",
     "t_num", "t_opt_ss", "t_opt_vol",
+    "ss_k", "ss_eq", "ppg_k", "ppg_eq", "cau_k_usd", "cau_eq", "fx_cny_per_usd",
+    "cap_ppg1", "cap_cau2", "conv_k_per_wt", "ppg23_k_usd",
     "batt_pretax", "net_finance",
     "tax_rate", "nci_share",
     "r_perp", "g2", "axis_g2_li",
     "pe_own_min", "pe_own_max", "pb_floor",
 ]
+
+
+def num(s: str) -> float:
+    """Doc numbers may carry a U+2212 minus."""
+    return float(s.replace("−", "-"))
 
 
 def first_float(pattern: str, md: str) -> float | None:
@@ -139,10 +153,37 @@ def post_pe(inp: dict[str, float], eps_h: float, d_eps: float) -> float:
     return perpetual_pe(inp["g2"], (eps_h + d_eps) / inp["bps"], inp["r_perp"])
 
 
-def v_opt_vol(inp: dict[str, float], li2co3: float, eps_h: float) -> float:
+def disc_spread(inp: dict[str, float], t_opt: float) -> float:
+    """Unspent capital spread evenly over t_num+1 .. t_opt, each tranche discounted to t_num (A9 / A12)."""
+    years = range(int(inp["t_num"]) + 1, int(t_opt) + 1)
+    return sum((1.0 + inp["r_disc"]) ** (-(t - inp["t_num"])) for t in years) / len(years)
+
+
+def k_vol_parts(inp: dict[str, float]) -> dict[str, float]:
+    """Equity share of unspent capital behind the 30 万吨 increment, 亿 CNY (A12)."""
+    rest = inp["cap_2030"] - inp["cap_now"] - inp["cap_ppg1"] - inp["cap_cau2"]
+    return {
+        "ppg1": inp["ppg_k"] * inp["ppg_eq"],
+        "cau2": inp["cau_k_usd"] / 100.0 * inp["fx_cny_per_usd"] * inp["cau_eq"],
+        "rest": rest * inp["conv_k_per_wt"],
+    }
+
+
+def k_ps(inp: dict[str, float], k_yi: float, t_opt: float, spread: bool = True) -> float:
+    """Unspent capital 亿 CNY -> HKD/share at the numerator year."""
+    d = disc_spread(inp, t_opt) if spread else disc_to_num(inp, t_opt)
+    return per_share_hkd(k_yi * d, inp)
+
+
+def v_opt_vol_gross(inp: dict[str, float], li2co3: float, eps_h: float) -> float:
     """Named 2030 capacity target beyond today's nameplate, read at the given rung, discounted (A12)."""
     d_eps = per_share_hkd(parent_from_pretax(li_2026(inp, li2co3) * option_share(inp), inp), inp)
     return d_eps * post_pe(inp, eps_h, d_eps) * disc_to_num(inp, inp["t_opt_vol"])
+
+
+def v_opt_vol(inp: dict[str, float], li2co3: float, eps_h: float) -> float:
+    """Gross volume option less the equity share of unspent capital (2026-10-04 rule)."""
+    return v_opt_vol_gross(inp, li2co3, eps_h) - k_ps(inp, sum(k_vol_parts(inp).values()), inp["t_opt_vol"])
 
 
 def scenario(inp: dict[str, float], tag: str, scale: float = 1.0, g2: float | None = None) -> dict[str, float]:
@@ -195,7 +236,11 @@ def main() -> int:
         errors.append("2027E volume must exceed 2026E (the candidate scale is a growth factor)")
     if not inp["cap_2030"] > inp["cap_now"]:
         errors.append("2030 capacity target must exceed today's nameplate (V_opt share)")
-    if not (inp["t_opt_ss"] >= inp["t_num"] and inp["t_opt_vol"] >= inp["t_num"]):
+    if not inp["cap_2030"] - inp["cap_now"] - inp["cap_ppg1"] - inp["cap_cau2"] >= 0:
+        errors.append("named brine capacity exceeds the 30 万吨 increment (A12)")
+    if not all(0.0 < inp[k] <= 1.0 for k in ("ss_eq", "ppg_eq", "cau_eq")):
+        errors.append("equity shares must lie in (0, 1]")
+    if not (inp["t_opt_ss"] > inp["t_num"] and inp["t_opt_vol"] > inp["t_num"]):
         errors.append("option realisation years must not precede the numerator year")
     errors += check_li2co3_mount(
         (inp["li2co3_l"], inp["li2co3_m"], inp["li2co3_h"])
@@ -224,8 +269,13 @@ def main() -> int:
     # realised 2030.  Both on this ticker's own post-realisation Gordon multiple,
     # discounted to the numerator year at the basket r.
     d_eps_ss = per_share_hkd(parent_from_pretax(inp["batt_pretax"], inp), inp)
-    v_ss = d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(inp, inp["t_opt_ss"])
-    v_vol = v_opt_vol(inp, inp["li2co3_m"], S["h"]["eps"])
+    v_ss_gross = d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(inp, inp["t_opt_ss"])
+    k_ss_ps = k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"])
+    v_ss = v_ss_gross - k_ss_ps
+    v_vol_gross = v_opt_vol_gross(inp, inp["li2co3_m"], S["h"]["eps"])
+    kv = k_vol_parts(inp)
+    k_vol_ps = k_ps(inp, sum(kv.values()), inp["t_opt_vol"])
+    v_vol = v_vol_gross - k_vol_ps
     v_opt = v_ss + v_vol
 
     if not (L < M < H):
@@ -255,16 +305,16 @@ def main() -> int:
         if s is None or abs(s - want_v) > TOL:
             errors.append(f"{label}: stated {s} vs recomputed {want_v:.4f}")
     vm = re.search(
-        r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*（固态 \*\*([0-9.]+)\*\* \+ 量增 \*\*([0-9.]+)\*\*）",
+        r"V_\{opt\}\\\) = \*\*([−\-]?[0-9.]+)\*\*（固态 \*\*([−\-]?[0-9.]+)\*\* \+ 量增 \*\*([−\-]?[0-9.]+)\*\*）",
         out_sec,
     )
     if vm is None:
         errors.append("stated V_opt line (total + two components) not found")
     else:
         for label, stated, want in (
-            ("V_opt", float(vm.group(1)), v_opt),
-            ("V_opt^ss", float(vm.group(2)), v_ss),
-            ("V_opt^vol", float(vm.group(3)), v_vol),
+            ("V_opt", num(vm.group(1)), v_opt),
+            ("V_opt^ss", num(vm.group(2)), v_ss),
+            ("V_opt^vol", num(vm.group(3)), v_vol),
         ):
             if abs(stated - want) > TOL:
                 errors.append(f"{label}: stated {stated} vs recomputed {want:.4f}")
@@ -286,7 +336,7 @@ def main() -> int:
     adj = {k: base[k] + P_SS[t] * v_ss + P_VOL[t] * v_vol for k, t in zip("LMH", "lmh")}
     # Table 3 rows: | L | 10.27 | 0 | 0.00 | 0 | 0.00 | **10.27** | ...
     for k, v in adj.items():
-        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [0-9.]+ \| [^|]+\| [0-9.]+ \| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
+        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [−\-]?[0-9.]+ \| [^|]+\| [−\-]?[0-9.]+ \| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
         if m3 is None or abs(float(m3.group(1)) - v) > TOL:
             errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
     for label, want_v, rx in (("A′", (adj["L"] + adj["M"]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
@@ -329,13 +379,31 @@ def main() -> int:
           f"scenario_L/M={scenario_L / M:.3f}  floor vs band: {zone_of(floor, L, M, H)}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  "
           f"V_opt={v_opt:.2f} = ss {v_ss:.2f} + vol {v_vol:.2f} "
+          f"[gross ss {v_ss_gross:.2f} − K {k_ss_ps:.2f}; gross vol {v_vol_gross:.2f} − K {k_vol_ps:.2f}] "
           f"(vol: {option_share(inp):.2f} x 2026 structure = {inp['cap_now']:g}→{inp['cap_2030']:g} 万吨 nameplate @axis M, "
           f"disc {disc_to_num(inp, inp['t_opt_vol']):.4f} ({inp['t_opt_vol']:g}→{inp['t_num']:g}); "
           f"ss disc {disc_to_num(inp, inp['t_opt_ss']):.4f} ({inp['t_opt_ss']:g}→{inp['t_num']:g}, 无时点锚·拍值))")
     print("zone+V: " + "  ".join(
         f"{k}={adj[k]:.2f}(p_ss={P_SS[t]:g},p_vol={P_VOL[t]:g})" for k, t in zip("LMH", "lmh")
     ) + f"  A′={(adj['L'] + adj['M']) / 2:.2f} B′={(adj['M'] + adj['H']) / 2:.2f}"
-        f"  vol option @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], S['h']['eps']):.2f}/{v_opt_vol(inp, inp['li2co3_h'], S['h']['eps']):.2f}")
+        f"  vol option (net) @L/H rung = {v_opt_vol(inp, inp['li2co3_l'], S['h']['eps']):.2f}/{v_opt_vol(inp, inp['li2co3_h'], S['h']['eps']):.2f}")
+    # Unspent capital (valuation-rules「未建模期权」2026-10-04): equity share, 亿 CNY, and readings.
+    print(f"unspent capital: ss {inp['ss_k']:g} x {inp['ss_eq']:g} = {inp['ss_k'] * inp['ss_eq']:.2f} 亿, "
+          f"spread disc {disc_spread(inp, inp['t_opt_ss']):.4f} -> {k_ss_ps:.2f} HKD/sh; "
+          f"vol ppg1 {kv['ppg1']:.2f} + cau2 {kv['cau2']:.2f} + rest {kv['rest']:.2f} = {sum(kv.values()):.2f} 亿, "
+          f"spread disc {disc_spread(inp, inp['t_opt_vol']):.4f} -> {k_vol_ps:.2f} HKD/sh")
+    named_only = v_vol_gross - k_ps(inp, kv["ppg1"] + kv["cau2"], inp["t_opt_vol"])
+    ppg23 = inp["ppg23_k_usd"] / 100.0 * inp["fx_cny_per_usd"] * inp["ppg_eq"]
+    rest_less = kv["rest"] - 10.0 * inp["conv_k_per_wt"]  # PPGS stages 2-3 = 10 万吨 replace conversion
+    ppgs_full = v_vol_gross - k_ps(inp, kv["ppg1"] + kv["cau2"] + ppg23 + rest_less, inp["t_opt_vol"])
+    oneshot_vol = v_vol_gross - k_ps(inp, sum(kv.values()), inp["t_opt_vol"], spread=False)
+    oneshot_ss = v_ss_gross - k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"], spread=False)
+    r10 = {**inp, "r_disc": 0.10}
+    v10 = (v_opt_vol(r10, inp["li2co3_m"], S["h"]["eps"]),
+           d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(r10, inp["t_opt_ss"])
+           - k_ps(r10, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"]))
+    print(f"K sensitivities: vol named-only (no remainder) {named_only:.2f}; PPGS all 3 stages (stages 2-3 replace 10 万吨 conversion) {ppgs_full:.2f}; "
+          f"one-shot at realisation year vol {oneshot_vol:.2f} / ss {oneshot_ss:.2f}; r_disc 10% vol {v10[0]:.2f} / ss {v10[1]:.2f}")
     print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}")
     print(f"gordon: r={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2={inp['g2']:g} flat [§13 commodity-leg tier default] "
           f"(axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "
