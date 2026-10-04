@@ -30,7 +30,9 @@ b = Σ w_i g_i / ROE (valuation-rules ③ step 2).
 V_opt (valuation-rules「未建模期权」): two named corridor items, each one
 measured Kasa unit (FY2025 land-port GP × group NI/GP) priced on this ticker's
 own Africa-leg H multiple and discounted from its realisation year to the
-deck's basis (FY+1 undiscounted → exponent t - 2027):
+deck's basis (FY+1 undiscounted → exponent t - 2027), less the capital not
+yet invested (valuation-rules 2026-10-04; Mokambo's announced budget, Kasa's
+budget for the next corridor), discounted from its investment year:
   * Mokambo (signed, building; 2028; size = its investment ÷ Kasa's)  p = 0 / 0.25 / 1.0
   * next unsigned corridor (2030, 拍值)        p = 0 / 0    / 1.0
 The Outputs bullet carries the summed V_opt and the value-weighted p.
@@ -77,7 +79,7 @@ REQUIRED = [
     "ni_ttm", "net_cash", "tp_street", "pe_own_hi", "pe_own_lo",
     "trade_rev_fy25", "trade_gm_fy25", "logi_rev_fy25", "logi_gm_fy25",
     "lp_rev_fy25", "lp_gm_fy25", "t_mokambo", "t_unsigned",
-    "inv_kasa_musd", "inv_mokambo_musd",
+    "inv_kasa_musd", "inv_mokambo_musd", "fx_usdcny", "t_inv_mokambo", "t_inv_unsigned",
 ]
 
 
@@ -157,6 +159,23 @@ def unit_value(inp: dict[str, float], t: float, pe_afr_h: float, r_afr: float | 
     return k * kasa_ni(inp) * pe_afr_h * 1e8 / inp["shares"] / (1 + ra) ** (t - BASIS_YEAR)
 
 
+def capex_ps(inp: dict[str, float], musd: float, t_inv: float, r_afr: float | None = None) -> float:
+    """Unspent capital per share (valuation-rules 2026-10-04: capacity options deduct it),
+    discounted from its investment year to the deck basis.  100% basis: the stake in each
+    corridor company is not disclosed (A14)."""
+    ra = inp["r_afr"] if r_afr is None else r_afr
+    return musd * inp["fx_usdcny"] / 100.0 * 1e8 / inp["shares"] / (1 + ra) ** (t_inv - BASIS_YEAR)
+
+
+def net_options(inp: dict[str, float], pe_afr_h: float, r_afr: float | None = None) -> dict[str, float]:
+    """{name: (gross, capex, net)} for Mokambo and the unsigned corridor (A14)."""
+    mok_g = unit_value(inp, inp["t_mokambo"], pe_afr_h, r_afr, k=k_mokambo(inp))
+    mok_c = capex_ps(inp, inp["inv_mokambo_musd"], inp["t_inv_mokambo"], r_afr)
+    uns_g = unit_value(inp, inp["t_unsigned"], pe_afr_h, r_afr)
+    uns_c = capex_ps(inp, inp["inv_kasa_musd"], inp["t_inv_unsigned"], r_afr)
+    return {"mok": (mok_g, mok_c, mok_g - mok_c), "uns": (uns_g, uns_c, uns_g - uns_c)}
+
+
 def k_mokambo(inp: dict[str, float]) -> float:
     """Mokambo's size in Kasa units = its announced investment ÷ Kasa's (capacity proxy)."""
     return inp["inv_mokambo_musd"] / inp["inv_kasa_musd"]
@@ -233,8 +252,10 @@ def main() -> int:
 
     # --- Step 5: V_opt (two named corridor units) --------------------------------
     pe_afr_h = pes["h"][1]
-    v_mok = unit_value(inp, inp["t_mokambo"], pe_afr_h, k=k_mokambo(inp))
-    v_uns = unit_value(inp, inp["t_unsigned"], pe_afr_h)
+    opts = net_options(inp, pe_afr_h)
+    v_mok, v_uns = opts["mok"][2], opts["uns"][2]
+    if v_mok <= 0 or v_uns <= 0:
+        errors.append(f"option net of unspent capital <= 0 (Mokambo {v_mok:.2f}, unsigned {v_uns:.2f}) — 回对话")
     v_opt = v_mok + v_uns
     p_eff = tuple(round((pm * v_mok + pu * v_uns) / v_opt, 2) for pm, pu in zip(P_MOKAMBO, P_UNSIGNED))
     adj = [a + pm * v_mok + pu * v_uns for a, pm, pu in zip((L, M, H), P_MOKAMBO, P_UNSIGNED)]
@@ -266,7 +287,7 @@ def main() -> int:
     for label, rm, ra in DESCENT:
         pes_d = leg_pes(inp, "m", rm, ra)
         m_d = anchor(inp, "m", pes=pes_d, r_mgl=rm, r_afr=ra)
-        mok_d = unit_value(inp, inp["t_mokambo"], leg_pes(inp, "h", rm, ra)[1], ra, k=k_mokambo(inp))
+        mok_d = net_options(inp, leg_pes(inp, "h", rm, ra)[1], ra)["mok"][2]
         band_d = [anchor(inp, t, r_mgl=rm, r_afr=ra) for t in TIERS]
         descent.append((label, rm, ra, band_d, m_d / eps26, (m_d + mok_d) / eps26))
     final = descent[-1]
@@ -310,6 +331,9 @@ def main() -> int:
     print(f"卡萨单位：陆港毛利 {kasa_gp(inp):.3f} 亿 / 集团毛利 {group_gp_fy25(inp):.3f} 亿 → 归母 {kasa_ni(inp):.3f} 亿"
           f" × PE_afr_H {pe_afr_h:.2f}")
     print(f"莫坎博份数 k = {inp['inv_mokambo_musd']:g} / {inp['inv_kasa_musd']:g} = {k_mokambo(inp):.3f} 个卡萨")
+    for key, label in (("mok", "莫坎博"), ("uns", "未签约下一条")):
+        g_, c_, n_ = opts[key]
+        print(f"  {label}: 毛值 {g_:.2f} − 未投资本 {c_:.2f} = {n_:.2f}")
     print(f"V_opt：莫坎博 {v_mok:.2f}（{int(inp['t_mokambo'])}，折 {int(inp['t_mokambo']) - BASIS_YEAR} 年）"
           f" + 未签约下一条 {v_uns:.2f}（{int(inp['t_unsigned'])}，折 {int(inp['t_unsigned']) - BASIS_YEAR} 年）"
           f" = {v_opt:.2f}；价值加权 p = {p_eff[0]:g} / {p_eff[1]:g} / {p_eff[2]:g}")

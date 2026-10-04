@@ -64,7 +64,8 @@ axis no longer carries them in its g.  Units = capacity x unit revenue
 segment residual / glass output — a public-data inference with its biases
 named in A22) x the Africa leg's own 归母 margin (stake already inside),
 priced on the Africa leg's H multiple and discounted from the start-up year
-to the numerator year at r_afr.  p_k = 0 / 0.25 / 1.0 lives in table 3 only.
+to the numerator year at r_afr, less Keda's share of the capital not yet
+spent (valuation-rules 2026-10-04).  p_k = 0 / 0.25 / 1.0 lives in table 3 only.
 
 Run:  python3 frameworks/eval/600499.SH.py
 """
@@ -120,6 +121,7 @@ REQUIRED = [
     "tf_np_fy2025", "tf_uplift_fy2025", "stake_tf", "nci_fy2025", "nci_h1",
     "afr_rev_yoy_fy2025", "tile_sales_fy2025", "tile_sales_yoy_fy2025", "glass_out_fy2025",
     "tile_cap_now", "tile_cap_after", "glass_peru", "glass_ghana", "t_tile", "t_peru", "t_ghana",
+    "capex_kisumu2", "prog_kisumu2", "capex_ci2", "prog_ci2", "capex_peru", "prog_peru", "spent_ghana",
 ]
 NUM_YEAR = 2026            # Africa / machinery numerator = 2026H1 annualised
 P_TIERS = (0.0, 0.25, 1.0)  # A22 — table 3 only, never an input
@@ -137,19 +139,41 @@ def opt_units(inp: dict[str, float]) -> dict[str, float]:
     return {"p_tile": p_tile, "p_glass": p_glass, "margin": margin}
 
 
-def opt_items(inp: dict[str, float], pe_afr_h: float, glass_scale: float = 1.0) -> list[tuple[str, float, float, float]]:
-    """[(label, revenue 亿, ΔNI 亿, V per share)] for the named projects (A22)."""
+def unspent(inp: dict[str, float]) -> dict[str, float]:
+    """A22 (valuation-rules 2026-10-04: capacity options deduct unspent capital), 亿元, 100% basis.
+
+    Budgets / progress from the 2026H1 在建工程 note.  Guinea and Ghana have no
+    disclosed budget: Guinea = mean of the two ceramic phase-II budgets, Ghana =
+    the Peru budget (same 20 万吨 float line) less what it has already booked —
+    proxies, named in A22.
+    """
+    kis = inp["capex_kisumu2"] * (1.0 - inp["prog_kisumu2"])
+    ci2 = inp["capex_ci2"] * (1.0 - inp["prog_ci2"])
+    guinea = (inp["capex_kisumu2"] + inp["capex_ci2"]) / 2.0
+    return {"tile": kis + ci2 + guinea,
+            "peru": inp["capex_peru"] * (1.0 - inp["prog_peru"]),
+            "ghana": max(0.0, inp["capex_peru"] - inp["spent_ghana"])}
+
+
+def opt_items(inp: dict[str, float], pe_afr_h: float, glass_scale: float = 1.0) -> list[tuple[str, float, float, float, float]]:
+    """[(label, revenue 亿, ΔNI 亿, gross V, net V per share)] for the named projects (A22).
+
+    Net = gross − Keda's share (stake_tf) of the unspent capital, spent before
+    start-up and therefore taken at the numerator year (2026) undiscounted.
+    """
     u = opt_units(inp)
+    k = unspent(inp)
     items = [
-        ("瓷砖 科特迪瓦二期 + 基苏木二期 + 几内亚", (inp["tile_cap_after"] - inp["tile_cap_now"]) * u["p_tile"], inp["t_tile"]),
-        ("秘鲁玻璃 20 万吨", inp["glass_peru"] * u["p_glass"] * glass_scale / 1e4, inp["t_peru"]),
-        ("加纳玻璃 20 万吨", inp["glass_ghana"] * u["p_glass"] * glass_scale / 1e4, inp["t_ghana"]),
+        ("瓷砖 科特迪瓦二期 + 基苏木二期 + 几内亚", (inp["tile_cap_after"] - inp["tile_cap_now"]) * u["p_tile"], inp["t_tile"], k["tile"]),
+        ("秘鲁玻璃 20 万吨", inp["glass_peru"] * u["p_glass"] * glass_scale / 1e4, inp["t_peru"], k["peru"]),
+        ("加纳玻璃 20 万吨", inp["glass_ghana"] * u["p_glass"] * glass_scale / 1e4, inp["t_ghana"], k["ghana"]),
     ]
     out = []
-    for label, rev, t in items:
+    for label, rev, t, cap in items:
         dni = rev * u["margin"]
-        v = dni * pe_afr_h / (1.0 + inp["r_afr"]) ** (t - NUM_YEAR) * YI / inp["shares"]
-        out.append((label, rev, dni, v))
+        gross = dni * pe_afr_h / (1.0 + inp["r_afr"]) ** (t - NUM_YEAR) * YI / inp["shares"]
+        net = gross - cap * inp["stake_tf"] * YI / inp["shares"]
+        out.append((label, rev, dni, gross, net))
     return out
 # A5 (valuation-rules「公开数据推断」, 2026-10-03): w_afr is inferred, not a placeholder.
 W_TOL = 1e-5
@@ -379,7 +403,9 @@ def main() -> int:
 
     # --- Step 5: V_opt (A22) — named projects, own ruler, start-up year → numerator year
     items = opt_items(inp, pe["h"]["afr"])
-    v_opt = sum(x[3] for x in items)
+    v_opt = sum(x[4] for x in items)
+    if v_opt <= 0:
+        errors.append(f"V_opt {v_opt:.2f} <= 0 after unspent capital (A22, 回对话)")
     for t_key in ("t_tile", "t_peru", "t_ghana"):
         if inp[t_key] < NUM_YEAR:
             errors.append(f"{t_key} before the numerator year")
@@ -468,12 +494,14 @@ def main() -> int:
     u = opt_units(inp)
     print(f"V_opt 单位（A22 公开数据推断）: 瓷砖 {u['p_tile']:.2f} 元/㎡ · 玻璃 {u['p_glass']:,.0f} 元/吨 · "
           f"非洲腿归母利润率 {u['margin']:.2%} · PE_afr_H {pe['h']['afr']:.2f}")
-    for label, rev, dni, v_ in items:
-        print(f"  {label:<22} 收入 {rev:6.2f} 亿 → ΔNI {dni:5.2f} 亿 → {v_:.2f} 元/股")
+    k = unspent(inp)
+    for (label, rev, dni, gross, net), cap in zip(items, (k["tile"], k["peru"], k["ghana"])):
+        print(f"  {label:<22} 收入 {rev:6.2f} 亿 → ΔNI {dni:5.2f} 亿 → 毛值 {gross:.2f} − 未投资本 {cap:.2f} 亿 × "
+              f"{inp['stake_tf']:.2%} ({cap * inp['stake_tf'] * YI / inp['shares']:.2f}) = {net:.2f} 元/股")
     a2, b2 = cut_points(*adj)
     print(f"V_opt={v_opt:.2f}  表3 (p {P_TIERS[0]:g}/{P_TIERS[1]:g}/{P_TIERS[2]:g}): "
           f"{adj[0]:.2f} / {adj[1]:.2f} / {adj[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    v_half = sum(x[3] for x in opt_items(inp, pe["h"]["afr"], glass_scale=0.5))
+    v_half = sum(x[4] for x in opt_items(inp, pe["h"]["afr"], glass_scale=0.5))
     print(f"敏感 V_opt: 玻璃单价减半 → {v_half:.2f}")
     print(f"分子比（两腿合计 {total['l']:.2f}/{total['m']:.2f}/{total['h']:.2f} 亿）"
           f"L/M={total['l'] / total['m']:.2f} H/M={total['h'] / total['m']:.2f} | "
