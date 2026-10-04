@@ -7,7 +7,7 @@ L/M/H / A/B and the NPO option from the §3 Inputs table and exits 1 on
 mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
 nothing here reads a quote.
 
-formula_id: zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v2
+formula_id: zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v3
 
 Main ruler: the pluggable-module business only (NPO is carved out into V_opt).
 Numerator year FY2027 — the furthest year with a >=2-house consensus range
@@ -16,8 +16,10 @@ struck on to the post-H-share total count.  L = FY27 digestion year (FY26
 revenue consensus x (1 - rev_cut_l) x FY25 realised net margin), no transition.
 M / H = FY27 consensus mean / high, then ONE transition year: FY28 growth =
 mean of the two houses that state FY28 (UBS EPS, Citi NI) with the NPO share
-(UBS 10%, applied to both — A11) stripped out, then perpetual g2.  g2 is a
-user-set 2% (below the named macro 4%: a declared rule deviation, A16).
+(UBS 10%, applied to both — A11) stripped out, then perpetual g2.  g2 is the
+peer-ruler axis value `_AXIS.pluggable-module` (frameworks/axes/pluggable-
+module.md, row g2_pluggable): user-set 2% (below the named macro 4%: a declared
+rule deviation), peer-checked by leg and market (A16); cross-file checked.
 
 ROE is E_{n+1}/B_n: FY27 EPS over the FY27 opening book = 2026-06-30 equity +
 H-share net proceeds - interim dividend + the unbooked H2 FY26 consensus
@@ -68,7 +70,8 @@ from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "300308.SZ.md"
-FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v2"
+AXIS_PLUG = REPO_ROOT / "frameworks" / "axes" / "pluggable-module.md"
+FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v3"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 N_STAGE = 1  # FY28 is the only year beyond the numerator with >=2 stated houses
@@ -161,6 +164,13 @@ def main() -> int:
         return 1
     baskets = parse_baskets(md)
     errors = check_inputs(inp, baskets)
+    # Peer-ruler axis (contracts.md「同业尺轴」): g2 is the leg ruler, single source = the axis file.
+    if AXIS_PLUG.is_file():
+        ax = parse_inputs(AXIS_PLUG.read_text(encoding="utf-8"))
+        if "g2_pluggable" not in ax or abs(ax["g2_pluggable"] - inp["g2"]) > 1e-9:
+            errors.append(f"g2 {inp['g2']:g} != _AXIS.pluggable-module g2_pluggable {ax.get('g2_pluggable')} — the leg ruler drifted")
+    else:
+        errors.append("frameworks/axes/pluggable-module.md missing — g2 unchecked")
     errors += check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))
     errors += check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"]))
     if errors:

@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v4
+formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v5
 
 Main ruler (valuation-rules.md「增长的表达顺序」, 裁决顺序 ②): the numerator year
 is FY28 — the furthest year with a >=2-house consensus — as one axis, three
@@ -15,7 +15,9 @@ SBC haircut x k_l), M = FY28 consensus mean x haircut, H = FY28 consensus HIGH
 x haircut.  FY29 has no consensus anywhere, so there is no transition stage:
 every tier prices off `perpetual_pe` (no `two_stage_pe`, so
 `check_transition_years` does not apply).  Perpetual g2 is the peer
-cross-section reverse-solve truncated at the repo cap; `cyclical` primary
+the peer-ruler axis value `_AXIS.inp-laser` (frameworks/axes/inp-laser.md; the
+whole company rides the laser / device leg, A10 / A16) and must equal the axis
+row `g2_inp_laser`; `cyclical` primary
 means g is FLAT across tiers, so the only tier-to-tier multiple difference is
 the mechanical ROE effect.  ROE is E_{n+1}/B_n (valuation-rules 2026-09-21): the
 FY28 numerator over the FY28 OPENING book = FY26 reported equity rolled over
@@ -78,7 +80,11 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "LITE.US.md"
-FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v4"
+AXIS_LASER = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "inp-laser.md"
+AXIS_PLUG = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "pluggable-module.md"
+# (this ticker's Inputs key, axis Inputs key, axis file): rows taken from peer-ruler axes.
+AXIS_ROWS = (("g2", "g2_inp_laser", AXIS_LASER), ("g2_plug_ref", "g2_pluggable", AXIS_PLUG))
+FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v5"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
@@ -207,6 +213,8 @@ def main() -> int:
         "inp_fabs",
         "rev_fy28_cons",
         "t_opt",
+        "g2_plug_ref",
+        "sys_share",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -215,6 +223,16 @@ def main() -> int:
 
     baskets = parse_baskets(md)
     errors = check_inputs(inp, baskets)
+    # Peer-ruler axes (contracts.md「同业尺轴」): rows sourced `_AXIS.<name>` must equal the axis file.
+    for key, axis_key, path in AXIS_ROWS:
+        if not path.is_file():
+            errors.append(f"{path.name} missing — {key} unchecked")
+            continue
+        ax = parse_inputs(path.read_text(encoding="utf-8"))
+        if axis_key not in ax or abs(ax[axis_key] - inp[key]) > 1e-9:
+            errors.append(f"{key} {inp[key]:g} != _AXIS.{path.stem} {axis_key} {ax.get(axis_key)} — the leg ruler drifted")
+    if not (0.0 < inp["sys_share"] < 0.5):
+        errors.append(f"sys_share={inp['sys_share']} must be the minority Systems revenue share (A10)")
     errors.extend(check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"])))
     errors.extend(check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"])))
     opt_rev = {
@@ -414,10 +432,19 @@ def main() -> int:
     print(f"FY28 consensus-low coordinate: {eps_lo:.3f} x {tier(eps_lo)[1]:.2f}x = {eps_lo * tier(eps_lo)[1]:.2f} -> {zone_of(eps_lo * tier(eps_lo)[1], L, M, H)}")
     print(f"implied mcap (bn USD) L/M/H = {mcap(L):.1f}/{mcap(M):.1f}/{mcap(H):.1f}")
     # Sensitivities the doc quotes (Outputs 敏感性)
-    for g in (g2 - 0.01, g2 + 0.01, 0.0664):
+    for g in (g2 - 0.01, g2 + 0.01, 0.0664, 0.04):
         vals = [eps[t] * tier(eps[t], g)[1] for t in TIERS]  # book re-rolls at the perturbed g
         tag = " (above cap, reference only)" if g > g_cap(r) + 1e-9 else ""
         print(f"  sens g2={g:.4f}{tag}: {vals[0]:.2f}/{vals[1]:.2f}/{vals[2]:.2f}")
+    # Bias bound of the whole-company mount (A10 / A16): Systems revenue share priced at the
+    # pluggable-module leg g2, the rest at the laser leg g2; the book rolls at the EPS-weighted g.
+    s_sys, g_p = inp["sys_share"], inp["g2_plug_ref"]
+    g_mix = (1 - s_sys) * g2 + s_sys * g_p
+    mix = []
+    for t in TIERS:
+        roe_mix = eps[t] / (bps0 / (1.0 - g_mix * unbooked / eps[t]))
+        mix.append(eps[t] * ((1 - s_sys) * perpetual_pe(g2, roe_mix, r) + s_sys * perpetual_pe(g_p, roe_mix, r)))
+    print(f"  sens Systems {s_sys:.1%} of EPS at module g2 {g_p:.2%} (bias bound, A16): {mix[0]:.2f}/{mix[1]:.2f}/{mix[2]:.2f}")
     for f in (0.9, 1.1):
         e = eps["M"] * f
         print(f"  sens FY28 consensus x{f:g}: M {e * tier(e)[1]:.2f}")
