@@ -6,7 +6,7 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: ytn_realized_earnings_regime_gordon_v5
+formula_id: ytn_realized_earnings_regime_gordon_v6
 
 Main ruler: three *already-printed or already-consensus* annual net profits,
 each at the same flat multiple 1/(r - g2):
@@ -40,9 +40,16 @@ comes from the other transmission path of the same regime.
 
 V_opt (A9): the 35% stake in the Wanchang phosphate mine (1,000万吨/年, total
 capex 81.69亿, company-stated after-tax IRR 12.81%), valued with this ticker's
-own ruler — stake x capex x (IRR x PE - 1) at the same 1/(r - g2) — in the
-first full year after completion (2032) and discounted back to FY2026 at the
-basket r.  Borrow quantity, never price (valuation-rules「未建模期权」2026-10-03).
+own ruler — stake x (capex x IRR x PE - (capex - spent)) at the same
+1/(r - g2) — in the first full year after completion (2032) and discounted back
+to FY2026 at the basket r.  Borrow quantity, never price (valuation-rules
+「未建模期权」2026-10-03).  Only the capital not yet spent is deducted (rule of
+2026-10-04): the 9.81亿 already paid for the exploration / mining rights is
+sunk.  The IRR is the project's unlevered after-tax IRR on the whole budget, so
+the "IRR x capex" profit belongs to every source of funds — the unspent
+deduction therefore includes whatever the JV will borrow (loans repaid by the
+project count as unspent, as with 002895.SZ 老虎洞); deducting only equity
+would under-deduct, and adding the sunk rights fee back would over-deduct.
 
 The beta guard below is what keeps that honest: if the measured elasticity ever
 climbs above 0.20, the "does not transmit" premise has failed and the ruler has
@@ -69,7 +76,7 @@ from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
-FORMULA_ID = "ytn_realized_earnings_regime_gordon_v5"
+FORMULA_ID = "ytn_realized_earnings_regime_gordon_v6"
 YI = 1e8
 
 NP_PEAK_FY2022_YI = 60.21  # highest annual net profit the company has printed
@@ -95,7 +102,7 @@ REQUIRED = [
     "shares", "np_l", "eps_m_consensus", "np_h",
     "equity", "r_perp", "g2_l", "g2_m", "g2_h", "eps_fy27_single",
     "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map", "bps",
-    "opt_capex", "opt_stake", "opt_irr", "t_opt",
+    "opt_capex", "opt_spent", "opt_stake", "opt_irr", "t_opt",
 ]
 
 
@@ -183,12 +190,20 @@ def main() -> int:
     p_fields = [k for k in inp if k.startswith("p_")]
     if p_fields:
         errors.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
-    k_share = inp["opt_stake"] * inp["opt_capex"]
+    if not (0 <= inp["opt_spent"] < inp["opt_capex"]):
+        errors.append(f"opt_spent {inp['opt_spent']:g} must lie in [0, opt_capex {inp['opt_capex']:g})")
+    k_share = inp["opt_stake"] * inp["opt_capex"]          # earns the IRR (whole budget, unlevered)
+    k_remain = inp["opt_stake"] * (inp["opt_capex"] - inp["opt_spent"])  # still to be spent, debt included
     dni_opt = k_share * inp["opt_irr"]
-    v_at_t = (dni_opt * pe["M"] - k_share) * YI / inp["shares"]
+    v_at_t = (dni_opt * pe["M"] - k_remain) * YI / inp["shares"]
     disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR)
     v_opt = v_at_t / disc
-    v_g0 = (dni_opt / r - k_share) * YI / inp["shares"] / disc
+    v_g0 = (dni_opt / r - k_remain) * YI / inp["shares"] / disc
+    v_full_k = (dni_opt * pe["M"] - k_share) * YI / inp["shares"] / disc  # pre-2026-10-04 (sunk fee re-deducted)
+    # Contrast: unspent capital spread evenly over the build years (2027 .. t_opt-1), each discounted to FY2026.
+    build = range(NUM_YEAR + 1, int(inp["t_opt"]))
+    k_pv_spread = sum(k_remain / len(build) / (1 + r) ** (y - NUM_YEAR) for y in build)
+    v_spread = (dni_opt * pe["M"] / disc - k_pv_spread) * YI / inp["shares"]
     said_v = stated_v_opt(md[md.find("### Outputs"):])
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
@@ -222,8 +237,10 @@ def main() -> int:
           f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}")
     print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}): L'={L:.2f} M'={m_cand:.2f} H'={H:.2f} "
           f"(disclosed, not judged)")
-    print(f"V_opt={v_opt:.4f} (stake {inp['opt_stake']:g} x capex {inp['opt_capex']:g}亿 = {k_share:.3f}亿; "
-          f"ΔNI {dni_opt:.4f}亿 x {pe['M']:.3f}x - K -> {v_at_t:.4f}/sh @{inp['t_opt']:g}, ÷{disc:.4f}); g=0 contrast {v_g0:.4f}; V_opt/M {v_opt / M:.4f}")
+    print(f"V_opt={v_opt:.4f} (stake {inp['opt_stake']:g} x capex {inp['opt_capex']:g}亿 = {k_share:.3f}亿 earning IRR; "
+          f"ΔNI {dni_opt:.4f}亿 x {pe['M']:.3f}x - K_remain {k_remain:.3f}亿 (= {inp['opt_stake']:g} x ({inp['opt_capex']:g} - spent {inp['opt_spent']:g})) "
+          f"-> {v_at_t:.4f}/sh @{inp['t_opt']:g}, ÷{disc:.4f}); deduction {k_remain * YI / inp['shares'] / disc:.4f}/sh at FY{NUM_YEAR}; "
+          f"g=0 contrast {v_g0:.4f}; full-K (old) {v_full_k:.4f}; capex spread {build.start}-{build.stop - 1} {v_spread:.4f}; V_opt/M {v_opt / M:.4f}")
     print("table3: " + " / ".join(f"{t} {b:.2f}+{p:g}x{v_opt:.2f}={o:.2f}" for t, b, p, o in zip("LMH", (L, M, H), P_TIERS, opt))
           + f"  A'={A_v:.2f} B'={B_v:.2f}")
     per_yi = YI / inp["shares"] * pe["M"]

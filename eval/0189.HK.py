@@ -7,7 +7,7 @@ no current price (AGENTS.md「现价 — 禁写契约」): this script neither r
 price nor derives or checks a zone -- the daily digest derives the zone from
 live quotes.
 
-formula_id: dongyue_quota_sotp_actual_year_flat_v3
+formula_id: dongyue_quota_sotp_actual_year_flat_v4
 
 Main ruler: four-leg segment SOTP.  The refrigerant leg's three tiers are
 **named price scenarios** (L = R32 45,000 / M = 2025 average 53,600 / H = Q3
@@ -44,8 +44,12 @@ The PB floor is disclosed only, never max()-ed into L (A16).  V_opt (PTFE-AI /
 semiconductor grade, §1) = one snapshot share of today's fluoropolymer leg
 (26H1 annualised revenue x reported segment margin), valued on this name's own
 fluoropolymer multiple and discounted at the basket r from t_opt (aligned year
-+ 2, no named date) back to t_num (valuation-rules「未建模期权」2026-10-03);
-it stays out of the deck.
++ 2, no named date) back to t_num (valuation-rules「未建模期权」2026-10-03),
+less the unspent capital of the named industrialisation projects (2026 interim
+"additional investment of more than RMB1 billion": opt_k budget - opt_k_spent,
+x own_poly, spread evenly over opt_k_y0..opt_k_y1 and discounted at the basket r
+to t_num; valuation-rules「未建模期权」2026-10-04 new-capacity rule, v4); it
+stays out of the deck.
 
 Sanity checks beyond the anchor comparison:
   * r_perp must be the basket the Inputs row names (parse_baskets + check_r);
@@ -90,7 +94,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "0189.HK.md"
-FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v3"
+FORMULA_ID = "dongyue_quota_sotp_actual_year_flat_v4"
 LISTING_CCY = "HKD"
 TOL = 0.05  # outputs are rounded to 2 decimals
 YI = 1e5  # 亿, from RMB thousand
@@ -152,6 +156,7 @@ REQUIRED = [
     "px_r134a_l", "px_r134a_m", "px_r134a_h", "px_r22_l", "px_r22_m", "px_r22_h",
     "eps_2027_l", "eps_2027_m", "eps_2027_h",
     "opt_rev", "opt_margin", "t_opt", "t_num",
+    "opt_k", "opt_k_spent", "opt_k_y0", "opt_k_y1",
     "c_r32", "c_r125", "c_r134a", "c_r22", "bridge_k",
     "res_poly_l", "res_poly_m", "res_poly_h",
     "res_sil_l", "res_sil_m", "res_sil_h",
@@ -375,7 +380,18 @@ def main() -> int:
         errors.append("t_opt must be after t_num")
     opt_np = inp["opt_rev"] * inp["opt_margin"] * inp["own_poly"] * (1.0 - inp["tax"])
     v_at_t = opt_np * gen["poly"] * scale
-    v_opt = v_at_t / (1.0 + r) ** (inp["t_opt"] - inp["t_num"])
+    # Unspent capital (valuation-rules「未建模期权」2026-10-04): budget - spent,
+    # attributable via own_poly, spread evenly over y0..y1, discounted to t_num.
+    k_remain = inp["opt_k"] - inp["opt_k_spent"]
+    if k_remain < 0:
+        errors.append(f"opt_k_spent {inp['opt_k_spent']:,.0f} > budget opt_k {inp['opt_k']:,.0f}")
+    k_years = range(int(inp["opt_k_y0"]), int(inp["opt_k_y1"]) + 1)
+    if not k_years or k_years[-1] >= inp["t_opt"]:
+        errors.append("opt_k_y0..opt_k_y1 must be non-empty and end before t_opt")
+    k_df = sum((1.0 + r) ** -(y - inp["t_num"]) for y in k_years) / max(len(k_years), 1)
+    k_pv = k_remain * inp["own_poly"] * k_df * scale  # HKD/share at t_num
+    v_gross = v_at_t / (1.0 + r) ** (inp["t_opt"] - inp["t_num"])
+    v_opt = v_gross - k_pv
 
     # --- compare against the stated Outputs ---------------------------------
     out_sec = outputs_section(md)
@@ -447,9 +463,14 @@ def main() -> int:
           f"{scenario('l', fy24_unit, gen)['value']:.2f}")
     print(f"V_opt: {inp['opt_rev']:,.0f}k x {inp['opt_margin']:.4f} = {inp['opt_rev'] * inp['opt_margin']:,.0f}k segment result"
           f" -> attrib {opt_np:,.0f}k x pe_poly {gen['poly']:.3f} = {v_at_t:.3f} HKD @ {inp['t_opt']:.0f}"
-          f" / {1 + r}^{inp['t_opt'] - inp['t_num']:.0f} = {v_opt:.3f}")
+          f" / {1 + r}^{inp['t_opt'] - inp['t_num']:.0f} = {v_gross:.3f}")
+    print(f"  less unspent capital: ({inp['opt_k']:,.0f}k - spent {inp['opt_k_spent']:,.0f}k) x own_poly {inp['own_poly']}"
+          f" x mean DF {k_df:.4f} ({inp['opt_k_y0']:.0f}-{inp['opt_k_y1']:.0f} @ r to {inp['t_num']:.0f}) = {k_pv:.3f} HKD"
+          f" -> V_opt {v_opt:.3f} (gross {v_gross:.3f}, V_opt/M {v_opt / M:.1%})")
     for t_alt in (inp["t_opt"] - 1, inp["t_opt"] + 1):
-        print(f"  sens t_opt {t_alt:.0f}: V_opt {v_at_t / (1.0 + r) ** (t_alt - inp['t_num']):.2f}")
+        print(f"  sens t_opt {t_alt:.0f}: V_opt {v_at_t / (1.0 + r) ** (t_alt - inp['t_num']) - k_pv:.2f}")
+    print(f"  sens capital at t_opt in one lump (optimistic): V_opt "
+          f"{v_gross - k_remain * inp['own_poly'] * scale / (1.0 + r) ** (inp['t_opt'] - inp['t_num']):.2f}")
     if meta.v_opt is not None and meta.p_tiers:
         print(f"V_opt={meta.v_opt:.2f} (not in deck) p_tiers={meta.p_tiers}  zone+V: "
               + "/".join(f"{b + p * meta.v_opt:.2f}" for b, p in zip((L, M, H), meta.p_tiers)))

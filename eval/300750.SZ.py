@@ -7,7 +7,7 @@ no current price, A or H (AGENTS.md「现价 — 禁写契约」), so nothing he
 computes a zone, an A/H ratio or a market-implied reading — the digest and the
 app zone on live quotes.
 
-formula_id: catl_group_ni_fy27_consensus_perpetual_gordon_v3
+formula_id: catl_group_ni_fy27_consensus_perpetual_gordon_v4
 
 Main ruler: one numerator (group EPS) and a Gordon multiple from a named
 perpetual g, one stage, no transition:
@@ -67,7 +67,7 @@ from lib.tiers import flat_multiple_ladder  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300750.SZ.md"
-FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v3"
+FORMULA_ID = "catl_group_ni_fy27_consensus_perpetual_gordon_v4"
 
 TIERS = ("l", "m", "h")
 MIN_SPREAD = 0.02          # r - g2 floor (valuation-rules ①)
@@ -92,6 +92,7 @@ REQUIRED = sorted(FORMULA_FIELDS | {
     "px_low_2026", "px_low_2025", "gp_other_rate",
     "buyback_lo", "buyback_hi", "treasury_shares", "opt_outstanding",
     "cap_now_ann", "cap_build", "util_h1", "t_num", "t_opt",
+    "hu_gwh", "hu_budget", "hu_inv_pct", "dom_budget_gwh", "dom_inv_pct", "opt_eq",
 })
 
 # 表3 only — never Inputs, never the base band (A2e-7a).
@@ -107,7 +108,8 @@ def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     implies at the 2026H1 unit net profit.  Unit economics: this ticker's own
     2026H1 unit net profit.  Ruler: this ticker's own Gordon at the H tier
     (g2_h, H-tier opening BPS), valued in the realisation year and discounted
-    back to the numerator year at the basket r.
+    back to the numerator year at the basket r.  Less the unspent capital
+    behind the option's share of the in-construction capacity (2026-10-04).
     """
     vol_full = (inp["cap_now_ann"] + inp["cap_build"]) * inp["util_h1"]          # GWh
     vol_in_h = inp["eps_h"] * inp["shares"] / (inp["unit_profit_h1"] * 1e6)    # GWh
@@ -120,10 +122,26 @@ def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     pe_post = perpetual_pe(inp["g2_h"], roe_post, inp["r_perp"])
     anchor_post = eps_post * pe_post
     disc = (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    # Unspent capital (valuation-rules「未建模期权」2026-10-04): budget − invested
+    # for the whole 764 GWh, Hungary at its own note budget, the rest at the
+    # domestic per-GWh announcement rate and the 西南 project's invested ratio;
+    # only the option's share (d_vol over the in-construction volume) is
+    # charged, at the 归母 share, once in the realisation year (偏乐观).
+    k_hu = inp["hu_budget"]
+    k_dom = (inp["cap_build"] - inp["hu_gwh"]) * inp["dom_budget_gwh"]
+    k_budget = k_hu + k_dom
+    k_spent = k_hu * inp["hu_inv_pct"] + k_dom * inp["dom_inv_pct"]
+    k_remain = k_budget - k_spent                                              # 亿
+    share_opt = d_vol / (inp["cap_build"] * inp["util_h1"])
+    k_opt = k_remain * share_opt * inp["opt_eq"]                               # 亿
+    k_ps = k_opt * 1e8 / inp["shares"]
     return {"vol_full": vol_full, "vol_in_h": vol_in_h, "d_vol": d_vol, "d_ni": d_ni,
             "d_eps": d_eps, "roe_post": roe_post, "pe_post": pe_post,
             "anchor_post": anchor_post, "disc": disc,
-            "v_opt": (anchor_post - base_h) * disc}
+            "k_budget": k_budget, "k_spent": k_spent, "k_remain": k_remain,
+            "share_opt": share_opt, "k_opt": k_opt, "k_ps": k_ps,
+            "v_gross": (anchor_post - base_h) * disc,
+            "v_opt": (anchor_post - base_h - k_ps) * disc}
 
 
 def unbooked_eps(inp: dict[str, float]) -> float:
@@ -278,6 +296,11 @@ def main() -> int:
     opt = capacity_option(inp, H)
     if opt["d_vol"] <= 0 or opt["v_opt"] < 0:
         errors.append(f"capacity option non-positive: d_vol={opt['d_vol']:.1f} V_opt={opt['v_opt']:.2f}")
+    for key in ("hu_inv_pct", "dom_inv_pct", "opt_eq"):
+        if not 0.0 <= inp[key] <= 1.0:
+            errors.append(f"{key}={inp[key]} outside [0, 1]")
+    if not 0.0 < opt["share_opt"] <= 1.0:
+        errors.append(f"option share of in-construction volume {opt['share_opt']:.3f} outside (0, 1]")
     if inp["t_opt"] < inp["t_num"]:
         errors.append("t_opt must not precede the numerator year t_num")
     if any(k.startswith("p_") for k in inp):
@@ -313,7 +336,13 @@ def main() -> int:
           f"= {opt['d_vol']:.1f} GWh × {inp['unit_profit_h1']:.2f} 元/kWh = {opt['d_ni']:.2f} 亿（ΔEPS {opt['d_eps']:.3f}）"
           f" → ROE {opt['roe_post']:.2%}、PE {opt['pe_post']:.2f} → 兑现后锚点 {opt['anchor_post']:.2f} − H "
           f"= {opt['anchor_post'] - H:.2f} × {opt['disc']:.4f}（{inp['t_opt']:g}→{inp['t_num']:g}，无时点锚·拍值）"
-          f" = {opt['v_opt']:.2f}；V_opt/M={opt['v_opt'] / M:.1%}")
+          f" = {opt['v_gross']:.2f}（扣资本前）")
+    print(f"  未投资本：预算 {opt['k_budget']:.2f} 亿（匈牙利 {inp['hu_budget']:.2f} + 其余 "
+          f"{inp['cap_build'] - inp['hu_gwh']:.0f} GWh × {inp['dom_budget_gwh']:.4f}）− 已投 {opt['k_spent']:.2f} 亿 "
+          f"= {opt['k_remain']:.2f} 亿 × 期权份额 {opt['share_opt']:.2%} × 归母 {inp['opt_eq']:.2%} "
+          f"= {opt['k_opt']:.2f} 亿 = {opt['k_ps']:.2f} 元/股（兑现年一次扣）"
+          f" → V_opt = ({opt['anchor_post'] - H:.2f} − {opt['k_ps']:.2f}) × {opt['disc']:.4f} = {opt['v_opt']:.2f}；"
+          f"V_opt/M={opt['v_opt'] / M:.1%}")
     print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}  A′={a3:.2f} B′={b3:.2f}")
     bps_2q26 = inp["equity"] * 1e8 / inp["shares"]
     print(

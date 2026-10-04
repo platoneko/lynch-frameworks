@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v5
+formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v6
 
 Main ruler (valuation-rules.md「增长的表达顺序」, 裁决顺序 ②): the numerator year
 is FY28 — the furthest year with a >=2-house consensus — as one axis, three
@@ -35,7 +35,11 @@ undisclosed, so one fab = today's output per InP fab (Q4 FY26 Components
 annualised / inp_fabs; snapshot floor).  Unit economics = the company-level
 FY28 consensus net margin (placeholder, SBC haircut applied); valued on this
 ticker's own ruler (perpetual_pe at g2, ROE_H, r) in the realisation year
-t_opt and discounted back to the FY28 numerator year at r.  zone+V only.
+t_opt and discounted back to the FY28 numerator year at r, less the unspent
+retrofit capital (valuation-rules 2026-10-04 capacity-option rule: budget
+gso_k_budget - spent gso_k_spent, spread evenly over gso_k_n fiscal years from
+gso_k_y0; years at or before FY28 undiscounted, later years discounted to FY28
+at r; the $38.0M purchase price is paid, i.e. sunk).  zone+V only.
 
 Guardrail (valuation-rules 裁决顺序 ③): the M multiple must sit inside the
 ticker's own realised current-FY forward-PE band [pe_own_min, pe_own_max];
@@ -84,7 +88,7 @@ AXIS_LASER = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "inp-
 AXIS_PLUG = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "pluggable-module.md"
 # (this ticker's Inputs key, axis Inputs key, axis file): rows taken from peer-ruler axes.
 AXIS_ROWS = (("g2", "g2_inp_laser", AXIS_LASER), ("g2_plug_ref", "g2_pluggable", AXIS_PLUG))
-FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v5"
+FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v6"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
@@ -169,6 +173,10 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errors.append("option year must lie after the FY28 numerator year (A22)")
     if inp["inp_fabs"] < 1 or inp["comp_q4_fy26"] <= 0 or inp["rev_fy28_cons"] <= 0:
         errors.append("option unit inputs must be positive (A22)")
+    if not (0 <= inp["gso_k_spent"] <= inp["gso_k_budget"]) or inp["gso_k_n"] < 1:
+        errors.append("Greensboro capital: need 0 <= spent <= budget and >= 1 spend year (A22)")
+    if inp["gso_k_y0"] + inp["gso_k_n"] - 1 > inp["t_opt"]:
+        errors.append("Greensboro capital spend runs past the realisation year t_opt (A22)")
     if inp["equity"] <= 0 or inp["shares_dil"] <= 0:
         errors.append("equity and shares_dil must be positive")
     # A2e-7a: probabilities never enter the base deck.
@@ -213,6 +221,10 @@ def main() -> int:
         "inp_fabs",
         "rev_fy28_cons",
         "t_opt",
+        "gso_k_budget",
+        "gso_k_spent",
+        "gso_k_y0",
+        "gso_k_n",
         "g2_plug_ref",
         "sys_share",
     ]
@@ -316,7 +328,14 @@ def main() -> int:
     fab_rev = inp["comp_q4_fy26"] * 4.0 / inp["inp_fabs"]  # USD / yr, snapshot floor
     inc_ps = fab_rev / (inp["rev_fy28_cons"] * 1e6) * eps["M"]  # FY28 consensus net margin, after SBC
     pe_opt = pe["H"]  # own ruler: perpetual_pe(g2, ROE_H, r)
-    v_opt = inc_ps * pe_opt / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    v_gross = inc_ps * pe_opt / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    # Unspent capital (2026-10-04 rule): even spread over the spend years, each discounted to FY28.
+    k_remain = inp["gso_k_budget"] - inp["gso_k_spent"]
+    k_years = [int(inp["gso_k_y0"]) + i for i in range(int(inp["gso_k_n"]))]
+    k_ps = sum(
+        k_remain / len(k_years) / (1.0 + r) ** max(0, y - NUM_YEAR) for y in k_years
+    ) / (inp["shares_dil"] * 1e6)
+    v_opt = v_gross - k_ps
     opt_band = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a_opt = (opt_band[0] + opt_band[1]) / 2
     b_opt = (opt_band[1] + opt_band[2]) / 2
@@ -416,7 +435,8 @@ def main() -> int:
     print(
         f"V_opt={v_opt:.2f} (1 fab x ${fab_rev / 1e6:.1f}M [Q4 FY26 Components x4 / {inp['inp_fabs']:g} fabs]"
         f" x FY28 cons net margin {eps['M'] / haircut * inp['shares_dil'] / inp['rev_fy28_cons']:.3f} x (1-SBC) = {inc_ps:.4f}/sh"
-        f" x own H perp PE {pe_opt:.2f}x / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR});"
+        f" x own H perp PE {pe_opt:.2f}x / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR} = {v_gross:.2f}"
+        f" - unspent capital {k_ps:.2f}/sh [(${inp['gso_k_budget'] / 1e6:.0f}M - ${inp['gso_k_spent'] / 1e6:.0f}M) over FY{k_years[0]}-FY{k_years[-1]}, to FY{NUM_YEAR} at r]);"
         f" p_k {P_TIERS} -> zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f} A'={a_opt:.2f} B'={b_opt:.2f}"
     )
     fy27_axis = {

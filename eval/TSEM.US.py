@@ -83,7 +83,7 @@ REQUIRED = [
     "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2027_gaap_m", "eps_2028_gaap_m",
     "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_floor",
     "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
-    *SHARED, "opt_rev", "t_opt",
+    *SHARED, "opt_rev", "t_opt", "opt_k_ceiling",
 ]
 TIERS = ("L", "M", "H")
 
@@ -217,6 +217,12 @@ def main() -> int:
         return inc * perpetual_pe(g2s, d["H"]["roe_s"], r) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
 
     v_opt = v_opt_at(base)
+    # Unspent capital (valuation-rules 未建模期权, 2026-10-04): Track 2 budget undisclosed -> 待补, not
+    # deducted.  Printed only: the whole dual-track ceiling charged to Track 2 (an over-deduction).
+    yrs = inp["t_opt"] - NUM_YEAR
+    k_ps = inp["opt_k_ceiling"] / inp["shares"]
+    v_k_once = v_opt - k_ps / (1.0 + r) ** yrs
+    v_k_spread = v_opt - k_ps * (1.0 + 1.0 / (1.0 + r)) / 2.0
 
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
@@ -275,6 +281,8 @@ def main() -> int:
     a2, b2 = cut_points(*opt)
     print(f"V_opt={v_opt:.2f} (Track 2 = {inp['opt_rev'] / 1e9:.2f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio']:g}) x (1-t) -> "
           f"x SiPho perp PE {perpetual_pe(g2s, base['H']['roe_s'], r):.2f}x / 1.1^{int(inp['t_opt']) - NUM_YEAR}); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
+    print(f"unspent capital 待补 (A9): ceiling {inp['opt_k_ceiling'] / 1e9:.1f}B = {k_ps:.2f}/sh (dual track, not Track 2 alone) -> "
+          f"V_opt {v_k_once:.2f} (one-shot at {int(inp['t_opt'])}) / {v_k_spread:.2f} (2027-28 even) — printed only, not in V_opt")
     if not errors:
         write_rf_readings("TSEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)

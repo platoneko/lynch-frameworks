@@ -6,7 +6,15 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: dec_three_leg_fy28_consensus_g50_g200_vopt_perpetual_g_hk_anchored_v8
+formula_id: dec_three_leg_fy28_consensus_g50_g200_vopt_capex_net_perpetual_g_hk_anchored_v9
+
+v9 (2026-10-04, valuation-rules「未建模期权」新建产能型期权扣未投资本): the H-tier
+25 G50 + 3 G200 units come from the planned capacity of 自主燃机核心产能提升建设
+项目（一期）(board 2026-04-29, total 7.39 亿, wholly-owned 东方汽轮机, 30/yr by
+end-2027).  V_opt now nets the unspent budget (budget - spent, x equity share),
+charged at the realisation point and discounted on the option's own lag
+(g50_lag), split G50 / G200 pro rata to gross value.  Tiers whose units fit the
+capacity already built (`cap_now` = 12, M) are not charged.
 
 v8 (2026-10-04, valuation-rules「周期票的中枢分子」适用范围): DEC is a
 demand-cycle manufacturer (it prices its own equipment; the cycle is order
@@ -108,7 +116,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORKS = Path(__file__).resolve().parents[2] / "frameworks"
 FRAMEWORK = FRAMEWORKS / "1072.HK.md"
-FORMULA_ID = "dec_three_leg_fy28_consensus_g50_g200_vopt_perpetual_g_hk_anchored_v8"
+FORMULA_ID = "dec_three_leg_fy28_consensus_g50_g200_vopt_capex_net_perpetual_g_hk_anchored_v9"
 LISTING_CCY = "HKD"
 
 TIERS = ("l", "m", "h")
@@ -122,7 +130,8 @@ REQUIRED = (
      "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
      "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
      "g50_usdkw_lo", "g50_usdkw_hi",
-     "g200_mw", "g200_units_l", "g200_units_m", "g200_units_h"]
+     "g200_mw", "g200_units_l", "g200_units_m", "g200_units_h",
+     "cap_k", "cap_spent", "cap_eq", "cap_now", "gt_other_k"]
     + [f"jv_ni_{t}" for t in TIERS]
     + [f"ni_{t}" for t in TIERS]
     + [f"gp_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -220,8 +229,8 @@ def anchor(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> flo
 
 
 def g50_ps(inp: dict[str, float], tag: str) -> float:
-    """G50 腿 HKD/股（未乘 p_k）。"""
-    return to_hkd(inp, g50_leg(inp, tag)[2])
+    """G50 腿 HKD/股（未乘 p_k；已扣分摊的未投资本）。"""
+    return to_hkd(inp, option_parts(inp, tag)[0])
 
 
 def g200_price(inp: dict[str, float]) -> float:
@@ -243,13 +252,40 @@ def g200_leg(inp: dict[str, float], tag: str) -> tuple[float, float, float]:
     return ni, pe, ni * pe / (1.0 + inp["r_disc"]) ** inp[f"g50_lag_{tag}"]
 
 
+def capex_k(inp: dict[str, float], tag: str) -> float:
+    """Unspent capacity capital charged to a tier (亿 CNY, discounted).
+
+    valuation-rules「未建模期权」(2026-10-04): an option whose units come from
+    capacity still to be built is worth its realised value LESS the capital not
+    yet spent.  Only tiers whose G50 + G200 units exceed the capacity already
+    built (`cap_now`) need 一期 (7.39 亿, 30/yr by end-2027).  The charge sits at
+    the realisation point and rides the option's own lag — spend actually runs
+    2026H2-2027, so charging it at end-2027 slightly flatters V_opt (A16/A17).
+    """
+    units = inp[f"g50_units_{tag}"] + inp[f"g200_units_{tag}"]
+    if units <= inp["cap_now"]:
+        return 0.0
+    remain = (inp["cap_k"] - inp["cap_spent"]) * inp["cap_eq"]
+    return remain / (1.0 + inp["r_disc"]) ** inp[f"g50_lag_{tag}"]
+
+
+def option_parts(inp: dict[str, float], tag: str) -> tuple[float, float]:
+    """(G50, G200) CNY 市值 net of the unspent capital, split pro rata to gross."""
+    g50, g200 = g50_leg(inp, tag)[2], g200_leg(inp, tag)[2]
+    gross = g50 + g200
+    if gross <= 0:
+        return 0.0, 0.0
+    k = capex_k(inp, tag)
+    return g50 - k * g50 / gross, g200 - k * g200 / gross
+
+
 def g200_ps(inp: dict[str, float], tag: str) -> float:
-    return to_hkd(inp, g200_leg(inp, tag)[2])
+    return to_hkd(inp, option_parts(inp, tag)[1])
 
 
 def option_mv(inp: dict[str, float], tag: str) -> float:
-    """G50 + G200 CNY 市值（亿元）。"""
-    return g50_leg(inp, tag)[2] + g200_leg(inp, tag)[2]
+    """G50 + G200 CNY 市值（亿元），已扣未投资本。"""
+    return sum(option_parts(inp, tag))
 
 
 def variant_weights(inp: dict[str, float], tag: str, mode: str) -> dict[str, float]:
@@ -472,7 +508,7 @@ def main() -> int:
     # machine that is not in the 2019-2025 own-year PE history, so the combined
     # 表3 multiple may overshoot pe_own_hi — printed, not a fail (A18).
     for t in TIERS:
-        implied_g50 = (inp[f"ni_{t}"] * pe[t] + g50_leg(inp, t)[2]) / inp[f"ni_{t}"]
+        implied_g50 = (inp[f"ni_{t}"] * pe[t] + option_parts(inp, t)[0]) / inp[f"ni_{t}"]
         if not (lo - 1e-9 <= implied_g50 <= hi + 1e-9):
             errors.append(
                 f"G50-only implied multiple at {t.upper()} = {implied_g50:.2f} "
@@ -580,6 +616,23 @@ def main() -> int:
               f"{n}:{b:.2f}+{pk:.3f}xV={a:.2f}"
               for n, b, pk, a in zip("LMH", (L, M, H), p_k, adj_band)))
     print(f"V_opt/M={v_opt / M:.1%}")
+    # 未投资本 (valuation-rules「未建模期权」2026-10-04): what was netted, and the
+    # sensitivities §0 / 表3 quote, recomputed on the same charge.
+    k_h = capex_k(inp, "h")
+    gross_h = to_hkd(inp, g50_leg(inp, "h")[2] + g200_leg(inp, "h")[2])
+    print(f"未投资本: 一期预算 {inp['cap_k']} - 已投 {inp['cap_spent']} = {inp['cap_k'] - inp['cap_spent']:.2f} 亿 "
+          f"x 权益 {inp['cap_eq']:.0%} ÷{(1 + inp['r_disc']) ** inp['g50_lag_h']:.2f} = {k_h:.2f} 亿 = "
+          f"{to_hkd(inp, k_h):.3f} HKD; V_opt 未扣 {gross_h:.2f} -> 扣后 {v_opt:.2f}; "
+          f"M 档 {inp['g50_units_m'] + inp['g200_units_m']:.0f} 台 <= 已建 {inp['cap_now']:.0f} 台，不扣")
+    print(f"  其余燃机在建工程未投（交叉，不扣）{inp['gt_other_k']:.2f} 亿 = "
+          f"{to_hkd(inp, inp['gt_other_k'] / (1 + inp['r_disc']) ** inp['g50_lag_h']):.3f} HKD"
+          f" → 若全计 V_opt {v_opt - to_hkd(inp, inp['gt_other_k'] / (1 + inp['r_disc']) ** inp['g50_lag_h']):.2f}")
+    for label, over in (("g50_units_h 25->12", {"g50_units_h": 12}),
+                        ("g50_gm_h 40%->30%", {"g50_gm_h": 0.30}),
+                        ("去掉 G200", {"g200_units_h": 0})):
+        alt = dict(inp, **over)
+        v_alt = to_hkd(alt, option_mv(alt, "h"))
+        print(f"  敏感性 {label}: V_opt {v_alt:.2f}  H+V {H + v_alt:.2f}")
 
     gw = {t: gross_weights(inp, t) for t in TIERS}
     print(f"腿 C 分部毛利权重 {gw['l']['c']:.2%} / {gw['m']['c']:.2%} / {gw['h']['c']:.2%}"

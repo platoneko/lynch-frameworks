@@ -89,6 +89,7 @@ LI_COST_H1 = (LI_REV_H1 - LI_GP_H1) / LI_VOL_H1
 
 REQUIRED = [
     "jl3_cu_t", "jl2_cu_t", "nci_julong", "t_num", "t_opt",
+    "jl2_capex", "jl2_ore_add", "jl3_ore_add",
     "shares", "bps", "fx_usd_cny", "realization_au", "realization_cu",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_g", "cost_au",
     "lme_cu_l", "lme_cu_m", "lme_cu_h", "vol_cu_t", "cost_cu",
@@ -232,8 +233,16 @@ def julong3_option(inp: dict[str, float], th: dict) -> dict[str, float]:
     roe_post = (th["fwd"]["parent"] + d_parent) / th["b27"]
     pe_post = perpetual_pe(inp["g2_aucu"], roe_post, inp["r_perp"])
     disc = (1 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    # Unspent capital (valuation-rules「未建模期权」2026-10-04): the phase-3 budget
+    # is undisclosed (待补), so V_opt carries no deduction yet and reads high.
+    # Reference only — phase-2 capex per tonne of added ore throughput scaled to
+    # phase 3's added throughput, equity share, one lump in t_opt (optimistic).
+    k_ref = inp["jl2_capex"] / inp["jl2_ore_add"] * inp["jl3_ore_add"]
+    k_ref_ps = k_ref * (1 - inp["nci_julong"]) / inp["shares"] * disc
+    v_opt = d_eps * pe_post * disc
     return {"d_cu": d_cu, "d_parent": d_parent, "d_eps": d_eps, "roe_post": roe_post,
-            "pe_post": pe_post, "disc": disc, "v_opt": d_eps * pe_post * disc}
+            "pe_post": pe_post, "disc": disc, "v_opt": v_opt,
+            "k_ref": k_ref, "k_ref_ps": k_ref_ps, "v_opt_ref": v_opt - k_ref_ps}
 
 
 def main() -> int:
@@ -363,6 +372,11 @@ def main() -> int:
         m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
         if m3 is None or abs(float(m3.group(1)) - v) > TOL:
             errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
+    for label, want, rx in (("K_ref", opt["k_ref_ps"], r"未投资本参照[^|]*?= \*\*([0-9.]+)\*\* 元/股"),
+                            ("V_opt_ref", opt["v_opt_ref"], r"期权参照值 \*\*([0-9.]+)\*\*")):
+        got = first_float(rx, md)
+        if got is None or abs(got - want) > TOL:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
     for label, want, rx in (("A′", (band3[0] + band3[1]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
                             ("B′", (band3[1] + band3[2]) / 2, r"B′ = \*\*([0-9.]+)\*\*")):
         got = first_float(rx, out_sec)
@@ -393,6 +407,9 @@ def main() -> int:
           f"税金及附加、(1−t)(1−NCI 巨龙 {inp['nci_julong']:.2%}) = {opt['d_parent'] / YI:.2f} 亿（ΔEPS {opt['d_eps']:.4f}）"
           f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_aucu']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}） × {opt['disc']:.4f}"
           f"（{inp['t_opt']:g}→{inp['t_num']:g}，无时点锚·拍值）= {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+    print(f"  未投资本 待补（三期预算未披露，V_opt 未扣、偏高）；参照（不入 V_opt）：二期 {inp['jl2_capex'] / YI:.1f} 亿 ÷ "
+          f"{inp['jl2_ore_add'] / 1e4:,.0f} 万吨矿石/年 × 三期 {inp['jl3_ore_add'] / 1e4:,.0f} 万吨 = {opt['k_ref'] / YI:.1f} 亿（全矿）"
+          f" × 权益 {1 - inp['nci_julong']:.2%} ÷ 股本 × {opt['disc']:.4f} = {opt['k_ref_ps']:.2f}/股 → V_opt 参照 {opt['v_opt_ref']:.2f}")
     print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
           f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
     print(f"flat-multiple ladder @ metal PE_M {T['m']['pe']['metal']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
