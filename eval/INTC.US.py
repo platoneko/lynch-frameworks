@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""INTC.US valuation eval — base L/M/H with Foundry at 0, V_opt = Foundry 2030 target world.
+"""INTC.US valuation eval — base L/M/H with the Foundry transition loss, V_opt = named packaging customer.
 
 frameworks/INTC.US.md is the source of truth for inputs; this script recomputes
-the base L/M/H (CPU leg on Gordon multiples + closing items, Foundry = 0), A/B
+the base L/M/H (CPU leg on Gordon multiples + closing items + the Foundry
+leg's consensus-implied loss until the management breakeven year), A/B
 and V_opt, and exits 1 on mismatch with stated Outputs.  The doc carries no
 current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id (CPU):     intc_cpu_product_gordon_v3
-formula_id (Foundry): intc_foundry_target_option_v2  (ceiling only; not in the base)
+formula_id (CPU):     intc_cpu_product_gordon_v4
+formula_id (Foundry): intc_foundry_named_option_v3  (ceiling only; the pre-breakeven loss is in the base, A21)
 
 CPU leg (A2e-1 / AGENTS.md 永续增长口径; 2026-10-03 data priority + leg economics):
   numerators  L = FY2025 full-year Intel Products operating income (realised
@@ -25,8 +26,9 @@ CPU leg (A2e-1 / AGENTS.md 永续增长口径; 2026-10-03 data priority + leg ec
               said so).  r_perp comes from the basket the CPU leg is assigned to
               (valuation-rules「§r 篮子」, A19): 篮 4 龙头制造; the Inputs source
               cell names the basket and `check_r` demands the value match it.
-              The Foundry leg sits in 篮 7 but has no r row -- it is an option,
-              never in L/M/H; its V_opt is discounted at the base basket r
+              The Foundry leg sits in 篮 7 but has no r row -- its steady state
+              is an option, never in L/M/H (only its finite pre-breakeven loss
+              is, discounted at the base basket r, A21); its V_opt is discounted at the base basket r
               (construction §7c-1), 15% only as a printed sensitivity (A19).
               One g2 shared across tiers (turnaround class), reverse-solved from
               the well-conditioned semis cluster (A15) and capped at g_cap(r);
@@ -41,14 +43,24 @@ CPU leg (A2e-1 / AGENTS.md 永续增长口径; 2026-10-03 data priority + leg ec
   closure     corporate unallocated cost is capitalised at the M-tier generated
               multiple (A10b), so it moves with the same g2/ROE as the leg.
 
-Foundry stays an option, closed by public data (valuation-rules「未建模期权」
-2026-10-03): count = the company's named 2030 external-foundry revenue target
-plus today's measured internal foundry revenue (snapshot), unit economics =
-the company's named 30% Foundry operating-margin target, valued on Intel's own
-ruler (basket r, company-ROE 口径, foundry-cluster g2) in 2030 and discounted
-to the FY2027 numerator year at r.  No peer multiple (the old SMIC-level PB is
-gone).  表3 = base_k + p_k × V_opt with P_K an eval constant, never an Input
-(A2e-7a); p_M = the pre-split success weight 0.25 (A7).
+Foundry in the base (A21, 2026-10-04): the leg's FY2027 loss is computable --
+FY2027 company EPS consensus (>=2 ranged houses) minus the inferred product EPS
+through the A5b bridge -- so it enters every tier for the years until the
+current management's breakeven year (M/H: end-2027; L: the named slip to
+end-2028, FY2028 at the FY2027 amount, discounted at r).  After breakeven the
+leg is 0 in the base; anything above breakeven is the option.
+
+Foundry option, closed by public data (valuation-rules「未建模期权」): count =
+quantities the CURRENT management still names -- one publicly adopted
+advanced-packaging customer x "multiple billion dollars per customer per year"
+read at its floor $2B (CFO, 2026-08-26); the 2024 $15B-by-2030 external target
+and the 2030 30% Foundry margin are not restated by current management and are
+out; internal foundry revenue is out (a transfer from the product leg, whose
+margin already prices it).  Unit economics = the same CFO's 30% operating
+margin for that business at run-rate (2028).  Valued on Intel's own ruler
+(basket r, company-ROE 口径, foundry-cluster g2) in 2028, discounted to FY2027
+at r.  表3 = base_k + p_k × V_opt with P_K an eval constant, never an Input
+(A2e-7a).
 
 Run:  python3 frameworks/eval/INTC.US.py
 """
@@ -84,8 +96,8 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "INTC.US.md"
 FORMULA_IDS = (
-    "intc_cpu_product_gordon_v3",
-    "intc_foundry_target_option_v2",
+    "intc_cpu_product_gordon_v4",
+    "intc_foundry_named_option_v3",
 )
 TOL = 0.05
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
@@ -110,7 +122,9 @@ REQUIRED = [
     *(f"{k}_{q}" for k in ("prod_rev", "prod_oi", "cons_rev") for q in QTRS),
     "prod_rev_fy25", "cons_rev_fy25",
     "r_perp", "g2_cpu", "pe_own_min", "pe_own_max", "eps_fy27_hsbc",
-    "opt_rev_ext", "foundry_rev_h1", "foundry_ext_h1", "opt_opm", "g2_foundry", "t_opt", "t_num",
+    "cons_eps_fy27_low", "cons_eps_fy27_m", "cons_eps_fy27_h", "oi_products_trough", "bridge_other_eps", "sbc_acq_eps", "be_year_l", "be_year_mh",
+    "foundry_oi_h1", "foundry_oi_q2",
+    "opt_rev_pkg", "foundry_rev_h1", "foundry_ext_h1", "foundry_ext_q2", "opt_opm", "g2_foundry", "t_opt", "t_num",
     "corp_other_eps", *ADJ_PS,
 ]
 TIERS = ("L", "M", "H")
@@ -187,14 +201,32 @@ def main() -> int:
 
     corp_ps = inp["corp_other_eps"] * pe["M"]
     adj = closure_at(pe)
-    base = {t: cpu[t] + adj for t in TIERS}
+
+    # ---- Step 2b: Foundry leg until breakeven (A21) ----
+    # A5b bridge: company non-GAAP EPS = product EPS - foundry loss + all-other
+    # + recurring unallocated (after-tax, negative) + SBC/acquisition add-back.
+    # Solve for the FY2027 foundry loss the consensus mean implies.
+    loss_fy27 = (eps["M"] + inp["bridge_other_eps"] + inp["corp_other_eps"] + inp["sbc_acq_eps"]
+                 - inp["cons_eps_fy27_m"])
+    if loss_fy27 <= 0:
+        errors.append(f"consensus implies no FY2027 foundry loss ({loss_fy27:.3f}) — recheck A21 bridge")
+    t0 = inp["t_num"]
+    be = {"L": inp["be_year_l"], "M": inp["be_year_mh"], "H": inp["be_year_mh"]}
+
+    def foundry_at(r_: float) -> dict[str, float]:
+        return {t: -loss_fy27 * sum((1 + r_) ** -(y - t0) for y in range(int(t0), int(be[t]) + 1)) for t in TIERS}
+
+    fdy = foundry_at(r)
+    if not all(be[t] >= t0 for t in TIERS) or be["L"] < be["M"]:
+        errors.append(f"breakeven years {be} must be >= t_num {t0} and L >= M/H (A21)")
+    base = {t: cpu[t] + adj + fdy[t] for t in TIERS}
     L, M, H = (base[t] for t in TIERS)
     A, B = cut_points(L, M, H)
 
     # ---- Step 3: A2e-2c flat ladder + A2e-5 decomposition ----
     flat_errs, flat_eps = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pe["M"])
     errors += flat_errs
-    flat = tuple(v + adj for v in flat_eps)
+    flat = tuple(v + adj + fdy[t] for v, t in zip(flat_eps, TIERS))
     dec = decompose((L, M, H), (pe["L"], pe["M"], pe["H"]))
 
     # ---- Step 3b: single-house cross-check (A5b / A18) — not a band ----
@@ -205,20 +237,24 @@ def main() -> int:
         errors.append("候选带 line still in Outputs — retired 2026-10-03 (A18)")
 
     # ---- Step 4: Foundry option (A6/A11) and 表3 (probabilities only here) ----
-    # Count: named 2030 external target + measured internal revenue (H1'26 x2).
+    # Count: one named packaging customer at the CFO's per-customer floor (A6).
+    # Internal foundry revenue is a transfer from the product leg -- disclosed only.
     g2f = inp["g2_foundry"]
     errors += check_g_cap(g2f, r, "g2_foundry")
     if r - g2f < MIN_R_MINUS_G:
         errors.append(f"r - g2_foundry = {r - g2f:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     rev_int = (inp["foundry_rev_h1"] - inp["foundry_ext_h1"]) * 2 * MM
-    opt_rev = inp["opt_rev_ext"] + rev_int
-    ni_opt = opt_rev * inp["opt_opm"] * keep
-    eps_opt = ni_opt / sh
-    roe_post = (ni["H"] + ni_opt) / eq  # company-ROE 口径 in the realised world (A15)
-    pe_f = perpetual_pe(g2f, roe_post, r)
     years = inp["t_opt"] - inp["t_num"]
+
+    def option(rev: float, opm: float = inp["opt_opm"], yrs: float = years, g_: float = g2f) -> tuple[float, float, float, float]:
+        ni_ = rev * opm * keep
+        roe_ = (ni["H"] + ni_) / eq  # company-ROE 口径 in the realised world (A15)
+        pe_ = perpetual_pe(g_, roe_, r)
+        return ni_ / sh, roe_, pe_, ni_ / sh * pe_ * (1 + r) ** -yrs
+
+    opt_rev = inp["opt_rev_pkg"]
+    eps_opt, roe_post, pe_f, v_opt = option(opt_rev)
     df = (1 + r) ** -years
-    v_opt = eps_opt * pe_f * df
     p_k = P_K
     adj_band = [base[t] + p_k[i] * v_opt for i, t in enumerate(TIERS)]
     a2, b2 = cut_points(*adj_band)
@@ -247,6 +283,11 @@ def main() -> int:
             f"{t}: OI {oi[t]:,.0f}M -> eps {eps[t]:.4f} ROE {roe[t]:.3f} payout {1 - g2 / roe[t]:.3f}"
             f" -> PE {pe[t]:.2f}x -> CPU {cpu[t]:.2f}/sh"
         )
+    print(f"foundry leg (A21): FY2027 loss implied by consensus EPS {inp['cons_eps_fy27_m']:g} = "
+          f"{eps['M']:.3f} {inp['bridge_other_eps']:+.3f} {inp['corp_other_eps']:+.3f} {inp['sbc_acq_eps']:+.3f} - {inp['cons_eps_fy27_m']:g}"
+          f" = {loss_fy27:.3f}/sh after tax (${loss_fy27 * sh / keep / 1e9:.2f}B pre-tax); snapshot H1'26 run-rate "
+          f"${-inp['foundry_oi_h1'] * 2 / 1e3:.2f}B; breakeven L {be['L']:.0f} / M,H {be['M']:.0f} -> "
+          + " ".join(f"{t} {fdy[t]:+.2f}" for t in TIERS))
     print(f"closure {adj:+.2f} = " + " ".join(f"{k}={inp[k]:+.2f}" for k in ADJ_PS)
           + f" corp_other={corp_ps:+.2f} ({inp['corp_other_eps']:+.3f}/yr x M-PE {pe['M']:.2f})")
     print(f"base L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
@@ -262,7 +303,8 @@ def main() -> int:
     g_lo, _ = implied_g(inp["pe_own_min"], roe["M"], r)
     g_hi, _ = implied_g(inp["pe_own_max"], roe["M"], r)
     print(f"guardrail ⇔ g at M-tier ROE {roe['M']:.3f}: [{g_lo:+.2%}, {g_hi:+.2%}]; g2_cpu {g2:.2%} inside -> no band-edge reverse-solve")
-    print(f"foundry option: ({inp['opt_rev_ext'] / 1e9:.1f}B ext target + {rev_int / 1e9:.2f}B internal) x OPM {inp['opt_opm']:.0%}"
+    print(f"internal foundry revenue {rev_int / 1e9:.2f}B/yr (H1'26 x2) excluded from the count (transfer from the product leg)")
+    print(f"foundry option: {opt_rev / 1e9:.1f}B (1 named packaging customer, per-customer floor) x OPM {inp['opt_opm']:.0%}"
           f" x (1-t) / shares = {eps_opt:.4f}/sh; ROE_post {roe_post:.3f} -> PE {pe_f:.2f}x (g2 {g2f:.2%}, r {r:g})"
           f" -> {eps_opt * pe_f:.2f} @{inp['t_opt']:.0f} x df {df:.4f} ({years:.0f}y) = V_opt {v_opt:.2f}")
     print(f"表3  V_opt={v_opt:.2f}  p_k={p_k[0]:.2f}/{p_k[1]:.2f}/{p_k[2]:.2f}  "
@@ -275,12 +317,50 @@ def main() -> int:
         e_ = {t: oi_[t] * MM * keep / sh for t in TIERS}
         p_ = {t: perpetual_pe(g_, e_[t] * sh / eq, r) for t in TIERS}
         a_ = sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * p_["M"]
-        return tuple(e_[t] * p_[t] + a_ for t in TIERS)  # type: ignore[return-value]
+        # Consensus EPS is fixed, so a different product EPS implies a different foundry loss (A21).
+        f_ = {t: fdy[t] * (loss_fy27 + e_["M"] - eps["M"]) / loss_fy27 for t in TIERS}
+        return tuple(e_[t] * p_[t] + a_ + f_[t] for t in TIERS)  # type: ignore[return-value]
 
     for g in (g2 - 0.01, g2 + 0.01):
         print(f"sensitivity g2={g:.2%}: L/M/H " + "/".join(f"{v:.2f}" for v in band_with(g_=g)))
     print(f"sensitivity margin FY25 {margin_fy25:.4f}: L/M/H " + "/".join(f"{v:.2f}" for v in band_with(m_=margin_fy25)))
     print(f"sensitivity df at 15% (篮 7 leg r, not adopted): V_opt {eps_opt * pe_f * 1.15 ** -years:.2f}")
+    print(f"sensitivity V_opt: run-rate 2029 {option(opt_rev, yrs=years + 1)[3]:.2f}; 3 customers {option(3 * opt_rev)[3]:.2f}; "
+          f"snapshot floor (Q2'26 external x4 = {inp['foundry_ext_q2'] * 4 / 1e3:.2f}B) {option(inp['foundry_ext_q2'] * 4 * MM)[3]:.2f}; "
+          f"g2 = g2_cpu {option(opt_rev, g_=g2)[3]:.2f}; internal revenue at 30% (not adopted, double count) "
+          f"{option(rev_int, yrs=3)[3]:.2f}")
+    # Foundry-loss path: management's end-2027 breakeven as a straight line from Q2'26.
+    q2l = -inp["foundry_oi_q2"]
+    mgmt_fy27 = q2l * (3 + 2 + 1 + 0) / 6 * MM * keep / sh
+    print(f"sensitivity foundry FY2027 loss on management's straight-line path to 0 at Q4'27: {mgmt_fy27:.3f}/sh -> "
+          f"M {M - fdy['M'] - mgmt_fy27:.2f}; loss forever: see the loss-perpetual line")
+    # 纠正对账门 coordinates that are pure model arithmetic (A5c / A21).
+    em_r = eps["M"] * (1 / r) + sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] / r + fdy["M"]
+    co = inp["cons_eps_fy27_m"] * pe["M"] + inp["net_cash_ps"]
+    print(f"gate coordinates: E_M/r {em_r:.2f}; company FY2027 consensus EPS x M-PE + net cash {co:.2f}")
+    # 口径二 (cross-coordinate, A21): company FY2027 non-GAAP EPS consensus low/mean/high
+    # x the same tier Gordon multiple + net cash.  Its numerator carries the
+    # transitional foundry loss into perpetuity at the CPU g2 -- not the same world.
+    cons3 = (inp["cons_eps_fy27_low"], inp["cons_eps_fy27_m"], inp["cons_eps_fy27_h"])
+    k2 = tuple(e_ * pe[t] + inp["net_cash_ps"] for e_, t in zip(cons3, TIERS))
+    print("口径二 (company consensus EPS x tier PE + net cash, cross only): L/M/H " + "/".join(f"{v:.2f}" for v in k2))
+    # Pressure coordinate for deep_discount: FY2023 trough product OI x 1/r + closure + L foundry loss.
+    trough = inp["oi_products_trough"] * MM * keep / sh
+    print(f"pressure: FY2023 trough eps {trough:.3f} x 1/r + closure {adj:+.2f} + L foundry {fdy['L']:+.2f} = "
+          f"{trough / r + adj + fdy['L']:.2f}; L at g2=0: {band_with(g_=0.0)[0]:.2f}")
+    # Loss-perpetual SOTP: the FY2027 foundry loss never ends -> company numerator, company ROE.
+    def perpetual_loss_band() -> tuple[float, ...]:
+        out = []
+        for t in TIERS:
+            e_ = eps[t] - loss_fy27
+            # ROE below r: peak region, the multiple is capped at 1/r (valuation-rules 峰形区处理).
+            p_ = perpetual_pe(g2, e_ * sh / eq, r) if e_ * sh / eq > r else 1 / r
+            out.append(e_ * p_)
+        pm = perpetual_pe(g2, (eps["M"] - loss_fy27) * sh / eq, r)
+        a_ = sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * pm
+        return tuple(v + a_ for v in out)
+    print("loss-perpetual SOTP (FY2027 foundry loss forever, not adopted): L/M/H " + "/".join(f"{v:.2f}" for v in perpetual_loss_band()))
+    print(f"old 口径 (foundry 0 in every year, superseded 2026-10-04): L/M/H " + "/".join(f"{base[t] - fdy[t]:.2f}" for t in TIERS))
 
     # ---- Checks ----
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=TOL)
@@ -298,12 +378,14 @@ def main() -> int:
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_perp 1:1 in every tier multiple and so in the corp-unallocated closure
-    # capitalised at the M multiple (A10b); OI, ROE, g2 and the $/share closing
-    # items stay put, and the Foundry option is outside the base.  Disclosure only.
+    # capitalised at the M multiple (A10b) and the discounting of the L-tier
+    # FY2028 foundry loss (A21); OI, ROE, g2 and the $/share closing items stay
+    # put, and the Foundry option is outside the base.  Disclosure only.
     def band_at(dr: float) -> tuple[float, float, float]:
         pe_ = tier_pe(r + dr)
         adj_ = closure_at(pe_)
-        return tuple(eps[t] * pe_[t] + adj_ for t in TIERS)  # type: ignore[return-value]
+        f_ = foundry_at(r + dr)
+        return tuple(eps[t] * pe_[t] + adj_ + f_[t] for t in TIERS)  # type: ignore[return-value]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     # Only a clean run feeds the daily digest.
