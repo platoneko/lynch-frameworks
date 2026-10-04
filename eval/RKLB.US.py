@@ -6,7 +6,7 @@ A/B, the Neutron option and the candidate band from its §3 Inputs table and
 exits 1 on mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」):
 which zone a quote falls in is derived live by the daily digest and the app.
 
-formula_id: rklb_sotp_fy27_mature_margin_iridium_evebit_v2
+formula_id: rklb_sotp_fy27_mature_margin_iridium_evebit_v3
 
 Pro-forma (Iridium closed) unlevered SOTP, USD bn → per share:
 
@@ -23,11 +23,16 @@ Pro-forma (Iridium closed) unlevered SOTP, USD bn → per share:
     Closure                 6/30 cash + Sep-2026 ATM proceeds − debt.  Neutron spend
                             is NOT here: it sits with the option (A12).
 
-Option (zone+V; valuation-rules「未建模期权」2026-10-03): the count is Rocket
-Lab's own named quantity — the stated Neutron steady cadence (launches / yr) ×
-the stated price per launch; no peer scale, no peer multiple.  Unit economics
-and the multiple are this ticker's own Space + Electron leg at the H tier
-(margin_h, marginal ROIC, g2, basket r); valued in the cadence year and
+Option (zone+V; valuation-rules「未建模期权」2026-10-03): no sell-side house
+publishes a same-year Neutron launch count (only Morgan Stanley, one house), so
+the count falls to Rocket Lab's own named quantity — the CFO's named fleet
+capacity (≈4 vehicles × quarterly turnaround = neutron_cadence launches / yr)
+× the stated price per launch; the ramp's stated floor (neutron_unit, "seven
+and beyond") is one unit, so k = cadence / unit > 1.  No peer scale, no peer
+multiple.  Unit economics are launch economics: the company-stated Neutron
+gross margin (unit cost vs price) less the deck's H-tier opex ratio; the
+multiple is this ticker's ruler (perpetual_pe at g2, marginal ROIC = option
+margin × (1 − tax) / cap_int, basket r).  Valued in the fleet year and
 discounted back to FY2027.  Remaining Neutron spend is deducted in full (not
 probability-weighted) in table 3.
 
@@ -53,7 +58,7 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "RKLB.US.md"
-FORMULA_ID = "rklb_sotp_fy27_mature_margin_iridium_evebit_v2"
+FORMULA_ID = "rklb_sotp_fy27_mature_margin_iridium_evebit_v3"
 TIERS = ("l", "m", "h")
 REQUIRED = [
     "shares_base", "shares_sep", "irdm_shares", "exch_ratio", "tax",
@@ -61,7 +66,8 @@ REQUIRED = [
     "neutron_rev", "cap_int", "g2", "r_legs", "n_arr",
     "ir_nd", "ir_cash_ps",
     "cash", "sep_raise", "debt",
-    "neutron_price", "neutron_cadence", "t_opt", "neutron_carry",
+    "neutron_price", "neutron_cadence", "neutron_unit", "t_unit", "t_opt", "neutron_carry",
+    "neutron_gm", "neutron_opex",
     "g_fade0", "fade_step", "n_fade",
 ]
 TOL = 0.05
@@ -155,18 +161,30 @@ def main() -> int:
              + closure) / sh for t in TIERS]
     errors += ladder("flat-multiple L<M<H", *flat)
 
-    # Neutron option: own named cadence × own price, own leg ruler at H, discounted from t_opt.
-    t_opt = int(inp["t_opt"])
-    if t_opt <= NUM_YEAR:
-        errors.append("t_opt must lie after the numerator year (A11)")
+    # Neutron option: own named fleet cadence × own price, launch economics, own ruler, discounted from t_opt.
+    t_opt, t_unit = int(inp["t_opt"]), int(inp["t_unit"])
+    if not NUM_YEAR < t_unit <= t_opt:
+        errors.append("t_unit / t_opt must lie after the numerator year, unit year first (A11)")
+    if inp["neutron_cadence"] < inp["neutron_unit"]:
+        errors.append("neutron_cadence below the stated unit cadence: k must be ≥ 1 (A11)")
+    k_units = inp["neutron_cadence"] / inp["neutron_unit"]
+
+    def opt_ruler(gm: float) -> tuple[float, float, float]:
+        m = gm - inp["neutron_opex"]
+        roic = m * (1 - inp["tax"]) / inp["cap_int"]
+        return m, roic, perpetual_pe(inp["g2"], roic, r)
+
+    m_opt, roic_opt, pe_opt = opt_ruler(inp["neutron_gm"])
+
+    def v_at(year: int, n: float, price: float | None = None, gm: float | None = None) -> float:
+        m, _, pe = opt_ruler(inp["neutron_gm"] if gm is None else gm)
+        rev = n * (inp["neutron_price"] if price is None else price)
+        return rev * m * (1 - inp["tax"]) * pe / (1 + r) ** (year - NUM_YEAR) / sh
+
     opt_rev = inp["neutron_price"] * inp["neutron_cadence"]
-    opt_nopat = opt_rev * inp["margin_h"] * (1 - inp["tax"])
-    pe_opt = rows["h"]["pe"]
-
-    def v_at(year: int, rev: float = opt_rev) -> float:
-        return rev * inp["margin_h"] * (1 - inp["tax"]) * pe_opt / (1 + r) ** (year - NUM_YEAR) / sh
-
-    v_opt = v_at(t_opt)
+    opt_nopat = opt_rev * m_opt * (1 - inp["tax"])
+    v_opt = v_at(t_opt, inp["neutron_cadence"])
+    v_unit = v_at(t_unit, inp["neutron_unit"])
     carry = inp["neutron_carry"] / sh
     said = stated(md, r"\(V_{opt}\)")
     if said is None:
@@ -204,14 +222,21 @@ def main() -> int:
     nm = [rows[t]["nopat"] for t in TIERS]
     print(f"L/M={L / M:.3f} (legs 分子比 {nm[0] / nm[1]:.2f}) H/M={H / M:.3f} (分子比 {nm[2] / nm[1]:.2f})"
           f" width={(H - L) / (2 * M):.3f} V_opt/M={v_opt / M:.2f}")
-    print(f"V_opt chain: {inp['neutron_cadence']:g}/yr × {inp['neutron_price']:g}bn = rev {opt_rev:.3f}bn × margin_h {inp['margin_h']:g}"
-          f" × (1-t) = NOPAT {opt_nopat:.4f} × PE {pe_opt:.2f} (g2 {inp['g2']:g}, ROIC_H {rows['h']['roic']:.1%}, r {r:g}) @{t_opt}"
-          f" ÷ {(1 + r) ** (t_opt - NUM_YEAR):.3f} ÷ shares → {v_opt:.2f}")
-    print(f"  V_opt sensitivity: first flight 2026 (cadence year {t_opt - 1}) → {v_at(t_opt - 1):.2f};"
-          f" price 0.055 → {v_at(t_opt, 0.055 * inp['neutron_cadence']):.2f}; 5/yr → {v_at(t_opt, inp['neutron_price'] * 5):.2f}")
+    print(f"V_opt chain: {inp['neutron_cadence']:g}/yr (k = {k_units:.2f} × unit {inp['neutron_unit']:g}/yr) × {inp['neutron_price']:g}bn"
+          f" = rev {opt_rev:.3f}bn × margin {m_opt:.3f} (GM {inp['neutron_gm']:g} − opex {inp['neutron_opex']:g}) × (1-t)"
+          f" = NOPAT {opt_nopat:.4f} × PE {pe_opt:.2f} (g2 {inp['g2']:g}, ROIC {roic_opt:.1%}, r {r:g}) @{t_opt}"
+          f" ÷ {(1 + r) ** (t_opt - NUM_YEAR):.4f} ÷ shares → {v_opt:.2f}")
+    print(f"  unit ({inp['neutron_unit']:g}/yr @{t_unit}) → {v_unit:.2f};"
+          f" one-year slip → {v_at(t_opt + 1, inp['neutron_cadence']):.2f};"
+          f" Morgan Stanley 12/yr @{t_opt} → {v_at(t_opt, 12):.2f};"
+          f" price 0.055 → {v_at(t_opt, inp['neutron_cadence'], price=0.055):.2f}")
+    for gm in (0.408, 0.60):
+        m, roic, pe = opt_ruler(gm)
+        print(f"  GM {gm:g} (margin {m:.3f}, ROIC {roic:.1%}, PE {pe:.2f}) → V_opt {v_at(t_opt, inp['neutron_cadence'], gm=gm):.2f}")
     print(f"V_opt {v_opt:.2f} (PE {pe_opt:.2f}, t {t_opt}); carry {carry:.2f}/sh;"
           f" +V(net of carry) L/M/H {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
-          f"  A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}")
+          f"  A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}"
+          f"  (+V gross {', '.join('%.2f' % (rows[t]['total'] + p * v_opt) for t, p in zip(TIERS, ps))})")
     print(f"candidate L′ {cand['l']:.2f} M′ {cand['m']:.2f} H′ {cand['h']:.2f}")
     for dg in (-0.01, 0.01):
         band = []
