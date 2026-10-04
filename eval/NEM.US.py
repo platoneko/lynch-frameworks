@@ -5,7 +5,7 @@ frameworks/NEM.US.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: nem_fed_gold_fwd6moz_two_stage_v2
+formula_id: nem_fed_gold_fwd6moz_two_stage_v3
 
 Price axis: the shared Fed-path gold/copper USD ladder (_AXIS.fed-path-gold-copper),
 checked cell by cell against the axis file and against the peer mount
@@ -52,7 +52,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "NEM.US.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
-FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v2"
+FORMULA_ID = "nem_fed_gold_fwd6moz_two_stage_v3"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
 TIERS = ("l", "m", "h")
@@ -75,6 +75,7 @@ REQUIRED = [
     "k_l", "k_m", "k_h",
     "r_perp", "r_pbzn", "g2_metal", "g2_pbzn", "axis_g2_aucu", "pe_own_min", "pe_own_max",
     "rc_au_oz", "rc_cu_t", "rc_share", "t_num", "t_opt",
+    "rc_capex", "rc_capex_pfs", "rc_capex_hi", "rc_spent", "t_build0",
 ]
 # 表3 only — never Inputs, never the base band (A2e-7a).  p_M: FID pending, no anchor.
 P_K = (0.0, 0.25, 1.0)
@@ -99,8 +100,25 @@ def red_chris_option(inp: dict[str, float], th: dict) -> dict[str, float]:
     roe_post = (th["fwd"]["parent"] + d_np) / th["b27"]
     pe_post = perpetual_pe(inp["g2_metal"], roe_post, inp["r_perp"])
     disc = (1 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    gross = d_eps * pe_post * disc
+    k_ps = {key: unspent_ps(inp, inp[key]) for key in ("rc_capex", "rc_capex_pfs", "rc_capex_hi")}
     return {"margin": margin, "s_inc": s_inc, "d_np": d_np, "d_eps": d_eps, "roe_post": roe_post,
-            "pe_post": pe_post, "disc": disc, "v_opt": d_eps * pe_post * disc}
+            "pe_post": pe_post, "disc": disc, "gross": gross, "k_ps": k_ps,
+            "v_opt": gross - k_ps["rc_capex"]["ps"]}
+
+
+def unspent_ps(inp: dict[str, float], capex_100: float) -> dict[str, float]:
+    """Unspent capital owed by this ticker (valuation-rules「未建模期权」2026-10-04).
+
+    Budget (100%) x share less what this ticker has already booked as Red Chris
+    development capital (proportionate consolidation, so already its 70%), spread
+    evenly over t_build0..t_opt and discounted at the basket r to the numerator
+    year — the same rate and end point as the option value itself.
+    """
+    k_eq = capex_100 * inp["rc_share"] - inp["rc_spent"]
+    years = range(int(inp["t_build0"]), int(inp["t_opt"]) + 1)
+    pv = sum(k_eq / len(years) * (1 + inp["r_perp"]) ** (-(t - inp["t_num"])) for t in years)
+    return {"k_eq": k_eq, "pv": pv, "ps": pv / inp["shares"]}
 _AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%", re.MULTILINE)
 
 
@@ -248,8 +266,8 @@ def main() -> int:
     net_cash_ps = -inp["net_debt"] / inp["shares"]
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     opt = red_chris_option(inp, T["h"])
-    if inp["t_opt"] < inp["t_num"] or opt["v_opt"] < 0:
-        errors.append("V_opt: realisation year before numerator year, or negative option")
+    if not (inp["t_num"] < inp["t_build0"] <= inp["t_opt"]) or opt["v_opt"] < 0 or opt["k_ps"]["rc_capex"]["k_eq"] < 0:
+        errors.append("V_opt: build/realisation years out of order, negative option, or spent > budget share")
     band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
     out_sec = md.split("### Outputs", 1)[-1]
     for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
@@ -290,7 +308,13 @@ def main() -> int:
     print(f"V_opt Red Chris（A15）：PFS {inp['rc_au_oz'] / 1e3:.0f} koz + {inp['rc_cu_t'] / 1e3:.0f} kt × {inp['rc_share']:.0%} @M "
           f"= {opt['s_inc']:,.0f} $M × 毛利率 {opt['margin']:.1%} × (1−t) = {opt['d_np']:,.0f} $M（ΔEPS {opt['d_eps']:.3f}）"
           f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_metal']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}）"
-          f" × {opt['disc']:.4f}（{inp['t_opt']:g}→{inp['t_num']:g}）= {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+          f" × {opt['disc']:.4f}（{inp['t_opt']:g}→{inp['t_num']:g}）= 毛值 {opt['gross']:.2f}")
+    kk = opt["k_ps"]["rc_capex"]
+    print(f"  − 未投资本：预算 {inp['rc_capex']:,.0f} × {inp['rc_share']:.0%} − 已投 {inp['rc_spent']:,.0f} = {kk['k_eq']:,.0f} $M，"
+          f"{inp['t_build0']:g}–{inp['t_opt']:g} 均摊折回 {inp['t_num']:g} = {kk['pv']:,.0f} $M（{kk['ps']:.2f}/股）"
+          f" → V_opt {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}")
+    print("  敏感：" + " | ".join(f"预算 {inp[key]:,.0f} → 扣 {opt['k_ps'][key]['ps']:.2f} → V_opt {opt['gross'] - opt['k_ps'][key]['ps']:.2f}"
+                                  for key in ("rc_capex_pfs", "rc_capex", "rc_capex_hi")))
     print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
           f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
     print(f"flat-multiple ladder @ metal PE_M {T['m']['pe']['metal']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
