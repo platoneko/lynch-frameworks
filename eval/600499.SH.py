@@ -5,7 +5,7 @@ frameworks/600499.SH.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 
-formula_id: keda_lanke_axis_afr_mac_perpetual_g_v4
+formula_id: keda_lanke_axis_afr_mac_perpetual_g_vopt_named_v5
 
 Three legs, each on its own basket r, added per share (SOTP):
 
@@ -57,11 +57,21 @@ ROIC_proj read off steady-state peer years (L = 2026H1 price-war reading, M =
 peer FY2024-25 median, H = best integrated peer through-cycle).  The charge
 floors at 0: unspent money earns no credit above r.
 
+V_opt (2026-10-04, valuation-rules「未建模期权」): the named overseas building-
+materials projects not yet in the 2026H1-annualised numerator — the Africa
+axis no longer carries them in its g.  Units = capacity x unit revenue
+(ceramics: FY2024 segment revenue / FY2024 tile sales; glass: the FY2025
+segment residual / glass output — a public-data inference with its biases
+named in A22) x the Africa leg's own 归母 margin (stake already inside),
+priced on the Africa leg's H multiple and discounted from the start-up year
+to the numerator year at r_afr.  p_k = 0 / 0.25 / 1.0 lives in table 3 only.
+
 Run:  python3 frameworks/eval/600499.SH.py
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -76,7 +86,7 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600499.SH.md"
-FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_v4"
+FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_vopt_named_v5"
 MIN_R_MINUS_G = 0.02
 # A18: realised trough→recovery paths — the company's (Longbridge annual parent NI,
 # FY2024 10.06 亿 → FY2025 13.09 亿, mostly Africa growth) and Lanke's own (net profit
@@ -108,7 +118,39 @@ REQUIRED = [
     "capex_anode", "stake_anode", "roic_anode_l", "roic_anode_m", "roic_anode_h",
     "afr_rev_fy2025", "afr_cogs_fy2025", "afr_rev_h1", "afr_cogs_h1",
     "tf_np_fy2025", "tf_uplift_fy2025", "stake_tf", "nci_fy2025", "nci_h1",
+    "afr_rev_yoy_fy2025", "tile_sales_fy2025", "tile_sales_yoy_fy2025", "glass_out_fy2025",
+    "tile_cap_now", "tile_cap_after", "glass_peru", "glass_ghana", "t_tile", "t_peru", "t_ghana",
 ]
+NUM_YEAR = 2026            # Africa / machinery numerator = 2026H1 annualised
+P_TIERS = (0.0, 0.25, 1.0)  # A22 — table 3 only, never an input
+TOL = 0.05
+
+
+def opt_units(inp: dict[str, float]) -> dict[str, float]:
+    """A22: tile 元/m² and glass 元/t from public segment data (inference, biases in A22)."""
+    rev24 = inp["afr_rev_fy2025"] / (1.0 + inp["afr_rev_yoy_fy2025"])
+    tile24 = inp["tile_sales_fy2025"] / (1.0 + inp["tile_sales_yoy_fy2025"])
+    p_tile = rev24 / tile24                                     # 亿元 / 亿㎡ = 元/㎡
+    glass_rev = inp["afr_rev_fy2025"] - inp["tile_sales_fy2025"] * p_tile   # 亿元
+    p_glass = glass_rev / inp["glass_out_fy2025"] * 1e4         # 亿元 / 万吨 → 元/吨
+    margin = inp["w_afr"] * inp["ni_exli"] / (2.0 * inp["afr_rev_h1"])
+    return {"p_tile": p_tile, "p_glass": p_glass, "margin": margin}
+
+
+def opt_items(inp: dict[str, float], pe_afr_h: float, glass_scale: float = 1.0) -> list[tuple[str, float, float, float]]:
+    """[(label, revenue 亿, ΔNI 亿, V per share)] for the named projects (A22)."""
+    u = opt_units(inp)
+    items = [
+        ("瓷砖 科特迪瓦二期 + 基苏木二期 + 几内亚", (inp["tile_cap_after"] - inp["tile_cap_now"]) * u["p_tile"], inp["t_tile"]),
+        ("秘鲁玻璃 20 万吨", inp["glass_peru"] * u["p_glass"] * glass_scale / 1e4, inp["t_peru"]),
+        ("加纳玻璃 20 万吨", inp["glass_ghana"] * u["p_glass"] * glass_scale / 1e4, inp["t_ghana"]),
+    ]
+    out = []
+    for label, rev, t in items:
+        dni = rev * u["margin"]
+        v = dni * pe_afr_h / (1.0 + inp["r_afr"]) ** (t - NUM_YEAR) * YI / inp["shares"]
+        out.append((label, rev, dni, v))
+    return out
 # A5 (valuation-rules「公开数据推断」, 2026-10-03): w_afr is inferred, not a placeholder.
 W_TOL = 1e-5
 
@@ -335,6 +377,26 @@ def main() -> int:
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
+    # --- Step 5: V_opt (A22) — named projects, own ruler, start-up year → numerator year
+    items = opt_items(inp, pe["h"]["afr"])
+    v_opt = sum(x[3] for x in items)
+    for t_key in ("t_tile", "t_peru", "t_ghana"):
+        if inp[t_key] < NUM_YEAR:
+            errors.append(f"{t_key} before the numerator year")
+    if not inp["tile_cap_after"] > inp["tile_cap_now"] > 0:
+        errors.append("tile capacity must step up")
+    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
+    if leaked:
+        errors.append(f"p-class fields must not appear in Inputs: {leaked}")
+    outs = md.split("### Outputs", 1)[-1]
+    vm = re.search(r"V_\{?opt\}?\\?\)?\s*[≈=]\s*\*{0,2}\s*\+?([0-9]+(?:\.[0-9]+)?)", outs)
+    if vm is None or abs(float(vm.group(1)) - v_opt) > TOL:
+        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {v_opt:.4f}")
+    pm_ = re.search(r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)", outs)
+    if pm_ is None or tuple(float(x) for x in pm_.groups()) != P_TIERS:
+        errors.append(f"p_L/p_M/p_H stated {pm_.groups() if pm_ else None} vs {P_TIERS}")
+    adj = [a + p_ * v_opt for a, p_ in zip((L, M, H), P_TIERS)]
+
     # --- report --------------------------------------------------------------
     disc = (1.0 + inp["r_disc"]) ** (-inp["n_disc"])
     v = {t: {leg: ni[t][leg] * pe[t][leg] for leg in LEGS} for t in TIERS}
@@ -402,7 +464,17 @@ def main() -> int:
         band = [anchor(alt, t) for t in TIERS]
         print(f"敏感区 负极 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
+    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M={v_opt / M:.1%}")
+    u = opt_units(inp)
+    print(f"V_opt 单位（A22 公开数据推断）: 瓷砖 {u['p_tile']:.2f} 元/㎡ · 玻璃 {u['p_glass']:,.0f} 元/吨 · "
+          f"非洲腿归母利润率 {u['margin']:.2%} · PE_afr_H {pe['h']['afr']:.2f}")
+    for label, rev, dni, v_ in items:
+        print(f"  {label:<22} 收入 {rev:6.2f} 亿 → ΔNI {dni:5.2f} 亿 → {v_:.2f} 元/股")
+    a2, b2 = cut_points(*adj)
+    print(f"V_opt={v_opt:.2f}  表3 (p {P_TIERS[0]:g}/{P_TIERS[1]:g}/{P_TIERS[2]:g}): "
+          f"{adj[0]:.2f} / {adj[1]:.2f} / {adj[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
+    v_half = sum(x[3] for x in opt_items(inp, pe["h"]["afr"], glass_scale=0.5))
+    print(f"敏感 V_opt: 玻璃单价减半 → {v_half:.2f}")
     print(f"分子比（两腿合计 {total['l']:.2f}/{total['m']:.2f}/{total['h']:.2f} 亿）"
           f"L/M={total['l'] / total['m']:.2f} H/M={total['h'] / total['m']:.2f} | "
           f"倍数比 L/M={pe_company['l'] / pe_company['m']:.2f} H/M={pe_company['h'] / pe_company['m']:.2f}")
