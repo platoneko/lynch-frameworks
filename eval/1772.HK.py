@@ -6,7 +6,7 @@ anchors, candidate band and V_opt from its §3 Inputs table and exits 1 on
 mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
 nothing here computes a zone for the price or a market-implied reading — the
 digest and the app zone on live quotes.
-formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v3
+formula_id: ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v4
 
 Ganfeng does not disclose lithium sales volumes or its self-supplied feed
 share, so the lithium leg (salts + mining + JV share, all inside the reported
@@ -18,11 +18,16 @@ rungs.  The base deck keeps the line's own 2026H1 volume structure (2026E
 (27 万吨, single house) is NOT in the base deck -- it is the candidate band
 (A2e-7h): the same formula with the leg scaled by vol_2027e/vol_2026e and
 discounted one year.  The battery leg is its annualised segment result
-(current, undiscounted) and also supplies the first V_opt component,
-solid-state: the named 12 GWh cannot be converted to revenue (no battery
-shipments / price disclosed), so one share of today's battery leg, a
-snapshot lower bound, realised in 2029 (aligned year 2027 + 2, no named date)
-and discounted back to the numerator year 2026 at the basket r.  The second
+(current, undiscounted).  The first V_opt component is
+solid-state (valuation-rules「未建模期权」2026-10-05: a pre-revenue leg takes
+peers' unit economics through a peer-ruler axis, never 0 or a snapshot): no
+sell-side quantity exists for Ganfeng's solid-state, so only the H tier is
+sized (p_L = p_M = 0, 分档 rule) -- the named Chongqing 20 GWh base at full capacity x the steady-state
+price on _AXIS.solid-state-battery (东吴 path far end, 0.8 元/Wh), at the
+axis H margin (adjacent liquid-cell layer: CATL measured less an entrant
+discount), on the project's own ROE (budget as capital) with the axis g2,
+realised 2029 (aligned year 2027 + 2, no named date) and discounted back to
+the numerator year 2026 at the basket r; L / M carry p = 0.  The second
 component is volume growth beyond the base, sized ONLY from the company's own
 named quantity (valuation-rules「未建模期权」, 2026-10-03): the 2030 design
 capacity target 60 万吨 vs today's ~30 万吨 nameplate = one more 2026
@@ -60,7 +65,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.axes import AXIS_LI2CO3, check_li2co3_mount, load_axis_g2  # noqa: E402
+from lib.axes import AXIS_LI2CO3, axis_path, check_li2co3_mount, load_axis_g2  # noqa: E402
 from lib.gordon import check_g_cap, check_r, implied_g, perpetual_pe, recovery_two_stage_pe  # noqa: E402
 from lib.inputs import check_against_stated, outputs_section, parse_baskets, parse_inputs  # noqa: E402
 from lib.tiers import report as tier_report  # noqa: E402
@@ -73,18 +78,25 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1772.HK.md"
-FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v3"
+FORMULA_ID = "ganfeng_li2co3_twopoint_batt_pe10_v3_gordon_v4"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 # The single perpetual r leg (both business legs share the basket, A14); r_disc
 # is the same number by construction but is a discount input, not a leg.
 LEG_R = ("r_perp",)
+# Peer-ruler axis for the solid-state leg: shared rows must match it verbatim.
+SSB_AXIS = axis_path("_AXIS.solid-state-battery")
+SSB_SHARED = ("ssb_px_ss", "ssb_px_2029", "ssb_px_2030", "ssb_opm_weak", "ssb_opm_strong",
+              "ssb_entrant_disc", "g2_ssb_src")
 # _AXIS.rates segment: HKD rides the USD r_f via the peg (valuation-rules「按上市货币取段」).
 LISTING_CCY = "HKD"
 
-# Per-tier option credits (A9): both p_M are judgement calls (no probability
-# anchor; per-project start dates are not disclosed).
-P_SS = {"l": 0.0, "m": 0.25, "h": 1.0}
+# Per-tier option credits (A9).  valuation-rules「未建模期权」分档 (2026-10-05):
+# an item with no sell-side quantity for this ticker enters H only, p_L = p_M = 0.
+# Solid-state has none (no house sizes Ganfeng's solid-state) -> 0 / 0 / 1.
+# Volume keeps its L/M: the lithium leg does carry sell-side volume (大华 2027E,
+# single house); its p_M 0.25 is a judgement call (no probability anchor).
+P_SS = {"l": 0.0, "m": 0.0, "h": 1.0}
 P_VOL = {"l": 0.0, "m": 0.25, "h": 1.0}
 # A13: the company's own realised trough→recovery path (Longbridge annual parent NI,
 # HKD: FY2024 −22.45 亿 loss trough; FY2025 17.63 亿 → 2026H1 42.6 亿 CNY × 2 × fx).
@@ -96,7 +108,7 @@ REQUIRED = [
     "cal_p0", "cal_li_pretax_0", "cal_p1", "cal_li_pretax_1",
     "vol_2026e", "vol_2027e", "cap_now", "cap_2030", "r_disc", "n_disc",
     "t_num", "t_opt_ss", "t_opt_vol",
-    "ss_k", "ss_eq", "ppg_k", "ppg_eq", "cau_k_usd", "cau_eq", "fx_cny_per_usd",
+    "ss_k", "ss_eq", "ss_cap_gwh", "ss_budget", "g2_ssb", *SSB_SHARED, "ppg_k", "ppg_eq", "cau_k_usd", "cau_eq", "fx_cny_per_usd",
     "cap_ppg1", "cap_cau2", "conv_k_per_wt", "ppg23_k_usd",
     "batt_pretax", "net_finance",
     "tax_rate", "nci_share",
@@ -157,6 +169,23 @@ def disc_spread(inp: dict[str, float], t_opt: float) -> float:
     """Unspent capital spread evenly over t_num+1 .. t_opt, each tranche discounted to t_num (A9 / A12)."""
     years = range(int(inp["t_num"]) + 1, int(t_opt) + 1)
     return sum((1.0 + inp["r_disc"]) ** (-(t - inp["t_num"])) for t in years) / len(years)
+
+
+def ss_tier(inp: dict[str, float], opm: float, px: float | None = None, g2: float | None = None) -> dict[str, float]:
+    """Solid-state option at full capacity (A9): 20 GWh x price x margin, project ROE on the budget,
+    valued in t_opt_ss on this ticker's r (ROE <= r -> 1/r; else Gordon at the axis g2),
+    discounted to t_num, less the equity share of unspent capital spread 2027..t_opt_ss."""
+    px = inp["ssb_px_ss"] if px is None else px
+    g = inp["g2_ssb"] if g2 is None else g2
+    rev = inp["ss_cap_gwh"] * px * 10.0  # GWh x 元/Wh -> 亿 CNY
+    pretax = rev * opm
+    ni = pretax * (1.0 - inp["tax_rate"])
+    roe = ni / inp["ss_budget"]
+    pe = perpetual_pe(g, roe, inp["r_perp"]) if roe > inp["r_perp"] else 1.0 / inp["r_perp"]
+    eps = per_share_hkd(ni * inp["ss_eq"], inp)
+    gross = eps * pe * disc_to_num(inp, inp["t_opt_ss"])
+    net = gross - k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"])
+    return {"rev": rev, "pretax": pretax, "roe": roe, "pe": pe, "eps": eps, "gross": gross, "net": net}
 
 
 def k_vol_parts(inp: dict[str, float]) -> dict[str, float]:
@@ -238,6 +267,18 @@ def main() -> int:
         errors.append("2030 capacity target must exceed today's nameplate (V_opt share)")
     if not inp["cap_2030"] - inp["cap_now"] - inp["cap_ppg1"] - inp["cap_cau2"] >= 0:
         errors.append("named brine capacity exceeds the 30 万吨 increment (A12)")
+    if SSB_AXIS.exists():
+        peer = parse_inputs(SSB_AXIS.read_text(encoding="utf-8"))
+        for k in SSB_SHARED:
+            if k not in peer or abs(inp[k] - peer[k]) > 1e-9:
+                errors.append(f"{k} {inp[k]:g} != _AXIS.solid-state-battery {peer.get(k)} — the leg ruler drifted")
+    else:
+        errors.append("frameworks/axes/solid-state-battery.md missing — leg ruler unchecked")
+    errors += check_g_cap(inp["g2_ssb"], inp["r_perp"], "g2_ssb")
+    if abs(inp["g2_ssb"] - min(inp["g2_ssb_src"], 0.06)) > 1e-9:
+        errors.append(f"g2_ssb {inp['g2_ssb']} must be the axis source {inp['g2_ssb_src']} capped at G_cap 6%")
+    if abs(inp["ss_k"] - inp["ss_budget"] * (1.0 - 0.125)) > 0.01:
+        errors.append("ss_k must equal ss_budget x (1 − 12.50% spent)")
     if not all(0.0 < inp[k] <= 1.0 for k in ("ss_eq", "ppg_eq", "cau_eq")):
         errors.append("equity shares must lie in (0, 1]")
     if not (inp["t_opt_ss"] > inp["t_num"] and inp["t_opt_vol"] > inp["t_num"]):
@@ -263,15 +304,20 @@ def main() -> int:
     H = S["h"]["px"]
     A, B = (L + M) / 2, (M + H) / 2
 
-    # Option components (valuation-rules「未建模期权」2026-10-03): solid-state = one
-    # share of today's battery leg (snapshot lower bound) realised 2029; volume =
-    # the named 2030 capacity target beyond today's nameplate at the axis M rung,
-    # realised 2030.  Both on this ticker's own post-realisation Gordon multiple,
-    # discounted to the numerator year at the basket r.
-    d_eps_ss = per_share_hkd(parent_from_pretax(inp["batt_pretax"], inp), inp)
-    v_ss_gross = d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(inp, inp["t_opt_ss"])
+    # Option components (valuation-rules「未建模期权」2026-10-03 / 10-04 / 10-05):
+    # solid-state = the Chongqing 20 GWh base at full capacity x the axis steady
+    # price x the axis H margin (no sell-side quantity -> only H is sized; L / M
+    # margins printed as readings), realised 2029; volume = the named 2030
+    # capacity target beyond today's nameplate at the axis M rung, realised 2030.
+    # Both discounted to the numerator year at the basket r, less unspent capital.
+    # Sign: the rule sets V = value − unspent capital with no floor, so a negative
+    # net would be carried as is.
+    opm_h = inp["ssb_opm_strong"] - inp["ssb_entrant_disc"]
+    opm_m = (inp["ssb_opm_weak"] + opm_h) / 2.0
+    SS = {"h": ss_tier(inp, opm_h), "m": ss_tier(inp, opm_m), "l": ss_tier(inp, inp["ssb_opm_weak"])}
+    v_ss_gross = SS["h"]["gross"]
     k_ss_ps = k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"])
-    v_ss = v_ss_gross - k_ss_ps
+    v_ss = SS["h"]["net"]
     v_vol_gross = v_opt_vol_gross(inp, inp["li2co3_m"], S["h"]["eps"])
     kv = k_vol_parts(inp)
     k_vol_ps = k_ps(inp, sum(kv.values()), inp["t_opt_vol"])
@@ -398,12 +444,19 @@ def main() -> int:
     ppgs_full = v_vol_gross - k_ps(inp, kv["ppg1"] + kv["cau2"] + ppg23 + rest_less, inp["t_opt_vol"])
     oneshot_vol = v_vol_gross - k_ps(inp, sum(kv.values()), inp["t_opt_vol"], spread=False)
     oneshot_ss = v_ss_gross - k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"], spread=False)
+    ss_r10 = ss_tier({**inp, "r_disc": 0.10}, opm_h)["net"]
     r10 = {**inp, "r_disc": 0.10}
-    v10 = (v_opt_vol(r10, inp["li2co3_m"], S["h"]["eps"]),
-           d_eps_ss * post_pe(inp, S["h"]["eps"], d_eps_ss) * disc_to_num(r10, inp["t_opt_ss"])
-           - k_ps(r10, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"]))
+    v10 = (v_opt_vol(r10, inp["li2co3_m"], S["h"]["eps"]), ss_r10)
     print(f"K sensitivities: vol named-only (no remainder) {named_only:.2f}; PPGS all 3 stages (stages 2-3 replace 10 万吨 conversion) {ppgs_full:.2f}; "
           f"one-shot at realisation year vol {oneshot_vol:.2f} / ss {oneshot_ss:.2f}; r_disc 10% vol {v10[0]:.2f} / ss {v10[1]:.2f}")
+    print("solid-state (A9, _AXIS.solid-state-battery): " + "  ".join(
+        f"{t.upper()} opm {o:.2%}: rev {SS[t]['rev']:.0f} 亿 pretax {SS[t]['pretax']:.2f} ROE {SS[t]['roe']:.1%} "
+        f"PE {SS[t]['pe']:.2f} gross {SS[t]['gross']:.2f} net {SS[t]['net']:.2f}"
+        for t, o in (("l", inp["ssb_opm_weak"]), ("m", opm_m), ("h", opm_h))))
+    print(f"  ss sensitivities (H margin): price 2029E {inp['ssb_px_2029']:g} -> {ss_tier(inp, opm_h, inp['ssb_px_2029'])['net']:.2f}; "
+          f"2030E {inp['ssb_px_2030']:g} -> {ss_tier(inp, opm_h, inp['ssb_px_2030'])['net']:.2f}; "
+          f"no entrant discount -> {ss_tier(inp, inp['ssb_opm_strong'])['net']:.2f}; g2 0 -> {ss_tier(inp, opm_h, g2=0.0)['net']:.2f}; "
+          f"break-even margin at 0.8 元/Wh -> {next(o / 1000 for o in range(1, 400) if ss_tier(inp, o / 1000)['net'] >= 0):.1%}")
     print(f"candidate (2027E 量·大华单家, scale {vol_scale(inp):.4f}): L′={Lc:.2f} M′={Mc:.2f} H′={Hc:.2f}")
     print(f"gordon: r={inp['r_perp']:g} (篮 {baskets['r_perp']}) g2={inp['g2']:g} flat [§13 commodity-leg tier default] "
           f"(axis 永续 g2 {inp['axis_g2_li']:g} referenced, superseded — A7) "
