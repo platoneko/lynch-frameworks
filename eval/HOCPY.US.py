@@ -141,7 +141,7 @@ def main() -> int:
     if h_pe > inp["pe_own_top"]:
         errors.append(f"H = {h_pe:.1f}× FY2026 EPS exceeds own band top {inp['pe_own_top']}×")
     if inp["v_opt"] != 0:
-        errors.append("v_opt must be 0 (A12: HDD third customer / new plants have no disclosed unit)")
+        errors.append("v_opt must be 0 (A12: the Vietnam HDD / Singapore EUV plants have no disclosed capacity)")
 
     # Candidate band (A11): FY2029E consensus mean as a one-year stage-1 g1; L′ = L
     # (the consensus-low world carries no transition).  Analyst count unverified.
