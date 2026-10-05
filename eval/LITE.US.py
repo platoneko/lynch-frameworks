@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v7
+formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v8
 
 Main ruler (valuation-rules.md「增长的表达顺序」, 裁决顺序 ②): the numerator year
 is FY28 — the furthest year with a >=2-house consensus — as one axis, three
@@ -33,13 +33,18 @@ Option (A22; valuation-rules「未建模期权」2026-10-05 tiering): Greensboro
 fifth InP fab, is the only named quantity outside FY28 consensus.  No
 sell-side house sizes it, so the tiers are: L = 0 (digestion world, fab not
 needed); M = one fab at today's measured output per InP fab (Q4 FY26
-Components annualised / inp_fabs) x the company-level FY28 consensus net
-margin, valued at t_opt; H = full capacity as the company states it
-(gso_rev_full, CEO answering the Greensboro capacity question) x the
-peer-ruler axis margin (`_AXIS.inp-laser` ebit_margin_inp_peer, converted to
-net with this ticker's FY28 consensus net margin / OFC-model operating margin
-om_lite_model), valued at t_opt_h.  Each tier on this ticker's own ruler
-(perpetual_pe at g2, ROE_tier, r), discounted to FY28 at r, less the unspent
+Components annualised / inp_fabs), valued at t_opt; H = full capacity as the
+company states it (gso_rev_full, CEO answering the Greensboro capacity
+question), valued at t_opt_h.  The margin is time-dependent (`_AXIS.inp-laser`
+§1b, user 2026-10-05): the shortage-era margin (ebit_margin_inp_peer) holds
+only through t_shortage_end (2027); both tiers realise after it, so both take
+the axis normal (non-shortage) margin ebit_margin_inp_normal (LITE's own
+FY19-FY22 non-GAAP operating income / revenue, recomputed here from the raw
+sums), converted to net with this ticker's FY28 consensus net margin /
+OFC-model operating margin om_lite_model.  The leg's perpetual growth is the
+axis non-bottleneck value g2_inp_laser_normal (4%), not the shortage-era 6%.
+Each tier on this ticker's own ruler (perpetual_pe at g2_gso, ROE_tier, r),
+discounted to FY28 at r, less the unspent
 capital that tier's quantity requires: the retrofit floor (budget gso_k_budget
 - spent gso_k_spent, even over gso_k_n years from gso_k_y0, years after FY28
 discounted; the $38.0M purchase is sunk), topped up to Q_k x today's capital
@@ -47,6 +52,8 @@ intensity (ppe_net_fy26 / (rev_q4_fy26 x 4), FY26 10-K net PP&E over the Q4
 FY26 revenue run-rate) when that is larger, the top-up spent in the last spend
 year (FY29).  Only H binds (full capacity $5B needs ~$1.44B, not $600M); the
 $600M-only reading is printed as the disclosed alternative.  V_opt = V_H; p_k = V_k / V_H (same structure as INTC.US).  zone+V only.
+Supply security (Greensboro not constrained by Chinese capacity) is tracked,
+not priced (A23): no input here carries it.
 
 Guardrail (valuation-rules 裁决顺序 ③): the M multiple must sit inside the
 ticker's own realised current-FY forward-PE band [pe_own_min, pe_own_max];
@@ -96,10 +103,13 @@ AXIS_PLUG = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "plugg
 # (this ticker's Inputs key, axis Inputs key, axis file): rows taken from peer-ruler axes.
 AXIS_ROWS = (
     ("g2", "g2_inp_laser", AXIS_LASER),
-    ("opm_gso_h", "ebit_margin_inp_peer", AXIS_LASER),
+    ("opm_inp_shortage", "ebit_margin_inp_peer", AXIS_LASER),
+    ("opm_inp_normal", "ebit_margin_inp_normal", AXIS_LASER),
+    ("g2_gso", "g2_inp_laser_normal", AXIS_LASER),
+    ("t_shortage_end", "t_shortage_end", AXIS_LASER),
     ("g2_plug_ref", "g2_pluggable", AXIS_PLUG),
 )
-FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v7"
+FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v8"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
@@ -188,8 +198,21 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errors.append("Greensboro capital: need 0 <= spent <= budget and >= 1 spend year (A22)")
     if inp["t_opt_h"] < inp["t_opt"]:
         errors.append("full-capacity year t_opt_h must not precede the snapshot year t_opt (A22)")
-    if not (0.0 < inp["opm_gso_h"] < 1.0) or not (0.0 < inp["om_lite_model"] < 1.0):
-        errors.append("option margins must lie in (0, 1) (A22)")
+    for k in ("opm_inp_shortage", "opm_inp_normal", "om_lite_model"):
+        if not (0.0 < inp[k] < 1.0):
+            errors.append(f"{k}={inp[k]} must lie in (0, 1) (A22)")
+    if inp["opm_inp_normal"] >= inp["opm_inp_shortage"]:
+        errors.append("normal margin must sit below the shortage-era margin (axis §1b)")
+    # The normal margin is recomputed from LITE's own pre-shortage years (A22).
+    if abs(inp["opi_ng_fy19_22"] / inp["rev_fy19_22"] - inp["opm_inp_normal"]) > 5e-5:
+        errors.append(
+            f"opm_inp_normal {inp['opm_inp_normal']} != FY19-22 non-GAAP OI / revenue "
+            f"{inp['opi_ng_fy19_22'] / inp['rev_fy19_22']:.4f} (A22)"
+        )
+    if inp["g2_gso"] > inp["g2"]:
+        errors.append("option-leg g2 (non-bottleneck) must not exceed the shortage-era axis g2 (A22)")
+    if min(inp["t_opt"], inp["t_opt_h"]) <= inp["t_shortage_end"]:
+        errors.append("an option tier realises inside the shortage era — it must take the shortage margin (axis §1b)")
     if inp["gso_rev_full"] <= inp["comp_q4_fy26"] * 4.0 / max(inp["inp_fabs"], 1):
         errors.append("stated full capacity below one average fab — H would sit under M (A22)")
     if inp["ppe_net_fy26"] <= 0 or inp["rev_q4_fy26"] <= 0:
@@ -249,7 +272,12 @@ def main() -> int:
         "gso_rev_full",
         "t_opt_h",
         "om_lite_model",
-        "opm_gso_h",
+        "opm_inp_shortage",
+        "opm_inp_normal",
+        "opi_ng_fy19_22",
+        "rev_fy19_22",
+        "g2_gso",
+        "t_shortage_end",
         "g2_plug_ref",
         "sys_share",
     ]
@@ -359,14 +387,25 @@ def main() -> int:
     # retrofit budget; the top-up lands in the last spend year (A22, 2026-10-05).
     k_int = inp["ppe_net_fy26"] / (inp["rev_q4_fy26"] * 4.0)
     k_top_df = (1.0 + r) ** max(0, k_years[-1] - NUM_YEAR)
-    nm_m = eps["M"] / haircut * inp["shares_dil"] / inp["rev_fy28_cons"]  # FY28 consensus net margin
-    nm_h = inp["opm_gso_h"] * nm_m / inp["om_lite_model"]  # axis operating margin -> net
+    nm_cons = eps["M"] / haircut * inp["shares_dil"] / inp["rev_fy28_cons"]  # FY28 consensus net margin
+    op_to_net = nm_cons / inp["om_lite_model"]  # this ticker's operating -> net ratio
+
+    def leg_nm(year: float) -> float:
+        """Axis §1b: shortage-era margin through t_shortage_end, normal margin after."""
+        opm = inp["opm_inp_shortage"] if year <= inp["t_shortage_end"] else inp["opm_inp_normal"]
+        return opm * op_to_net
+
+    g_opt = inp["g2_gso"]  # axis non-bottleneck g2 (A22)
+    pe_opt = {t: perpetual_pe(g_opt, roe[t], r) for t in TIERS}
     fab_rev = inp["comp_q4_fy26"] * 4.0 / inp["inp_fabs"]  # USD / yr, measured per fab
-    opt_q = {"M": (fab_rev, nm_m, inp["t_opt"]), "H": (inp["gso_rev_full"], nm_h, inp["t_opt_h"])}
+    opt_q = {
+        "M": (fab_rev, leg_nm(inp["t_opt"]), inp["t_opt"]),
+        "H": (inp["gso_rev_full"], leg_nm(inp["t_opt_h"]), inp["t_opt_h"]),
+    }
     v_k, v_gross_k, inc_k, k_k = {"L": 0.0}, {"L": 0.0}, {"L": 0.0}, {"L": 0.0}
     for t, (rev_t, nm_t, yr) in opt_q.items():
         inc_k[t] = rev_t * nm_t * haircut / shares
-        v_gross_k[t] = inc_k[t] * pe[t] / (1.0 + r) ** (yr - NUM_YEAR)
+        v_gross_k[t] = inc_k[t] * pe_opt[t] / (1.0 + r) ** (yr - NUM_YEAR)
         k_k[t] = k_ps + max(0.0, rev_t * k_int - k_remain) / k_top_df / shares
         v_k[t] = v_gross_k[t] - k_k[t]
     v_opt = v_k["H"]
@@ -472,10 +511,16 @@ def main() -> int:
         f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
     )
     print(
-        f"option (A22): L 0 | M 1 fab ${fab_rev / 1e6:.1f}M x NM {nm_m:.4f} x (1-SBC) = {inc_k['M']:.4f}/sh"
-        f" x PE_M {pe['M']:.2f} / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR} = {v_gross_k['M']:.2f}"
-        f" | H full ${inp['gso_rev_full'] / 1e9:.1f}B x NM {nm_h:.4f} [axis OPM {inp['opm_gso_h']:.4f} x {nm_m:.4f}/{inp['om_lite_model']:g}]"
-        f" x (1-SBC) = {inc_k['H']:.4f}/sh x PE_H {pe['H']:.2f} / {1 + r:g}^{int(inp['t_opt_h']) - NUM_YEAR} = {v_gross_k['H']:.2f}"
+        f"option (A22): normal OPM {inp['opm_inp_normal']:.4f} (FY19-22 {inp['opi_ng_fy19_22']:.1f}/{inp['rev_fy19_22']:.1f})"
+        f" x op->net {op_to_net:.4f} [{nm_cons:.4f}/{inp['om_lite_model']:g}] = NM {opt_q['H'][1]:.4f};"
+        f" g2_gso {g_opt:.2%} -> PE_opt M {pe_opt['M']:.2f} / H {pe_opt['H']:.2f}"
+        f" (shortage-era g2 {g2:.0%}: {pe['M']:.2f} / {pe['H']:.2f})"
+    )
+    print(
+        f"  L 0 | M 1 fab ${fab_rev / 1e6:.1f}M x NM {opt_q['M'][1]:.4f} x (1-SBC) = {inc_k['M']:.4f}/sh"
+        f" x {pe_opt['M']:.2f} / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR} = {v_gross_k['M']:.2f}"
+        f" | H full ${inp['gso_rev_full'] / 1e9:.1f}B x NM {opt_q['H'][1]:.4f}"
+        f" x (1-SBC) = {inc_k['H']:.4f}/sh x {pe_opt['H']:.2f} / {1 + r:g}^{int(inp['t_opt_h']) - NUM_YEAR} = {v_gross_k['H']:.2f}"
     )
     print(
         f"  unspent capital: floor {k_ps:.2f}/sh [(${inp['gso_k_budget'] / 1e6:.0f}M - ${inp['gso_k_spent'] / 1e6:.0f}M) over FY{k_years[0]}-FY{k_years[-1]}, to FY{NUM_YEAR} at r];"
@@ -485,11 +530,25 @@ def main() -> int:
         f" p_k {p_k['L']:.4f}/{p_k['M']:.4f}/{p_k['H']:.4f} -> zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f}"
         f" A'={a_opt:.2f} B'={b_opt:.2f}"
     )
+    def v_alt(t: str, nm: float, mult: float) -> float:
+        rev_t, _, yr = opt_q[t]
+        return rev_t * nm * haircut / shares * mult / (1.0 + r) ** (yr - NUM_YEAR) - k_k[t]
+
+    nm_short = inp["opm_inp_shortage"] * op_to_net
     print(
         f"  alt: H capital = $600M floor only -> V_H {v_h_floor:.2f} (p_M {v_k['M'] / v_h_floor:.4f});"
-        f" sens: H at snapshot-era NM {nm_m:.4f} -> V_H {inp['gso_rev_full'] * nm_m * haircut / shares * pe['H'] / (1 + r) ** (inp['t_opt_h'] - NUM_YEAR) - k_k['H']:.2f};"
-        f" H realised FY29 (undiscounted 2nd yr) -> V_H {inc_k['H'] * pe['H'] / (1 + r) - k_k['H']:.2f}"
+        f" H realised FY29 (undiscounted 2nd yr) -> V_H {inc_k['H'] * pe_opt['H'] / (1 + r) - k_k['H']:.2f}"
     )
+    print(
+        "  sens (shortage persists past 2027): V_M/V_H at shortage NM "
+        f"{nm_short:.4f} + g2 {g2:.0%} = {v_alt('M', nm_short, pe['M']):.2f}/{v_alt('H', nm_short, pe['H']):.2f}"
+        f" (H = the pre-rework V_H; old M used the FY28 consensus NM); normal NM + g2 {g2:.0%}"
+        f" = {v_alt('M', opt_q['M'][1], pe['M']):.2f}/{v_alt('H', opt_q['H'][1], pe['H']):.2f};"
+        f" FY28 consensus NM {nm_cons:.4f} + g2_gso = {v_alt('M', nm_cons, pe_opt['M']):.2f}/{v_alt('H', nm_cons, pe_opt['H']):.2f}"
+    )
+    for lo_opm, tag in ((0.205, "FY19 trough-of-normal 20.5%"), (0.105, "COHR Networking FY22 GAAP segment 10.5%")):
+        nm_lo = lo_opm * op_to_net
+        print(f"  sens normal OPM {tag}: V_M/V_H = {v_alt('M', nm_lo, pe_opt['M']):.2f}/{v_alt('H', nm_lo, pe_opt['H']):.2f}")
     fy27_axis = {
         "L": eps["L"] * pe["L"],
         "M": eps27_adj * tier(eps27_adj)[1],
