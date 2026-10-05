@@ -5,7 +5,7 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which
 quote falls in is derived live by the daily digest and the app, so nothing
 here reads a price.
 
-formula_id: tsem_gordon_twoleg_2027_v3
+formula_id: tsem_gordon_twoleg_2027_v4
 
 Two-leg Gordon on the FY2027 consensus (the furthest year with a >=2-house
 *range*, valuation-rules 裁决顺序 ②), with the SiPho leg on the peer-ruler axis
@@ -28,9 +28,16 @@ Leg split (group ruler):
   book is rolled the A16 way at the company g (L: share-weighted g2).
 
 The SiPho gross margin is this ticker's own two-period inference (A17) and is
-the group value GFS borrows.  V_opt = Track 2 sized as one own realised SiPho
-leg (snapshot lower bound: the x4 Japan capacity has no revenue base), valued
-on the SiPho leg's ruler at its year and discounted to FY2027 (A9).
+the group value GFS borrows.  V_opt = Track 2 at full capacity (A9;
+valuation-rules 未建模期权, 2026-10-05): the named Japan 300mm capacity (CEO,
+45k wafers/month in 2029; Track 2 quadruples it) less the Track 1 part, x the
+axis unit price per 300mm SiPho wafer (no sell-side or measured SiPho price:
+GF's measured cost per 300mm-equivalent wafer grossed up to the axis SiPho gross
+margin), x full-capacity margin (axis GM - the 2028 model opex ratio), after
+tax, valued on the SiPho leg's g2 with ROE = profit / Track 2's own capital, at
+the full-capacity year, discounted to FY2027, less Track 2's unspent capital
+(the $3B dual-track budget, net of grants, split by capacity added).  No
+sell-side quantity exists for Track 2, so only H carries it at full weight.
 
 Cross-file: shared rows must equal frameworks/axes/sipho-wafer.md.
 
@@ -69,13 +76,14 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSEM.US.md"
 PEER = REPO_ROOT / "frameworks" / "axes" / "sipho-wafer.md"
-FORMULA_ID = "tsem_gordon_twoleg_2027_v3"
+FORMULA_ID = "tsem_gordon_twoleg_2027_v4"
 LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
 NUM_YEAR = 2027
 P_TIERS = (0.0, 0.25, 1.0)  # A9 — table 3 only, never an input
-SHARED = ("g2_sipho_src", "gm_sipho", "t_align")
+SHARED = ("g2_sipho_src", "gm_sipho", "t_align", "asp_sipho_300", "gf_cogs_2025", "gf_wafers_2025")
+MONTHS = 12
 
 REQUIRED = [
     "shares", "equity", "net_cash", "nii_4q", "gaap_gap_ps", "tax",
@@ -83,7 +91,7 @@ REQUIRED = [
     "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2027_gaap_m", "eps_2028_gaap_m",
     "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_floor",
     "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
-    *SHARED, "opt_rev", "t_opt", "opt_k_ceiling",
+    *SHARED, "jp_wpm_2029", "jp_mult_t2", "jp_mult_2025", "opex_ratio_full", "k_dual", "k_t2_spent", "t_opt",
 ]
 TIERS = ("L", "M", "H")
 
@@ -211,18 +219,33 @@ def main() -> int:
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
-    # ---- Option (A9): own realised SiPho leg at the SiPho leg's ruler, discounted to FY2027 ----
-    def v_opt_at(d: dict) -> float:
-        inc = inp["opt_rev"] * (inp["gm_sipho"] - inp["opex_ratio"]) * (1.0 - inp["tax"]) / inp["shares"]
-        return inc * perpetual_pe(g2s, d["H"]["roe_s"], r) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    # ---- Option (A9): Track 2 at full capacity x axis price, on the SiPho leg's g2 ----
+    asp_calc = inp["gf_cogs_2025"] / inp["gf_wafers_2025"] / (1.0 - inp["gm_sipho"])
+    if abs(asp_calc - inp["asp_sipho_300"]) > 1.0:
+        errors.append(f"asp_sipho_300 {inp['asp_sipho_300']:g} != GF cost/wafer / (1 - gm_sipho) = {asp_calc:.1f} (_AXIS.sipho-wafer)")
+    wpm_t2 = inp["jp_wpm_2029"] * (1.0 - 1.0 / inp["jp_mult_t2"])
+    wpm_t1 = inp["jp_wpm_2029"] / inp["jp_mult_t2"] - inp["jp_wpm_2029"] / inp["jp_mult_2025"]
+    t2_share = wpm_t2 / (wpm_t2 + wpm_t1)
 
-    v_opt = v_opt_at(base)
-    # Unspent capital (valuation-rules 未建模期权, 2026-10-04): Track 2 budget undisclosed -> 待补, not
-    # deducted.  Printed only: the whole dual-track ceiling charged to Track 2 (an over-deduction).
-    yrs = inp["t_opt"] - NUM_YEAR
-    k_ps = inp["opt_k_ceiling"] / inp["shares"]
-    v_k_once = v_opt - k_ps / (1.0 + r) ** yrs
-    v_k_spread = v_opt - k_ps * (1.0 + 1.0 / (1.0 + r)) / 2.0
+    def option(price: float = inp["asp_sipho_300"], opex: float = inp["opex_ratio_full"],
+               t_opt: float = inp["t_opt"], share: float = t2_share, wpm: float = wpm_t2) -> dict:
+        k = inp["k_dual"] * share
+        unspent = k - inp["k_t2_spent"]
+        rev = wpm * MONTHS * price
+        ni = rev * (inp["gm_sipho"] - opex) * (1.0 - inp["tax"])
+        roe = ni / k
+        pe = perpetual_pe(g2s, roe, r)
+        gross = ni / inp["shares"] * pe / (1.0 + r) ** (t_opt - NUM_YEAR)
+        k_ps = unspent / inp["shares"] * (1.0 + 1.0 / (1.0 + r)) / 2.0  # 2027-28 even spend
+        return dict(k=k, rev=rev, ni=ni, roe=roe, pe=pe, gross=gross, k_ps=k_ps, v=gross - k_ps)
+
+    o = option()
+    v_opt = o["v"]
+    if v_opt <= 0:
+        errors.append(f"V_opt {v_opt:.2f} <= 0 after unspent capital — Track 2 does not pay for itself")
+    o_px15, o_px2 = option(price=1.5 * inp["asp_sipho_300"]), option(price=2.0 * inp["asp_sipho_300"])
+    o_t29, o_opex = option(t_opt=inp["t_opt"] - 1), option(opex=inp["opex_ratio"])
+    o_kall = option(share=1.0)
 
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
@@ -279,10 +302,13 @@ def main() -> int:
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
     opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
     a2, b2 = cut_points(*opt)
-    print(f"V_opt={v_opt:.2f} (Track 2 = {inp['opt_rev'] / 1e9:.2f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio']:g}) x (1-t) -> "
-          f"x SiPho perp PE {perpetual_pe(g2s, base['H']['roe_s'], r):.2f}x / 1.1^{int(inp['t_opt']) - NUM_YEAR}); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
-    print(f"unspent capital 待补 (A9): ceiling {inp['opt_k_ceiling'] / 1e9:.1f}B = {k_ps:.2f}/sh (dual track, not Track 2 alone) -> "
-          f"V_opt {v_k_once:.2f} (one-shot at {int(inp['t_opt'])}) / {v_k_spread:.2f} (2027-28 even) — printed only, not in V_opt")
+    print(f"V_opt={v_opt:.2f}: Track 2 {wpm_t2:,.0f} wpm (= {inp['jp_wpm_2029']:,.0f} x (1 - 1/{inp['jp_mult_t2']:g}); Track 1 adds {wpm_t1:,.0f}) "
+          f"x {MONTHS} x ${inp['asp_sipho_300']:,.0f} = {o['rev'] / 1e9:.3f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio_full']:g}) x (1-t) = NI {o['ni'] / 1e9:.3f}B")
+    print(f"  capital {o['k'] / 1e9:.3f}B (= {inp['k_dual'] / 1e9:g}B x capacity share {t2_share:.4f}) -> ROE {o['roe']:.4f}, SiPho perp PE {o['pe']:.2f}x; "
+          f"value {o['gross']:.2f} at {int(inp['t_opt'])} / 1.1^{int(inp['t_opt']) - NUM_YEAR} - unspent {o['k_ps']:.2f}/sh = {v_opt:.2f}")
+    print(f"  zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
+    print(f"  sens: price x1.5 {o_px15['v']:.2f} / x2 {o_px2['v']:.2f} | full capacity in {int(inp['t_opt']) - 1} {o_t29['v']:.2f} | "
+          f"opex at today's {inp['opex_ratio']:g} {o_opex['v']:.2f} | whole $3B charged to Track 2 {o_kall['v']:.2f}")
     if not errors:
         write_rf_readings("TSEM.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
     return report(errors)
