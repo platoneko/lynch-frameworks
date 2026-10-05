@@ -6,7 +6,7 @@ table, recomputes L/M/H / A/B and the candidate band, and exits 1 on mismatch.
 The framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
 script neither reads a price nor derives a zone.
 
-formula_id: kingboard_holdco_sotp_point_v1
+formula_id: kingboard_holdco_sotp_point_v2
 
 Main ruler: holding-company SOTP, legs added one by one (no blended r):
 
@@ -35,6 +35,11 @@ printed as the comparison band and pressure coordinates, not the main band.
 
 Candidate band (A10, AI shortage extended): same formula, the H path gains
 Citi's single-source FY2028; L' = L, M' = M.
+
+V_opt (A9, valuation-rules「未建模期权」2026-10-05): AI special glass fabric on
+_AXIS.ai-glass-fabric and HVLP / RTF copper foil on _AXIS.hvlp-copper-foil; the
+axis rows are checked value by value against the axis files.  See option_values().
+V_opt = V_H; p_k = V_k / V_H.  Never enters L/M/H.
 
 Sanity checks beyond the anchor comparison:
   * every r row names its basket and equals it (parse_baskets + check_r);
@@ -72,7 +77,7 @@ from eval.lib.inputs import (  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "0148.HK.md"
-FORMULA_ID = "kingboard_holdco_sotp_point_v1"
+FORMULA_ID = "kingboard_holdco_sotp_point_v2"
 LISTING_CCY = "HKD"
 TOL = 0.05
 RET_TOL = 0.0005  # returns are stated to 4 decimals
@@ -108,6 +113,68 @@ REQUIRED = [
 ]
 
 
+AXES = Path(__file__).resolve().parents[1] / "axes"
+# Rows the framework copies from its peer-ruler axes (contracts.md「同业尺轴」): one source per field.
+AXIS_ROWS = {
+    "ai-glass-fabric": ["px_ai_gf_l", "px_ai_gf_m", "px_ai_gf_h", "nm_ai_gf_l", "nm_ai_gf_m", "nm_ai_gf_h",
+                        "gm_ai_gf_ref", "m_per_t_ai_gf", "capex_per_m_ai_gf"],
+    "hvlp-copper-foil": ["pt_hvlp_l", "pt_hvlp_m", "pt_hvlp_h", "capex_per_t_hvlp"],
+}
+OPT_REQUIRED = [
+    "gf_citi_share", "np_gp_kl", "gf_kilns_total", "gf_kilns_new", "gf_kilns_unspent", "gf_t_per_kiln",
+    "gf_yield", "gf_years", "cu_tons", "cu_yield", "cu_years", "fx_cny_hkd",
+] + [k for ks in AXIS_ROWS.values() for k in ks]
+
+
+def option_values(inp: dict[str, float]) -> dict:
+    """V_opt per tier, HK$ per 0148 share (A9; valuation-rules「未建模期权」2026-10-05).
+
+    Size: L / M = the ticker's own sell-side quantity (Citi's AI-cloth gross-profit share of
+    its FY2028 KLHL forecast, gross profit -> revenue at the axis gross margin, scaled to the
+    kilns not already in the base); H = the larger of that path and full capacity
+    (new kilns x tons x m/t x yield x axis price).  HVLP has no own sell-side quantity:
+    L / M = 0, H = capacity tons x yield x axis profit per ton.
+    Value: the ticker's ruler -- laminate leg r (basket 6) and g2, ROE on the leg's own
+    capital (capacity x axis capex), 1/r below r - 3pp; valued in the realisation year,
+    discounted to the numerator year, minus the capital not yet spent (one year out),
+    x stake / shares.  Net margins / per-ton profits on the axes are after tax.
+    """
+    r, g2, fx = inp["r_lam"], inp["g2_lam"], inp["fx_cny_hkd"]
+    keep = inp["gf_kilns_new"] / inp["gf_kilns_total"]
+    gp28 = inp["e_lam_28c"] / inp["np_gp_kl"]
+    citi_rev = inp["gf_citi_share"] * gp28 / inp["gm_ai_gf_ref"] * keep
+    cap_m = inp["gf_kilns_new"] * inp["gf_t_per_kiln"] * inp["m_per_t_ai_gf"]  # metres / yr
+    k_gf = cap_m * inp["capex_per_m_ai_gf"] * fx / 1e9
+    k_cu = inp["cu_tons"] * inp["capex_per_t_hvlp"] * 1e4 * fx / 1e9
+
+    def leg(np_: float, k: float, years: float, unspent: float, rev: float) -> dict[str, float]:
+        if np_ <= 0:
+            return {"rev": rev, "np": 0.0, "k": k, "roe": 0.0, "pe": 0.0, "value": 0.0,
+                    "years": years, "unspent": 0.0, "v1888": 0.0, "ps": 0.0}
+        roe = np_ / k
+        pe = perpetual_pe(g2, roe, r) if roe > r - 0.03 else 1.0 / r
+        value = np_ * pe
+        unspent_pv = unspent / (1 + r)
+        v = value / (1 + r) ** years - unspent_pv
+        return {"rev": rev, "np": np_, "k": k, "roe": roe, "pe": pe, "value": value, "years": years,
+                "unspent": unspent_pv, "v1888": v, "ps": v * inp["stake_kl"] / inp["shares"]}
+
+    out: dict = {}
+    unspent_gf = k_gf * inp["gf_kilns_unspent"] / inp["gf_kilns_new"]
+    for x in "lmh":
+        rev = citi_rev
+        if x == "h":
+            cap_rev = cap_m * inp["gf_yield"] * inp["px_ai_gf_h"] * fx / 1e9
+            out["cap_rev_h"], out["citi_rev"] = cap_rev, citi_rev
+            out["citi_px"] = citi_rev / (cap_m * inp["gf_yield"] * fx / 1e9)
+            rev = max(cap_rev, citi_rev)
+        gf = leg(rev * inp[f"nm_ai_gf_{x}"], k_gf, inp["gf_years"], unspent_gf, rev)
+        cu_np = inp["cu_tons"] * inp["cu_yield"] * inp[f"pt_hvlp_{x}"] * 1e4 * fx / 1e9 if x == "h" else 0.0
+        cu = leg(cu_np, k_cu, inp["cu_years"], k_cu, 0.0)
+        out[x] = {"gf": gf, "cu": cu, "total": gf["ps"] + cu["ps"]}
+    return out
+
+
 def seg_returns(i: int) -> list[float]:
     """Segment result / opening segment net assets for leg i, FY2017-2025."""
     return [HIST_RESULT[y][i] / HIST_NET_ASSETS[y - 1][i] for y in RET_YEARS]
@@ -119,7 +186,7 @@ def main() -> int:
         print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
         return 1
     inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+    errors = check_missing(inp, REQUIRED + OPT_REQUIRED)
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
@@ -267,8 +334,27 @@ def main() -> int:
         for lab, said, got in zip(("L′", "M′", "H′"), meta.candidate, cand):
             if abs(said - got) > TOL:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
-    if meta.v_opt is not None and meta.v_opt != 0:
-        errors.append("V_opt must stay 0 until the specialty-fibre gate (A9) is met")
+    # --- V_opt (A9): AI glass fabric + HVLP copper foil, peer-ruler axes ------
+    for axis, keys in AXIS_ROWS.items():
+        path = AXES / f"{axis}.md"
+        if not path.is_file():
+            errors.append(f"frameworks/axes/{axis}.md missing — the leg ruler is unchecked")
+            continue
+        peer = parse_inputs(path.read_text(encoding="utf-8"))
+        for k in keys:
+            if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
+                errors.append(f"{k} {inp[k]:g} != _AXIS.{axis} {peer.get(k)} — the leg ruler drifted")
+        if axis == "hvlp-copper-foil" and abs(peer.get("yield_hvlp3", -1) - inp["cu_yield"]) > 1e-9:
+            errors.append(f"cu_yield {inp['cu_yield']:g} != _AXIS.hvlp-copper-foil yield_hvlp3 {peer.get('yield_hvlp3')}")
+    opt = option_values(inp)
+    v_l, v_m, v_h = (opt[x]["total"] for x in "lmh")
+    if not 0 <= v_l <= v_m <= v_h:
+        errors.append(f"V_opt tiers not ordered: {v_l:.2f}/{v_m:.2f}/{v_h:.2f}")
+    p_rule = (v_l / v_h, v_m / v_h, 1.0)
+    if meta.v_opt is None or abs(meta.v_opt - v_h) > TOL:
+        errors.append(f"V_opt stated {meta.v_opt} vs recomputed V_H {v_h:.4f}")
+    if meta.p_tiers is None or any(abs(a - b) > 0.005 for a, b in zip(meta.p_tiers, p_rule)):
+        errors.append(f"p_L/p_M/p_H stated {meta.p_tiers} vs V_k/V_H {tuple(round(p, 3) for p in p_rule)}")
 
     # --- regime comparison band (A1) -----------------------------------------
     r0 = inp["r_lam"]
@@ -302,6 +388,19 @@ def main() -> int:
     print(f"ratios: L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"regime comparison band (A1): L={reg[0]:.2f} M={reg[1]:.2f} H={reg[2]:.2f}")
     print(f"candidate (A10): L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}")
+    for x in "lmh":
+        o = opt[x]
+        for leg in ("gf", "cu"):
+            d = o[leg]
+            print(f"V_opt {x.upper()} {leg}: rev {d['rev']:.2f}bn NP {d['np']:.2f}bn K {d['k']:.2f}bn ROE {d['roe']:.1%}"
+                  f" PE {d['pe']:.2f}x value@t {d['value']:.2f} /(1+r)^{d['years']:g} - unspent {d['unspent']:.2f}"
+                  f" = {d['v1888']:.2f}bn -> {d['ps']:.2f}/sh")
+        print(f"V_opt {x.upper()} total {o['total']:.2f}/sh")
+    if "cap_rev_h" in opt:
+        print(f"glass fabric H: capacity rev {opt['cap_rev_h']:.2f}bn vs Citi-path rev {opt['citi_rev']:.2f}bn"
+              f" -> Citi implies {opt['citi_px']:.1f} CNY/m on the new capacity")
+    print(f"V_opt={v_h:.2f} p_L/p_M/p_H={p_rule[0]:.3f}/{p_rule[1]:.3f}/1.0 V_opt/M={v_h / M:.2f}")
+    print(f"zone+V: {L + p_rule[0] * v_h:.2f}/{M + p_rule[1] * v_h:.2f}/{H + v_h:.2f}")
     for g in (inp["g2_lam"] - 0.01, inp["g2_lam"] + 0.01):
         saved = inp["g2_lam"]
         inp["g2_lam"] = g
