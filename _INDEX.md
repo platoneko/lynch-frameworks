@@ -12,6 +12,7 @@
 - [AVGO.US](./AVGO.US.md) — 篮子：r_perp 篮 4 10% · r_lab 篮 7 15% · r_lab_t 篮 4 10%
 - [BA.US](./BA.US.md) — 篮子：篮 4 10%
 - [BE.US](./BE.US.md) — 篮子：r_journey 篮 7 15% · r_terminal 篮 4 10%
+- [CCJ.US](./CCJ.US.md) — 篮子：r_fuel 篮 6 13% · r_wec 篮 4 10%
 - [COHR.US](./COHR.US.md) — 篮子：篮 4 10%
 - [COIN.US](./COIN.US.md) — 篮子：篮 4 10%
 - [CRDO.US](./CRDO.US.md) — 篮子：篮 4 10%
@@ -115,3 +116,4 @@
 - [`_AXIS.sic`](./axes/sic.md) — 碳化硅（衬底 → 外延 → 功率器件）同业尺轴 · 挂载票：— ｜ 参照：WOLF.US · 2631.HK
 - [`_AXIS.sipho-wafer`](./axes/sipho-wafer.md) — 硅光晶圆代工 · 挂载票：— ｜ 参照：TSEM.US · GFS.US | 候选：TSM.US（COUPE 期权；本票未入轴，见其敏感性行）
 - [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：— ｜ 参照：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`
+- [`_AXIS.uranium`](./axes/uranium.md) — 铀 U3O8 长期均衡价情景轴（现货与长期合同价收敛后的价位） · 挂载票：CCJ.US
