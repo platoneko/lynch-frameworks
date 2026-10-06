@@ -5,6 +5,7 @@
 
 ## 美股
 
+- [AAOI.US](./AAOI.US.md) — 篮子：r_journey 篮 7 15% · r_terminal 篮 4 10%
 - [AAPL.US](./AAPL.US.md) — 篮子：篮 4 10%
 - [AEHR.US](./AEHR.US.md) — 篮子：篮 4 10%
 - [ALB.US](./ALB.US.md) — 篮子：r_perp 篮 6 13% · r_spec 篮 4 10%
@@ -99,21 +100,29 @@
 
 - [`_AXIS.africa-corridor`](./axes/africa-corridor.md) — 非洲建材与矿业通道情景轴 · 挂载票：`6655.HK` · `600499.SH` · `603871.SH`
 - [`_AXIS.ai-capex`](./axes/ai-capex.md) — AI 资本开支情景轴 · 挂载票：— ｜ 参照（需求方）：COHR.US · GLW.US · LITE.US · AEHR.US · 300308.SZ · CRDO.US · VIAV.US · FN.US · 参照（**构成方**）：GOOG.US · ORCL.US · META.US · MSFT.US · AMZN.US
+- [`_AXIS.ai-glass-fabric`](./axes/ai-glass-fabric.md) — AI 特种电子玻纤布（低介电 / 低膨胀 / 石英）同业尺轴 · 挂载票：— ｜ 参照：0148.HK | 候选：1888.HK、603256.SH（宏和科技）、002080.SZ（中材科技·泰山玻纤）、3110.T（日东纺）、300395.SZ（菲利华）——未入库，只作尺的提供方
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
+- [`_AXIS.burn-in-test`](./axes/burn-in-test.md) — 老化 / 可靠性测试与系统级测试（SLT）同业尺轴 · 挂载票：— ｜ 参照：AEHR.US | 候选：6857.T（爱德万）、2449.TW（京元电子）、2360.TW（致茂）、TER.US（泰瑞达）、FORM.US（FormFactor）——未入库或未按本腿拆，只作尺的提供方
 - [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：— ｜ 参照：`000543.SZ` 皖能电力 · `600011.SH` 华能国际（均电厂侧；000543 主尺写「分子取本轴」但锚点数值与轴档不对应，待该票纠正时复核）；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
 - [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US ｜ 参照：TSM.US
 - [`_AXIS.crypto-cycle`](./axes/crypto-cycle.md) — 加密活跃度情景轴 · 挂载票（全档）：COIN.US ｜ 参照（**仅 L 档**）：HOOD.US
+- [`_AXIS.direct-to-cell`](./axes/direct-to-cell.md) — 手机直连卫星（direct-to-cell / D2D）同业尺轴 · 挂载票：— ｜ 参照：SPCX.US | 候选：ASTS.US（AST SpaceMobile）、GSAT.US（Globalstar，Amazon 收购中）、IRDM.US（Iridium）、Lynk（未上市）——未入库，只作尺的提供方
+- [`_AXIS.euv-mask-blank`](./axes/euv-mask-blank.md) — EUV 掩模基板 · 挂载票：— ｜ 参照：HOCPY.US
 - [`_AXIS.fed-path-aluminium`](./axes/fed-path-aluminium.md) — 电解铝价差情景轴（利率路径 × 铝供应潮） · 挂载票：1378.HK · 601600.SH · 002532.SZ · 000933.SZ
 - [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH ｜ 参照：603799.SH（仅铜腿，且只进 M/H）
 - [`_AXIS.frontier-lab-funding`](./axes/frontier-lab-funding.md) — 前沿实验室付款能力情景轴 · 挂载票：—（三档值待补前无定档）｜ 参照（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
-- [`_AXIS.inp-laser`](./axes/inp-laser.md) — InP 基激光 / 光器件芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US | 候选：COHR.US（激光 / 器件腿拆不出：产品收入无披露、InP 激光大半自用，见 §1；本票未迁移）
+- [`_AXIS.glass-core-substrate`](./axes/glass-core-substrate.md) — 玻璃芯封装载板 · 挂载票：— ｜ 参照：000725.SZ
+- [`_AXIS.hdd-glass-substrate`](./axes/hdd-glass-substrate.md) — HDD 玻璃基板 · 挂载票：— ｜ 参照：HOCPY.US
+- [`_AXIS.hvlp-copper-foil`](./axes/hvlp-copper-foil.md) — 高频高速电子铜箔（RTF / HVLP）同业尺轴 · 挂载票：— ｜ 参照：0148.HK | 候选：301511.SZ（德福科技）、301217.SZ（铜冠铜箔）、5706.T（三井金属）、5801.T（古河电工）、8358.TWO（金居）——未入库，只作尺的提供方
+- [`_AXIS.inp-laser`](./axes/inp-laser.md) — 磷化铟基激光芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US · AAOI.US | 候选：COHR.US（激光 / 器件腿拆不出：产品收入无披露、磷化铟基激光芯片大半自用，见 §1；本票未迁移）
 - [`_AXIS.leading-edge-foundry`](./axes/leading-edge-foundry.md) — 先进逻辑晶圆代工 · 挂载票：— ｜ 参照：INTC.US | 候选：TSM.US（尺的提供方：本轴借它的实测营业利润率作上界；其框架未按本轴拆腿，输入不变）
 - [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 - [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ ｜ 参照：600096.SH
-- [`_AXIS.pluggable-module`](./axes/pluggable-module.md) — 可插拔光模块组装同业尺轴 · 挂载票：— ｜ 参照：300308.SZ | 候选：COHR.US（数通收发器腿拆不出，见 §1；本票未迁移）· FN.US（代工加工费生意，不属本腿，只列候选）
+- [`_AXIS.pluggable-module`](./axes/pluggable-module.md) — 可插拔光模块组装同业尺轴 · 挂载票：— ｜ 参照：300308.SZ · AAOI.US | 候选：COHR.US（数通收发器腿拆不出，见 §1；本票未迁移）· FN.US（代工加工费生意，不属本腿，只列候选）
 - [`_AXIS.rates`](./axes/rates.md) — 无风险利率轴（按上市货币分段） · 挂载票：全部 USD 段票（美股；港股经联系汇率跟 USD 段）——只出 \(r_f\) 敏感性读数，不进锚点
 - [`_AXIS.sic`](./axes/sic.md) — 碳化硅（衬底 → 外延 → 功率器件）同业尺轴 · 挂载票：— ｜ 参照：WOLF.US · 2631.HK
 - [`_AXIS.sipho-wafer`](./axes/sipho-wafer.md) — 硅光晶圆代工 · 挂载票：— ｜ 参照：TSEM.US · GFS.US | 候选：TSM.US（COUPE 期权；本票未入轴，见其敏感性行）
+- [`_AXIS.solid-state-battery`](./axes/solid-state-battery.md) — 固态电池（电芯制造） · 挂载票：— ｜ 参照：1772.HK
 - [`_AXIS.southbound-repricing`](./axes/southbound-repricing.md) — 南向定价权情景轴 · 挂载票：— ｜ 参照：`000338.SZ` · `600036.SH` · `6655.HK` · `1766.HK` · `1072.HK` · `600011.SH`
 - [`_AXIS.uranium`](./axes/uranium.md) — 铀 U3O8 长期均衡价情景轴（现货与长期合同价收敛后的价位） · 挂载票：CCJ.US
