@@ -9,7 +9,7 @@ formula_id: chalco_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
 aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 753.3万吨 x the axis's spread steps (−4,629 / +1,028 元/吨) through the
+by 753.3万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
 marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
 g rows (flat 0% / 0% / 0% → 1/r) at the tier's own forward ROE (NP_x /
 中报归母权益), with r the basket the framework names for the single leg
@@ -21,7 +21,7 @@ cannot be reverse-solved for one ticker — so the framework walks the
 降篮门 one basket down to 篮 5 (11%, 9.09×), which is inside the band, and
 stops (A15).  The guard below asserts that premise: if the 篮 6 multiple ever
 re-enters the band, the market evidence for borrowing 篮 5's r is gone.
-The axis L rung 4,250 is a GS 2027E supply-glut *level* that may persist, not
+The axis L rung 4,873 is an MS 2027 supply-glut *level* that may persist, not
 a trough that mean-reverts; IAI 3.3% is sensitivity / stretched only.  The L
 numerator is that regime, not this company's own trough year (2023H1 归母
 33.66亿 was far lower) — so it takes steady g_L=0; a v4 that ran the 谷底档

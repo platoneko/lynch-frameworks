@@ -9,13 +9,13 @@ formula_id: tianshan_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
 aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 128万吨 x the axis's spread steps (−4,629 / +1,028 元/吨) through the
+by 128万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
 marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
 g rows (0% / 0% / 0% → flat 1/r) at the tier's own forward ROE (NP_x / 中报归母权益),
 with r the basket the framework names for the single leg (篮 6 周期商品, 13% →
 7.69×; valuation-rules「§r 篮子」, gordon.BASKET_R).
-The L numerator (48.0亿, the level this company printed for FY2025) is the
-axis's L rung — GS 2027E supply-glut 4,250 as a sustainable low regime, not a
+The L numerator (52.8亿, 9.5% above the FY2025 print of 48.18亿) is the
+axis's L rung — MS 2027 supply-glut 4,873 as a sustainable low regime, not a
 trough that must revert, and not this company's own trough year (2023H1 归母
 10.19亿 was far lower) — so g_L = 0% same as the platform; a v4 that ran the
 谷底档 recovery stage, and a later g_L 3.3%「谷底回归中枢」pass, both overstated

@@ -10,12 +10,12 @@ formula_id: hongqiao_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
 aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 562.2万吨 x the axis's spread steps (−4,629 / +1,028 元/吨) through the
+by 562.2万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
 marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
 g rows (0% / 0% / 0% → flat 1/r) at the tier's own forward ROE (NP_x / 中报归母权益),
 with r the basket the framework names for the single leg (篮 6 周期商品, 13% →
 7.69×; valuation-rules「§r 篮子」, gordon.BASKET_R).
-The L numerator is the axis's L rung — GS 2027E supply-glut level that may
+The L numerator is the axis's L rung — MS 2027 supply-glut level that may
 persist, not a trough that mean-reverts, and not this company's own trough year
 (2023H1 本公司擁有人應佔溢利 24.57亿 was far lower) — so g_L = 0 with g_M/g_H;
 IAI/CRU 3.3% is sensitivity / stretched only.  A v4 that ran the 谷底档 recovery

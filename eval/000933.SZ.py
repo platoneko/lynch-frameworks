@@ -9,17 +9,17 @@ formula_id: shenhuo_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
 aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 151.9万吨 x the axis's spread steps (−4,629 / +1,028 元/吨) through the
+by 151.9万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
 marginal conversion rate.  L/H only move the aluminium-spread term; coal /
 trade / processing are *not* scenario-modelled (no segment GM — there is no
 measured "coal@M" to freeze).  Whatever those legs contributed to
 consolidated NP_M stays inside NP_L/NP_H by omission (A6).  Each tier's
-multiple is Gordon on the axis g rows (all 0%: L rung 4,250 is a GS 2027E
+multiple is Gordon on the axis g rows (all 0%: L rung 4,873 is an MS 2027
 supply-glut *level* that may persist; IAI 3.3% is sensitivity only) at the
 tier's own forward ROE, with r the basket the framework names for the single
 leg (篮 6 周期商品, 13% → flat 1/r = 7.69×; valuation-rules「§r 篮子」,
 gordon.BASKET_R).  The PB floor is disclosed, never max()'d into L.  The L
-numerator (54.3亿) coincides with 2023H1 printed but is the axis regime —
+numerator (59.9亿) sits above 2023H1 printed 54.8亿 and is the axis regime —
 g_L=0, not the 谷底档 recovery stage.  Open item: L may be optimistic vs a
 world where coal also troughs (A6/A14).
 
@@ -119,7 +119,7 @@ def main() -> int:
           f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
           f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
     print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
-          f"L numerator {np_l:.1f}亿 = axis L rung (regime), coincides with printed 2023H1 {NP_TROUGH_2023H1:.1f}亿 (A15)")
+          f"L numerator {np_l:.1f}亿 = axis L rung (regime), above printed 2023H1 {NP_TROUGH_2023H1:.1f}亿 (A15)")
     print(f"  L/M={L/M:.3f} = 分子比 {eps[0]/eps[1]:.3f} x 倍数比 {pes[0]/pes[1]:.3f} | "
           f"H/M={H/M:.3f} = 分子比 {eps[2]/eps[1]:.3f} x 倍数比 {pes[2]/pes[1]:.3f} | "
           f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
