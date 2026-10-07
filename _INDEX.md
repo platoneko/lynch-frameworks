@@ -41,6 +41,7 @@
 - [RKLB.US](./RKLB.US.md) — 篮子：篮 4 10%
 - [SOFI.US](./SOFI.US.md) — 篮子：篮 6 13%
 - [SPCX.US](./SPCX.US.md) — 篮子：r_starlink 篮 4 10% · r_space 篮 4 10% · r_compute 篮 7 15%
+- [TER.US](./TER.US.md) — 篮子：篮 4 10%
 - [TSEM.US](./TSEM.US.md) — 篮子：篮 4 10%
 - [TSM.US](./TSM.US.md) — 篮子：篮 4 10%
 - [VIAV.US](./VIAV.US.md) — 篮子：篮 4 10%
