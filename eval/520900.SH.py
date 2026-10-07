@@ -1,7 +1,23 @@
 #!/usr/bin/env python3
 """520900.SH (GF CSI China Reform HK Connect SOE Dividend ETF) eval.
 
-formula_id: gf_soe_hk_div_sotp_index_pe_flat_v3  (cross-check: 931722 price-index trend channel)
+formula_id: gf_soe_hk_div_sotp_pername_v4  (cross-check: 931722 price-index trend channel)
+
+v4 (2026-10-07): the energy sleeve is looked through NAME BY NAME
+(valuation-rules「§ETF 例外」集中型 → 成分框架 SOTP; 「成分行业 → 篮子默认映射」
+只在无个股材料时用).  Each of the four energy SOEs contributes
+w_k x (V_k,x / P_k) with P_k its own 2026-09-11 close:
+  * 中海油 / 中石油: V_k = the constituent framework's stated L/M/H
+    (frameworks/0883.HK.md, 0857.HK.md) -- restated in Inputs and asserted
+    equal here, so a constituent change turns this eval red;
+  * 神华 / 中石化 (no framework yet): V_k = FY2027E consensus x a leg-mix
+    multiple, each segment at its basket's 1/r (篮 6 commodity legs 13%, 篮 4
+    power / rail / port / marketing 10%; 神华 2025 segment profit, 中石化
+    2018-25 eight-year segment operating income -- 2025 chemicals lost money).
+The uncovered energy weight and the residual cyclical sleeve take the four
+names' weighted ratio.  Industrial and annuity sleeves are unchanged.  The v3
+whole-sleeve Gordon (index-PE denominator, shared with 513530.SH) is kept
+below as the comparison band and its branch checks still run.
 
 Ruler (valuation-rules「§ETF 例外」, concentrated basket): 44% energy in four
 SOEs, top-5 51%, and 931722 has no total-return series, so the ETF is looked
@@ -69,13 +85,20 @@ from lib.gordon import (  # noqa: E402
     NEAR_FULL_PAYOUT, check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, payout_gap, perpetual_pe,
 )
 from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
+    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report, stated_anchors,
 )
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "520900.SH.md"
 PEER = Path(__file__).resolve().parents[2] / "frameworks" / "513530.SH.md"
-FORMULA_ID = "gf_soe_hk_div_sotp_index_pe_flat_v3"
+FORMULA_ID = "gf_soe_hk_div_sotp_pername_v4"
+FRAMEWORKS_DIR = FRAMEWORK.parent
+
+# v4 energy sleeve, name by name (A12).
+FW_NAMES = {"cnooc": "0883.HK", "petrochina": "0857.HK"}       # constituent framework anchors
+SPLIT_NAMES = ("shenhua", "sinopec")                           # segment-mix multiple inside this ETF
+ENE_NAMES = ("shenhua", "cnooc", "petrochina", "sinopec")
+FW_TOL = 0.01
 
 # ---- channel cross-check: the index this ETF tracks (was the `ETF` table entry) ----
 INDEX_SRC, INDEX_CODE = "csi", "931722"
@@ -135,7 +158,43 @@ REQUIRED = [
     *(f"{n}_{f}" for n in SLEEVES["ene"] for f in ROLL_FIELDS),
     *(f"{k}_{t}" for k in ENERGY_NI for t in "lmh"),
     "chan_regime_start", *CHAN_FIELDS, "chan_slope_full", "chan_slope_2019", "chan_slope_2021",
+    "r_mk", "fx_hkdcny", *(f"{n}_px" for n in ENE_NAMES),
+    *(f"{n}_fw_{t}" for n in FW_NAMES for t in "lmh"),
+    *(f"{n}_seg{b}" for n in SPLIT_NAMES for b in (6, 4)),
+    "shenhua_netcash", "shenhua_shares",
 ]
+
+
+def pe_mix(inp: dict[str, float], n: str) -> float:
+    """Leg-mix multiple: commodity segments at 1/r_ene (篮 6), the rest at 1/r_mk (篮 4)."""
+    s6, s4 = inp[f"{n}_seg6"], inp[f"{n}_seg4"]
+    return (s6 / inp["r_ene"] + s4 / inp["r_mk"]) / (s6 + s4)
+
+
+def name_value(inp: dict[str, float], n: str, tier: str) -> float:
+    """V_k,x in HKD: the constituent framework's anchor, or FY27E consensus x leg mix."""
+    if n in FW_NAMES:
+        return inp[f"{n}_fw_{tier}"]
+    return inp[f"{n}_fy27_{tier}"] * pe_mix(inp, n) / inp["fx_hkdcny"]
+
+
+def ene_ratios(inp: dict[str, float], tier: str) -> dict[str, float]:
+    return {n: name_value(inp, n, tier) / inp[f"{n}_px"] for n in ENE_NAMES}
+
+
+def legs_v4(inp: dict[str, float], tag: str) -> dict[str, float]:
+    """v4 sleeves (pre NAV x fee): four energy names on own price, the uncovered
+    energy weight + residual cyclical on the four names' weighted ratio,
+    industrial / annuity as v3."""
+    rat = ene_ratios(inp, tag)
+    w4 = sum(inp[f"{n}_w"] for n in ENE_NAMES)
+    avg = sum(inp[f"{n}_w"] * rat[n] for n in ENE_NAMES) / w4
+    out = {n: inp[f"{n}_w"] * rat[n] for n in ENE_NAMES}
+    out["ene_rest"] = (inp["w_ene"] - w4) * avg
+    out["resc"] = inp["w_resc"] * avg
+    out["ind"] = inp["w_ind"] * inp[f"eps_ind_{tag}"] * inp["pe_ind"] / inp["pe_now"]
+    out["ann"] = inp["w_ann"] * inp[f"eps_ann_{tag}"] * inp["pe_ann"] / inp["pe_now"]
+    return out
 
 
 def sleeve_weights(inp: dict[str, float], names: tuple[str, ...]) -> dict[str, float]:
@@ -232,9 +291,23 @@ def main() -> int:
         if key not in baskets:
             errors.append(f"{key}: no 篮 N in the Inputs source cell (valuation-rules.md「§r 篮子」)")
         errors += check_r(r[leg], key, baskets.get(key))
+    if "r_mk" not in baskets:
+        errors.append("r_mk: no 篮 N in the Inputs source cell (valuation-rules.md「§r 篮子」)")
+    errors += check_r(inp["r_mk"], "r_mk", baskets.get("r_mk"))
+    # v4: constituent framework anchors restated in Inputs must match the constituent files.
+    for n, ticker in FW_NAMES.items():
+        path = FRAMEWORKS_DIR / f"{ticker}.md"
+        if not path.exists():
+            errors.append(f"{ticker}: constituent framework missing")
+            continue
+        said = stated_anchors(path.read_text(encoding="utf-8"))
+        for t in "lmh":
+            got = said.get(t.upper())
+            if got is None or abs(got - inp[f"{n}_fw_{t}"]) > FW_TOL:
+                errors.append(f"{n}_fw_{t} {inp[f'{n}_fw_{t}']} != {ticker} stated {t.upper()} {got} — re-run the ETF after the constituent change (A12)")
     for leg, g_key in GORDON_LEGS:
         errors += check_g_cap(inp[g_key], r[leg], g_key)
-    r_bask = (inp["w_ene"] + inp["w_resc"]) * r["ene"] + inp["w_ind"] * r["ind"] + inp["w_ann"] * r["ann"]
+    r_bask =(inp["w_ene"] + inp["w_resc"]) * r["ene"] + inp["w_ind"] * r["ind"] + inp["w_ann"] * r["ann"]
     if abs(r_bask - R_BASK) > 0.005:
         errors.append(f"P-weighted look-through r̄ {r_bask:.4f} != declared R_BASK {R_BASK} (A10)")
 
@@ -316,9 +389,17 @@ def main() -> int:
     def band(pe_ene: float, pe_ind: float, pe_ann: float | None = None) -> tuple[float, float, float]:
         return tuple(anchor(t, pe_ene=pe_ene, pe_ind=pe_ind, pe_ann=pe_ann) for t in "lmh")  # type: ignore[return-value]
 
-    computed = {t.upper(): anchor(t) for t in "lmh"}
+    def anchor_v4(tag: str) -> float:
+        return scale(inp["nav_ref"], inp["fee_drag"], sum(legs_v4(inp, tag).values()))
+
+    v3 = tuple(anchor(t) for t in "lmh")   # v3 whole-sleeve Gordon: comparison band only
+    computed = {t.upper(): anchor_v4(t) for t in "lmh"}
     if not (computed["L"] < computed["M"] < computed["H"]):
         return report(["ladder collapsed"])
+    for n in ENE_NAMES:
+        errors += ladder(f"{n} V/P", *(ene_ratios(inp, t)[n] for t in "lmh"))
+    if errors:
+        return report(errors)
     A, B = cut_points(computed["L"], computed["M"], computed["H"])
     computed["A"], computed["B"] = A, B
     errors = check_against_stated(md, computed, tol=0.01)
@@ -395,10 +476,25 @@ def main() -> int:
     print(f"  留存分支 g = (1−{inp['payout_ind']:.3f}) × {inp['roe_ind']:.3f} = {g_ind_alt:+.2%} → PE {pe_ind_alt:.2f}x: 方向向下, 过不了同世界门 (裁决顺序 ④) — 只作对照")
     print(f"  → 具名 g2 = 0 (零增长参照, 1/r = {inp['pe_ind']}x): 留存用于船队更替不换来稳态增长; check_branch(0) 仍标『留存』= BLOCKED 的记录, 非红线")
     print(f"年金腿 (中国移动代理, 篮 {baskets['r_ann']} r {r['ann']:.1%}): g2 {inp['g2_ann']:.0%} → 1/r = {inp['pe_ann']}x flat")
+    print(f"v4 能源逐名 (V_k / 09-11 收盘 P_k; 中海油 / 中石油 = 个股框架锚点, 神华 / 中石化 = FY27E × 腿组合倍数 @ 篮 6 {inp['r_ene']:.0%} / 篮 4 {inp['r_mk']:.0%}):")
+    for n in ENE_NAMES:
+        src = f"{FW_NAMES[n]} 锚点" if n in FW_NAMES else f"PE_mix {pe_mix(inp, n):.2f}x (篮 6 份额 {inp[f'{n}_seg6'] / (inp[f'{n}_seg6'] + inp[f'{n}_seg4']):.1%})"
+        vals = [name_value(inp, n, t) for t in "lmh"]
+        rats = [ene_ratios(inp, t)[n] for t in "lmh"]
+        print(f"  {n:<11} w {inp[f'{n}_w']:.3f}  {src}: V {'/'.join(f'{v:.2f}' for v in vals)} HKD ÷ P {inp[f'{n}_px']} = {'/'.join(f'{x:.3f}' for x in rats)}")
     for tag in "lmh":
-        print(f"{tag.upper()}: " + "  ".join(f"{k} {v * nav:.4f}" for k, v in legs(inp, tag).items()) + f"  = {computed[tag.upper()]:.4f}")
-    print(f"flat-multiple ladder = base ladder (pe flat on every sleeve): {L:.4f}/{M:.4f}/{H:.4f}  A {A:.4f} B {B:.4f}")
-    print(f"报表年 regime 对照带 (压力坐标 L): {regime[0]:.4f}/{regime[1]:.4f}/{regime[2]:.4f}")
+        print(f"{tag.upper()}: " + "  ".join(f"{k} {v * nav:.4f}" for k, v in legs_v4(inp, tag).items()) + f"  = {computed[tag.upper()]:.4f}")
+    print(f"底牌 v4: {L:.4f}/{M:.4f}/{H:.4f}  A {A:.4f} B {B:.4f} | v3 整腿 Gordon @ 指数 PE (对照): {v3[0]:.4f}/{v3[1]:.4f}/{v3[2]:.4f}")
+    sh_nc = inp["shenhua_netcash"] / inp["shenhua_shares"] / inp["fx_hkdcny"]
+    nc = tuple(computed[t.upper()] + scale(inp["nav_ref"], inp["fee_drag"],
+                                           (inp["w_ene"] + inp["w_resc"]) / sum(inp[f"{n}_w"] for n in ENE_NAMES)
+                                           * inp["shenhua_w"] * sh_nc / inp["shenhua_px"]) for t in "lmh")
+    print(f"敏感性 神华净现金 {sh_nc:.2f} HKD/股按面值加回 (只披露): {'/'.join(f'{x:.3f}' for x in nc)}")
+    for label, key, alt in (("神华 / 中石化 非商品腿改篮 2 7.5%", "r_mk", 0.075), ("神华 / 中石化 全腿篮 6 13%", "r_mk", inp["r_ene"])):
+        alt_inp = {**inp, key: alt}
+        b = tuple(scale(inp["nav_ref"], inp["fee_drag"], sum(legs_v4(alt_inp, t).values())) for t in "lmh")
+        print(f"敏感性 {label}: {'/'.join(f'{x:.3f}' for x in b)}")
+    print(f"报表年 regime 对照带 (v3 尺, 压力坐标 L):{regime[0]:.4f}/{regime[1]:.4f}/{regime[2]:.4f}")
     mkt = {k: v * nav for k, v in legs(inp, "m", ene=1.0, ind=1.0, ann=1.0, pe_ene=inp["pe_now"], pe_ind=inp["pe_now"], pe_ann=inp["pe_now"]).items()}
     print(
         f"L/M {L / M:.3f} = num {L / M:.3f} x pe 1.000 | H/M {H / M:.3f} = num {H / M:.3f} x pe 1.000 | "
