@@ -56,6 +56,7 @@
 - [0857.HK](./0857.HK.md) — 中国石油股份 · 篮子：r_perp 篮 6 13% · r_ng 篮 6 13% · r_rc 篮 6 13% · r_mk 篮 4 10%
 - [0883.HK](./0883.HK.md) — 中国海洋石油 · 篮子：篮 7 15%
 - [1072.HK](./1072.HK.md) — 东方电气 · 篮子：篮 4 10%
+- [1088.HK](./1088.HK.md) — 中国神华 · 篮子：r_coal 篮 6 13% · r_power 篮 4 10% · r_rail 篮 4 10%
 - [1378.HK](./1378.HK.md) — 中国宏桥 · 篮子：篮 6 13%
 - [1766.HK](./1766.HK.md) — 中国中车 · 篮子：篮 4 10%
 - [1772.HK](./1772.HK.md) — 赣锋锂业 · 篮子：篮 6 13%
@@ -104,7 +105,7 @@
 - [`_AXIS.ai-glass-fabric`](./axes/ai-glass-fabric.md) — AI 特种电子玻纤布（低介电 / 低膨胀 / 石英）同业尺轴 · 挂载票：— ｜ 参照：0148.HK | 候选：1888.HK、603256.SH（宏和科技）、002080.SZ（中材科技·泰山玻纤）、3110.T（日东纺）、300395.SZ（菲利华）——未入库，只作尺的提供方
 - [`_AXIS.brent-oil`](./axes/brent-oil.md) — 布伦特原油 USD 价格情景轴（霍尔木兹中断后的 2027 油价 regime） · 挂载票：0857.HK · 0883.HK（后者主尺为 DDM——valuation-rules「DDM 主尺例外」，分子仍由本轴桥出，见 §3）
 - [`_AXIS.burn-in-test`](./axes/burn-in-test.md) — 老化 / 可靠性测试与系统级测试（SLT）同业尺轴 · 挂载票：— ｜ 参照：AEHR.US | 候选：6857.T（爱德万）、2449.TW（京元电子）、2360.TW（致茂）、TER.US（泰瑞达）、FORM.US（FormFactor）——未入库或未按本腿拆，只作尺的提供方
-- [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：— ｜ 参照：`000543.SZ` 皖能电力 · `600011.SH` 华能国际（均电厂侧；000543 主尺写「分子取本轴」但锚点数值与轴档不对应，待该票纠正时复核）；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
+- [`_AXIS.coal-price`](./axes/coal-price.md) — 秦皇岛 5500 动力煤价格情景轴（长协 regime 下的煤价周期位置） · 挂载票：`1088.HK` 中国神华（矿商侧定档，2026-10-07）｜ 参照：`000543.SZ` 皖能电力 · `600011.SH` 华能国际（均电厂侧；000543 主尺写「分子取本轴」但锚点数值与轴档不对应，待该票纠正时复核）；候选：`1898.HK` 中煤能源；`513530.SH` / `520900.SH` 内的神华 / 中煤切片）
 - [`_AXIS.cowos-capacity`](./axes/cowos-capacity.md) — CoWoS 产能与配额情景轴 · 挂载票：NVDA.US · AVGO.US ｜ 参照：TSM.US
 - [`_AXIS.crypto-cycle`](./axes/crypto-cycle.md) — 加密活跃度情景轴 · 挂载票（全档）：COIN.US ｜ 参照（**仅 L 档**）：HOOD.US
 - [`_AXIS.direct-to-cell`](./axes/direct-to-cell.md) — 手机直连卫星（direct-to-cell / D2D）同业尺轴 · 挂载票：— ｜ 参照：SPCX.US | 候选：ASTS.US（AST SpaceMobile）、GSAT.US（Globalstar，Amazon 收购中）、IRDM.US（Iridium）、Lynk（未上市）——未入库，只作尺的提供方

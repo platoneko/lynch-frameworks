@@ -7,13 +7,12 @@ v4 (2026-10-07): the energy sleeve is looked through NAME BY NAME
 (valuation-rules「§ETF 例外」集中型 → 成分框架 SOTP; 「成分行业 → 篮子默认映射」
 只在无个股材料时用).  Each of the four energy SOEs contributes
 w_k x (V_k,x / P_k) with P_k its own 2026-09-11 close:
-  * 中海油 / 中石油: V_k = the constituent framework's stated L/M/H
-    (frameworks/0883.HK.md, 0857.HK.md) -- restated in Inputs and asserted
-    equal here, so a constituent change turns this eval red;
-  * 神华 / 中石化 (no framework yet): V_k = FY2027E consensus x a leg-mix
-    multiple, each segment at its basket's 1/r (篮 6 commodity legs 13%, 篮 4
-    power / rail / port / marketing 10%; 神华 2025 segment profit, 中石化
-    2018-25 eight-year segment operating income -- 2025 chemicals lost money).
+  * 神华 / 中海油 / 中石油: V_k = the constituent framework's stated L/M/H
+    (frameworks/1088.HK.md, 0883.HK.md, 0857.HK.md) -- restated in Inputs and
+    asserted equal here, so a constituent change turns this eval red;
+  * 中石化 (no framework yet): V_k = FY2027E consensus x a leg-mix multiple,
+    each segment at its basket's 1/r (篮 6 commodity legs 13%, 篮 4 marketing
+    10%; 2018-25 eight-year segment operating income -- 2025 chemicals lost money).
 The uncovered energy weight and the residual cyclical sleeve take the four
 names' weighted ratio.  Industrial and annuity sleeves are unchanged.  The v3
 whole-sleeve Gordon (index-PE denominator, shared with 513530.SH) is kept
@@ -95,8 +94,8 @@ FORMULA_ID = "gf_soe_hk_div_sotp_pername_v4"
 FRAMEWORKS_DIR = FRAMEWORK.parent
 
 # v4 energy sleeve, name by name (A12).
-FW_NAMES = {"cnooc": "0883.HK", "petrochina": "0857.HK"}       # constituent framework anchors
-SPLIT_NAMES = ("shenhua", "sinopec")                           # segment-mix multiple inside this ETF
+FW_NAMES = {"shenhua": "1088.HK", "cnooc": "0883.HK", "petrochina": "0857.HK"}   # constituent framework anchors
+SPLIT_NAMES = ("sinopec",)                                     # segment-mix multiple inside this ETF
 ENE_NAMES = ("shenhua", "cnooc", "petrochina", "sinopec")
 FW_TOL = 0.01
 
@@ -161,7 +160,6 @@ REQUIRED = [
     "r_mk", "fx_hkdcny", *(f"{n}_px" for n in ENE_NAMES),
     *(f"{n}_fw_{t}" for n in FW_NAMES for t in "lmh"),
     *(f"{n}_seg{b}" for n in SPLIT_NAMES for b in (6, 4)),
-    "shenhua_netcash", "shenhua_shares",
 ]
 
 
@@ -476,7 +474,7 @@ def main() -> int:
     print(f"  留存分支 g = (1−{inp['payout_ind']:.3f}) × {inp['roe_ind']:.3f} = {g_ind_alt:+.2%} → PE {pe_ind_alt:.2f}x: 方向向下, 过不了同世界门 (裁决顺序 ④) — 只作对照")
     print(f"  → 具名 g2 = 0 (零增长参照, 1/r = {inp['pe_ind']}x): 留存用于船队更替不换来稳态增长; check_branch(0) 仍标『留存』= BLOCKED 的记录, 非红线")
     print(f"年金腿 (中国移动代理, 篮 {baskets['r_ann']} r {r['ann']:.1%}): g2 {inp['g2_ann']:.0%} → 1/r = {inp['pe_ann']}x flat")
-    print(f"v4 能源逐名 (V_k / 09-11 收盘 P_k; 中海油 / 中石油 = 个股框架锚点, 神华 / 中石化 = FY27E × 腿组合倍数 @ 篮 6 {inp['r_ene']:.0%} / 篮 4 {inp['r_mk']:.0%}):")
+    print(f"v4 能源逐名 (V_k / 09-11 收盘 P_k; 神华 / 中海油 / 中石油 = 个股框架锚点, 中石化 = FY27E × 腿组合倍数 @ 篮 6 {inp['r_ene']:.0%} / 篮 4 {inp['r_mk']:.0%}):")
     for n in ENE_NAMES:
         src = f"{FW_NAMES[n]} 锚点" if n in FW_NAMES else f"PE_mix {pe_mix(inp, n):.2f}x (篮 6 份额 {inp[f'{n}_seg6'] / (inp[f'{n}_seg6'] + inp[f'{n}_seg4']):.1%})"
         vals = [name_value(inp, n, t) for t in "lmh"]
@@ -485,12 +483,7 @@ def main() -> int:
     for tag in "lmh":
         print(f"{tag.upper()}: " + "  ".join(f"{k} {v * nav:.4f}" for k, v in legs_v4(inp, tag).items()) + f"  = {computed[tag.upper()]:.4f}")
     print(f"底牌 v4: {L:.4f}/{M:.4f}/{H:.4f}  A {A:.4f} B {B:.4f} | v3 整腿 Gordon @ 指数 PE (对照): {v3[0]:.4f}/{v3[1]:.4f}/{v3[2]:.4f}")
-    sh_nc = inp["shenhua_netcash"] / inp["shenhua_shares"] / inp["fx_hkdcny"]
-    nc = tuple(computed[t.upper()] + scale(inp["nav_ref"], inp["fee_drag"],
-                                           (inp["w_ene"] + inp["w_resc"]) / sum(inp[f"{n}_w"] for n in ENE_NAMES)
-                                           * inp["shenhua_w"] * sh_nc / inp["shenhua_px"]) for t in "lmh")
-    print(f"敏感性 神华净现金 {sh_nc:.2f} HKD/股按面值加回 (只披露): {'/'.join(f'{x:.3f}' for x in nc)}")
-    for label, key, alt in (("神华 / 中石化 非商品腿改篮 2 7.5%", "r_mk", 0.075), ("神华 / 中石化 全腿篮 6 13%", "r_mk", inp["r_ene"])):
+    for label, key, alt in (("中石化营销腿改篮 2 7.5%", "r_mk", 0.075), ("中石化全腿篮 6 13%", "r_mk", inp["r_ene"])):
         alt_inp = {**inp, key: alt}
         b = tuple(scale(inp["nav_ref"], inp["fee_drag"], sum(legs_v4(alt_inp, t).values())) for t in "lmh")
         print(f"敏感性 {label}: {'/'.join(f'{x:.3f}' for x in b)}")
