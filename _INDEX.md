@@ -32,6 +32,7 @@
 - [MRVL.US](./MRVL.US.md) — 篮子：篮 4 10%
 - [MSFT.US](./MSFT.US.md) — 篮子：r_perp 篮 4 10% · r_az_lab 篮 7 15% · r_az_lab_t 篮 4 10%
 - [MTSI.US](./MTSI.US.md) — 篮子：篮 4 10%
+- [NBIS.US](./NBIS.US.md) — 篮子：篮 4 10%
 - [NEM.US](./NEM.US.md) — 篮子：r_perp 篮 4 10% · r_pbzn 篮 6 13%
 - [NOK.US](./NOK.US.md) — 篮子：篮 4 10%
 - [NVDA.US](./NVDA.US.md) — 篮子：篮 4 10%
