@@ -101,7 +101,7 @@ RET_YEARS = range(2017, 2026)
 REQUIRED = [
     "shares", "stake_kl", "tax", "tax_prop",
     "na_lam", "na_pcb", "na_chem", "ip_hold",
-    "ret_lam_l", "ret_lam_m", "g1_lam_rec", "n_rec", "e_lam_26", "e_lam_27", "e_lam_28c", "n_fade",
+    "ret_lam_l", "ret_lam_m", "g1_lam_rec", "n_rec", "e_lam_26", "e_lam_27", "e_lam_27c", "e_lam_28c", "n_fade",
     "ret_pcb_l", "ret_pcb_m", "ret_pcb_h",
     "chem_l", "chem_m", "chem_h",
     "rent_l", "rent_m", "rent_h", "noi_margin",
@@ -325,7 +325,11 @@ def main() -> int:
         errors.append(f"flat-multiple ladder collapses: {flat}")
 
     # --- candidate band (A10): FY2028 single-source added to the H path ------
-    cand = anchors(0.0, [inp["e_lam_26"], inp["e_lam_27"], inp["e_lam_28c"]])
+    # Citi's FY2028 is an ordinary base forecast (growth type, construction §7h): convert it to
+    # Citi's own FY27 -> FY28 growth and apply that to the H path's FY2027, not the level itself.
+    g1_cand = inp["e_lam_28c"] / inp["e_lam_27c"] - 1
+    e_lam_28h = inp["e_lam_27"] * (1 + g1_cand)
+    cand = anchors(0.0, [inp["e_lam_26"], inp["e_lam_27"], e_lam_28h])
     cand = (L, M, cand[2])
     meta = load_framework(FRAMEWORK)
     if meta.candidate is None:
@@ -387,7 +391,9 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"ratios: L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
     print(f"regime comparison band (A1): L={reg[0]:.2f} M={reg[1]:.2f} H={reg[2]:.2f}")
-    print(f"candidate (A10): L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}")
+    print(f"candidate (A10, Citi FY27->FY28 g1 {g1_cand:+.2%} on H path -> FY28 {e_lam_28h:.2f}bn):"
+          f" L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}"
+          f" A'={(cand[0] + cand[1]) / 2:.2f} B'={(cand[1] + cand[2]) / 2:.2f}")
     for x in "lmh":
         o = opt[x]
         for leg in ("gf", "cu"):
