@@ -152,9 +152,14 @@ def parse_stated(md: str) -> dict:
         m = row_re.match(line)
         if m:
             legs[m.group(1)] = [float(m.group(i).replace("−", "-")) for i in range(2, 7)]
+    # Zone boundaries come from 表2 only: slice from its heading to the next
+    # **表… heading so 表1 / 表3 / 表2c rows can never leak into the base-card check.
+    if "**表2 · zone" not in out:
+        sys.exit("FATAL: cannot find the 表2 · zone table in §3 Outputs")
+    zone_table = out.split("**表2 · zone", 1)[1].split("\n**表", 1)[0]
     table = "\n".join(
         line.strip().strip("|").split("|")[2]
-        for line in out.splitlines()
+        for line in zone_table.splitlines()
         if line.lstrip().startswith("|") and "`" in line)
     vopt_m = re.search(r"V_\{?opt\}?\\?\)?\s*=\s*\*\*([\d.]+)\*\*", out)
     ptier_m = re.search(
