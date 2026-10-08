@@ -175,11 +175,13 @@ def main() -> int:
     errors += flat_errs
     dec = decompose((L, M, H), tuple(pe[t] * (1 - k[t]) for t in TIERS))
 
-    # ---- Candidate band (A21): single-house FY29 as a one-year transition on M/H ----
-    g1 = inp["jef_eps_cy28"] / inp["eps_fy28_m"] - 1  # SBC share held at the M-tier ratio
-    cand = {"L": L}
+    # ---- Candidate band (A21): Jefferies' bull-case EPS is a level (construction §7h) ----
+    # A single-point upside case caps H′ at the source (FY29 non-GAAP = 18, SBC share held at the
+    # tier ratio); M′ copies base M — the single point is both midpoint and top.
+    g1 = max(0.0, inp["jef_eps_cy28"] / inp["eps_fy28_h"] - 1)
+    cand = {"L": L, "M": M}
     cand_roe, cand_b1 = {}, {}
-    for t in ("M", "H"):
+    for t in ("H",):
         _, cand_roe[t] = book(eps[t], g1)
         cand_b1[t] = g1 / cand_roe[t]
         cand[t] = eps[t] * two_stage_pe(g1, 1, g2, cand_roe[t], r) * (1 - k[t])
@@ -209,9 +211,10 @@ def main() -> int:
     print(f"flat ladder @ M {pe['M']:.2f}x (pre-k): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | H/M {dec['hm']:.3f}"
           f" = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0")
-    print(f"candidate (FY29 g1 {g1:+.2%} from single-house CY28 {inp['jef_eps_cy28']:g}): "
-          f"L′ {cand['L']:.2f} M′ {cand['M']:.2f} H′ {cand['H']:.2f}; "
-          + " ".join(f"{t} ROE {cand_roe[t]:.3f} b1 {cand_b1[t]:.2f}" for t in ("M", "H"))
+    print(f"candidate (level: H capped at single-house bull CY28 {inp['jef_eps_cy28']:g}, FY29 g1_H {g1:+.2%};"
+          f" M′ = M): L′ {cand['L']:.2f} M′ {cand['M']:.2f} H′ {cand['H']:.2f}"
+          f"  A′ {(cand['L'] + cand['M']) / 2:.2f} B′ {(cand['M'] + cand['H']) / 2:.2f}; "
+          + " ".join(f"{t} ROE {cand_roe[t]:.3f} b1 {cand_b1[t]:.2f}" for t in ("H",))
           + ("  [b1 > 1: stage-1 payout negative = growth funded by share issuance]"
              if max(cand_b1.values()) > 1 else ""))
 
