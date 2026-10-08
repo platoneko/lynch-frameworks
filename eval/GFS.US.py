@@ -77,7 +77,7 @@ REQUIRED = [
     "eps_2026_m", "eps_1h26_a", "payout_3y",
     "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2027_gaap_m", "eps_2028_gaap_m",
     "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_own_min",
-    "rev_2025", "cagr_model", "opm_model_2028",
+    "rev_2025", "cagr_model", "cagr_model_hi", "opm_model_2028",
     "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
     *SHARED, "opt_rev", "t_opt",
 ]
@@ -223,12 +223,16 @@ def main() -> int:
     inc_ps = inp["opt_rev"] * (inp["gm_sipho"] - inp["opex_ratio"]) * (1.0 - inp["tax"]) / inp["shares"]
     v_opt = inc_ps * perpetual_pe(g2s, base["H"]["roe_s"], r) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
 
-    # ---- Candidate band (A17): Analyst Day 2028 model swapped into the company g1 (single source) ----
-    rev_2028 = inp["rev_2025"] * (1.0 + inp["cagr_model"]) ** 3
-    ni_2028 = rev_2028 * inp["opm_model_2028"] * (1.0 - inp["tax"])
-    econ_2028 = ni_2028 / inp["shares"] - sbc_ps - nii_ps
+    # ---- Candidate band (A17): Analyst Day 2028 model = a level range (construction §7h) ----
+    # A company target is a ceiling: M′ goes to the range midpoint (CAGR 11%), H′ is capped at the
+    # range top (CAGR 12%) — not the midpoint's growth multiplied onto H's higher FY27.
+    def econ_at(cagr: float) -> float:
+        rev_2028 = inp["rev_2025"] * (1.0 + cagr) ** 3
+        return rev_2028 * inp["opm_model_2028"] * (1.0 - inp["tax"]) / inp["shares"] - sbc_ps - nii_ps
+    econ_2028, econ_2028_hi = econ_at(inp["cagr_model"]), econ_at(inp["cagr_model_hi"])
     g1_cand = econ_2028 / ops["M"] - 1.0
-    cand = deck(g1_=g1_cand)[0]
+    g1_cand_h = max(0.0, econ_2028_hi / ops["H"] - 1.0)
+    cand = {"M": deck(g1_=g1_cand)[0]["M"], "H": deck(g1_=g1_cand_h)[0]["H"]}
     cand_band = (L, cand["M"]["val"], cand["H"]["val"])
     if not (cand_band[0] < cand_band[1] < cand_band[2]):
         errors.append(f"candidate band ladder broken: {cand_band}")
@@ -301,7 +305,9 @@ def main() -> int:
           + " | ".join(f"GM {gm:g} -> {trio(d)} V_opt {v_opt_gm(gm, d):.2f}" for gm, d in gm_lo.items()))
     print(f"V_opt={v_opt:.2f} ({inp['opt_rev'] / 1e9:.2f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio']:g}) x (1-t) = {inc_ps:.4f}/sh x SiPho perp PE "
           f"{perpetual_pe(g2s, base['H']['roe_s'], r):.2f}x / 1.1^{int(inp['t_opt']) - NUM_YEAR}); zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
-    print(f"candidate (Analyst Day 2028: econ EPS {econ_2028:.3f} -> company g1' {g1_cand:.4f}): L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}")
+    print(f"candidate (Analyst Day 2028 level: M econ {econ_2028:.3f} g1' {g1_cand:.4f}; H capped at econ"
+          f" {econ_2028_hi:.3f} g1' {g1_cand_h:.4f}): L'/M'/H' {cand_band[0]:.2f}/{cand_band[1]:.2f}/{cand_band[2]:.2f}"
+          f"  A' {(cand_band[0] + cand_band[1]) / 2:.2f} B' {(cand_band[1] + cand_band[2]) / 2:.2f}")
 
     def band_at(dr: float) -> tuple[float, float, float]:
         d = deck(rr=r + dr)[0]
