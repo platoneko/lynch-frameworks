@@ -9,6 +9,7 @@
 - [AAPL.US](./AAPL.US.md) — 篮子：篮 4 10%
 - [AEHR.US](./AEHR.US.md) — 篮子：篮 4 10%
 - [ALB.US](./ALB.US.md) — 篮子：r_perp 篮 6 13% · r_spec 篮 4 10%
+- [AMKR.US](./AMKR.US.md) — 篮子：篮 4 10%
 - [AMZN.US](./AMZN.US.md) — 篮子：r_perp 篮 4 10% · r_aws_lab 篮 7 15% · r_aws_lab_t 篮 4 10%
 - [AVGO.US](./AVGO.US.md) — 篮子：r_perp 篮 4 10% · r_lab 篮 7 15% · r_lab_t 篮 4 10%
 - [BA.US](./BA.US.md) — 篮子：篮 4 10%
