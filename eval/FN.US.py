@@ -29,9 +29,11 @@ closed form BPS = BPS0 / (1 - g N / EPS) (A11).  The FY28 sum sits at
 2027-06-30 and is discounted t_disc years at r_disc, then net cash/share is
 added.  k = 0 (A12).
 
-Candidate band (A22, never a base anchor): Building 10 capacity as a one-year
-FY29 transition on the AI leg of M / H, g1 = added capacity / the tier's FY28
-AI-leg revenue; the book is rolled at the g1-weighted company g, uncapped
+Candidate band (A22, never a base anchor): Building 10 capacity is a level
+(construction §7h): the FY29 AI-leg revenue is pinned at the pre-expansion base
+(the L world's FY28 AI revenue, Building 10 idle) + the 30-35 亿 range — M at the
+midpoint, H capped at the top — and each tier's g1 = that level / its own FY28
+AI-leg revenue - 1 (floored at 0); the book is rolled at the g1-weighted company g, uncapped
 (retention > 1 = growth needs more capital than the year earns, charged as
 external funding); L' = L.
 
@@ -204,7 +206,12 @@ def main() -> int:
     dec = decompose((L, M, H), blend)
 
     # ---- Candidate band (A22): Building 10 as a one-year FY29 transition on the AI leg ----
-    g1 = {"M": inp["cap_add_m"] / (rev["M"] - rev_auto), "H": inp["cap_add_h"] / (rev["H"] - rev_auto)}
+    # Level map: pre-expansion base = the L world's AI revenue (Building 10 idle); M′ to the range
+    # midpoint, H′ capped at the range top. Not the added capacity as growth on each tier's own base,
+    # which would count the H tier's earlier fill-up twice.
+    ai_base = rev["L"] - rev_auto
+    lvl29 = {"M": ai_base + (inp["cap_add_m"] + inp["cap_add_h"]) / 2, "H": ai_base + inp["cap_add_h"]}
+    g1 = {t: max(0.0, lvl29[t] / (rev[t] - rev_auto) - 1) for t in ("M", "H")}
     cand = {"L": L}
     cand_info: dict[str, tuple[float, float, float]] = {}
     cand_capped = {"L": L}
@@ -252,8 +259,10 @@ def main() -> int:
     print(f"L/M {dec['lm']:.3f} = num {eps['L'] / eps['M']:.3f} x pe {dec['pe_lm']:.3f} (residual num"
           f" {dec['num_lm']:.3f}, net cash folded in) | H/M {dec['hm']:.3f} = num {eps['H'] / eps['M']:.3f}"
           f" x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0")
-    print("candidate (Building 10, FY29 one-year transition, uncapped roll): "
-          f"L′ {cand['L']:.2f} M′ {cand['M']:.2f} H′ {cand['H']:.2f}; "
+    print(f"candidate (Building 10 level: FY29 AI rev M {lvl29['M']:.1f} / H {lvl29['H']:.1f} on base {ai_base:.1f};"
+          " one-year transition, uncapped roll): "
+          f"L′ {cand['L']:.2f} M′ {cand['M']:.2f} H′ {cand['H']:.2f}"
+          f"  A′ {(cand['L'] + cand['M']) / 2:.2f} B′ {(cand['M'] + cand['H']) / 2:.2f}; "
           + " ".join(f"{t} g1 {g1[t]:.4%} ROE {cand_info[t][0]:.4f} b1 {cand_info[t][1]:.2f}" for t in ("M", "H"))
           + "  [b1 > 1: growth needs more capital than the year earns -> external funding charged]")
     print(f"  unadopted capped roll (CRDO style): M′ {cand_capped['M']:.2f} H′ {cand_capped['H']:.2f}")
