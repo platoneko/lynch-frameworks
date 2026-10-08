@@ -423,8 +423,12 @@ def main() -> int:
     # no second leg of growth, so L′ = L.
     errors += ladder("FY28 revenue", rev28["L"], rev28["M"], rev28["H"])
 
+    # Freedom Broker's FY30 is an ordinary base forecast = growth type (construction §7h): its
+    # FY28-mean -> FY30 growth is shared by M and H (each tier keeps its own FY28 margin).
+    grow30 = inp["rev_fy30_fb"] / rev28["M"]
+
     def fy30_tier(t: str) -> tuple[float, float, float]:
-        c30 = street[t] * inp["rev_fy30_fb"] / rev28[t] * (1.0 - inp["sbc_haircut"]) - int_ps
+        c30 = street[t] * grow30 * (1.0 - inp["sbc_haircut"]) - int_ps
         rolled = unbooked + core[t] + (core[t] * c30) ** 0.5
         share = g2 * rolled / c30
         if share >= 1.0:
@@ -504,9 +508,10 @@ def main() -> int:
     opt = tuple(anchor + vt[t]["v"] for anchor, t in zip((L, M, H), TIERS))
     a2, b2 = cut_points(*opt)
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    print(f"候选带 (A19; Freedom Broker FY30 revenue {inp['rev_fy30_fb']:g}M x FY28 tier margin, g2, ÷(1+r)^{CAND_DISC_YEARS}; not a zone input): "
+    print(f"候选带 (A19; Freedom Broker FY30 revenue {inp['rev_fy30_fb']:g}M = x{grow30:.4f} on FY28 mean, shared by M/H;"
+          f" FY30 rev M/H {rev28['M'] * grow30:.1f}/{rev28['H'] * grow30:.1f}M, g2, ÷(1+r)^{CAND_DISC_YEARS}; not a zone input): "
           f"core FY30 {cand_m[0]:.3f}/{cand_h[0]:.3f}  ROE {cand_m[1]:.3f}/{cand_h[1]:.3f}  "
-          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}")
+          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  A′={(cand[0] + cand[1]) / 2:.2f} B′={(cand[1] + cand[2]) / 2:.2f}")
     print(f"capex axis implied share: M {inp['rev_fy28_m'] * MILLION / inp['capex_m']:.3%} (not material)")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
