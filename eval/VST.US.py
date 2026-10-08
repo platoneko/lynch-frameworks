@@ -98,7 +98,7 @@ REQUIRED = [
     "da_total", "da_retail", "maint_retail", "maint_gen", "invested_capital",
     "net_debt", "pref", "cog_cash", "cog_debt", "cog_tax_npv", "shares", "cog_shares",
     "growth_capex", "window_years", "k_l", "k_m", "k_h",
-    "fwd_band_min", "ebitda_2028_gs",
+    "fwd_band_min", "ebitda_2027_gs", "ebitda_2028_gs",
     "cp_fcfbg_base", "cp_accretion", "cp_mw", "cp_term", "meta_mw", "meta_2027_ebitda",
     "meta_term", "p_l", "p_m", "p_h", "t_opt",
     "band_ebitda", "band_floor_close", "incr_2027_ebitda", "band_t",
@@ -241,10 +241,18 @@ def main() -> int:
     ps = (inp["p_l"], inp["p_m"], inp["p_h"])
     plus_v = [x + p * v_opt for x, p in zip((L, M, H), ps)]
 
-    # Candidate band (A14): GS FY2028 EBITDA in H′ only, discounted one year.
-    ev28 = ev_at(inp["ebitda_2028_gs"], inp["retail_h"], inp["r_retail"], inp["r_gen"])
-    h_prime = (ev28 + closure) / sh / (1 + inp["r_disc"]) - ks[2] * excess_ps
-    cand = (L, M, h_prime)
+    # Candidate band (A14): GS FY2028 EBITDA is an ordinary base forecast = growth type
+    # (construction §7h). GS's own FY27 -> FY28 growth is applied to the M and H 2027 EBITDA
+    # (retail at tier, discounted one year, k as base); the L 2025-price world has no transition.
+    g1_cand = inp["ebitda_2028_gs"] / inp["ebitda_2027_gs"] - 1
+
+    def cand_tier(e27: float, retail: float, k_: float) -> float:
+        ev28 = ev_at(e27 * (1 + g1_cand), retail, inp["r_retail"], inp["r_gen"])
+        return (ev28 + closure) / sh / (1 + inp["r_disc"]) - k_ * excess_ps
+
+    m_prime = cand_tier(inp["ebitda_m"], inp["retail_m"], ks[1])
+    h_prime = cand_tier(inp["ebitda_h"], inp["retail_h"], ks[2])
+    cand = (L, m_prime, h_prime)
     errors += ladder("candidate L′<M′<H′", *cand)
 
     # Point reading of L (comparison only): 2025 world recovers to M over 2 years.
@@ -271,7 +279,9 @@ def main() -> int:
     print(f"  初分篮 13% band {init[0]:.2f} / {init[1]:.2f} / {init[2]:.2f}")
     print(f"  band-edge r_gen {r_edge:.2%} (step 1c) → {edge[0]:.2f} / {edge[1]:.2f} / {edge[2]:.2f}")
     print(f"  V_opt {v_opt:.2f} (CP {cp_pv / sh:.2f} + Meta {meta_pv / sh:.2f}); +V {plus_v[0]:.2f} / {plus_v[1]:.2f} / {plus_v[2]:.2f}")
-    print(f"  candidate H′ {h_prime:.2f}   L point {l_point:.2f} (g1 {g1:.1%})")
+    print(f"  candidate (GS FY27->FY28 g1 {g1_cand:+.2%} on M/H; FY28 EBITDA M {inp['ebitda_m'] * (1 + g1_cand):.0f}"
+          f" H {inp['ebitda_h'] * (1 + g1_cand):.0f}): L′ {cand[0]:.2f} M′ {cand[1]:.2f} H′ {cand[2]:.2f}"
+          f"  A′ {(cand[0] + cand[1]) / 2:.2f} B′ {(cand[1] + cand[2]) / 2:.2f}   L point {l_point:.2f} (g1 {g1:.1%})")
     for d in (-0.01, 0.01):
         s = band(inp["r_retail"], inp["r_gen"], g2 + d)
         print(f"  g2 {g2 + d:.0%}: {s[0]:.2f} / {s[1]:.2f} / {s[2]:.2f}")
