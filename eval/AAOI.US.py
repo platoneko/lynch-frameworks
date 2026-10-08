@@ -89,7 +89,7 @@ REQUIRED = [
     "ni_h2_cons", "r_journey", "r_terminal", "r_catv_cross", "g2", "catv_rev_27",
     "k_l", "k_m", "k_h", "payout_obs", "elsfp_units_month", "elsfp_price", "t_opt",
     "tax_opt", "ebit_margin_inp_normal", "g2_inp_laser_normal", "t_shortage_end",
-    "cap_intensity", "rj_eps_runrate",
+    "cap_intensity", "rj_eps_runrate", "rj_eps_runrate_hi",
 ]
 
 
@@ -235,11 +235,14 @@ def main() -> int:
                 * (1 - k["H"]) / disc - rv * inp["cap_intensity"] / sh)
 
     # ---- Candidate band (A19): RJ run-rate as one FY28 transition year ----
-    g1 = inp["rj_eps_runrate"] / inp["eps_fy27_m"] - 1
+    # A capacity run-rate is a level, not a growth rate: M′ reaches the midpoint, H′ is
+    # capped at the source's top (construction §7h), so H's FY27 ramp is not counted twice.
+    g1_by = {"M": inp["rj_eps_runrate"] / inp["eps_fy27_m"] - 1,
+             "H": max(0.0, inp["rj_eps_runrate_hi"] / inp["eps_fy27_h"] - 1)}
     cand = {"L": L}
     for t in ("M", "H"):
         roe = info[t][1]
-        cand[t] = lower_of(eps[t] * two_stage_pe(g1, 1, g2, roe, r_t) * (1 - k[t]))
+        cand[t] = lower_of(eps[t] * two_stage_pe(g1_by[t], 1, g2, roe, r_t) * (1 - k[t]))
     if not cand["L"] < cand["M"] < cand["H"]:
         errors.append("candidate band not ordered")
 
@@ -285,8 +288,10 @@ def main() -> int:
           f" - capital {capital:.2f} = V_opt {v_opt:.2f}")
     print(f"  +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}  A' {(plus_v[0] + plus_v[1]) / 2:.2f}"
           f" B' {(plus_v[1] + plus_v[2]) / 2:.2f}; price $750 -> {v_at(750):.2f}, $1000 -> {v_at(1000):.2f}")
-    print(f"candidate (RJ run-rate {inp['rj_eps_runrate']}, g1 {g1:+.1%}, n=1; stage-1 payout "
-          f"{1 - g1 / info['M'][1]:+.2f} = 发股融资的增长): {cand['L']:.2f}/{cand['M']:.2f}/{cand['H']:.2f}")
+    print(f"candidate (RJ run-rate level: M -> {inp['rj_eps_runrate']} g1 {g1_by['M']:+.1%}, H capped at "
+          f"{inp['rj_eps_runrate_hi']} g1 {g1_by['H']:+.1%}; n=1; stage-1 payout M {1 - g1_by['M'] / info['M'][1]:+.2f}"
+          f" / H {1 - g1_by['H'] / info['H'][1]:+.2f}): {cand['L']:.2f}/{cand['M']:.2f}/{cand['H']:.2f}"
+          f"  A' {(cand['L'] + cand['M']) / 2:.2f} B' {(cand['M'] + cand['H']) / 2:.2f}")
     single, _ = band(r_j, r_j, ks={"L": 0, "M": 0, "H": 0})
     print(f"basket-pair reference (single journey basket {r_j:g}, k = 0): "
           f"{single['L']:.2f}/{single['M']:.2f}/{single['H']:.2f}")
