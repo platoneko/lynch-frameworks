@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 
 from lib.axes import check_crypto_l_only_mount  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    check_branch, check_g_cap, check_r, payout_gap, perpetual_pe,
+    check_branch, check_g_cap, check_r, payout_gap, perpetual_pe, two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
@@ -51,6 +51,7 @@ from lib.zones import cut_points  # noqa: E402
 # rf_report imports `eval.lib.*`, so the repo root must be importable too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
+from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "HOOD.US.md"
@@ -128,9 +129,21 @@ def main() -> int:
 
     # --- disclosure ----------------------------------------------------------
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])
+    # Candidate band (A8): MS FY2028 is an ordinary base forecast = growth type (construction §7h).
+    # Its step over the FY2027 mean is one n = 1 transition shared by M and H; FY2028 sits at t = 2
+    # inside two_stage_pe, so it is discounted (construction §3). L carries no transition.
     eps_28 = inp["eps_28_ms"]
-    roe_28 = eps_28 * shares / equity
-    cand_m = eps_28 * perpetual_pe(g2, roe_28, r)
+    g1_cand = eps_28 / eps_m - 1
+    cand = (L, eps_m * two_stage_pe(g1_cand, 1, g2, roe_m, r),
+            eps_h * two_stage_pe(g1_cand, 1, g2, roe_h, r))
+    errors += ladder("candidate", *cand)
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A8)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
+            if abs(said - got) > 0.05:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     # A4 prints two readings because the sports share of event-contract revenue
     # is not disclosed: half as a proxy for a sports-only ban, and the whole line.
     def eps_l_less_pred(share: float) -> float:
@@ -144,7 +157,9 @@ def main() -> int:
     print(f"  PE    {pe_l:.2f}x / {pe_m:.2f}x / {pe_h:.2f}x")
     print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}")
     print(f"  ratios L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / (2 * M):.1%}")
-    print(f"  candidate M' {cand_m:.2f} (MS FY2028 {eps_28}, single house)")
+    print(f"  candidate (MS FY2028 {eps_28}, single house, growth g1 {g1_cand:+.2%} on M/H, n=1):"
+          f" L' {cand[0]:.2f} M' {cand[1]:.2f} H' {cand[2]:.2f}  A' {(cand[0] + cand[1]) / 2:.2f}"
+          f" B' {(cand[1] + cand[2]) / 2:.2f}; H FY2028 EPS {eps_h * (1 + g1_cand):.3f}")
     print(f"  payout modelled {modelled_payout:.1%} vs observed {inp['payout_obs']:.1%} gap {gap:+.1%}")
     print(f"  A4 sensitivity: prediction markets halved -> L {eps_l_half * pe_l:.2f}"
           f"  |  zeroed -> L {eps_l_zero * pe_l:.2f}")
