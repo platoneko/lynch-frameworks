@@ -7,7 +7,7 @@ A/B, the advanced-node option and the +V band from the §3 Inputs table and
 exits 1 on mismatch.  The doc carries no current price (AGENTS.md「现价 —
 禁写契约」), so nothing here reads a quote.
 
-formula_id: smic_fy27_gordon_g0_adv_node_opt_v1
+formula_id: smic_fy27_gordon_g0_adv_node_mature_reroe_opt_v2
 
 Whole-company ruler: the filings have one operating segment and no node
 breakdown since 2021, so the mature / advanced split is a cross only
@@ -29,7 +29,14 @@ valued on the leg's own ROIC at t_align and discounted to FY2027, less the
 unspent capital and less the FY2027 advanced profit already in the base.
 A negative tier value is the window capex destroying value and goes into the
 base anchor (as INTC.US carries pre-breakeven losses); a positive one is the
-option, p_k = V_k / V_H.
+option.
+
+Mature re-ROE component (A22–A24): from 2031 the FY2027 opening book less the
+built advanced capacity (already valued in the leg) earns the UMC-measured
+steady ROE instead of the tier's FY2027 ROE; H adds a finite shortage rent at
+UMC's 2021–22 ROE.  Steady ROE sits within r ± 3pp, so its multiple is 1/r.
+It is option-only and never nets against a negative leg in the base.
+V_k = max(V_leg,k, 0) + V_mat,k; V_opt = V_H; p_k = V_k / V_H.
 
 Run:  python3 frameworks/eval/0981.HK.py
 """
@@ -64,7 +71,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "0981.HK.md"
 AXIS_LEF = REPO_ROOT / "frameworks" / "axes" / "leading-edge-foundry.md"
-FORMULA_ID = "smic_fy27_gordon_g0_adv_node_opt_v1"
+FORMULA_ID = "smic_fy27_gordon_g0_adv_node_mature_reroe_opt_v2"
 LISTING_CCY = "HKD"
 TOL = 0.05
 NUM_YEAR = 2027
@@ -77,6 +84,7 @@ REQUIRED = [
     "adv_rev_25", "adv_cagr", "cap_built_k", "cap_full_k", "asp_wafer", "util",
     "opm_weak_peer", "opm_strong_peer", "yield_discount", "g2_foundry_src", "g2_foundry_h_src",
     "t_align", "n_rent_m", "n_rent_h", "tax_opt", "kpk_l", "kpk_m", "kpk_h", "capex_years",
+    "roe_ss_m", "roe_ss_h", "roe_short", "n_short",
 ]
 AXIS_ROWS = ("opm_weak_peer", "opm_strong_peer", "yield_discount",
              "g2_foundry_src", "g2_foundry_h_src", "t_align")
@@ -112,6 +120,10 @@ def sanity(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         e.append("k must satisfy 0 <= k_L <= k_M <= k_H < 1 (cyclical)")
     if inp["t_align"] <= NUM_YEAR:
         e.append("option alignment year must lie after the numerator year")
+    if not inp["roe_ss_m"] < inp["roe_ss_h"] < inp["roe_short"]:
+        e.append("mature ROE ladder must be steady M < steady H < shortage")
+    if inp["roe_ss_m"] <= inp["r_perp"]:
+        e.append("roe_ss_m must exceed r — a steady ROE at or below r adds no value over the 1/r base")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         e.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -187,8 +199,27 @@ def main() -> int:
     vraw, legs = {}, {}
     for t in TIERS:
         vraw[t], legs[t] = leg_value(t)
+
+    # ---- Mature re-ROE component (A22–A24), HKD/share; option only ----
+    roe_ss = {"L": None, "M": inp["roe_ss_m"], "H": inp["roe_ss_h"]}
+
+    def mature_value(t: str, n_short: int | None = None) -> tuple[float, dict]:
+        n_short = int(inp["n_short"]) if n_short is None else n_short
+        book = bps27 - inp["cap_built_k"] * leg[t][5] * 1e9 / sh
+        if roe_ss[t] is None:
+            return 0.0, dict(book=book, up=0.0, rent=0.0)
+        pe_ss = perpetual_pe(g2, roe_ss[t], r)
+        up = max(roe_ss[t] - info[t][0], 0.0) * book * pe_ss
+        rent = ((inp["roe_short"] - roe_ss[t]) * book * annuity_factor(0.0, r, n_short)
+                if t == "H" else 0.0)
+        d = (1 + r) ** yrs_disc
+        return (up + rent) / d * hkd, dict(book=book, up=up / d * hkd, rent=rent / d * hkd, pe=pe_ss)
+
+    vmat, mats = {}, {}
+    for t in TIERS:
+        vmat[t], mats[t] = mature_value(t)
     carry = {t: min(vraw[t], 0.0) for t in TIERS}
-    pos = {t: max(vraw[t], 0.0) for t in TIERS}
+    pos = {t: max(vraw[t], 0.0) + vmat[t] for t in TIERS}
     base = {t: pre[t] + carry[t] for t in TIERS}
     L, M, H = base["L"], base["M"], base["H"]
     A, B = (L + M) / 2, (M + H) / 2
@@ -247,6 +278,12 @@ def main() -> int:
               f"PE {d['pe']:.2f} (g {d['gl']:.2%}); rent ({d['mr']:.1%}-{d['mn']:.1%}) x {d['n']}y = ${d['rent'] / 1e9:.2f}B; "
               f"/1.1^{yrs_disc:.0f} - unspent PV ${d['pv_unspent'] / 1e9:.2f}B - overlap ${d['overlap'] / 1e9:.2f}B "
               f"(adv FY27 ${adv27 / 1e9:.2f}B x npm {d['npm']:.1%} x {info[t][1]:.0f}x) = {vraw[t]:+.2f} HKD")
+    for t in TIERS:
+        d = mats[t]
+        ss = f"{roe_ss[t]:.2%}" if roe_ss[t] is not None else "no recovery"
+        print(f"  mature {t}: book {d['book']:.4f} USD (BPS less built adv {inp['cap_built_k']:.0f}k x {leg[t][5]}); "
+              f"ROE {info[t][0]:.2%} -> {ss}; steady +{d['up']:.2f} + shortage rent {d['rent']:.2f} "
+              f"({inp['roe_short']:.2%}, {inp['n_short']:.0f}y, H only) /1.1^{yrs_disc:.0f} = {vmat[t]:.2f} HKD")
     print(f"flat ladder @ 1/r: {pre['L']:.2f}/{pre['M']:.2f}/{pre['H']:.2f} (numerator ratio L/M {eps['L'] / eps['M']:.3f},"
           f" H/M {eps['H'] / eps['M']:.3f})")
     print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
@@ -264,13 +301,16 @@ def main() -> int:
     for asp in (10000.0, 13000.0):
         vs = {t: leg_value(t, asp=asp)[0] for t in TIERS}
         b_ = {t: pre[t] + min(vs[t], 0) for t in TIERS}
-        vh = max(vs["H"], 0)
-        pv_ = tuple(b_[t] + (max(vs[t], 0) / vh if vh else 0) * vh for t in TIERS)
+        vh = max(vs["H"], 0) + vmat["H"]
+        pv_ = tuple(b_[t] + max(vs[t], 0) + vmat[t] for t in TIERS)
         print(f"  sens wafer ${asp:.0f}: base {b_['L']:.2f}/{b_['M']:.2f}/{b_['H']:.2f}  V_opt {vh:.2f}  "
               f"+V {pv_[0]:.2f}/{pv_[1]:.2f}/{pv_[2]:.2f}")
     for kk in (inp["kpk_h"], inp["kpk_l"]):
         vs = {t: leg_value(t, kpk=kk)[0] for t in ("M", "H")}
         print(f"  sens capital ${kk:.3f}B per 1k wpm on all tiers: leg M {vs['M']:+.2f} H {vs['H']:+.2f}")
+    vm3 = mature_value("H", n_short=3)[0]
+    print(f"  sens mature shortage 3y: mature H {vm3:.2f}  V_opt {pos['H'] - vmat['H'] + vm3:.2f}  "
+          f"+V H {H + pos['H'] - vmat['H'] + vm3:.2f}")
 
     # ---- r_f readings (_AXIS.rates HKD -> USD segment); the leg moves with r too ----
     def band_rf(dr: float) -> tuple[float, float, float]:
