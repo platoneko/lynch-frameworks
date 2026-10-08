@@ -149,10 +149,12 @@ def parse_stated(text: str) -> dict:
             legs[m.group(1)] = tuple(float(m.group(i)) for i in range(2, 7))
     # Zone table: only rows whose first cell is a backticked zone id, and only
     # their price-interval column — the g2-leverage table also carries backticks.
+    # Scoped to 表2: the candidate 表2c below it has the same row shape (construction §7g).
     zone_row = re.compile(r"^\|\s*`(" + "|".join(ZONE_IDS) + r")`\s*\|")
+    t2 = out.split("**表2 · zone**", 1)[-1].split("**表2c", 1)[0]
     interval = "\n".join(
         line.strip().strip("|").split("|")[2]
-        for line in out.splitlines() if zone_row.match(line.strip()))
+        for line in t2.splitlines() if zone_row.match(line.strip()))
     return {
         "L": float(anchors.group(1)), "M": float(anchors.group(2)),
         "H": float(anchors.group(3)),
@@ -185,7 +187,8 @@ def bridge(v: dict) -> dict:
         # numerator is FY2027, so the book rolls to the FY2027 opening (A7e).
         "unbooked_ni": v["ebit_ni_fy26"] * net / 2.0,
         "g1": eps28_mean / eps27_eur["m"] - 1.0,
-        "g1_cand": v["eps28_jpm_high_eur"] / eps27_eur["m"] - 1.0,
+        # JPM's high case is a level (construction §7h): cap the H tier's FY2028 at it.
+        "g1_cand": max(0.0, v["eps28_jpm_high_eur"] / eps27_eur["h"] - 1.0),
         "ev_corp": v["ebit_corp_fy26"] * v["ev_ebit_corp"],
         "adj": sum(v[k] for k in CLOSING_COMPONENTS),
         "unit": v["fx_eur_usd"] * v["adr_ratio"] / v["shares"],  # EUR total -> USD/ADR
