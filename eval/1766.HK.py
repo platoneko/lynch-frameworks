@@ -68,6 +68,7 @@ from lib.axes import AXIS_SOUTHBOUND  # noqa: E402
 from lib.frameworks import load_framework  # noqa: E402
 from lib.gordon import (  # noqa: E402
     check_branch, check_g_cap, check_r, g_cap, implied_g_retaining, payout, payout_gap, perpetual_pe,
+    two_stage_pe,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
@@ -102,12 +103,12 @@ REQUIRED = [
     "dps_fy25", "ni_fy25", "g2_l", "g2_m", "g2_h",
     "g_evid_min", "g_evid_max", "g_peer_crsc",
     "pe_own_min", "pe_own_max",
-    "pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "eps_fy27_ubs",
+    "pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "eps_fy26_ubs", "eps_fy27_ubs",
     "w_rail", "w_new", "emu_2026", "emu_2025",
     "pe_a_mid", "seg_total_h1", "rev_h1",
 ]
 # Reference rows: present in Inputs, never in an anchor path (校验步骤 4d / 7).
-NOT_FORMULA = ("pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "pe_a_mid", "eps_fy27_ubs", "g_peer_crsc")
+NOT_FORMULA = ("pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "pe_a_mid", "eps_fy26_ubs", "eps_fy27_ubs", "g_peer_crsc")
 
 
 def check_southbound_mount(md: str) -> list[str]:
@@ -251,10 +252,12 @@ def main() -> int:
     flat = tuple(v / fx for v in flat_cny)
     flat_width = (flat[2] - flat[0]) / (2 * flat[1])
 
-    # 校验步骤 4c (A9): candidate band swaps only the M-tier EPS for the UBS
-    # FY2027 single point; L'/H' copy the base.  Compared to the Outputs line
+    # 校验步骤 4c (A9): UBS's FY2027 is an ordinary base forecast = growth type
+    # (construction §7h).  UBS's own FY26 -> FY27 step is one n = 1 transition
+    # shared by all three tiers (FY2027 at t = 2).  Compared to the Outputs line
     # the digest reads.
-    cand = (L, inp["eps_fy27_ubs"] * pe["m"] / fx, H)
+    g1_cand = inp["eps_fy27_ubs"] / inp["eps_fy26_ubs"] - 1
+    cand = tuple(eps[t] * two_stage_pe(g1_cand, 1, inp[f"g2_{t}"], roe[t], r) / fx for t in TIERS)
     errors += ladder("候选带", *cand)
     stated_cand = load_framework(FRAMEWORK).candidate
     if stated_cand is None:
@@ -330,7 +333,10 @@ def main() -> int:
           f"{own[0]:.2f}/{own[1]:.2f}/{own[2]:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%}")
-    print(f"候选带 (A9, UBS FY2027 单家 {inp['eps_fy27_ubs']} 换入 M′): L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}")
+    print(f"候选带 (A9, UBS 自身路径 {inp['eps_fy26_ubs']}→{inp['eps_fy27_ubs']} g1 {g1_cand:+.2%}, 三档共用, n=1): "
+          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  A′={(cand[0] + cand[1]) / 2:.2f} B′={(cand[1] + cand[2]) / 2:.2f}"
+          f"; FY27 EPS " + "/".join(f"{eps[t] * (1 + g1_cand):.4f}" for t in TIERS)
+          + "; stage-1 payout " + "/".join(f"{1 - g1_cand / roe[t]:+.2f}" for t in TIERS))
     for g, b in evid.items():
         print(f"证据区间 g2={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)}")
     for dg in (-0.01, 0.01):
