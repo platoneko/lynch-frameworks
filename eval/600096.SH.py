@@ -72,6 +72,7 @@ from lib.gordon import BASKET_R, check_g_cap, check_r, perpetual_pe  # noqa: E40
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
 )
+from lib.frameworks import load_framework  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
@@ -179,10 +180,21 @@ def main() -> int:
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    # Candidate band (A17): single-house FY2027 EPS swapped into M only; disclosed, not judged.
+    # Candidate band (A17): the broker's FY2027E is an ordinary base forecast = growth type
+    # (construction §7h): its step over the FY2026E mean is shared by M and H; the L regime
+    # (FY2023 actual) bears no transition. Disclosed, not judged.
+    g1_cand = inp["eps_fy27_single"] / inp["eps_m_consensus"] - 1
     m_cand = inp["eps_fy27_single"] * pe["M"]
-    if not (L < m_cand < H):
-        errors.append(f"candidate band collapsed: L {L:.2f} < M' {m_cand:.2f} < H {H:.2f} fails (A17)")
+    h_cand = H * (1 + g1_cand)
+    if not (L < m_cand < h_cand):
+        errors.append(f"candidate band collapsed: L {L:.2f} < M' {m_cand:.2f} < H' {h_cand:.2f} fails (A17)")
+    stated_cand = load_framework(FRAMEWORK).candidate
+    if stated_cand is None:
+        errors.append("候选带 line missing from Outputs (A17)")
+    else:
+        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, (L, m_cand, h_cand)):
+            if abs(said - got) > 0.05:
+                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
 
     # V_opt (A9): own ruler, discounted from the realisation year to the numerator year.
     if inp["t_opt"] <= NUM_YEAR:
@@ -235,8 +247,9 @@ def main() -> int:
           + " / ".join(f"{rows[i][2] * ret[t]:.2f}" for i, t in enumerate("LMH")))
     print(f"deep_discount 压力坐标: 谷底 x 1/r = {inp['np_l'] * YI / inp['shares'] / r:.2f}; "
           f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}")
-    print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}): L'={L:.2f} M'={m_cand:.2f} H'={H:.2f} "
-          f"(disclosed, not judged)")
+    print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}, g1 {g1_cand:+.2%} on M/H): "
+          f"L'={L:.2f} M'={m_cand:.2f} H'={h_cand:.2f} A'={(L + m_cand) / 2:.2f} B'={(m_cand + h_cand) / 2:.2f}"
+          f" (disclosed, not judged); per-share EPS at A'/B' {(L + m_cand) / 2 / pe['M']:.4f}/{(m_cand + h_cand) / 2 / pe['M']:.4f}")
     print(f"V_opt={v_opt:.4f} (stake {inp['opt_stake']:g} x capex {inp['opt_capex']:g}亿 = {k_share:.3f}亿 earning IRR; "
           f"ΔNI {dni_opt:.4f}亿 x {pe['M']:.3f}x - K_remain {k_remain:.3f}亿 (= {inp['opt_stake']:g} x ({inp['opt_capex']:g} - spent {inp['opt_spent']:g})) "
           f"-> {v_at_t:.4f}/sh @{inp['t_opt']:g}, ÷{disc:.4f}); deduction {k_remain * YI / inp['shares'] / disc:.4f}/sh at FY{NUM_YEAR}; "
