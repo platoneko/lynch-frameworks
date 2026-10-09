@@ -64,6 +64,7 @@
 - [1378.HK](./1378.HK.md) — 中国宏桥 · 篮子：篮 6 13%
 - [1766.HK](./1766.HK.md) — 中国中车 · 篮子：篮 4 10%
 - [1772.HK](./1772.HK.md) — 赣锋锂业 · 篮子：篮 6 13%
+- [1787.HK](./1787.HK.md) — 山东黄金 · 篮子：r_perp 篮 4 10% · r_rest 篮 6 13%
 - [1810.HK](./1810.HK.md) — 小米集团 · 篮子：篮 4 10%
 - [1898.HK](./1898.HK.md) — 中煤能源 · 篮子：篮 6 13%
 - [2631.HK](./2631.HK.md) — 天岳先进 · 篮子：篮 4 10%
@@ -115,7 +116,7 @@
 - [`_AXIS.direct-to-cell`](./axes/direct-to-cell.md) — 手机直连卫星（direct-to-cell / D2D）同业尺轴 · 挂载票：— ｜ 参照：SPCX.US | 候选：ASTS.US（AST SpaceMobile）、GSAT.US（Globalstar，Amazon 收购中）、IRDM.US（Iridium）、Lynk（未上市）——未入库，只作尺的提供方
 - [`_AXIS.euv-mask-blank`](./axes/euv-mask-blank.md) — EUV 掩模基板 · 挂载票：— ｜ 参照：HOCPY.US
 - [`_AXIS.fed-path-aluminium`](./axes/fed-path-aluminium.md) — 电解铝价差情景轴（利率路径 × 铝供应潮） · 挂载票：1378.HK · 601600.SH · 002532.SZ · 000933.SZ
-- [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH ｜ 参照：603799.SH（仅铜腿，且只进 M/H）
+- [`_AXIS.fed-path-gold-copper`](./axes/fed-path-gold-copper.md) — 金铜 USD 价格情景轴（美联储利率路径） · 挂载票：601899.SH · 603993.SH · 1787.HK（仅金梯） ｜ 参照：603799.SH（仅铜腿，且只进 M/H）
 - [`_AXIS.frontier-lab-funding`](./axes/frontier-lab-funding.md) — 前沿实验室付款能力情景轴 · 挂载票：—（三档值待补前无定档）｜ 参照（**供应方**）：AVGO.US · AMZN.US · MSFT.US · GOOG.US · ORCL.US · SPCX.US（单篮 7，不取篮子对）
 - [`_AXIS.glass-core-substrate`](./axes/glass-core-substrate.md) — 玻璃芯封装载板 · 挂载票：— ｜ 参照：000725.SZ
 - [`_AXIS.hdd-glass-substrate`](./axes/hdd-glass-substrate.md) — HDD 玻璃基板 · 挂载票：— ｜ 参照：HOCPY.US
