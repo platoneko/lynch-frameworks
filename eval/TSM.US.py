@@ -191,6 +191,10 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if inp["rev_2027_twd"] <= 4.0 * inp["rev_2q26_twd"]:
         errs.append("rev_2027_twd <= 2Q26 run-rate: pin-bridge for mature wafer share would not shrink")
     errs += ladder("numerator (2027E low/mean/high)", inp["eps_2027_l"], inp["eps_2027_m"], inp["eps_2027_h"])
+    # A15: the M margin is the one the consensus mean implies, not the 1H26 run-rate.
+    npm_implied = inp["eps_2027_m"] * inp["shares_adr"] * inp["fx_twd"] / inp["rev_2027_twd"]
+    if abs(npm_implied - inp["npm_2027e_m"]) > 0.005:
+        errs.append(f"npm_2027e_m={inp['npm_2027e_m']:g} vs consensus-implied {npm_implied:.4f} (A15)")
     mech = inp["eps_2027_m"] * inp["npm_2027e_l"] / inp["npm_2027e_m"]
     if abs(mech / inp["eps_2027_l"] - 1.0) > NPM_TOL:
         errs.append(
