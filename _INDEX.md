@@ -26,6 +26,7 @@
 - [HIMS.US](./HIMS.US.md) — 篮子：篮 4 10%
 - [HOCPY.US](./HOCPY.US.md) — 篮子：篮 4 10%
 - [HOOD.US](./HOOD.US.md) — 篮子：篮 4 10%
+- [HPE.US](./HPE.US.md) — 篮子：篮 4 10%
 - [INTC.US](./INTC.US.md) — 篮子：篮 4 10%
 - [LITE.US](./LITE.US.md) — 篮子：篮 4 10%
 - [LLY.US](./LLY.US.md) — 篮子：篮 4 10%
