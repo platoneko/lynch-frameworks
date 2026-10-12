@@ -34,8 +34,8 @@ Guardrail (③): PE_M against the same-earnings band [step-1c floor, pe_same_max
 floor point pe_same_min stripped of the 4万吨 project, see v3); the own 5-year
 TTM PE band is on a different earnings basis and is only printed.
 
-L tier (valuation-rules「谷底档」): the axis L world (Li2CO3 103k = BMI 2028
-surplus bottom, above the p90 cost curve) is a regime, not the company's
+L tier (valuation-rules「谷底档」): the axis L world (Li2CO3 103k = 2028
+surplus bottom between BMI 113k and Goldman 85k, above the p90 cost curve) is a regime, not the company's
 realised trough (FY2024, lithium 6–8 万).  `recovery_two_stage_pe` on the
 company's own measured path (FY2024 46.63 亿 → FY2025 84.76 亿, n = 1) is
 printed as a coordinate — it overshoots M with the measured CAGR and collapses

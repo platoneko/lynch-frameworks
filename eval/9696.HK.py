@@ -12,8 +12,8 @@ PE_x = perpetual_pe(g2, ROE_x, r).  At g2 = 0 all three tiers sit at 1/r.
 The axis 永续 g2 row (6%, cap-truncated) is referenced verbatim (`axis_g2_li`)
 and not adopted.
 
-L tier (valuation-rules「谷底档」): the axis L world (Li2CO3 103k = BMI 2028
-bottom, above the p90 cost curve) is a regime, not the company's realised
+L tier (valuation-rules「谷底档」): the axis L world (Li2CO3 103k = 2028
+bottom between BMI 113k and Goldman 85k, above the p90 cost curve) is a regime, not the company's realised
 trough (FY2024 −85.57 亿 HKD, lithium 6–8 万).  `recovery_two_stage_pe` on the
 measured path (FY2025 5.06 亿 → 2026H1 × 2, n = 1) is printed as a coordinate
 only.  The PB floor is disclosure only (峰形区地板条款): L is the scenario
