@@ -29,6 +29,14 @@
 
 **BLOCKED 只在落盘前**：规则拦下（BLOCKED）= 停下来向用户报告原因，不落盘（skill references「BLOCKED 的语义」）。用户看过原因仍拍板落盘，该票就是正常票——底牌照常出 zone、进 `_INDEX` / `calibration.py`、参与跨带告警；未满足的规则写进 Outputs 披露行（样板 `ORCL.US`「③ 出带」行）。已落盘的文件 **MUST NOT** 带 BLOCKED 状态行。
 
+## 超额现金 — 行契约（2026-10-13 定）
+
+超额现金单列的票（valuation-rules「经营价值与超额现金」①触发），Outputs **MUST** 有两行，写在锚点 bullet 之后、表1 之前：
+- `- 超额现金：扩展口径净现金 x · 经营所需现金锚 y（周期最低值，年份）· C_ex z（每股 w）· λ v（证据）`
+- `- 多留部分：比例 p（实付经营留存 − b）· 每股 q / 年 · PV s · λ v`（λ = 1 时 PV 不进锚点，照印）
+
+未触发的票在 Assumptions 写一句读数，不出这两行。两行都不得含本票现价。锚点 bullet 的 L/M/H 已含 \(C_{ex}\times\lambda\)，**MUST NOT** 另写第二组 L/M/H（解析器会因双三元组报错）。
+
 ## 未建模期权（\(V_{opt}\)）— 行契约
 
 **未建模期权（\(V_{opt}\)）— 行契约**：Outputs bullet `\(V_{opt}\)` + `\(p_L/p_M/p_H\)`；`daily_bands.py` 据此报第二条 `+V` zone。底牌 \(L/M/H\) 与 zone 判定 **MUST NOT** 含概率。判据与构造见 skill references「未建模期权」。
