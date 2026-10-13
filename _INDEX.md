@@ -101,6 +101,7 @@
 - [600111.SH](./600111.SH.md) — 北方稀土 · 篮子：篮 6 13%
 - [600309.SH](./600309.SH.md) — 万华化学 · 篮子：篮 4 10%
 - [600499.SH](./600499.SH.md) — 科达制造 · 篮子：r_li 篮 6 13% · r_afr 篮 6 13% · r_mac 篮 4 10%
+- [600522.SH](./600522.SH.md) — 中天科技 · 篮子：篮 4 10%
 - [600900.SH](./600900.SH.md) — 长江电力 · 篮子：篮 2 7.5%
 - [601600.SH](./601600.SH.md) — 中国铝业 · 篮子：篮 5 11%
 - [601899.SH](./601899.SH.md) — 紫金矿业 · 篮子：r_perp 篮 4 10% · r_li 篮 6 13% · r_rest 篮 6 13%
@@ -131,6 +132,7 @@
 - [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 - [`_AXIS.optical-electrical-chip`](./axes/optical-electrical-chip.md) — 光模块电芯片同业尺轴 · 挂载票：— ｜ 参照：MTSI.US | 候选：MRVL.US（Connectivity 腿含光 DSP、驱动 / TIA，但与交换、CXL、DCI 模块混在一腿，本次只作尺提供方——借用过渡年的贷方，未迁移）· CRDO.US（主业有源电缆 DSP / SerDes，属同层；本次只作 \(g_2\) 互证与尺提供方，未迁移）· AVGO.US（光 DSP 与驱动混在半导体网络业务里，拆不出）· SMTC.US（信号完整性分部是本腿，但公司另有物联网、模拟业务，主业构成未核实，未入库）
+- [`_AXIS.optical-fiber`](./axes/optical-fiber.md) — 光纤价格情景轴（中国 G.652.D 裸纤现货年均价） · 挂载票：`600522.SH` 中天科技（光纤腿定档，2026-10-13）｜ 参照：`GLW.US` 康宁（光通信腿是需求周期型、美国长约定价，不跟本轴的中国现货价，只作交叉）；候选：`601869.SH` 长飞光纤、`600487.SH` 亨通光电、`600498.SH` 烽火通信——未入库
 - [`_AXIS.phosphate-chain`](./axes/phosphate-chain.md) — 磷产业链价格情景轴（国内磷肥定价管理松紧） · 挂载票：002895.SZ ｜ 参照：600096.SH
 - [`_AXIS.pluggable-module`](./axes/pluggable-module.md) — 可插拔光模块组装同业尺轴 · 挂载票：— ｜ 参照：300308.SZ · AAOI.US | 候选：COHR.US（数通收发器腿拆不出，见 §1；本票未迁移）· FN.US（代工加工费生意，不属本腿，只列候选）
 - [`_AXIS.rates`](./axes/rates.md) — 无风险利率轴（按上市货币分段） · 挂载票：全部 USD 段票（美股；港股经联系汇率跟 USD 段）——只出 \(r_f\) 敏感性读数，不进锚点
