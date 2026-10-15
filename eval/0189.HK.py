@@ -25,8 +25,12 @@ Each segment result is taxed, scaled by the *leg-specific* attributable ownershi
 ratio (refrigerant + fluoropolymer sit in Dongyue Polymers, 74.06% owned;
 organosilicone is the separately A-listed Dongyue Organosilicon, 44.40% owned),
 multiplied by a **flat** per-leg Gordon multiple generated at the basket r
-(all four legs sit in basket 6 周期商品, r 13%, A24), then attributable net cash
-is added at face value.  Multiples do not vary by tier: this is a `cyclical`
+(all four legs sit in basket 6 周期商品, r 13%, A24); the after-tax interest on
+the listed cash (which sits inside the segment results) is taken out of every
+tier at 1/r, and attributable net cash less the declared-unpaid dividend is
+added at face value (A11; the existing cash line is kept -- valuation-rules
+「经营价值与超额现金」, 2026-10-15 framework correction).  The fluoropolymer
+leg's RONIC strips the entity's allocated cash and its interest.  Multiples do not vary by tier: this is a `cyclical`
 name whose numerators already carry the cycle, and two legs go negative in
 some tier (organosilicone at M, the by-product leg at H), which would make
 tiered multiples reward bigger losses.
@@ -166,7 +170,9 @@ REQUIRED = [
     "g2_ref", "g2_poly", "g2_sil", "g2_oth",
     "pe_ref", "pe_poly", "pe_sil", "pe_oth",
     "net_cash", "cash_attrib", "pb_floor",
+    "div_declared", "c_ex", "cash_yield", "tax_eff", "cash_grp_avg", "equity_grp_avg",
 ]
+CEX_TOL = 1.0  # RMB thousand
 
 
 def first_float(pattern: str, text: str) -> float | None:
@@ -234,7 +240,22 @@ def main() -> int:
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
     for leg in ("ref", "poly", "sil", "oth"):
         errors += check_g_cap(inp[f"g2_{leg}"], r, f"g2_{leg}")
-    roe_poly = inp["np_poly_fy25"] / inp["equity_poly_avg"]
+    # Excess cash (valuation-rules「经营价值与超额现金」①, framework correction
+    # 2026-10-15): the framework already lists all net cash at face value, so the
+    # structure stays (no operating-cash anchor is cut); the declared-unpaid FY2025
+    # final dividend is a debt-like item and comes off, and the cash's after-tax
+    # interest -- which A11 says sits inside the segment results -- comes out of
+    # the numerators and out of the leg RONIC (numerator and denominator).
+    c_ex = inp["net_cash"] - inp["div_declared"]
+    if abs(c_ex - inp["c_ex"]) > CEX_TOL:
+        errors.append(f"c_ex {inp['c_ex']:,.0f} != net_cash − div_declared {c_ex:,.0f}")
+    cash_after_tax = 1.0 - inp["tax_eff"]
+    # Dongyue Polymers' own cash is not disclosed: allocate the group's FY2025
+    # average cash by the entity's share of average group equity (A11).
+    cash_poly = inp["cash_grp_avg"] * inp["equity_poly_avg"] / inp["equity_grp_avg"]
+    inc_poly = cash_poly * inp["cash_yield"] * cash_after_tax
+    roe_poly_book = inp["np_poly_fy25"] / inp["equity_poly_avg"]
+    roe_poly = (inp["np_poly_fy25"] - inc_poly) / (inp["equity_poly_avg"] - cash_poly)
     roe_sil = inp["res_sil_h"] * (1.0 - inp["tax"]) / inp["equity_sil_avg"]
 
     def gordon(r_: float) -> dict[str, float]:
@@ -311,7 +332,11 @@ def main() -> int:
 
     # --- scenarios ----------------------------------------------------------
     scale = inp["fx_cny_hkd"] / (inp["shares"] / 1000.0)  # RMB'000 -> HKD/share
-    cash_ps = inp["net_cash"] * inp["cash_attrib"] * scale
+    cash_ps = c_ex * inp["cash_attrib"] * scale
+    # After-tax attributable interest on the listed cash, removed from every tier's
+    # numerator by the same amount (A11).  No segment attribution is disclosed;
+    # it is capitalised at the refrigerant leg's g = 0 multiple 1/r.
+    inc_attrib = c_ex * inp["cash_yield"] * cash_after_tax * inp["cash_attrib"]
 
     def res_oth_of(x: str) -> float:
         """By-product leg (A8): dichloromethane + recurring other ops + impairment."""
@@ -327,11 +352,13 @@ def main() -> int:
             inp["tax"], inp["own_poly"], inp["own_sil"], inp["own_oth"],
         ))
         ps = {leg: n * pe[leg] * scale for leg, n in zip(("ref", "poly", "sil", "oth"), np_legs)}
+        ps["int"] = -inc_attrib * pe["ref"] * scale
         # Segment total excludes non-segment items, to compare with reported totals.
         seg_total = res_ref + inp[f"res_poly_{x}"] + inp[f"res_sil_{x}"] + inp[f"dcm_{x}"] \
             + inp["oth_recur"] + inp[f"oth_imp_{x}"]
         return {
             "res_ref": res_ref, "seg_total": seg_total, "np": sum(np_legs),
+            "np_op": sum(np_legs) - inc_attrib,
             **ps, "cash": cash_ps, "value": sum(ps.values()) + cash_ps,
         }
 
@@ -409,7 +436,15 @@ def main() -> int:
 
     # --- report -------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print(f"basket: r_perp={r} 篮 {baskets.get('r_perp')} (all four legs) | ROE_poly {roe_poly:.4f} (note 36) ROE_sil {roe_sil:.4f} | "
+    print(f"超额现金(保留原结构): net_cash {inp['net_cash'] / YI:.2f}亿 − 已宣派未付股息 {inp['div_declared'] / YI:.2f}亿 "
+          f"= C_ex {c_ex / YI:.2f}亿 x 归母 {inp['cash_attrib']} = {c_ex * inp['cash_attrib'] / YI:.2f}亿 = {cash_ps:.3f} HKD/股 "
+          f"(占归母权益 {c_ex * inp['cash_attrib'] / (inp['bvps_cny'] * inp['shares'] / 1000):.1%}); "
+          f"税后归母利息 {c_ex:,.0f}k x {inp['cash_yield']:.4%} x (1−{inp['tax_eff']}) x {inp['cash_attrib']} = "
+          f"{inc_attrib:,.0f}k -> x pe_ref = −{inc_attrib * gen['ref'] * scale:.3f} HKD/股 三档同扣")
+    print(f"RONIC_poly: 东岳高分子 ({inp['np_poly_fy25']:,.0f} − 现金利息 {inc_poly:,.0f}) ÷ ({inp['equity_poly_avg']:,.0f} − 分摊现金 "
+          f"{cash_poly:,.0f}) = {roe_poly:.4f} (账面 {roe_poly_book:.4f}; 现金按权益份额 "
+          f"{inp['equity_poly_avg'] / inp['equity_grp_avg']:.2%} 分摊集团 FY2025 平均现金)")
+    print(f"basket: r_perp={r} 篮 {baskets.get('r_perp')} (all four legs) | RONIC_poly {roe_poly:.4f} ROE_sil {roe_sil:.4f} | "
           + " ".join(f"{leg}: g2 {inp[f'g2_{leg}']:+.4f} -> {gen[leg]:.2f}x (stated {inp[f'pe_{leg}']:g})" for leg in gen))
     alt_poly = perpetual_pe(0.0376, roe_poly, r)
     print(f"  sens g2_poly=0.0376 (A-share cross-section median, cross-market): poly {alt_poly:.2f}x")
@@ -442,8 +477,10 @@ def main() -> int:
     for x in "lmh":
         t = tiers[x]
         print(f"表1 {x.upper()}: 制冷剂={t['ref']:.2f} 高分子={t['poly']:.2f} 有机硅={t['sil']:.2f}"
-              f" 副产品={t['oth']:.2f} 净现金={t['cash']:.2f} 合计={t['value']:.2f}")
-    print(f"V(earnings)={L:.2f}/{M:.2f}/{H:.2f}  attrib net cash/share={cash_ps:.2f}")
+              f" 副产品={t['oth']:.2f} 剔现金利息={t['int']:.2f} 净现金={t['cash']:.2f} 合计={t['value']:.2f}")
+    print(f"V={L:.2f}/{M:.2f}/{H:.2f}  attrib cash line/share={cash_ps:.2f}")
+    eps_op = {x: tiers[x]["np_op"] * scale for x in "lmh"}
+    print("operating EPS(HKD, ex cash interest)=" + "/".join(f"{eps_op[x]:.3f}" for x in "lmh"))
     print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bvps × fx, disclosed only, A16)  scenario_L={L:.2f}"
           f"  floor vs band: {zone_of(floor, L, M, H)}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -451,13 +488,18 @@ def main() -> int:
           "   [cyclical cohort L/M median 0.71, repo H/M median 1.25]")
     # Disclosure rows (Outputs): ③ 出带, sensitivity, candidate, option.
     print("implied PE incl cash: " + "/".join(f"{tiers[x]['value'] / eps[x]:.2f}x" for x in "lmh")
-          + "  ex cash: " + "/".join(f"{(tiers[x]['value'] - cash_ps) / eps[x]:.2f}x" for x in "lmh")
-          + f"  vs own post-quota band min {OWN_PE_BAND_MIN} -> "
+          + "  operating (ex cash / ex interest): " + "/".join(f"{(tiers[x]['value'] - cash_ps) / eps_op[x]:.2f}x" for x in "lmh")
+          + f"  vs own post-quota band min {OWN_PE_BAND_MIN} (whole-equity band, operating band 待补) -> "
           + ("③ 出带 (M/H below band min, disclosed)" if M / eps["m"] < OWN_PE_BAND_MIN else "in band"))
     for label, r_alt in (("r +50bp", r + 0.005), ("r -50bp", r - 0.005), ("篮 7 15%", 0.15), ("篮 4 10%", 0.10)):
         pe_alt = gordon(r_alt)
         band = [scenario(x, inp[f"upt_{x}"], pe_alt, scale_of[x])["value"] for x in "lmh"]
         print(f"  sens {label}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
+    pe_book = {**gen, "poly": perpetual_pe(inp["g2_poly"], roe_poly_book, r)}
+    band = [scenario(x, inp[f"upt_{x}"], pe_book, scale_of[x])["value"] for x in "lmh"]
+    print(f"  sens RONIC_poly 账面 {roe_poly_book:.1%} (现金不分摊): {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
+    d_full = inp["div_declared"] * (1.0 - inp["cash_attrib"]) * scale
+    print(f"  sens 已宣派股息全额由归母承担（不乘归母比例）: −{d_full:.2f} -> {L - d_full:.2f}/{M - d_full:.2f}/{H - d_full:.2f}")
     fy24_px, fy24_unit = BRIDGE_REGIME_BREAK["FY2024"]
     print(f"deep_discount pressure coordinate (FY2024 actual unit {fy24_unit:,.0f}, other legs FY2024): "
           f"{scenario('l', fy24_unit, gen)['value']:.2f}")
