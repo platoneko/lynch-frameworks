@@ -4,7 +4,22 @@
 frameworks/000792.SZ.md is the source of truth; this script re-derives
 L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
-formula_id: saltlake_li_axis_kcl_ladder_pe_v2_gordon_v3
+formula_id: saltlake_li_axis_kcl_ladder_pe_v2_gordon_v4
+
+v4 (2026-10-15, valuation-rules「经营价值与超额现金」, framework correction):
+value per share = operating EPS × Gordon PE + excess cash per share (λ 1).
+The extended net cash at 2026-06-30 (cash + trading FA + CDs / term deposits −
+loans − leases − mining-right installment payables, no declared-unpaid
+dividend) over an operating-cash anchor of 0 (post-restructuring cycle
+FY2021–25 bottoms in net debt) is the excess cash; only the parent's share
+counts, pro rata to equity (subsidiary cash split not disclosed), so the
+minorities' share is taken out of the amount rather than through λ.  Every
+tier's parent NP loses the after-tax income on that cash; the per-tier
+operating return (E_op / (parent equity − C_ex)) replaces the book ROE.  g2 = 0
+is kept (decided), so the multiple stays 1/r.  The same-earnings band points,
+the step-1c project strip, the overturned basket-5 coordinate and the trough
+coordinates are all re-read on the operating basis ((close − then C_ex per
+share) ÷ (then EPS − then after-tax cash income per share)).
 
 v3 (2026-10-04, valuation-rules「③ 出带处理流程」步 1c): the same-earnings band
 floor is re-read on the base's basis.  The 2022-09→2023-10 band months priced the
@@ -15,7 +30,8 @@ discounted from the expected COD (2022 年报: 2024 年底) to the band point, n
 the announced capex -- comes off the band price before the band multiple is
 taken.  At the initial basket 6 the adjusted floor sits under 1/r, so ③ never
 fires: the 2026-09-20 demotion to basket 5 is overturned and printed only as the
-「对照坐标（被推翻的降篮）」band.
+「对照坐标（被推翻的降篮）」band.  On the v4 operating basis the raw floor is
+already under 1/r; step 1c stays as the guardrail floor's construction.
 
 Lithium volume is the commissioned nameplate (9.8 万吨/年) discounted one year
 at the basket r, so the 2027-28 price deck of the shared axis meets a 2027
@@ -23,24 +39,18 @@ run-rate volume -- the same construction as 9696.HK.  Potash stays on the
 annualised H1 volume without discounting (current capacity).
 
 Multiples are Gordon-generated at the legs' basket r (both legs = 篮 6, the
-initial basket; the 篮 5 demotion was overturned by step 1c, A10): ROE per tier
-from parent NP / equity (bps × shares), PE_x = perpetual_pe(g2, ROE_x, r) with
-ONE flat g2 = 0 (§13 commodity-leg tier default: lithium real price drift
+initial basket; the 篮 5 demotion was overturned by step 1c, A10): RONIC per
+tier = operating parent NP / operating equity, PE_x = perpetual_pe(g2, RONIC_x, r)
+with ONE flat g2 = 0 (§13 commodity-leg tier default: lithium real price drift
 ≤ −3%/yr floored at 0, potash has no peer anchor), so every tier sits at 1/r.
 The axis 永续 g2 row is referenced verbatim (`axis_g2_li`) and not adopted.
-
-Guardrail (③): PE_M against the same-earnings band [step-1c floor, pe_same_max]
-(months whose lagged TTM parent NP sits within ±20% of the M numerator; the
-floor point pe_same_min stripped of the 4万吨 project, see v3); the own 5-year
-TTM PE band is on a different earnings basis and is only printed.
 
 L tier (valuation-rules「谷底档」): the axis L world (Li2CO3 103k = 2028
 surplus bottom between BMI 113k and Goldman 85k, above the p90 cost curve) is a regime, not the company's
 realised trough (FY2024, lithium 6–8 万).  `recovery_two_stage_pe` on the
-company's own measured path (FY2024 46.63 亿 → FY2025 84.76 亿, n = 1) is
-printed as a coordinate — it overshoots M with the measured CAGR and collapses
-into M with the model's L→M magnitude — and is not the anchor.  The PB floor
-is disclosure only (A4): L is the scenario value, never max(scenario, floor).
+company's own measured operating path (FY2024 → FY2025, n = 1) is printed as a
+coordinate and is not the anchor.  The PB floor is disclosure only (A4): L is
+the scenario value, never max(scenario, floor).
 """
 
 from __future__ import annotations
@@ -52,28 +62,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 import re  # noqa: E402
 
 from lib.axes import AXIS_LI2CO3, check_li2co3_mount  # noqa: E402
-from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
+from lib.gordon import (  # noqa: E402
+    basket_r, check_branch, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe, two_stage_pe,
+)
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000792.SZ.md"
-FORMULA_ID = "saltlake_li_axis_kcl_ladder_pe_v2_gordon_v3"
+FORMULA_ID = "saltlake_li_axis_kcl_ladder_pe_v2_gordon_v4"
 MIN_R_MINUS_G = 0.02
-# A9: the company's own realised trough→recovery path (Longbridge annual parent NI,
-# FY2024 46.63 亿 — the 2024–25 lithium crash year — → FY2025 84.76 亿).
-RECOVERY_MEASURED = {"FY2024→FY2025": (46.63, 84.76, 1)}
+C_EX_TRIGGER = 0.15
+# A9: the company's own realised trough→recovery path on the operating basis
+# (亿; parent NI − own-year after-tax income on own-year parent-share C_ex:
+# FY2024 46.63 − 3.53 = 43.10 → FY2025 84.76 − 3.71 = 81.05; A11).
+RECOVERY_MEASURED = {"FY2024→FY2025": (43.10, 81.05, 1)}
 # A10: the initial basket (current ruler) and the overturned 2026-09-20 demotion
 # target, printed as the「对照坐标（被推翻的降篮）」band, never a zone.
 INITIAL_BASKET = 6
 DEMOTED_BASKET = 5
-# Step 1c floor points (A10): (tag, PE field, close field, years-to-COD field).
-# The LB weekly point is the guardrail floor; the other two are disclosed variants.
+# Same-earnings band points (A10): (tag, raw PE field, close, years-to-COD or None,
+# then C_ex per share, then after-tax cash income per share).  The LB weekly low
+# is the guardrail floor; the next two are disclosed variants; the last is the
+# band top (project already in its EPS, no strip).
 BAND_POINTS = (
-    ("LB 周点 2023-03-26", "pe_same_min", "band_lb_close", "band_lb_cod_yrs"),
-    ("事实口径 2023-10", "band_fact_pe", "band_fact_close", "band_fact_cod_yrs"),
-    ("剔 FY22 预告月 2023-09-24", "band_ex_pe", "band_ex_close", "band_ex_cod_yrs"),
+    ("LB 周点 2023-03-26", "pe_same_min", "band_lb_close", "band_lb_cod_yrs", "band_lb_cex", "band_lb_cinc"),
+    ("事实口径 2023-10", "band_fact_pe", "band_fact_close", "band_fact_cod_yrs", "band_fact_cex", "band_fact_cinc"),
+    ("剔 FY22 预告月 2023-09-24", "band_ex_pe", "band_ex_close", "band_ex_cod_yrs", "band_ex_cex", "band_ex_cinc"),
 )
+BAND_TOP = ("LB 周点 2026-05-03", "pe_same_max", "band_max_close", None, "band_max_cex", "band_max_cinc")
 STATED_1C = re.compile(r"步 1c 同口径带下沿 \*\*([0-9.]+)×\*\*")
+STATED_OP_RAW = re.compile(r"经营口径原始下沿 \*\*([0-9.]+)×\*\*")
+STATED_OP_BAND = re.compile(r"经营口径同等盈利带 \*\*\[([0-9.]+), ([0-9.]+)\]\*\*")
 STATED_DEMOTED = re.compile(r"对照坐标（被推翻的降篮）[^\n]*?→ ([0-9.]+) / ([0-9.]+) / ([0-9.]+)")
 TOL = 0.05
 YI = 1e8
@@ -85,18 +104,22 @@ H1_PARENT_X2 = 61.685e8 * 2
 GUARD_TOL = 0.01
 
 REQUIRED = [
-    "shares", "bps",
+    "shares", "bps", "equity_nci",
     "li2co3_l", "li2co3_m", "li2co3_h",
     "realization_li", "vol_li_plan", "vol_li_h1", "cost_li",
     "r_disc", "n_disc",
     "kcl_price_l", "kcl_price_m", "kcl_price_h",
     "vol_k", "cost_k",
     "conv_ratio",
+    "net_cash_ext_h1", "div_declared", "c_ex", "cash_yield", "tax_eff", "payout_op", "payout_paid",
     "r_perp", "axis_g2_li", "g2_li", "g2_k", "g2",
     "pe_same_min", "pe_same_max", "pe_own_min", "pe_own_max", "pb_floor",
     "proj_vol", "proj_capex", "shares_band",
-    "band_lb_close", "band_lb_cod_yrs", "band_fact_pe", "band_fact_close", "band_fact_cod_yrs",
-    "band_ex_pe", "band_ex_close", "band_ex_cod_yrs",
+    "band_lb_close", "band_lb_cod_yrs", "band_lb_cex", "band_lb_cinc",
+    "band_fact_pe", "band_fact_close", "band_fact_cod_yrs", "band_fact_cex", "band_fact_cinc",
+    "band_ex_pe", "band_ex_close", "band_ex_cod_yrs", "band_ex_cex", "band_ex_cinc",
+    "band_max_close", "band_max_cex", "band_max_cinc",
+    "eps_fy27_cons",
 ]
 
 _AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%", re.MULTILINE)
@@ -109,7 +132,15 @@ def axis_g2(path: Path) -> float:
     return float(m.group(1)) / 100.0
 
 
-def scenario(inp: dict[str, float], tag: str, r_disc: float | None = None) -> dict[str, float]:
+def excess_cash(inp: dict[str, float]) -> tuple[float, float]:
+    """(parent share, parent-share C_ex in 元): extended net cash − declared dividend − anchor 0."""
+    equity = inp["bps"] * inp["shares"]
+    share = equity / (equity + inp["equity_nci"])
+    return share, (inp["net_cash_ext_h1"] - inp["div_declared"]) * share
+
+
+def scenario(inp: dict[str, float], tag: str, c_inc: float, op_equity: float,
+             r_disc: float | None = None) -> dict[str, float]:
     li = inp[f"li2co3_{tag}"]
     kcl = inp[f"kcl_price_{tag}"]
     rd = inp["r_disc"] if r_disc is None else r_disc
@@ -118,13 +149,16 @@ def scenario(inp: dict[str, float], tag: str, r_disc: float | None = None) -> di
     gp_k = inp["vol_k"] * (kcl - inp["cost_k"])
     gp = gp_li + gp_k
     parent = gp * inp["conv_ratio"]
-    eps = parent / inp["shares"]
+    e_op = parent - c_inc  # A11: after-tax income on the excess cash comes off every tier
     return {
         "gp_li": gp_li,
         "gp_k": gp_k,
         "gp": gp,
         "parent": parent,
-        "eps": eps,
+        "eps": parent / inp["shares"],
+        "e_op": e_op,
+        "eps_op": e_op / inp["shares"],
+        "ronic": e_op / op_equity,
     }
 
 
@@ -141,13 +175,18 @@ def project_value(inp: dict[str, float], r: float, cod_yrs: float) -> float:
     return v_cod * (1.0 + r) ** -cod_yrs - inp["proj_capex"] * (1.0 + r) ** -(cod_yrs / 2.0)
 
 
-def band_floors_1c(inp: dict[str, float], r: float) -> list[tuple[str, float, float]]:
-    """[(tag, raw PE, PE with the project stripped from the band price)] at basket r."""
-    out = []
-    for tag, pe_k, px_k, yrs_k in BAND_POINTS:
-        v_ps = project_value(inp, r, inp[yrs_k]) / inp["shares_band"]
-        out.append((tag, inp[pe_k], inp[pe_k] * (1.0 - v_ps / inp[px_k])))
-    return out
+def band_point_op(inp: dict[str, float], r: float, point: tuple) -> tuple[str, float, float, float]:
+    """(tag, raw PE, operating PE, operating PE with the 4万吨 project stripped) at basket r.
+
+    Operating PE = (close − then C_ex per share) ÷ (then EPS − then after-tax cash
+    income per share); then EPS = close ÷ raw PE (the band's own earnings basis).
+    """
+    tag, pe_k, px_k, yrs_k, cex_k, cinc_k = point
+    px, pe_raw = inp[px_k], inp[pe_k]
+    e_op = px / pe_raw - inp[cinc_k]
+    pe_op = (px - inp[cex_k]) / e_op
+    v_ps = project_value(inp, r, inp[yrs_k]) / inp["shares_band"] if yrs_k else 0.0
+    return tag, pe_raw, pe_op, (px - inp[cex_k] - v_ps) / e_op
 
 
 def main() -> int:
@@ -190,6 +229,17 @@ def main() -> int:
     for k in inp:
         if k.startswith("p_"):
             errors.append(f"probability-style input {k} in Inputs")
+
+    # A11 excess cash: parent share of (extended net cash − declared dividend − anchor 0).
+    equity = inp["bps"] * inp["shares"]
+    share_p, c_ex = excess_cash(inp)
+    if abs(c_ex - inp["c_ex"]) > 1e6:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != (net_cash_ext_h1 − div_declared) × parent share {c_ex:.4e}")
+    if c_ex < C_EX_TRIGGER * equity:
+        errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
+    c_inc = c_ex * inp["cash_yield"] * (1.0 - inp["tax_eff"])
+    cps = c_ex / inp["shares"]
+    op_equity = equity - c_ex
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
@@ -207,46 +257,49 @@ def main() -> int:
             f"vs 2 × H1 parent {H1_PARENT_X2 / YI:.2f}亿"
         )
 
-    S = {t: scenario(inp, t) for t in ("l", "m", "h")}
+    S = {t: scenario(inp, t, c_inc, op_equity) for t in ("l", "m", "h")}
 
     # --- Gordon multiples ------------------------------------------------------
     # One flat g2 = lithium tier default × M-tier lithium GP weight + potash leg
     # × g2_k (both 0 under §13 commodity legs); g = 0 puts every tier at 1/r.
-    equity = inp["bps"] * inp["shares"]
     w_li = S["m"]["gp_li"] / S["m"]["gp"]
     g2_blend = w_li * inp["g2_li"] + (1.0 - w_li) * inp["g2_k"]
     if abs(inp["g2"] - g2_blend) > 1e-4:
         errors.append(f"g2={inp['g2']} vs blended g2 {g2_blend:.5f}")
     for t in S:
-        S[t]["roe"] = S[t]["parent"] / equity
-        S[t]["pe"] = perpetual_pe(inp["g2"], S[t]["roe"], r)
-        S[t]["px"] = S[t]["eps"] * S[t]["pe"]
+        S[t]["pe"] = perpetual_pe(inp["g2"], S[t]["ronic"], r)
+        S[t]["px"] = S[t]["eps_op"] * S[t]["pe"] + cps
     pe_l, pe_m, pe_h = (S[t]["pe"] for t in ("l", "m", "h"))
-    # Guardrail (裁决顺序 ③): PE_M against the same-earnings band, floor on the
-    # base's basis (step 1c).  Out of band is the ③ out-of-band flow (A10),
-    # never fixed by twisting g or r.
-    floors = band_floors_1c(inp, r)
-    floor_1c = floors[0][2]
-    if not (floor_1c <= pe_m <= inp["pe_same_max"]):
+    # Guardrail (裁决顺序 ③): operating PE_M against the operating same-earnings
+    # band, floor = the LB low with the 4万吨 project stripped (step 1c).  Out of
+    # band is the ③ out-of-band flow (A10), never fixed by twisting g or r.
+    pts = [band_point_op(inp, r, p) for p in BAND_POINTS]
+    top = band_point_op(inp, r, BAND_TOP)[2]
+    floor_raw_op, floor_1c = pts[0][2], pts[0][3]
+    if not (floor_1c <= pe_m <= top):
         errors.append(
-            f"guardrail: PE_M={pe_m:.2f} outside same-earnings band [{floor_1c:.2f} (1c), {inp['pe_same_max']}] "
+            f"guardrail: PE_M={pe_m:.2f} outside operating same-earnings band [{floor_1c:.2f} (1c), {top:.2f}] "
             "— ③ 出带处理流程 (A10), do not twist g / r"
         )
-    # Step 1c decides the basket: the initial basket back in band means ③ never
-    # fires, so the ruler MUST be the initial basket (a demotion would count the
-    # project twice -- once in today's nameplate, once through a lower r).
+    # The initial basket in band means ③ never fires, so the ruler MUST be the
+    # initial basket (a demotion would count the project twice -- once in today's
+    # nameplate, once through a lower r).
     r0 = basket_r(INITIAL_BASKET)
-    roe_m0 = scenario(inp, "m", r_disc=r0)["parent"] / (inp["bps"] * inp["shares"])
-    pe_m0 = perpetual_pe(inp["g2"], roe_m0, r0)
-    floor_1c0 = band_floors_1c(inp, r0)[0][2]
-    if floor_1c0 <= pe_m0 <= inp["pe_same_max"] and baskets.get("r_perp") != INITIAL_BASKET:
+    s0 = scenario(inp, "m", c_inc, op_equity, r_disc=r0)
+    pe_m0 = perpetual_pe(inp["g2"], s0["ronic"], r0)
+    floor_1c0 = band_point_op(inp, r0, BAND_POINTS[0])[3]
+    if floor_1c0 <= pe_m0 <= top and baskets.get("r_perp") != INITIAL_BASKET:
         errors.append(
-            f"step 1c: initial 篮 {INITIAL_BASKET} PE_M {pe_m0:.2f} is inside [{floor_1c0:.2f}, {inp['pe_same_max']}] "
+            f"step 1c: initial 篮 {INITIAL_BASKET} PE_M {pe_m0:.2f} is inside [{floor_1c0:.2f}, {top:.2f}] "
             f"-> ③ not triggered, r_perp must stay 篮 {INITIAL_BASKET}"
         )
-    m = STATED_1C.search(md)
-    if not m or abs(float(m.group(1)) - floor_1c) > 0.01:
-        errors.append(f"step 1c floor stated {m.group(1) if m else None} vs recomputed {floor_1c:.2f}")
+    for rx, want_v, label in ((STATED_1C, floor_1c, "step 1c floor"), (STATED_OP_RAW, floor_raw_op, "operating raw floor")):
+        m = rx.search(md)
+        if not m or abs(float(m.group(1)) - want_v) > 0.01:
+            errors.append(f"{label} stated {m.group(1) if m else None} vs recomputed {want_v:.2f}")
+    m = STATED_OP_BAND.search(md)
+    if not m or abs(float(m.group(1)) - floor_1c) > 0.01 or abs(float(m.group(2)) - top) > 0.01:
+        errors.append(f"operating band stated {m.groups() if m else None} vs [{floor_1c:.2f}, {top:.2f}]")
 
     # A4: the PB floor is disclosed, never max()-ed into L.
     floor = inp["pb_floor"] * inp["bps"]
@@ -260,7 +313,7 @@ def main() -> int:
         print(f"FAIL: L<M<H violated ({L:.2f}/{M:.2f}/{H:.2f})", file=sys.stderr)
         return 1
 
-    flat = [S["l"]["eps"] * pe_m, S["m"]["eps"] * pe_m, S["h"]["eps"] * pe_m]
+    flat = [S[t]["eps_op"] * pe_m + cps for t in ("l", "m", "h")]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
 
@@ -275,8 +328,8 @@ def main() -> int:
         if got is None or abs(got - want_v) > TOL:
             errors.append(f"{label}: stated {got} vs recomputed {want_v:.4f}")
     rd = basket_r(DEMOTED_BASKET)
-    Sd = {t: scenario(inp, t, r_disc=rd) for t in ("l", "m", "h")}
-    band_d = [Sd[t]["eps"] * perpetual_pe(inp["g2"], Sd[t]["parent"] / equity, rd) for t in ("l", "m", "h")]
+    Sd = {t: scenario(inp, t, c_inc, op_equity, r_disc=rd) for t in ("l", "m", "h")}
+    band_d = [Sd[t]["eps_op"] * perpetual_pe(inp["g2"], Sd[t]["ronic"], rd) + cps for t in ("l", "m", "h")]
     m = STATED_DEMOTED.search(out_sec)
     if not m or any(abs(float(a) - b) > TOL for a, b in zip(m.groups(), band_d)):
         errors.append(f"对照坐标（被推翻的降篮） stated {m.groups() if m else None} vs {[round(b, 2) for b in band_d]}")
@@ -293,6 +346,24 @@ def main() -> int:
         f"kcl ladder: {inp['kcl_price_l']:g}/{inp['kcl_price_m']:g}/{inp['kcl_price_h']:g}"
     )
     print(f"L/M/H = {L:.2f}/{M:.2f}/{H:.2f}  A/B = {A:.2f}/{B:.2f}")
+    print(
+        f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付股息 {inp['div_declared'] / YI:.2f}亿 − 锚 0 "
+        f"→ × 归母份额 {share_p:.4f}（少数股东 {(1 - share_p) * (inp['net_cash_ext_h1'] - inp['div_declared']) / YI:.2f}亿 不计）"
+        f"= C_ex {c_ex / YI:.2f}亿"
+        f"（每股 {cps:.3f}，占归母权益 {c_ex / equity:.1%}，λ 1）"
+    )
+    print(
+        f"现金税后收益 {c_ex / YI:.2f}亿 × {inp['cash_yield']:.4%} × (1 − {inp['tax_eff']:.4f}) = {c_inc / YI:.2f}亿/年 "
+        f"（{c_inc / inp['shares']:.4f} 元/股，三档同扣）；经营股权 {op_equity / YI:.2f}亿"
+    )
+    for t in ("l", "m", "h"):
+        print(
+            f"  {t.upper()}: 归母 {S[t]['parent'] / YI:.2f}亿 → 经营 {S[t]['e_op'] / YI:.2f}亿 · 经营 EPS {S[t]['eps_op']:.4f} "
+            f"· RONIC {S[t]['ronic']:.1%}（账面 ROE {S[t]['parent'] / equity:.1%}）· 经营价值 {S[t]['eps_op'] * S[t]['pe']:.2f} + 现金 {cps:.2f}"
+        )
+        w = S[t]["gp_li"] / S[t]["gp"]  # 表1: operating value split by GP weight
+        print(f"     表1 {t.upper()}: 锂 {S[t]['eps_op'] * w * S[t]['pe']:.2f} · 钾 {S[t]['eps_op'] * (1 - w) * S[t]['pe']:.2f} "
+              f"· 现金 {cps:.2f} · 合计 {S[t]['px']:.2f}")
     print(
         f"floor={floor:.2f} (PB {inp['pb_floor']:g} × BPS; disclosure only, not max()-ed; "
         f"L is the scenario value {scenario_L:.2f}; floor/M = {floor / M:.3f})"
@@ -313,49 +384,81 @@ def main() -> int:
         f"baskets={baskets} gordon: r={r:g} g2={inp['g2']:g} flat "
         f"(blend {g2_blend:.4f} = li {w_li:.3f}×{inp['g2_li']:g} [§13 tier default] + k {1 - w_li:.3f}×{inp['g2_k']:g} [无同业锚]; "
         f"axis row {inp['axis_g2_li']:g} referenced, not adopted) "
-        f"roe={S['l']['roe']:.3f}/{S['m']['roe']:.3f}/{S['h']['roe']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} "
-        f"(g=0: every tier = 1/r); PE_M inside same-earnings band [{floor_1c:.2f} (step 1c; raw {inp['pe_same_min']}), {inp['pe_same_max']}]; "
-        f"own 5y TTM band [{inp['pe_own_min']}, {inp['pe_own_max']}] printed only (different earnings basis)"
+        f"ronic={S['l']['ronic']:.3f}/{S['m']['ronic']:.3f}/{S['h']['ronic']:.3f} -> pe={pe_l:.2f}/{pe_m:.2f}/{pe_h:.2f} "
+        f"(g=0: every tier = 1/r); PE_M inside operating same-earnings band [{floor_1c:.2f} (step 1c; raw op {floor_raw_op:.2f}; "
+        f"whole-equity {inp['pe_same_min']}), {top:.2f}]; own 5y TTM band [{inp['pe_own_min']}, {inp['pe_own_max']}] printed only"
     )
-    # Step 1c: raw vs base-basis floor points, and the basket ladder it settles.
-    for tag, raw, adj in floors:
-        print(f"step 1c {tag}: band PE {raw:.2f} -> {adj:.2f} with the 4万吨 project stripped (r={r:g})")
+    # ⑤ / check_branch: g2 = 0 is the decided value; the operating payout is disclosed.
+    br = check_branch(inp["g2"], S["m"]["ronic"], r, inp["payout_op"], "g2")
+    print(
+        f"经营口径派息率 {inp['payout_op']:.1%}（分红与注销式回购 + 现金积累，FY2021–25）；"
+        f"check_branch(g2 0): {'通过' if not br else '提示 — ' + br[0]}（g2 = 0 已拍板，保留，只披露）"
+    )
+    keep = 1.0 - inp["g2"] / S["m"]["ronic"] - inp["payout_paid"]
+    q = keep * S["m"]["eps_op"]
+    print(
+        f"多留部分: 比例 {keep:.1%}（1 − b {inp['g2'] / S['m']['ronic']:.1%} − 实付 {inp['payout_paid']:.1%}）· 每股 {q:.2f}/年 "
+        f"· PV {q / (r - inp['g2']):.2f} · λ 1，PV 不进锚点"
+    )
+    # Band points: whole-equity vs operating vs operating with the project stripped.
+    for tag, raw, op, adj in pts:
+        print(f"band {tag}: 整股 PE {raw:.2f} -> 经营 {op:.2f} -> 步 1c {adj:.2f} (r={r:g})")
+    print(f"band top {BAND_TOP[0]}: 整股 PE {inp['pe_same_max']} -> 经营 {top:.2f}")
     for b in (INITIAL_BASKET, DEMOTED_BASKET):
         rb = basket_r(b)
-        fb = band_floors_1c(inp, rb)[0][2]
-        print(f"  篮 {b} r={rb:g}: PE_M {1 / rb:.2f}x vs 1c floor {fb:.2f} (raw {inp['pe_same_min']}) -> "
+        _, _, op_b, fb = band_point_op(inp, rb, BAND_POINTS[0])
+        print(f"  篮 {b} r={rb:g}: PE_M {1 / rb:.2f}x vs 1c floor {fb:.2f} (经营原始 {op_b:.2f}) -> "
               f"{'入带' if 1 / rb >= fb else '出带'}")
+    print(f"  1c floor {floor_1c:.2f}x at g = 0 reads r {1 / floor_1c:.1%}")
     # A10: the overturned demotion's band, printed as a coordinate (never a zone).
     print(
         f"对照坐标（被推翻的降篮）篮 {DEMOTED_BASKET} r={rd:g}: "
         f"{band_d[0]:.2f}/{band_d[1]:.2f}/{band_d[2]:.2f} (not a zone)"
     )
     for dg in (-0.01, 0.01):
-        alt = [S[t]["eps"] * perpetual_pe(inp["g2"] + dg, S[t]["roe"], r) for t in ("l", "m", "h")]
-        print(f"  g2 {dg:+.0%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
-    for dr in (-0.005, 0.005):
-        Sr = {t: scenario(inp, t, r_disc=r + dr) for t in ("l", "m", "h")}
-        alt = [Sr[t]["eps"] * perpetual_pe(inp["g2"], Sr[t]["parent"] / equity, r + dr) for t in ("l", "m", "h")]
-        print(f"  r {dr:+.1%} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+        alt = [S[t]["eps_op"] * perpetual_pe(inp["g2"] + dg, S[t]["ronic"], r) + cps for t in ("l", "m", "h")]
+        pes = [perpetual_pe(inp["g2"] + dg, S[t]["ronic"], r) for t in ("l", "m", "h")]
+        print(f"  g2 {dg:+.0%} -> pe {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+    for g_alt, why in ((0.0115, "锂同业反解 2.35% × 锂腿权重"), (0.0135, "钾腿借 2.6% 试算")):
+        alt = [S[t]["eps_op"] * perpetual_pe(g_alt, S[t]["ronic"], r) + cps for t in ("l", "m", "h")]
+        print(f"  g2 {g_alt:.2%} ({why}) -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+    # Numerator what-ifs (A5 / A2): each swaps one input, everything else as the base.
+    for label, over in (("vol_li_h1 替代名牌（仍折 1 年）", {"vol_li_plan": inp["vol_li_h1"]}),
+                        ("名牌不折现", {"n_disc": 0}),
+                        ("钾三档全钉 L", {"kcl_price_m": inp["kcl_price_l"], "kcl_price_h": inp["kcl_price_l"]})):
+        alt_inp = {**inp, **over}
+        alt = [scenario(alt_inp, t, c_inc, op_equity)["eps_op"] / r + cps for t in ("l", "m", "h")]
+        print(f"  {label} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+    pe_hw = two_stage_pe(0.17, 3, inp["g2"], S["m"]["ronic"], r)
+    print(f"  H 窗口对照 g1 17% n 3 -> {pe_hw:.2f}x -> {S['m']['eps_op'] * pe_hw + cps:.2f} (H {H:.2f})")
+    for rr in (r - 0.005, r + 0.005, 0.11, 0.15, 0.10):
+        Sr = {t: scenario(inp, t, c_inc, op_equity, r_disc=rr) for t in ("l", "m", "h")}
+        alt = [Sr[t]["eps_op"] * perpetual_pe(inp["g2"], Sr[t]["ronic"], rr) + cps for t in ("l", "m", "h")]
+        print(f"  r {rr:.3f} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     # A9 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) measured
     # n with the model's own L→M magnitude.  Printed, not anchors.
     for label, (np0, np1, n) in RECOVERY_MEASURED.items():
         g1_meas = (np1 / np0) ** (1.0 / n) - 1.0
-        pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2"], S["m"]["roe"], r)
-        g1_lm = (S["m"]["eps"] / S["l"]["eps"]) ** (1.0 / n) - 1.0
-        pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2"], S["m"]["roe"], r)
+        pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2"], S["m"]["ronic"], r)
+        g1_lm = (S["m"]["eps_op"] / S["l"]["eps_op"]) ** (1.0 / n) - 1.0
+        pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2"], S["m"]["ronic"], r)
+        v_i, v_ii = S["l"]["eps_op"] * pe_i + cps, S["l"]["eps_op"] * pe_ii + cps
         print(
-            f"谷底档坐标（A9）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {S['l']['eps'] * pe_i:.2f} "
-            f"(vs M {M:.2f}: {'overshoot' if S['l']['eps'] * pe_i > M else 'below M'}); "
-            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {S['l']['eps'] * pe_ii:.2f} (L/M {S['l']['eps'] * pe_ii / M:.3f}, collapsed)"
+            f"谷底档坐标（A9，经营口径）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.2f}x -> {v_i:.2f} "
+            f"(vs M {M:.2f}: {'overshoot' if v_i > M else 'below M'}); "
+            f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {v_ii:.2f} (L/M {v_ii / M:.3f}, collapsed)"
         )
-    print(f"谷底 x 1/r = {S['l']['eps'] / r:.2f}  (= L at g=0; deep_discount pressure coordinate)")
-    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}x (A2e-2c): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for line in tier_report((L, M, H), (pe_l, pe_m, pe_h), (S["l"]["eps"], S["m"]["eps"], S["h"]["eps"])):
-        print(line)
+    print(f"谷底 x 1/r + 现金 = {S['l']['eps_op'] / r + cps:.2f}  (= L at g=0; deep_discount pressure coordinate)")
+    print(f"FY27 共识 EPS {inp['eps_fy27_cons']} − 现金收益 → 经营 {inp['eps_fy27_cons'] - c_inc / inp['shares']:.3f} "
+          f"× 1/r + 现金 = {(inp['eps_fy27_cons'] - c_inc / inp['shares']) / r + cps:.2f}")
+    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}x (A2e-2c, with cash): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print("operating part only (anchors − cash):")
+    ops = tuple(S[t]["eps_op"] * S[t]["pe"] for t in ("l", "m", "h"))
+    for line in tier_report(ops, (pe_l, pe_m, pe_h), (S["l"]["eps_op"], S["m"]["eps_op"], S["h"]["eps_op"])):
+        print("  " + line)
     print(
-        f"L/M={L/M:.2f} H/M={H/M:.2f} (H-L)/2M={(H-L)/(2*M):.2%} V_opt/M=0 "
-        f"numerator L/M={S['l']['eps']/S['m']['eps']:.2f} H/M={S['h']['eps']/S['m']['eps']:.2f} "
+        f"L/M={L/M:.2f} H/M={H/M:.2f} (H-L)/2M={(H-L)/(2*M):.2%} V_opt/M=0 C_ex/M={cps / M:.1%} "
+        f"operating numerator L/M={S['l']['eps_op']/S['m']['eps_op']:.2f} H/M={S['h']['eps_op']/S['m']['eps_op']:.2f} "
         f"| multiple ratio L/M={pe_l/pe_m:.2f} H/M={pe_h/pe_m:.2f}"
     )
     print("OK")
