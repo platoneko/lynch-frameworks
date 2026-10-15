@@ -25,16 +25,25 @@ g1_adv, n=1, g2).  g1_adv is the platform growth that reproduces the company
 2028E consensus growth once mature/B2 only grow at their own g — the
 consensus year must be fully expressed, not diluted by the slow legs.
 
-Guardrail: the own realised forward-PE band is measured on COMPANY EPS, so it
-bounds each tier's blended PE (tier price ÷ tier EPS), not the platform leg on
-its own.  g2 = the value at which the H tier's blended PE touches pe_own_max.
+Operating value + excess cash (valuation-rules「经营价值与超额现金」, framework
+correction 2026-10-15): excess cash = extended net cash − declared unpaid
+dividends − operating cash anchor (min(lowest 2021-25 net-cash/revenue, two
+months of revenue) × FY2025 revenue); customer capacity prepayments are NOT
+deducted (non-refundable, offset against deliveries → operating liability).
+Every tier's numerator drops the excess cash's after-tax income, RONIC drops
+the cash from the book, and the cash is added back per ADR at face (λ = 1).
 
-ROE (v9): tier EPS ÷ the numerator year's OPENING BPS (end-2026), the 2Q26
-book rolled over 2H26 unbooked earnings at the growth-required retention
-b1 = g/ROE (company g1 for M/H, g2 for L; valuation-rules 裁决表 ② as of
-2026-09-21), solved in closed form.  v8 divided 2027 earnings by the
-mid-2026 book; year-end-book and actual-payout rolls are both wrong and kept
-only as cross-check rows in the framework.
+Guardrail: the own realised forward band is measured on COMPANY earnings, so
+it bounds each tier's blended multiple, now on the operating basis (operating
+value ÷ operating EPS) against the band re-read as (price − excess cash then)
+÷ (EPS − its after-tax income then).  g2 = the value at which the first tier
+(H) touches the operating band's upper edge.
+
+RONIC (per tier): operating EPS ÷ the numerator year's OPENING operating BPS
+(end-2026 book − excess cash), the 2Q26 operating book rolled over 2H26
+unbooked operating earnings at the growth-required retention b1 = g/RONIC
+(company g1 on operating earnings for M/H, g2 for L; valuation-rules 裁决表 ②
+as of 2026-09-21), solved in closed form.  No peak guard.
 
 Cross band (A27, not the main ruler, not in _INDEX): the PB-ROIC "machine" —
 book rolled to end-2028 on company capex guidance, new capital earning the
@@ -166,7 +175,22 @@ REQUIRED = [
     "pb_5y_med",
     "pb_5y_q3",
     "n_disc",
+    "net_cash_ext_2q26",
+    "div_declared",
+    "rev_2025_twd",
+    "cash_ratio_low",
+    "c_ex",
+    "cash_yield",
+    "tax_eff",
+    "payout_op",
+    "pe_op_min",
+    "pe_op_max",
+    "px_edge_hi",
+    "cex_edge_hi_twd",
+    "fx_edge_hi",
+    "aty_edge_hi",
 ]
+TWO_MONTHS = 2.0 / 12.0  # operating cash anchor cap (valuation-rules ①, 2026-10-15)
 TIERS = ("l", "m", "h")
 _CROSS_BAND = re.compile(r"对照带（PB-ROIC 机器尺）：L′ ([0-9.]+) / M′ ([0-9.]+) / H′ ([0-9.]+)")
 
@@ -239,8 +263,34 @@ def main() -> int:
     r = inp["r_perp"]
     g2, g_mat, g_b2 = inp["g2"], inp["g_mat_wafer"], inp["g_b2"]
     n = int(inp["n_stage"])
-    g1 = inp["eps_2028_cons_twd"] / inp["eps_2027_cons_twd"] - 1.0
-    eps = {"l": inp["eps_2027_l"], "m": inp["eps_2027_m"], "h": inp["eps_2027_h"]}
+    g1_eps = inp["eps_2028_cons_twd"] / inp["eps_2027_cons_twd"] - 1.0
+    eps_cons = {"l": inp["eps_2027_l"], "m": inp["eps_2027_m"], "h": inp["eps_2027_h"]}
+
+    # --- excess cash (经营价值与超额现金 ①②) ------------------------------------
+    fx, sh = inp["fx_twd"], inp["shares_adr"]
+    anchor_ratio = max(min(inp["cash_ratio_low"], TWO_MONTHS), 0.0)
+    cash_anchor = anchor_ratio * inp["rev_2025_twd"]
+    c_ex = inp["net_cash_ext_2q26"] - inp["div_declared"] - cash_anchor
+    if abs(c_ex - inp["c_ex"]) > 1e9:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net cash − declared dividends − anchor {c_ex:.4e}")
+    equity_twd = inp["equity"] * fx
+    if c_ex < 0.15 * equity_twd:
+        errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
+    c_adr = c_ex / fx / sh
+    c_inc = c_adr * inp["cash_yield"] * (1.0 - inp["tax_eff"])  # after-tax, USD/ADR, out of every numerator
+    eps = {t: eps_cons[t] - c_inc for t in TIERS}  # operating EPS
+    # The 2028 consensus carries the same cash income, so the company transition
+    # growth on operating earnings is the consensus step net of it.
+    g1 = (eps_cons["m"] * (1.0 + g1_eps) - c_inc) / eps["m"] - 1.0
+
+    # Own band on the operating basis: the upper edge month (2022-01, over FY2023
+    # actual) less the excess cash then visible (FY2021, at the then rate) and its
+    # after-tax income.  The lower edge (2025-03) is stated, not binding.
+    c_edge = inp["cex_edge_hi_twd"] / inp["fx_edge_hi"] / sh
+    f_edge = inp["px_edge_hi"] / inp["pe_own_max"]
+    op_edge = (inp["px_edge_hi"] - c_edge) / (f_edge - c_edge * inp["aty_edge_hi"])
+    if abs(op_edge - inp["pe_op_max"]) > 0.01:
+        errors.append(f"pe_op_max {inp['pe_op_max']} != operating re-read of the upper edge {op_edge:.3f}")
 
     # Pin mature wafer $ at the 2Q26 run-rate → 2027E mature share of wafer shrinks with revenue growth.
     mat = inp["mat_of_wafer_asof"] * 4.0 * inp["rev_2q26_twd"] / inp["rev_2027_twd"]
@@ -263,20 +313,27 @@ def main() -> int:
     # BPS = E0 / (1 - g·N/eps).  M/H roll at the company g1 (the legs' g sum to
     # it); L has no window and rolls at g2.  Actual retention beyond b1 is the B
     # bucket, printed as a disclosure, not put into the book.
-    ni_2h26 = inp["eps_2026_m"] * inp["shares_adr"] - inp["ni_1h26_twd"] / inp["fx_twd"]
-    bps_2q26 = inp["equity"] / inp["shares_adr"]
-    unbooked = {t: ni_2h26 / inp["shares_adr"] for t in TIERS}  # per ADR, 2H26 only (opening-2027 book)
+    # Operating book (equity − excess cash), unbooked 2H26 operating earnings
+    # (half a year of cash income out).
+    ni_2h26 = inp["eps_2026_m"] * sh - inp["ni_1h26_twd"] / fx
+    bps_2q26 = (inp["equity"] - c_ex / fx) / sh
+    unbooked = {t: ni_2h26 / sh - c_inc / 2.0 for t in TIERS}  # per ADR, 2H26 only (opening-2027 book)
     g_roll = {"l": g2, "m": g1, "h": g1}
     bps_open_2027 = {t: bps_2q26 / (1.0 - g_roll[t] * unbooked[t] / eps[t]) for t in TIERS}
-    roe = {t: eps[t] / bps_open_2027[t] for t in TIERS}
+    roe = {t: eps[t] / bps_open_2027[t] for t in TIERS}  # RONIC per tier
     b1 = {t: g_roll[t] / roe[t] for t in TIERS}
     for t in TIERS:
         if not (0.0 < b1[t] < 1.0):
             errors.append(f"{t.upper()}: growth-required retention b1={b1[t]:.2f} outside (0,1) — book roll needs external equity")
+        if roe[t] < r:
+            errors.append(f"{t.upper()}: RONIC {roe[t]:.1%} < r — check the persistent-failure rule")
     ret_actual = 1.0 - inp["payout_3y"]
-    excess_cash = {t: (ret_actual - b1[t]) * unbooked[t] for t in TIERS}  # USD/ADR, modelled-as-distributed
-    # g2 comes from a reverse-solve, so the Gordon branch must match the payout policy.
-    errors += check_branch(g2, roe["m"], r, inp["payout_ttm"], "g2")
+    retained_more = {t: (ret_actual - b1[t]) * unbooked[t] for t in TIERS}  # 多留部分, USD/ADR over 2H26
+    # g2 comes from a reverse-solve, so the Gordon branch must match the payout
+    # policy -- on the operating payout (dividends + excess-cash accumulation).
+    errors += check_branch(g2, roe["m"], r, inp["payout_op"], "g2")
+    if g2 > (1.0 - inp["payout_3y"]) * roe["m"]:
+        errors.append("g2 above (1 − d) × RONIC_M (③ 约束 2)")
 
     def platform_pe(t: str, g2_x: float, transition: bool) -> float:
         if transition:
@@ -306,14 +363,16 @@ def main() -> int:
             "Pb2": pb2,
             "cap": cap,
             "floor": floor,
-            "sum": paw + pmw + pb1 + pb2,
+            "vop": paw + pmw + pb1 + pb2,
+            "sum": paw + pmw + pb1 + pb2 + c_adr,  # operating value + excess cash (λ = 1)
         }
 
     def blended_pe(t: str, g2_x: float) -> float:
-        return legs_at(t, platform_pe(t, g2_x, t != "l"), pe_mat[t], pe_b2[t])["sum"] / eps[t]
+        """Operating multiple: operating value ÷ operating EPS."""
+        return legs_at(t, platform_pe(t, g2_x, t != "l"), pe_mat[t], pe_b2[t])["vop"] / eps[t]
 
-    # The own band is measured on company EPS, so the band edge is where the
-    # tier's blended PE (not the platform leg alone) touches it.
+    # The own band is measured on company earnings, so the band edge is where
+    # the tier's blended operating multiple (not the platform leg alone) touches it.
     def g2_at_edge(t: str, target: float) -> float:
         lo, hi = -0.05, r - 1e-4
         for _ in range(200):
@@ -324,16 +383,20 @@ def main() -> int:
                 hi = mid
         return (lo + hi) / 2
 
-    band_edge_g2 = {t: g2_at_edge(t, inp["pe_own_max"]) for t in TIERS}
+    band_edge_g2 = {t: g2_at_edge(t, inp["pe_op_max"]) for t in TIERS}
+    edge_min = min(band_edge_g2.values())
+    if g2 > edge_min + 1e-9 or edge_min - g2 > 1e-4:
+        errors.append(f"g2 {g2:.5f} is not the operating band-edge solve {edge_min:.5f} (A7)")
     pe = {t: platform_pe(t, g2, t != "l") for t in TIERS}
     legs = {t: legs_at(t, pe[t], pe_mat[t], pe_b2[t]) for t in TIERS}
     L, M, H = (legs[t]["sum"] for t in TIERS)
-    pe_blend = {t: legs[t]["sum"] / eps[t] for t in TIERS}
+    pe_blend = {t: legs[t]["vop"] / eps[t] for t in TIERS}  # operating multiple (guardrail)
+    pe_merged = {t: legs[t]["sum"] / eps_cons[t] for t in TIERS}  # whole-equity PE (disclosure)
     for t in TIERS:
-        if not (inp["pe_own_min"] <= pe_blend[t] <= inp["pe_own_max"] + 1e-6):
+        if not (inp["pe_op_min"] <= pe_blend[t] <= inp["pe_op_max"] + 1e-6):
             errors.append(
-                f"{t.upper()} blended PE {pe_blend[t]:.2f}x outside own realised band "
-                f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
+                f"{t.upper()} operating multiple {pe_blend[t]:.2f}x outside own operating band "
+                f"[{inp['pe_op_min']:g}, {inp['pe_op_max']:g}]"
             )
     if not (L < M < H):
         errors.append(f"invariant L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
@@ -413,15 +476,21 @@ def main() -> int:
         f"EPS shares aw={share_aw:.2%} mw={share_mw:.2%} b1={inp['share_adv']:.0%} b2={inp['share_other']:.0%}"
     )
     print(
-        f"tier EPS = {eps['l']:.2f}/{eps['m']:.2f}/{eps['h']:.2f}  "
-        f"ROE = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f}"
+        f"excess cash: ext. net cash {inp['net_cash_ext_2q26'] / 1e9:.1f}B − declared dividends {inp['div_declared'] / 1e9:.1f}B "
+        f"− anchor min({inp['cash_ratio_low']:.2%}, 2 months {TWO_MONTHS:.2%}) × FY25 rev {inp['rev_2025_twd'] / 1e9:.1f}B "
+        f"= {cash_anchor / 1e9:.1f}B → C_ex {c_ex / 1e9:.1f}B TWD ({c_ex / equity_twd:.1%} of parent equity) "
+        f"= {c_adr:.2f} USD/ADR (λ 1); after-tax income {c_inc:.3f}/ADR off every tier"
+    )
+    print(
+        f"operating EPS = {eps['l']:.3f}/{eps['m']:.3f}/{eps['h']:.3f} (consensus {eps_cons['l']}/{eps_cons['m']}/{eps_cons['h']})  "
+        f"RONIC = {roe['l']:.3f}/{roe['m']:.3f}/{roe['h']:.3f}  g1 consensus {g1_eps:.4f} → operating {g1:.4f}"
     )
     for t in TIERS:
         lg = legs[t]
         print(
-            f"{t.upper()}: plat {pe[t]:.2f}x mat {pe_mat[t]:.2f}x b2 {pe_b2[t]:.2f}x blended {pe_blend[t]:.2f}x  "
-            f"aw {lg['Paw']:.1f} mw {lg['Pmw']:.1f} B1 {lg['Pb1']:.1f} "
-            f"(cap {lg['cap']:.1f}/fl {lg['floor']:.1f}) B2 {lg['Pb2']:.1f} = {lg['sum']:.1f}"
+            f"{t.upper()}: plat {pe[t]:.2f}x mat {pe_mat[t]:.2f}x b2 {pe_b2[t]:.2f}x operating {pe_blend[t]:.2f}x "
+            f"(whole-equity PE {pe_merged[t]:.2f}x)  aw {lg['Paw']:.1f} mw {lg['Pmw']:.1f} B1 {lg['Pb1']:.1f} "
+            f"(cap {lg['cap']:.1f}/fl {lg['floor']:.1f}) B2 {lg['Pb2']:.1f} V_op {lg['vop']:.1f} + C_ex {c_adr:.2f} = {lg['sum']:.1f}"
         )
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
     print(
@@ -431,14 +500,15 @@ def main() -> int:
     )
     print(f"flat @ M: {flat[0]:.1f}/{flat[1]:.1f}/{flat[2]:.1f}")
     print(
-        f"own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on BLENDED PE, band-edge g2: "
-        f"L {band_edge_g2['l']:.4%} / M {band_edge_g2['m']:.4%} / H {band_edge_g2['h']:.4%} "
-        f"-> g2 {g2:.2%} {'<=' if g2 <= min(band_edge_g2.values()) + 1e-9 else '>'} binding"
+        f"own band: whole-equity [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] → operating "
+        f"[{inp['pe_op_min']:g}, {inp['pe_op_max']:g}] (upper edge 2022-01 re-read {op_edge:.3f}: C_ex then {c_edge:.3f}/ADR "
+        f"vs today {c_adr:.2f}); band-edge g2 on the operating multiple: "
+        f"L {band_edge_g2['l']:.4%} / M {band_edge_g2['m']:.4%} / H {band_edge_g2['h']:.4%} -> g2 {g2:.4%}"
     )
-    modelled, gap = payout_gap(g2, roe["m"], inp["payout_ttm"])
+    modelled, gap = payout_gap(g2, roe["m"], inp["payout_op"])
     print(
-        f"branch: g2 {g2:.2%} at ROE_M {roe['m']:.1%} implies payout {modelled:.0%} vs paid {inp['payout_ttm']:.0%} "
-        f"(gap {gap:+.0%}; monotonic zone ROE>>r, sign only)"
+        f"branch: g2 {g2:.2%} at RONIC_M {roe['m']:.1%} implies payout {modelled:.0%} vs operating payout {inp['payout_op']:.0%} "
+        f"(paid TTM {inp['payout_ttm']:.0%}; gap {gap:+.0%}; monotonic zone RONIC>>r, sign only)"
     )
     print(
         f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | "
@@ -466,7 +536,7 @@ def main() -> int:
     lo, hi = -0.05, r - 1e-4
     for _ in range(200):
         mid = (lo + hi) / 2
-        if platform_pe("h", mid, True) < inp["pe_own_max"]:
+        if platform_pe("h", mid, True) < inp["pe_op_max"]:
             lo = mid
         else:
             hi = mid
@@ -476,7 +546,7 @@ def main() -> int:
     for delta in (-0.01, +0.01):
         g2_d = g2 + delta
         legal = g2_d <= 0.06 + 1e-9 and all(
-            inp["pe_own_min"] <= blended_pe(t, g2_d) <= inp["pe_own_max"] + 1e-6 for t in TIERS
+            inp["pe_op_min"] <= blended_pe(t, g2_d) <= inp["pe_op_max"] + 1e-6 for t in TIERS
         )
         lever.append(f"{g2_d:.2%}: {fmt(band_with(g2_x=g2_d))}{'' if legal else ' (illegal)'}")
     print("g2 ±1pp (mw/B2 PE fixed): " + " | ".join(lever))
@@ -511,16 +581,16 @@ def main() -> int:
         f"{v_k_v9['l']:.2f}/{v_k_v9['m']:.2f}/{v_k_v9['h']:.2f}"
     )
     print(
-        f"ROE basis: BPS_2027 = {bps_open_2027['l']:.1f}/{bps_open_2027['m']:.1f}/{bps_open_2027['h']:.1f} USD/ADR (opening 2027 = end-2026) "
-        f"(2Q26 book {bps_2q26:.1f} rolled at b1 = g/ROE = {b1['l']:.2f}/{b1['m']:.2f}/{b1['h']:.2f}, "
-        f"g_roll {g_roll['l']:.2%}/{g_roll['m']:.2%}/{g_roll['h']:.2%}); "
-        f"v8 basis (2Q26 book) would read ROE {eps['l'] * inp['shares_adr'] / inp['equity']:.1%}/"
-        f"{eps['m'] * inp['shares_adr'] / inp['equity']:.1%}/{eps['h'] * inp['shares_adr'] / inp['equity']:.1%}"
+        f"RONIC basis: operating BPS_2027 = {bps_open_2027['l']:.2f}/{bps_open_2027['m']:.2f}/{bps_open_2027['h']:.2f} USD/ADR "
+        f"(opening 2027 = end-2026; 2Q26 operating book {bps_2q26:.2f} rolled over 2H26 operating {unbooked['m']:.3f} "
+        f"at b1 = g/RONIC = {b1['l']:.3f}/{b1['m']:.3f}/{b1['h']:.3f}, "
+        f"g_roll {g_roll['l']:.2%}/{g_roll['m']:.2%}/{g_roll['h']:.2%})"
     )
     print(
-        f"B bucket (modelled-as-distributed, actually retained): actual retention {ret_actual:.0%} − b1 → "
-        f"{excess_cash['l']:.1f}/{excess_cash['m']:.1f}/{excess_cash['h']:.1f} USD/ADR over 2H26 "
-        f"(disclosure only; not a leg, not in BPS)"
+        f"多留部分 (1 − payout_3y − b1) × 2H26 operating EPS: p {ret_actual - b1['l']:.3f}/{ret_actual - b1['m']:.3f}/"
+        f"{ret_actual - b1['h']:.3f} → {retained_more['l']:.2f}/{retained_more['m']:.2f}/{retained_more['h']:.2f} USD/ADR "
+        f"(lands on the excess cash, λ 1, PV not in the anchors); payout_op {inp['payout_op']:.3f}; "
+        f"(1 − d) × RONIC_M = {(1 - inp['payout_3y']) * roe['m']:.1%} ≥ g2"
     )
 
     # --- A27 cross band: PB-ROIC machine (user ruler 2026-09-21; not the main ruler) ---
