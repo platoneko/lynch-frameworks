@@ -6,10 +6,15 @@ L/M/H / A/B and V_opt from its §3 Inputs table and exits 1 on mismatch.  The
 doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing here
 computes a zone or a market-implied reading.
 
-formula_id: weichai_consensus_fy28_three_leg_gordon_v7
+formula_id: weichai_consensus_fy28_three_leg_gordon_v8
 
 Main ruler (2026-10-04, user ruling): an asymmetric three-leg SOTP on the
-FY2028 sell-side consensus.
+FY2028 sell-side consensus, on the operating basis since the 2026-10-15
+framework correction (valuation-rules「经营价值与超额现金」): the excess cash
+(extended net cash − the declared interim dividend − the operating-cash
+anchor) is added at face value (λ 1) to every tier, its after-tax income comes
+out of the core leg's numerator, and the per-tier ROE (same roll as before)
+loses the cash in both numerator and denominator (RONIC).  No peak guard.
 
   numerator  FY2028 company consensus (Eastmoney F10, 13 houses published
              after the 2026-08-27 interim report; CMBI taken at its 08-31
@@ -37,13 +42,16 @@ FY2028 sell-side consensus.
                same-world Chinese truck peers (Sinotruk A/H) price below 1/r
                and have no retention-branch solution; the US cluster's 4.74%
                is a different country and only a control.
-  ROE        company forward ROE (no leg equity is disclosed): FY2028 EPS over
-             the start-of-2028 BPS rolled from the 2026-06-30 book less the
-             interim dividend, retention b = g/ROE (only the power leg grows).
-  L          FY2022 trough unchanged: core on recovery_two_stage_pe (own
-             realised recovery to the TTM level, 3.5 years, then g2 = 0);
-             KION halved; power leg at FY2025 actual units.  Not discounted
-             (trough year = t=1).
+  RONIC      company forward operating return (no leg equity is disclosed):
+             FY2028 EPS less the excess-cash income over the start-of-2028
+             operating BPS (book less the interim dividend less the excess
+             cash, rolled with retention b = g/RONIC on operating EPS; only the
+             power leg grows).  Per tier, as the existing framework did.
+  L          FY2022 trough: core on recovery_two_stage_pe (own realised
+             recovery to the TTM level, 3.5 years, then g2 = 0), the trough
+             year less its own FY2022 excess-cash income, the TTM end less
+             today's; KION halved; power leg at FY2025 actual units.  Not
+             discounted (trough year = t=1).  Excess cash added as in M / H.
   ③          the own PE band is trailing and the FY2028 numerator was never
              printed (no same-earnings months) -> band test n/a, printed.
   中枢        demand-cycle core (trucks / engines): rule「周期票的中枢分子」does
@@ -81,7 +89,7 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000338.SZ.md"
-FORMULA_ID = "weichai_consensus_fy28_three_leg_gordon_v7"
+FORMULA_ID = "weichai_consensus_fy28_three_leg_gordon_v8"
 YI = 1e8
 NUM_YEAR = 2028
 TODAY_FY = 2026
@@ -105,10 +113,14 @@ REQUIRED = [
     "g2_pw_cmi", "g2_pw_gnrc", "g2_pw_jereh", "g2_power", "payout_obs", "disc_years",
     "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "pb_own_min",
     "aft_share_peer", "t_align", "t_aft",
+    "net_cash_ext_h1", "div_declared", "ncx_min", "rev_min", "rev_fy25", "c_ex", "cash_yield", "tax_eff",
+    "ncx_l", "rev_l", "cash_yield_l", "tax_eff_l", "cash_inc_mid5", "payout_op",
 ]
 NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_us", "lb_rev_fy28",
-               "cons_fy28_l", "np_q2x4", "pb_own_min")
-PREV_M = 25.87                   # v6 M, for the correction gate's coordinate ①
+               "cons_fy28_l", "np_q2x4", "pb_own_min", "cash_inc_mid5")
+PREV_M = 28.56                   # v7 M (before the 2026-10-15 excess-cash correction), gate coordinate ①
+EX_TRIGGER = 0.15                # C_ex >= 15% of parent equity -> own line
+CASH_CAP = 2 / 12                # anchor ratio capped at two months of revenue
 GATE_TRIGGER = 0.25              # gate is mandatory when |ΔM| > 25%
 
 
@@ -175,6 +187,21 @@ def main() -> int:
     if b2_i and abs(b2_dev) <= B2_MAX_DEV:
         errors.append("②-b passes — the run-rate ladder would be admissible; numerator choice must be revisited")
 
+    # --- excess cash (经营价值与超额现金 ①②) ------------------------------------------
+    if abs(inp["div_declared"] - inp["dps_after_h1"] * sh) > 1e6:
+        errors.append("div_declared != dps_after_h1 x shares")
+    rho = min(max(inp["ncx_min"] / inp["rev_min"], 0.0), CASH_CAP)   # lowest net-cash / revenue in FY2019–25
+    anchor = rho * inp["rev_fy25"]
+    c_ex = inp["net_cash_ext_h1"] - inp["div_declared"] - anchor
+    if abs(c_ex - inp["c_ex"]) > 1e6:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_h1 − div_declared − anchor {c_ex:.4e}")
+    if c_ex < EX_TRIGGER * inp["equity"]:
+        errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
+    c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])   # after-tax income, out of every forward numerator
+    cps = c_ex / sh
+    c_ex_l = max(inp["ncx_l"] - rho * inp["rev_l"], 0.0)       # FY2022's own excess cash
+    c_inc_l = c_ex_l * inp["cash_yield_l"] * (1 - inp["tax_eff_l"])
+
     # --- legs -------------------------------------------------------------------
     disc = (1 + r) ** inp["disc_years"]
     npm = inp["seg_margin"] * (1 - inp["seg_tax"])
@@ -198,35 +225,48 @@ def main() -> int:
     if not (lo <= kion_share <= hi):
         errors.append(f"KION run-rate is {kion_share:.1%} of TTM NP, outside {lo:.0%}-{hi:.0%} (属性 A)")
 
-    bps0 = inp["bps"] - inp["dps_after_h1"]
+    obps0 = inp["bps"] - inp["dps_after_h1"] - cps   # operating book: less the interim dividend and the excess cash
+    ci = c_inc / sh
     cons = {"m": (inp["cons_fy26_m"], inp["cons_fy27_m"], inp["cons_fy28_m"]),
             "h": (inp["cons_fy26_h"], inp["cons_fy27_h"], inp["cons_fy28_h"])}
     rows = {}
     for t, (e26, e27, e28) in cons.items():
-        np28 = e28 * sh
-        roe = e28 / bps0
-        for _ in range(200):  # BPS roll, b = g/ROE; only the power leg funds growth
+        o26, o27, o28 = e26 - ci, e27 - ci, e28 - ci        # operating EPS (cash income out, all years)
+        o_h1 = inp["eps_h1"] - ci / 2
+        np28 = o28 * sh
+        roe = o28 / obps0
+        for _ in range(200):  # operating BPS roll, b = g/RONIC; only the power leg funds growth
             b = inp["g2_power"] * (pw_ni[t] / np28) / roe
-            bps28 = bps0 + b * ((e26 - inp["eps_h1"]) + e27)
-            roe = e28 / bps28
+            bps28 = obps0 + b * ((o26 - o_h1) + o27)
+            roe = o28 / bps28
         pe_c = perpetual_pe(inp["g2_core"], roe, r)
         pe_p = perpetual_pe(inp["g2_power"], roe, r)
         core = np28 - kion - pw_ni[t]
-        parts = (core * pe_c / disc / sh, kion * inp["pe_kion"] / sh, pw_ni[t] * pe_p / disc / sh)
-        rows[t] = dict(np=np28, roe=roe, bps=bps28, pe_c=pe_c, pe_p=pe_p, core=core, parts=parts, anchor=sum(parts))
-        errors += check_branch(inp["g2_power"], roe, r, inp["payout_obs"], f"g2_power ({t.upper()})")
+        parts = (core * pe_c / disc / sh, kion * inp["pe_kion"] / sh, pw_ni[t] * pe_p / disc / sh, cps)
+        rows[t] = dict(np=np28, roe=roe, bps=bps28, b=b, pe_c=pe_c, pe_p=pe_p, core=core, parts=parts,
+                       anchor=sum(parts), win=(o26 - o_h1) + o27)
+        errors += check_branch(inp["g2_power"], roe, r, inp["payout_op"], f"g2_power ({t.upper()})")
+        if roe - r < 0.03:
+            errors.append(f"{t.upper()}: RONIC {roe:.1%} not in the monotone zone")
+        if b > 1 - inp["payout_obs"]:
+            errors.append(f"{t.upper()}: b {b:.1%} > 1 − d (约束 1)")
+        if inp["g2_power"] > (1 - inp["payout_obs"]) * roe:
+            errors.append(f"{t.upper()}: g2_power above (1 − d) x RONIC (约束 2)")
 
-    roe_mid = inp["np_ttm"] / inp["equity"]
-    if inp["np_l"] / inp["equity"] >= r:
-        errors.append("ROE_L >= r: L is not a trough tier (valuation-rules「谷底档」)")
-    g1 = (inp["np_ttm"] / inp["np_l"]) ** (1 / inp["n_rec_l"]) - 1
+    np_ttm_op = inp["np_ttm"] - c_inc
+    eq_op = inp["equity"] - inp["div_declared"] - c_ex
+    np_l_op = inp["np_l"] - c_inc_l
+    roe_mid = np_ttm_op / eq_op
+    if np_l_op / eq_op >= r:
+        errors.append("RONIC_L >= r: L is not a trough tier (valuation-rules「谷底档」)")
+    g1 = (np_ttm_op / np_l_op) ** (1 / inp["n_rec_l"]) - 1
     pe_l = recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_core"], roe_mid, r)
     pe_p_l = perpetual_pe(inp["g2_power"], roe_mid, r)
     kion_l = kion * inp["kion_l_factor"]
-    core_l = inp["np_l"] - kion_l - pw_ni_l
+    core_l = np_l_op - kion_l - pw_ni_l
     if core_l <= 0:
         errors.append("L core profit <= 0")
-    parts_l = (core_l * pe_l / sh, kion_l * inp["pe_kion"] / sh, pw_ni_l * pe_p_l / sh)
+    parts_l = (core_l * pe_l / sh, kion_l * inp["pe_kion"] / sh, pw_ni_l * pe_p_l / sh, cps)
     L = sum(parts_l)
     M, H = rows["m"]["anchor"], rows["h"]["anchor"]
     if not (L < M < H):
@@ -238,9 +278,9 @@ def main() -> int:
     if not (pe_l > rows["m"]["pe_c"] and abs(rows["h"]["pe_c"] - rows["m"]["pe_c"]) < 1e-9):
         errors.append("core multiple shape is not reverse/flat (cyclical, 裁决顺序 ⑤)")
     # flat-multiple ladder: every tier on the M-tier multiples
-    flat_l = (core_l * rows["m"]["pe_c"] + kion_l * inp["pe_kion"] + pw_ni_l * rows["m"]["pe_p"]) / sh
+    flat_l = (core_l * rows["m"]["pe_c"] + kion_l * inp["pe_kion"] + pw_ni_l * rows["m"]["pe_p"]) / sh + cps
     flat = [flat_l] + [(rows[t]["core"] * rows["m"]["pe_c"] / disc + kion * inp["pe_kion"]
-                        + pw_ni[t] * rows["m"]["pe_p"] / disc) / sh for t in ("m", "h")]
+                        + pw_ni[t] * rows["m"]["pe_p"] / disc) / sh + cps for t in ("m", "h")]
     errors += ladder("flat-multiple", *flat)
 
     # --- V_opt: aftermarket only ------------------------------------------------
@@ -256,20 +296,20 @@ def main() -> int:
     A2, B2 = cut_points(*adj)
 
     # --- ③ band test: n/a without same-earnings months --------------------------
-    same_eps_months = 0 if eps_ttm < 0.88 * mean28 else None   # record TTM EPS = the all-time high
+    same_eps_months = 0 if np_ttm_op / sh < 0.88 * (mean28 - ci) else None   # operating basis; TTM = all-time high
     if same_eps_months is None:
         errors.append("TTM EPS is now within 12% of the FY2028 numerator — run the ③ band test")
 
     # --- 周期票中枢 check on the core leg ---------------------------------------
-    core_mid = inp["np_mid5"] - kion - pw_ni_l
+    core_mid = inp["np_mid5"] - inp["cash_inc_mid5"] - kion - pw_ni_l   # each year less its own C_ex(t) income
     mid_ratio = rows["m"]["core"] / core_mid
-    m_mid = (core_mid * rows["m"]["pe_c"] + kion * inp["pe_kion"]) / sh + rows["m"]["parts"][2]
+    m_mid = (core_mid * rows["m"]["pe_c"] + kion * inp["pe_kion"]) / sh + rows["m"]["parts"][2] + cps
 
     # --- correction reconciliation gate ------------------------------------------
     e_m = mean28
     coords = {
-        "① 上一版 M (v6)": PREV_M,
-        "② E_M/r": e_m / r / disc,
+        "① 上一版 M (v7)": PREV_M,
+        "② E_op,M/r + c": (e_m - ci) / r / disc + cps,
         "③ D_M/(r-g)": inp["payout_obs"] * e_m / (r - inp["g2_core"]) / disc,
         "⑥ BPS x PB低点": inp["bps"] * inp["pb_own_min"],
     }
@@ -294,26 +334,31 @@ def main() -> int:
           f"{inp['cj_main'] / YI:.0f}) {pw_ni['h'] / YI:.2f}亿 = {pw_ni['h'] / (inp['cons_fy28_h'] * sh):.0%} of NP; 3-house top x margin "
           f"{max(pw_revs) * npm / YI:.1f}亿; L = FY2025 {inp['ms_units_l']:.0f} units -> {pw_ni_l / YI:.2f}亿")
     print(f"KION run-rate {kion / YI:.2f}亿 = {kion_share:.1%} of TTM NP; pe_kion {inp['pe_kion']}")
+    print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付中期股息 {inp['div_declared'] / YI:.2f}亿 "
+          f"− 锚 {anchor / YI:.2f}亿（FY2019 净现金/收入 {rho:.2%} x FY2025 收入 {inp['rev_fy25'] / YI:.1f}亿；2 个月上限 {CASH_CAP:.1%}）"
+          f"= C_ex {c_ex / YI:.2f}亿（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；"
+          f"税后收益 {c_ex / YI:.1f} x {inp['cash_yield']:.2%} x (1−{inp['tax_eff']:.2%}) = {c_inc / YI:.2f}亿 从核心盘分子扣除；"
+          f"L 档 FY2022 自身 C_ex {c_ex_l / YI:.1f}亿 → {c_inc_l / YI:.2f}亿")
     for t in ("m", "h"):
         x = rows[t]
-        print(f"{t.upper()}: NP {x['np'] / YI:.1f} core {x['core'] / YI:.1f} | BPS28 {x['bps']:.3f} ROE {x['roe']:.2%} | "
+        print(f"{t.upper()}: 经营NP {x['np'] / YI:.1f} core {x['core'] / YI:.1f} | 经营BPS28 {x['bps']:.3f} RONIC {x['roe']:.2%} b {x['b']:.1%} | "
               f"PE core {x['pe_c']:.2f} power {x['pe_p']:.2f} | per share core {x['parts'][0]:.2f} + KION {x['parts'][1]:.2f} "
-              f"+ power {x['parts'][2]:.2f} = {x['anchor']:.2f}")
-    print(f"L: trough {inp['np_l'] / YI:.1f} core {core_l / YI:.2f} x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
-          f"段二 ROE {roe_mid:.1%} g2 0) + KION {kion_l / YI:.2f}x{inp['pe_kion']} + power {pw_ni_l / YI:.2f}x{pe_p_l:.2f} "
-          f"-> {parts_l[0]:.2f} + {parts_l[1]:.2f} + {parts_l[2]:.2f} = {L:.2f}")
+              f"+ power {x['parts'][2]:.2f} + 现金 {cps:.2f} = {x['anchor']:.2f}")
+    print(f"L: trough 经营 {np_l_op / YI:.2f}亿 core {core_l / YI:.2f} x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
+          f"段二 RONIC {roe_mid:.1%} = TTM 经营 {np_ttm_op / YI:.1f} / 经营股权 {eq_op / YI:.1f}, g2 0) + KION {kion_l / YI:.2f}x{inp['pe_kion']} "
+          f"+ power {pw_ni_l / YI:.2f}x{pe_p_l:.2f} -> {parts_l[0]:.2f} + {parts_l[1]:.2f} + {parts_l[2]:.2f} + 现金 {cps:.2f} = {L:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M={v_opt / M:.1%} | "
-          f"分子比 L/M {inp['np_l'] / rows['m']['np']:.2f} H/M {rows['h']['np'] / rows['m']['np']:.2f}")
+          f"经营分子比 L/M {np_l_op / rows['m']['np']:.2f} H/M {rows['h']['np'] / rows['m']['np']:.2f}")
     print(f"flat-multiple (M-tier multiples): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"V_opt = aftermarket {rev_ms / YI:.2f}亿 x {inp['aft_share_peer']:.0%} x {npm:.2%} x PE {rows['m']['pe_p']:.2f} "
           f"@{inp['t_aft']:g} ÷1.1^{inp['t_aft'] - NUM_YEAR + inp['disc_years']:g} = {v_opt:.2f} (AIDC increment 0, SOFC 0: inside consensus)")
     print("表3 " + " / ".join(f"{n} {b:.2f}+{p:g}x{v_opt:.2f}={a:.2f}" for n, b, p, a in zip("LMH", (L, M, H), P_TIERS, adj))
           + f"  A'={A2:.2f} B'={B2:.2f}")
-    print(f"③ band test n/a: TTM EPS {eps_ttm:.4f} (all-time high) < 0.88 x FY28 {mean28} — no same-earnings months; "
+    print(f"③ band test n/a: TTM 经营 EPS {np_ttm_op / sh:.4f} (all-time high) < 0.88 x FY28 经营 {mean28 - ci:.4f} — no same-earnings months; "
           f"L trough-basis PE {pe_l:.2f} vs own monthly band [{inp['pe_own_min']}, {inp['pe_own_max']}] (L disclosed only)")
     print(f"周期中枢: core FY28 M {rows['m']['core'] / YI:.1f}亿 vs core 中枢 {core_mid / YI:.1f}亿 "
-          f"(5y mean {inp['np_mid5'] / YI:.1f} - KION - power FY25) = {mid_ratio:.2f}x "
+          f"(5y mean {inp['np_mid5'] / YI:.1f} - own C_ex(t) income {inp['cash_inc_mid5'] / YI:.2f} - KION - power FY25) = {mid_ratio:.2f}x "
           f"({'> 1.15: demand-cycle, 中枢 rule n/a (2026-10-04), disclosed + trigger' if mid_ratio > MID_MAX else 'ok'}); M coordinate with core at 中枢 {m_mid:.2f} (disclosure only)")
     print(f"gate ({'triggered' if gate_on else 'not triggered: |dM| <= 25%, printed for the record'}): M {PREV_M} -> " + f"{M:.2f} ({M / PREV_M - 1:+.0%}); "
           + "; ".join(f"{k} {v:.2f} (M {M / v - 1:+.0%})" for k, v in coords.items())
@@ -321,11 +366,13 @@ def main() -> int:
     print(f"gate neutral [{A:.2f}, {B:.2f}) as PE: TTM {eps_ttm:.3f} {A / eps_ttm:.1f}-{B / eps_ttm:.1f}x; "
           f"FY26E {inp['cons_fy26_m']} {A / inp['cons_fy26_m']:.1f}-{B / inp['cons_fy26_m']:.1f}x; "
           f"FY28E {mean28} {A / mean28:.1f}-{B / mean28:.1f}x")
-    mod, gap = payout_gap(inp["g2_power"] * pw_ni["m"] / rows["m"]["np"], rows["m"]["roe"], inp["payout_obs"])
-    excess = 1 - inp["payout_obs"] - (1 - mod)
-    win = (inp["cons_fy26_m"] - inp["eps_h1"]) + inp["cons_fy27_m"]
-    print(f"payout: model {mod:.1%} vs observed {inp['payout_obs']:.0%} (gap {gap:+.1%}); 视同派出 = {excess:.1%} x window EPS "
-          f"{win:.2f} = {excess * win:.2f}/sh (B 桶 net cash, k=0)")
+    mod, gap = payout_gap(rows["m"]["b"] * rows["m"]["roe"], rows["m"]["roe"], inp["payout_op"])
+    excess = (1 - rows["m"]["b"]) - inp["payout_obs"]
+    win = rows["m"]["win"]
+    print(f"payout: model {mod:.1%} vs 经营口径 {inp['payout_op']:.1%} (gap {gap:+.1%}); 实付 {inp['payout_obs']:.0%}; "
+          f"多留部分 = {excess:.1%} x 窗口经营 EPS {win:.3f} = {excess * win:.2f}/sh（落在超额现金，λ 1，PV 不进锚点）")
+    m_lam = M - cps * (1 - 0.88)
+    print(f"λ 敏感性（只披露）: 少数股东现金份额代理 λ 0.88 → M {m_lam:.2f}")
 
     def band_at(g_pw: float | None = None, g_core: float | None = None, kion_pe: float | None = None):
         gp = inp["g2_power"] if g_pw is None else g_pw
@@ -335,31 +382,31 @@ def main() -> int:
         for t in ("m", "h"):
             x = rows[t]
             out.append((x["core"] * perpetual_pe(gc, x["roe"], r) / disc + kion * kp
-                        + pw_ni[t] * perpetual_pe(gp, x["roe"], r) / disc) / sh)
+                        + pw_ni[t] * perpetual_pe(gp, x["roe"], r) / disc) / sh + cps)
         ll = (core_l * recovery_two_stage_pe(g1, inp["n_rec_l"], gc, roe_mid, r) + kion_l * kp
-              + pw_ni_l * perpetual_pe(gp, roe_mid, r)) / sh
+              + pw_ni_l * perpetual_pe(gp, roe_mid, r)) / sh + cps
         return "/".join(f"{v:.2f}" for v in [ll] + out)
 
     print(f"敏感性: g2_power {inp['g2_pw_cmi']:.2%} {band_at(g_pw=inp['g2_pw_cmi'])} | {inp['g2_pw_gnrc']:.2%} {band_at(g_pw=inp['g2_pw_gnrc'])} "
           f"| power ±1pp {band_at(g_pw=inp['g2_power'] - 0.01)} / {band_at(g_pw=inp['g2_power'] + 0.01)} "
           f"| core +1pp {band_at(g_core=0.01)} | core = US 4.74% {band_at(g_core=inp['g2_core_us'])} | pe_kion 9.97 {band_at(kion_pe=9.97)}")
-    own = [(core_l * inp["pe_ownyear_l"] + kion_l * inp["pe_kion"] + pw_ni_l * pe_p_l) / sh] + [
-        (rows[t]["core"] * inp[f"pe_ownyear_{t}"] / disc + kion * inp["pe_kion"] + pw_ni[t] * rows[t]["pe_p"] / disc) / sh
+    own = [(core_l * inp["pe_ownyear_l"] + kion_l * inp["pe_kion"] + pw_ni_l * pe_p_l) / sh + cps] + [
+        (rows[t]["core"] * inp[f"pe_ownyear_{t}"] / disc + kion * inp["pe_kion"] + pw_ni[t] * rows[t]["pe_p"] / disc) / sh + cps
         for t in ("m", "h")]
-    print(f"交叉尺 own-year 反向带 {inp['pe_ownyear_l']}/{inp['pe_ownyear_m']}/{inp['pe_ownyear_h']} on core: "
+    print(f"交叉尺 own-year 经营倍数反向带 {inp['pe_ownyear_l']}/{inp['pe_ownyear_m']}/{inp['pe_ownyear_h']} on core: "
           + "/".join(f"{v:.2f}" for v in own))
-    core_lo = inp['cons_fy28_l'] * sh - kion - pw_ni['m']
+    core_lo = inp['cons_fy28_l'] * sh - c_inc - kion - pw_ni['m']
     print(f"FY2028 共识下沿 {inp['cons_fy28_l']} 作 M 分子 -> core {core_lo / YI:.1f}亿 -> M "
-          f"{(core_lo * rows['m']['pe_c'] / disc + kion * inp['pe_kion'] + pw_ni['m'] * rows['m']['pe_p'] / disc) / sh:.2f}")
+          f"{(core_lo * rows['m']['pe_c'] / disc + kion * inp['pe_kion'] + pw_ni['m'] * rows['m']['pe_p'] / disc) / sh + cps:.2f}")
 
     def m_with_pw(ni_pw: float, t: str = "m") -> float:
         x = rows[t]
-        return ((x["np"] - kion - ni_pw) * x["pe_c"] / disc + kion * inp["pe_kion"] + ni_pw * x["pe_p"] / disc) / sh
+        return ((x["np"] - kion - ni_pw) * x["pe_c"] / disc + kion * inp["pe_kion"] + ni_pw * x["pe_p"] / disc) / sh + cps
     rep2 = statistics.mean(pw_revs[:2]) * npm
     print(f"电力腿口径敏感性: M 只认报告表两家 (招银+诚通) {m_with_pw(rep2):.2f} | M 电力取三家下沿 {m_with_pw(min(pw_revs) * npm):.2f} "
           f"/ 上沿 {m_with_pw(max(pw_revs) * npm):.2f} | M 电力回 v6 招银大缸径 {m_with_pw(inp['lb_rev_fy28'] * npm):.2f} | "
           f"H 长江主业 2028 +5% {m_with_pw(pw_ni['h'] - 0.05 * inp['cj_main'], 'h'):.2f} | H 电力改三家上沿 {m_with_pw(max(pw_revs) * npm, 'h'):.2f}")
-    print(f"压力坐标 谷底 x 1/r = {inp['np_l'] / sh / r:.2f}; 地板 PB 1.0 x BPS = {inp['bps']:.2f}")
+    print(f"压力坐标 谷底经营利润 x 1/r + 现金 = {np_l_op / sh / r + cps:.2f}; 地板 PB 1.0 x BPS = {inp['bps']:.2f}")
     fx = inp["fx_hkdcny"]
     print(f"H股对照(HKD): L={L / fx:.2f} M={M / fx:.2f} H={H / fx:.2f} A={A / fx:.2f} B={B / fx:.2f}")
     return report(errors)
