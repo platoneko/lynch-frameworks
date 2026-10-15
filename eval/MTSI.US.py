@@ -7,7 +7,7 @@ A/B, the band-edge-r parallel table and the borrowed-year candidate band from
 the §3 Inputs table and exits 1 on mismatch.  The doc carries no current price
 (AGENTS.md「现价 — 禁写契约」), so nothing here reads a quote.
 
-formula_id: mtsi_fy27_econ_eps_gordon_axis_g2_conv_v1
+formula_id: mtsi_fy27_econ_eps_gordon_axis_g2_conv_v2
 
 Main ruler: whole company, one leg (basket 4).  Numerator year FY2027 (fiscal
 year ending ~2027-10-01) — the furthest year with a >=2-house consensus range.
@@ -18,15 +18,23 @@ the federal NOLs that carry the 3% run out within about a year (A1 / A2).
 L = FY27 digestion year at the FY26 consensus; M / H = FY27 consensus mean /
 high.
 
+Operating value + excess cash (valuation-rules「经营价值与超额现金」, 框架纠正
+2026-10-15): excess cash C_ex = cash & short-term investments − convertible
+principal − leases − operating cash anchor 0 (A22).  Every tier's numerator
+drops C_ex's after-tax income; each tier's RONIC = FY27 operating NI / FY27
+opening operating equity (equity − C_ex + unbooked Q4 FY26 operating NI
+retained at b = g/RONIC, fixed point); C_ex is added back at face (λ 1).
+
 Multiple: perpetual Gordon at r 10% (basket 4) and g2 6% from the peer-ruler
 axis `_AXIS.optical-electrical-chip` (named macro cap; one-name peer read
-corroborates), each tier at its own ROE = FY27 economic NI / FY27 opening
-equity (2026-07-03 equity + unbooked Q4 FY26 economic NI retained at
-b = g/ROE, fixed point).  No transition: no FY28 consensus.  k = 0 (A11).
+corroborates), each tier at its own RONIC.  No transition: no FY28
+consensus.  k = 0 (A11).
 
 Per share: the 2029 convertible (principal in cash, excess in shares) is
 priced the way the holder would choose — the lower of "deduct principal over
-ex-convert shares" and "no deduction over fully converted shares".
+ex-convert shares" and "no deduction over fully converted shares" (on
+conversion the principal stays in the company, so the full-convert basis
+adds it back to C_ex).
 
 Candidate band (A20): one borrowed transition year — the data-center leg
 grows at the lender's (MRVL Connectivity, via the axis) FY29 rate, the rest
@@ -71,7 +79,8 @@ from eval.lib.zones import cut_points  # noqa: E402
 FRAMEWORK = REPO_ROOT / "frameworks" / "MTSI.US.md"
 AXIS = REPO_ROOT / "frameworks" / "axes" / "optical-electrical-chip.md"
 LENDER = REPO_ROOT / "frameworks" / "MRVL.US.md"
-FORMULA_ID = "mtsi_fy27_econ_eps_gordon_axis_g2_conv_v1"
+FORMULA_ID = "mtsi_fy27_econ_eps_gordon_axis_g2_conv_v2"
+EXCESS_CASH_GATE = 0.15   # C_ex >= 15% of equity -> its own line (经营价值与超额现金 ①)
 TICKER = "MTSI.US"
 LISTING_CCY = "USD"
 TOL = 0.05
@@ -86,7 +95,8 @@ REQUIRED = [
     "rev_fy26_cons", "rev_fy27_m", "rev_fy27_h",
     "eps_q4_guide", "rev_q4_guide", "sbc_q3", "sbc_9m", "rev_9m",
     "tax_ng", "tax_norm", "shares_ng", "conv_dil_q3", "conv_principal", "conv_shares",
-    "equity_q3", "r_perp", "g2", "k_l", "k_m", "k_h", "payout_obs",
+    "equity_q3", "r_perp", "g2", "k_l", "k_m", "k_h", "payout_obs", "payout_op",
+    "cash_st_q3", "lease_q3", "net_cash_ext_q3", "c_ex", "cash_yield",
     "pe_own_min", "pe_own_max", "lb_fwd_eps",
     "w_dc", "w_dc_hi", "w_dc_eq", "g_borrow",
 ]
@@ -174,51 +184,76 @@ def main() -> int:
     ni = {t: econ_ni(eps_ng[t], sbc[t]) for t in TIERS}
     q4_sbc = max(inp["sbc_q3"], sbc_ratio * inp["rev_q4_guide"])
 
-    # ---- Step 2: FY27 opening equity, fixed point on b = g/ROE (A6) ----
+    # ---- Step 1b: excess cash (经营价值与超额现金 ①②; A22) ----
+    net_cash = inp["cash_st_q3"] - inp["conv_principal"] - inp["lease_q3"]
+    if abs(net_cash - inp["net_cash_ext_q3"]) > 0.05:
+        errors.append(f"net_cash_ext_q3 {inp['net_cash_ext_q3']:g} != cash_st − conv_principal − lease {net_cash:.3f}")
+    c_ex = inp["net_cash_ext_q3"]                # operating cash anchor 0 (FY16–25 ratio min < 0)
+    if abs(c_ex - inp["c_ex"]) > 0.05:
+        errors.append(f"c_ex {inp['c_ex']:g} != net_cash_ext_q3 − anchor 0 = {c_ex:.3f}")
+    if c_ex < EXCESS_CASH_GATE * inp["equity_q3"]:
+        errors.append(f"c_ex below {EXCESS_CASH_GATE:.0%} of equity: the excess-cash line should not exist")
+
+    def cash_inc(tax: float = t_n) -> float:
+        """After-tax income on C_ex, taken out of every numerator."""
+        return c_ex * inp["cash_yield"] * (1 - tax)
+
+    c_inc = cash_inc()
+    cps = c_ex / sh_ex                           # per share on the (binding) principal-deducted basis
+    nop = {t: ni[t] - c_inc for t in TIERS}
+
+    # ---- Step 2: FY27 opening operating equity, fixed point on b = g/RONIC (A6) ----
     def book(n: float, g: float, tax: float = t_n, deduct: bool = True) -> tuple[float, float]:
-        q4 = (inp["eps_q4_guide"] * sh / (1 - t_ng) - (q4_sbc if deduct else 0.0)) * (1 - tax)
-        eq = inp["equity_q3"] + q4
+        q4 = (inp["eps_q4_guide"] * sh / (1 - t_ng) - (q4_sbc if deduct else 0.0)) * (1 - tax) - cash_inc(tax) / 4
+        base = inp["equity_q3"] - c_ex
+        eq = base + q4
         for _ in range(200):
-            nxt = inp["equity_q3"] + q4 * min(1.0, g / (n / eq))
+            nxt = base + q4 * min(1.0, g / (n / eq))
             if abs(nxt - eq) < 1e-9:
                 break
             eq = nxt
         return eq, n / eq
 
-    def per_share(v: float) -> float:
+    def per_share(v_op: float) -> float:
+        v = v_op + c_ex + inp["conv_principal"]  # λ 1; principal is in C_ex's netting
         return min((v - inp["conv_principal"]) / sh_ex, v / sh_full)
 
     def anchors_at(rr: float, g: float = g2, tax: float = t_n, deduct: bool = True) -> tuple[float, ...]:
         out = []
         for t in TIERS:
-            n = econ_ni(eps_ng[t], sbc[t], tax, deduct)
+            n = econ_ni(eps_ng[t], sbc[t], tax, deduct) - cash_inc(tax)
             _, roe_ = book(n, g, tax, deduct)
             out.append(per_share(n * perpetual_pe(g, roe_, rr) * (1 - k[t])))
         return tuple(out)
 
     eq, roe, pe, val = {}, {}, {}, {}
     for t in TIERS:
-        eq[t], roe[t] = book(ni[t], g2)
+        eq[t], roe[t] = book(nop[t], g2)
         pe[t] = perpetual_pe(g2, roe[t], r)
-        val[t] = ni[t] * pe[t] * (1 - k[t])
+        val[t] = nop[t] * pe[t] * (1 - k[t])
     L, M, H = (per_share(val[t]) for t in TIERS)
     A, B = cut_points(L, M, H)
     errors += ladder("anchors", L, M, H)
     for t in TIERS:
         if roe[t] - r < 0.03:
-            errors.append(f"{t}: ROE {roe[t]:.3f} not in the monotone domain at r {r:g}")
-        errors += check_branch(g2, roe[t], r, inp["payout_obs"], f"g2@{t}")
+            errors.append(f"{t}: RONIC {roe[t]:.3f} not in the monotone domain at r {r:g}")
+        errors += check_branch(g2, roe[t], r, inp["payout_op"], f"g2@{t}")
 
-    # ---- A2e-2c flat ladder + decomposition (multiples in per-share terms) ----
+    # ---- A2e-2c flat ladder + decomposition (operating multiples, cash added back) ----
     eps_e = {t: ni[t] / sh for t in TIERS}
-    mult = {t: per_share(val[t]) / eps_e[t] for t in TIERS}
-    flat_errs, flat = flat_multiple_ladder((eps_e["L"], eps_e["M"], eps_e["H"]), mult["M"])
+    eps_op = {t: nop[t] / sh for t in TIERS}
+    mult = {t: (per_share(val[t]) - cps) / eps_op[t] for t in TIERS}
+    flat_errs, flat_op = flat_multiple_ladder((eps_op["L"], eps_op["M"], eps_op["H"]), mult["M"])
+    flat = tuple(x + cps for x in flat_op)
     errors += flat_errs
     dec = decompose((L, M, H), tuple(mult[t] for t in TIERS))
 
-    # ---- ③ guardrail: band on LB non-GAAP forward EPS (A16); band-edge r (表2′) ----
-    m_on_band = M / inp["lb_fwd_eps"]
-    target = inp["pe_own_min"] * inp["lb_fwd_eps"]
+    # ---- ③ guardrail: band on LB non-GAAP forward EPS (A16), operating basis:
+    # (price − per-share C_ex(t)) ÷ (forward EPS − C_ex(t) after-tax income per share).
+    # C_ex(t) at the band low (2022-07) = 0, so the band low is unchanged. ----
+    fwd_op = inp["lb_fwd_eps"] - c_inc / sh
+    m_on_band = (M - cps) / fwd_op
+    target = inp["pe_own_min"] * fwd_op + cps
     lo, hi = g2 + MIN_R_MINUS_G, r
     for _ in range(100):
         mid = (lo + hi) / 2
@@ -234,8 +269,8 @@ def main() -> int:
         g1 = w * inp["g_borrow"] + (1 - w) * g2
         out = {"L": L}
         for t in ("M", "H"):
-            _, roe1 = book(ni[t], g1)
-            out[t] = per_share(ni[t] * two_stage_pe(g1, 1, g2, roe1, r) * (1 - k[t]))
+            _, roe1 = book(nop[t], g1)
+            out[t] = per_share(nop[t] * two_stage_pe(g1, 1, g2, roe1, r) * (1 - k[t]))
         return out | {"g1": g1}
 
     cand = cand_at(inp["w_dc"])
@@ -267,24 +302,32 @@ def main() -> int:
     print(f"SBC = max(Q3 x4 {sbc_floor:.1f}, 9M ratio {sbc_ratio:.2%} x revenue) "
           + " ".join(f"{t} {sbc[t]:.1f}" for t in TIERS)
           + f" ($M); tax {t_ng:.0%} -> {t_n:.1%}; shares ng {sh:g} / ex-conv {sh_ex:.3f} / full {sh_full:.3f}")
+    print(f"超额现金: 现金及短投 {inp['cash_st_q3']:.1f} − 可转债本金 {inp['conv_principal']:.1f} − 租赁 {inp['lease_q3']:.1f}"
+          f" − 锚 0 = C_ex {c_ex:.1f}（每股 {cps:.2f}，占股东权益 {c_ex / inp['equity_q3']:.1%}，λ 1）；"
+          f"税后收益 {c_ex:.1f} x {inp['cash_yield']:.2%} x (1 − {t_n:.1%}) = {c_inc:.2f}，三档同扣")
     for t in TIERS:
-        print(f"{t}: nonGAAP {eps_ng[t]:.4f} -> econ NI {ni[t]:.1f} (EPS {eps_e[t]:.4f}) | equity_open {eq[t]:.1f}"
-              f" ROE {roe[t]:.3f} PE {pe[t]:.3f} (payout {payout(g2, roe[t]):.3f}) -> V {val[t]:.0f}"
-              f" | debt basis {(val[t] - inp['conv_principal']) / sh_ex:.2f} vs conv basis {val[t] / sh_full:.2f}")
+        print(f"{t}: nonGAAP {eps_ng[t]:.4f} -> econ NI {ni[t]:.1f} -> op NI {nop[t]:.1f} (EPS {eps_op[t]:.4f})"
+              f" | op equity_open {eq[t]:.1f} RONIC {roe[t]:.3f} PE {pe[t]:.3f} (payout {payout(g2, roe[t]):.3f})"
+              f" -> V_op {val[t]:.0f} | debt basis {(val[t] + c_ex) / sh_ex:.2f}"
+              f" vs conv basis {(val[t] + c_ex + inp['conv_principal']) / sh_full:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat ladder @ M {mult['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"flat ladder @ M op {mult['M']:.2f}x + cash {cps:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | H/M {dec['hm']:.3f}"
-          f" = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0")
-    print(f"③ band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] on LB forward EPS; M / {inp['lb_fwd_eps']:g}"
-          f" = {m_on_band:.2f}x -> {'inside' if m_on_band >= inp['pe_own_min'] else 'BELOW band low (③ 出带, A16)'}")
+          f" = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0"
+          f" | op multiples " + "/".join(f"{mult[t]:.2f}" for t in TIERS))
+    print(f"③ band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (operating) on LB forward EPS; (M − {cps:.2f}) /"
+          f" ({inp['lb_fwd_eps']:g} − {c_inc / sh:.3f}) = {m_on_band:.2f}x -> "
+          f"{'inside' if m_on_band >= inp['pe_own_min'] else 'BELOW band low (③ 出带, A16)'}")
     print(f"band-edge r {r_edge:.2%}: {edge[0]:.2f}/{edge[1]:.2f}/{edge[2]:.2f}")
     print(f"candidate (w_dc {inp['w_dc']:g}, g_borrow {inp['g_borrow']:+.2%} -> g1 {cand['g1']:+.2%}): "
           f"L′ {cand['L']:.2f} M′ {cand['M']:.2f} H′ {cand['H']:.2f}")
     for lab, w in (("w_dc_hi", inp["w_dc_hi"]), ("w_dc_eq", inp["w_dc_eq"])):
         c = cand_at(w)
         print(f"  candidate @ {lab} {w:g} (g1 {c['g1']:+.2%}): {c['L']:.2f}/{c['M']:.2f}/{c['H']:.2f}")
-    print("视同派出、实际留存 ($/股/年, k=0): "
-          + " ".join(f"{t} {(1 - inp['payout_obs'] - g2 / roe[t]) * eps_e[t]:.2f}" for t in TIERS))
+    excess = {t: 1 - inp["payout_obs"] - g2 / roe[t] for t in TIERS}
+    print(f"多留部分 (1 − b − d; $/股/年; λ 1, PV 不进锚点; 经营口径派息 {inp['payout_op']:.0%}): "
+          + " ".join(f"{t} {excess[t]:.1%} x {eps_op[t]:.3f} = {excess[t] * eps_op[t]:.2f}"
+                     f" (PV {excess[t] * eps_op[t] / (r - g2):.1f})" for t in TIERS))
     for g in (g2 - 0.01,):
         v = anchors_at(r, g)
         print(f"  sens g2={g:.2%}: {v[0]:.2f}/{v[1]:.2f}/{v[2]:.2f}")
