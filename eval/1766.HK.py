@@ -6,10 +6,15 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading — the digest and the app zone on live quotes.
 
-formula_id: crrc_hk_anchored_consensus_pe_gordon_v3
+formula_id: crrc_hk_anchored_consensus_pe_gordon_v4
 
 Main ruler: whole-company PE on the H share.  ROE is EPS / the FY2026 OPENING
-book (end-2025 reported equity, E_{n+1}/B_n, A18).  EPS tiers rescale one consensus
+book (end-2025 reported equity, E_{n+1}/B_n, A18).  Excess cash is NOT split
+(valuation-rules「经营价值与超额现金」①): latest extended net cash (2026-06-30)
+less the declared-unpaid FY2025 final dividend less the operating-cash anchor
+(lowest FY2016-25 year-end「net cash / revenue」x FY2025 revenue) is ~11% of
+equity, under the 15% trigger, so earnings, ROE (= RONIC) and every historical
+multiple stay consolidated (A19).  EPS tiers rescale one consensus
 range (2026-04-20: low .514 / mean .554 / high .594) onto the latest mean
 (.538), so both ends stay same-source even though the newest print has
 degenerated to a point estimate.  FY2026 is the furthest year with >= 2
@@ -29,10 +34,13 @@ multiple below it has TWO readings: a business paying out 100% and shrinking
 (what `implied_g` returns for PE < 1/r) or one retaining g2/ROE and growing.
 The formula cannot tell them apart; the payout ratio can.  CRRC pays out 50%
 (FY2025 DPS 0.23 / EPS 0.459) and has grown DPS at +6% for seven years, so it
-sits on the RETENTION branch: g2 = (1 - payout) x ROE_M = +4.48%, shared by
-all tiers, and each tier's own ROE sets the payout it needs (46/50/53%) and
-hence its multiple (8.37/9.07/9.68).  `check_branch` guards this
-mechanically.  The peer cluster's 100%-payout reading (-3.67%, flat 7.32x)
+sits on the RETENTION branch.  g2 is the named macro default 4% (g2 source
+order ④; the former「payout x ROE」derivation is deleted from the rules),
+shared by all tiers and capped per tier by what the company actually keeps,
+g2 <= (1 - paid payout) x ROE_x (valuation-rules ③ constraint 2).  Each tier's
+own ROE sets the payout 4% needs (52/55/58%) and hence its multiple
+(8.66/9.24/9.74).  `check_branch` guards this mechanically.  The peer
+cluster's 100%-payout reading (-3.67%, flat 7.32x)
 describes a different company and also fails the same-world gate (裁决顺序 ④):
 CRRC's consensus and realised growth both point up.
 
@@ -83,13 +91,17 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1766.HK.md"
-FORMULA_ID = "crrc_hk_anchored_consensus_pe_gordon_v3"
+FORMULA_ID = "crrc_hk_anchored_consensus_pe_gordon_v4"
 
 TIERS = ("l", "m", "h")
 # The 2026-04-20 consensus range the tiers are rescaled from (A1).
 CONSENSUS_LOW, CONSENSUS_MEAN, CONSENSUS_HIGH = 0.514, 0.554, 0.594
 EPS_TOL = 0.001
-G2_TOL = 0.0005
+# g2 source order ④ (valuation-rules): named macro default 4%, 2.5% floor;
+# a re-sourced g2 inside [2.5%, 4%] is adopted without returning to the dialogue.
+G_MACRO, G_MACRO_LO = 0.04, 0.025
+# 经营价值与超额现金 ①: split only when C_ex >= 15% of parent equity.
+EXCESS_CASH_TRIGGER = 0.15
 SEGMENT_GAP_WARN = 0.20
 CANDIDATE_TOL = 0.05
 YI = 1e8
@@ -99,9 +111,10 @@ LISTING_CCY = "HKD"
 REQUIRED = [
     "shares", "bps", "equity", "fx_hkdcny",
     "eps_l", "eps_m", "eps_h",
-    "r_perp", "r_perp_a", "cny_rf_gap", "net_cash", "nppe_fy25",
+    "r_perp", "r_perp_a", "cny_rf_gap", "nppe_fy25",
+    "net_cash_ext_h1", "div_declared", "cash_anchor_ratio", "rev_fy25", "equity_h1", "mi_share",
     "dps_fy25", "ni_fy25", "g2_l", "g2_m", "g2_h",
-    "g_evid_min", "g_evid_max", "g_peer_crsc",
+    "g_evid_max", "g_peer_crsc",
     "pe_own_min", "pe_own_max",
     "pe_hk_ownyear_l", "pe_hk_ownyear_m", "pe_hk_ownyear_h", "eps_fy26_ubs", "eps_fy27_ubs",
     "w_rail", "w_new", "emu_2026", "emu_2025",
@@ -179,12 +192,26 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (numerators)")
 
+    # --- Step 1b: excess-cash trigger (经营价值与超额现金 ①, A19) ----------------
+    # C_ex = latest extended net cash - declared unpaid dividend - anchor, the
+    # anchor being the lowest FY2016-25 year-end「net cash / revenue」x FY2025
+    # revenue (below the 2-month cap).  Under 15% of parent equity → no split:
+    # earnings, ROE and historical multiples all stay consolidated.
+    cash_anchor = min(inp["cash_anchor_ratio"], 2 / 12) * inp["rev_fy25"]
+    c_ex = inp["net_cash_ext_h1"] - inp["div_declared"] - cash_anchor
+    c_ex_share = c_ex / inp["equity_h1"]
+    if c_ex_share >= EXCESS_CASH_TRIGGER:
+        errors.append(f"C_ex {c_ex:.1f}亿 = {c_ex_share:.1%} of parent equity >= 15% — the excess cash "
+                      "must be split (operating earnings / RONIC / operating multiples), A19 no longer holds")
+
     # --- Step 2: tier ROE, then g2 on the retention branch (A11) --------------
     # `equity` is the FY2026 OPENING book (end-2025, reported): E_{n+1}/B_n per
     # valuation-rules 2026-09-21 (A18).  Nothing to roll — the year has started.
+    # No excess-cash split (A19), so this consolidated ROE is the RONIC.
     roe = {t: eps[t] * inp["shares"] / (inp["equity"] * YI) for t in TIERS}
     payout_fy25 = inp["dps_fy25"] * inp["shares"] / (inp["ni_fy25"] * YI)
-    g2_derived = (1.0 - payout_fy25) * roe["m"]
+    # ③ constraint 2: a re-sourced g2 is capped by what is actually kept.
+    g_retained = {t: (1.0 - payout_fy25) * roe[t] for t in TIERS}
     errors += check_r_rows(r, r_a, baskets)
     for t in TIERS:
         errors += check_g_cap(inp[f"g2_{t}"], r, f"g2_{t}")
@@ -198,11 +225,15 @@ def main() -> int:
     # describes a different company (A11 / valuation-rules「反解分支」).
     if inp["g2_m"] <= 0:
         errors.append(f"g2={inp['g2_m']:+.4f} <= 0 is the full-payout branch — CRRC pays out {payout_fy25:.0%} (A11)")
-    if abs(inp["g2_m"] - g2_derived) > G2_TOL:
-        errors.append(f"g2_m {inp['g2_m']} vs (1 - payout {payout_fy25:.4f}) x ROE_M {roe['m']:.4f} = {g2_derived:.4f} (A11)")
+    # Re-sourced to the macro layer (A11): inside [2.5%, 4%], and under each
+    # tier's retained-earnings cap (1 - paid payout) x ROE_x.
+    if not (G_MACRO_LO - 1e-9 <= inp["g2_m"] <= G_MACRO + 1e-9):
+        errors.append(f"g2_m {inp['g2_m']} outside the macro range [{G_MACRO_LO}, {G_MACRO}] (A11)")
+    for t in TIERS:
+        if inp[f"g2_{t}"] > g_retained[t] + 1e-9:
+            errors.append(f"g2_{t} {inp[f'g2_{t}']} > (1 - payout {payout_fy25:.3f}) x ROE_{t} = {g_retained[t]:.4f} "
+                          "— take the cap (valuation-rules ③ constraint 2, A11)")
     errors += check_branch(inp["g2_m"], roe["m"], r, payout_fy25, "g2_m")
-    if not (inp["g_evid_min"] - 1e-9 <= inp["g2_m"] <= inp["g_evid_max"] + 1e-9):
-        errors.append(f"g2_m {inp['g2_m']} outside the evidence interval [{inp['g_evid_min']}, {inp['g_evid_max']}] (A11)")
     if errors:
         return report(errors, "FAIL (growth 口径)")
     pe = {t: perpetual_pe(inp[f"g2_{t}"], roe[t], r) for t in TIERS}
@@ -242,10 +273,9 @@ def main() -> int:
         return 1
     A, B = cut_points(L, M, H)
 
-    # 校验步骤 4a (A18): the base deck reads the evidence interval's lower end
-    # (first-tier source); both ends are printed as disclosure, never a reason
-    # to pick a g inside the interval.
-    evid = {g: band_at(g, eps, roe, r, fx) for g in (inp["g_evid_min"], inp["g_evid_max"])}
+    # 校验步骤 4a (A11): the macro layer's two ends (2.5% floor / 4% default)
+    # and the revenue CAGR are printed as disclosure, never a reason to pick a g.
+    evid = {g: band_at(g, eps, roe, r, fx) for g in (G_MACRO_LO, G_MACRO, inp["g_evid_max"])}
 
     flat_errs, flat_cny = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), pe["m"])
     errors += flat_errs
@@ -286,9 +316,15 @@ def main() -> int:
               f"{pe[t]:9.2f}{eps[t] * pe[t]:10.3f}{a:10.2f}")
     print(f"共识区间同源 ✓ ({CONSENSUS_LOW}/{CONSENSUS_MEAN}/{CONSENSUS_HIGH} "
           f"缩放至最新 mean {eps['m']}); 裁决顺序 ②: FY2026 = 最远带区间共识年, FY2027 仅单点 → 候选带")
+    print(f"超额现金 (A19): 扩展口径净现金 {inp['net_cash_ext_h1']:.1f}亿 − 已宣派未付股息 {inp['div_declared']:.1f}亿 "
+          f"− 锚 {cash_anchor:.1f}亿 ({inp['cash_anchor_ratio']:.2%} × FY2025 收入 {inp['rev_fy25']:.1f}亿) = C_ex {c_ex:.1f}亿 "
+          f"= 归母权益 {inp['equity_h1']:.1f}亿的 {c_ex_share:.1%} < 15% → 不单列, 全部合并口径; "
+          f"其中少数股东份额 {inp['mi_share']:.1%} (λ 规则按 0), 归母份额 {c_ex * (1 - inp['mi_share']):.1f}亿")
     print(f"分支: 留存 (FY2025 派息率 {payout_fy25:.1%} = DPS {inp['dps_fy25']} × shares ÷ 归母 {inp['ni_fy25']:.0f}亿); "
-          f"g2 = (1-{payout_fy25:.3f}) × ROE_M {roe['m']:.2%} = {g2_derived:+.2%} ✓ (cap {g_cap(r):.0%}; CNY 段披露 {g_cap(r_ccy):.1%}); "
-          f"证据区间 [{inp['g_evid_min']:+.2%}, {inp['g_evid_max']:+.2%}], 通号留存分支 {inp['g_peer_crsc']:+.2%} (n=1 互证)")
+          f"g2 = 宏观默认 {G_MACRO:.0%} (来源优先序 ④) ≤ 实付留存 × ROE_x = "
+          + "/".join(f"{g_retained[t]:.2%}" for t in TIERS)
+          + f" ✓ (cap {g_cap(r):.0%}; CNY 段披露 {g_cap(r_ccy):.1%}); 营收 CAGR {inp['g_evid_max']:+.2%}, "
+          f"通号留存分支 {inp['g_peer_crsc']:+.2%} (n=1 互证)")
     modelled, pgap = payout_gap(inp["g2_m"], roe["m"], payout_fy25)
     print(f"check_branch ✓ (峰形区 ROE_M {roe['m']:.2%} < r): 模型派息率 {modelled:.1%} vs 实付 {payout_fy25:.1%}, 差 {pgap:+.1%}")
     print(f"倍数生成: r={r:.0%}, PE_x = (1-g2/ROE_x)/(r-g2) = {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} 同向 (税前公允值, A14); "
@@ -313,11 +349,10 @@ def main() -> int:
     ddm = d0_hkd * (1 + inp["g2_m"]) / (r - inp["g2_m"])
     print(f"DDM 对照: D0 {d0_hkd:.4f} HKD × (1+g2) ÷ (r−g2) = {ddm:.2f}; "
           f"M 上 FY26E 股息率 {eps['m'] * payout(inp['g2_m'], roe['m']) / fx / M:.1%}")
-    net_cash_ps = inp["net_cash"] * YI / inp["shares"] / fx
+    c_ex_ps = c_ex * YI / inp["shares"] / fx
     print(f"地板 (只披露): BPS {inp['bps']} CNY = {inp['bps'] / fx:.2f} HKD (> H); 锚点隐含 PB "
           f"{L * fx / inp['bps']:.2f}/{M * fx / inp['bps']:.2f}/{H * fx / inp['bps']:.2f}; "
-          f"净现金 {inp['net_cash']:.0f}亿 CNY = {net_cash_ps:.2f} HKD/股 不加 "
-          f"(加回 → {L + net_cash_ps:.2f}/{M + net_cash_ps:.2f}/{H + net_cash_ps:.2f}); 净 PP&E FY25 {inp['nppe_fy25']:.0f}亿 (A16)")
+          f"C_ex {c_ex:.0f}亿 CNY = {c_ex_ps:.2f} HKD/股 未单列、不加 (A19); 净 PP&E FY25 {inp['nppe_fy25']:.0f}亿 (A16)")
     marker = "⚠" if gap > SEGMENT_GAP_WARN else " "
     print(f"{marker} 分部缺口 {gap:.0%} (分部合计 {inp['seg_total_h1'] / 1e8:.0f}亿 vs "
           f"营收 {inp['rev_h1'] / 1e8:.0f}亿) — 两腿仅在校验层, 未入分子路径 (A5)")
@@ -338,7 +373,7 @@ def main() -> int:
           f"; FY27 EPS " + "/".join(f"{eps[t] * (1 + g1_cand):.4f}" for t in TIERS)
           + "; stage-1 payout " + "/".join(f"{1 - g1_cand / roe[t]:+.2f}" for t in TIERS))
     for g, b in evid.items():
-        print(f"证据区间 g2={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)}")
+        print(f"宏观区间端点 / 营收 CAGR g2={g:+.2%}: {'/'.join(f'{x:.2f}' for x in b)}")
     for dg in (-0.01, 0.01):
         b = band_at(inp["g2_m"] + dg, eps, roe, r, fx)
         print(f"敏感性 g2 {dg:+.0%} ({inp['g2_m'] + dg:+.2%}): {'/'.join(f'{x:.2f}' for x in b)}")
