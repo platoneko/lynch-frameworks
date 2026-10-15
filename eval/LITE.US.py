@@ -6,7 +6,7 @@ L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v8
+formula_id: lite_cycle_normalized_nongaap_eps_pe_gordon_v9
 
 Main ruler (valuation-rules.md「增长的表达顺序」, 裁决顺序 ②): the numerator year
 is FY28 — the furthest year with a >=2-house consensus — as one axis, three
@@ -24,6 +24,17 @@ FY28 numerator over the FY28 OPENING book = FY26 reported equity rolled over
 the not-yet-booked FY27 EPS at the growth-required retention b1 = g2/ROE, i.e.
 BPS_open = BPS0 / (1 - g2 * N / EPS_x) with N = FY27 consensus EPS after the
 SBC haircut.  No g1 window, so every tier rolls at g2.
+
+Excess cash (valuation-rules「经营价值与超额现金」, 2026-10-15 框架纠正, A24):
+C_ex = extended net cash (cash + short-term investments - debt incl. leases)
+- declared-unpaid dividends - operating cash anchor; the anchor is
+max(min(lowest extended-net-cash / revenue ratio, 2/12), 0) x FY26 revenue
+(FY23-25 were net debt -> 0).  C_ex >= 15% of equity, so it is a separate line:
+every tier's numerator drops C_ex's after-tax yield (E_op = EPS - I/share),
+the tier RONIC = E_op / (BPS_open - C_ex/share) with BPS_open still rolled the
+A21 way, and C_ex/share x lambda (1) is added back to every value, the candidate
+band and the sensitivities.  The option leg (Greensboro) carries no cash: it
+only swaps ROE_x for RONIC_x in its multiple.
 
 Candidate band (A2e-7h, A19): the company's FY28 EPS target ($40, company
 guidance, above the consensus high) replaces only the H numerator -> H'.
@@ -109,7 +120,7 @@ AXIS_ROWS = (
     ("t_shortage_end", "t_shortage_end", AXIS_LASER),
     ("g2_plug_ref", "g2_pluggable", AXIS_PLUG),
 )
-FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v8"
+FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v9"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
 SBC_HAIRCUT_MAX = 0.5
@@ -280,6 +291,13 @@ def main() -> int:
         "t_shortage_end",
         "g2_plug_ref",
         "sys_share",
+        "net_cash_ext_fy26",
+        "div_declared",
+        "ncr_min",
+        "rev_fy26",
+        "c_ex",
+        "cash_yield",
+        "tax_eff",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -321,16 +339,33 @@ def main() -> int:
     bps0 = inp["equity"] / shares  # FY26 reported book per share
     unbooked = inp["eps_fy27"] * haircut  # FY27 EPS not yet in the book (A21)
 
-    def tier(eps: float, g: float = g2) -> tuple[float, float]:
-        """(ROE, Gordon multiple) for one FY28 numerator — no transition stage.
+    # ---- Step 0: excess cash (经营价值与超额现金 ①②④, A24) ----
+    anchor = max(min(inp["ncr_min"], 2.0 / 12.0), 0.0) * inp["rev_fy26"] * 1e6
+    c_ex = inp["net_cash_ext_fy26"] - inp["div_declared"] - anchor
+    if abs(c_ex - inp["c_ex"]) > 1e5:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_fy26 - div_declared - anchor {c_ex:.4e} (A24)")
+    if c_ex < 0.15 * inp["equity"]:
+        errors.append("c_ex below 15% of equity: the excess-cash line should not exist (A24)")
+    c_inc = c_ex * inp["cash_yield"] * (1.0 - inp["tax_eff"])  # after-tax yield, out of every numerator
+    cps = c_ex / shares
+    ips = c_inc / shares
+    lam = 1.0  # no evidence the cash cannot reach shareholders (A24)
 
-        ROE = EPS_FY28 / BPS_open(FY28); the book rolls over the unbooked FY27
-        EPS at b1 = g/ROE, closed form BPS_open = BPS0 / (1 - g*N/EPS) (A21).
+    def tier(eps: float, g: float = g2) -> tuple[float, float]:
+        """(RONIC, Gordon multiple) for one FY28 numerator — no transition stage.
+
+        The book rolls the A21 way (BPS_open = BPS0 / (1 - g*N/EPS), b1 = g/ROE);
+        RONIC = E_op / (BPS_open - C_ex/share), E_op = EPS - after-tax cash yield (A24).
         """
         if g * unbooked / eps >= 1.0:
             raise ValueError(f"book roll diverges: g*N/EPS = {g * unbooked / eps:.3f}")
-        roe = eps / (bps0 / (1.0 - g * unbooked / eps))
-        return roe, perpetual_pe(g, roe, r)
+        bps_open = bps0 / (1.0 - g * unbooked / eps)
+        ronic = (eps - ips) / (bps_open - cps)
+        return ronic, perpetual_pe(g, ronic, r)
+
+    def val(eps: float, g: float = g2) -> float:
+        """Per-share value = E_op x PE(RONIC) + C_ex/share x lambda."""
+        return (eps - ips) * tier(eps, g)[1] + cps * lam
 
     # ---- Step 1: one FY28 numerator axis, three points (裁决顺序 ②, A2e-2a) ----
     eps = {
@@ -345,6 +380,7 @@ def main() -> int:
     roe, pe = {}, {}
     for t in TIERS:
         roe[t], pe[t] = tier(eps[t])
+    e_op = {t: eps[t] - ips for t in TIERS}
     b1 = {t: g2 / roe[t] for t in TIERS}
     for t in TIERS:
         if not (0.0 < b1[t] < 1.0):
@@ -364,7 +400,7 @@ def main() -> int:
         )
 
     # ---- Step 4-5: anchors, cut points ----
-    L, M, H = (eps[t] * pe[t] for t in TIERS)
+    L, M, H = (e_op[t] * pe[t] + cps * lam for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
     if not (L < M < H):
@@ -373,7 +409,7 @@ def main() -> int:
     # ---- Step 6: candidate band — company FY28 target replaces the H numerator only (A19) ----
     eps_c = inp["eps_fy28_guide"] * haircut
     roe_c, pe_c = tier(eps_c)
-    cand = (L, M, eps_c * pe_c)
+    cand = (L, M, val(eps_c))
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not ordered: {cand}")
 
@@ -419,10 +455,12 @@ def main() -> int:
     v_h_floor = v_gross_k["H"] - k_ps
 
     # ---- A2e-2c flat ladder + A2e-5 decomposition ----
-    _, flat = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pe["M"])
+    _, flat_op = flat_multiple_ladder((e_op["L"], e_op["M"], e_op["H"]), pe["M"])
+    flat = tuple(v + cps * lam for v in flat_op)  # same cash on every rung
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
-    dec = decompose((L, M, H), (pe["L"], pe["M"], pe["H"]))
+    # Decompose the operating values (cash is the same on every tier, added after).
+    dec = decompose(tuple(v - cps * lam for v in (L, M, H)), (pe["L"], pe["M"], pe["H"]))
 
     # ---- Step 7: reconcile against the stated Outputs ----
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -445,10 +483,10 @@ def main() -> int:
         errors.append(f"V_opt: stated {fw.v_opt} vs recomputed {v_opt:.4f} (A22)")
     if fw.p_tiers is None or any(abs(a - p_k[t]) > P_TOL for a, t in zip(fw.p_tiers, TIERS)):
         errors.append(f"p_L/p_M/p_H stated {fw.p_tiers} vs eval " + "/".join(f"{p_k[t]:.4f}" for t in TIERS))
-    for lab, val in (("A'", a_opt), ("B'", b_opt)):
+    for lab, cut in (("A'", a_opt), ("B'", b_opt)):
         said = first_float(re.escape(lab) + r" = \*\*([0-9.]+)\*\*", out_sec)
-        if said is None or abs(said - val) > TOL:
-            errors.append(f"zone+V {lab}: stated {said} vs recomputed {val:.4f}")
+        if said is None or abs(said - cut) > TOL:
+            errors.append(f"zone+V {lab}: stated {said} vs recomputed {cut:.4f}")
     # Candidate band line: the digest reads it through frameworks.py; compare ±TOL.
     stated_cand = fw.candidate
     if stated_cand is None:
@@ -469,45 +507,64 @@ def main() -> int:
     )
     print(f"g2={g2:.4f} (flat, no transition) r={r:g} (篮 {baskets['r_perp']}, cap {g_cap(r):.3f})")
     print(
-        f"ROE basis (A21): EPS_FY28 / BPS_open(FY28); BPS0 {bps0:.2f} (FY26 book) rolled over unbooked FY27 {unbooked:.3f}"
-        f" at b1 = g2/ROE -> BPS_open L/M/H = "
-        + "/".join(f"{eps[t] / roe[t]:.2f}" for t in TIERS)
+        f"超额现金 (A24): 扩展口径净现金 ${inp['net_cash_ext_fy26'] / 1e6:.1f}M - 已宣派未付股息 ${inp['div_declared'] / 1e6:.1f}M"
+        f" - 锚 ${anchor / 1e6:.1f}M [max(min(ncr_min {inp['ncr_min']:.4f}, 2/12), 0) x rev ${inp['rev_fy26']:.1f}M]"
+        f" = C_ex ${c_ex / 1e6:.1f}M = {cps:.3f}/sh ({c_ex / inp['equity']:.1%} of equity, lambda {lam:g});"
+        f" after-tax yield {inp['cash_yield']:.2%} x (1 - {inp['tax_eff']:.0%}) = ${c_inc / 1e6:.2f}M = {ips:.4f}/sh"
     )
+    bps_open = {t: bps0 / (1.0 - g2 * unbooked / eps[t]) for t in TIERS}
     print(
-        f"tier ROE L/M/H = {roe['L']:.3f}/{roe['M']:.3f}/{roe['H']:.3f}"
-        f" (on current book: {'/'.join(f'{eps[t] * shares / inp['equity']:.3f}' for t in TIERS)});"
-        f" b1 = {b1['L']:.3f}/{b1['M']:.3f}/{b1['H']:.3f}"
+        f"RONIC basis (A21 / A24): E_op_FY28 / (BPS_open(FY28) - C_ex/sh); BPS0 {bps0:.2f} (FY26 book) rolled over unbooked FY27"
+        f" {unbooked:.3f} at b1 = g2/ROE (A21 way) -> BPS_open L/M/H = "
+        + "/".join(f"{bps_open[t]:.2f}" for t in TIERS)
+        + " -> operating book "
+        + "/".join(f"{bps_open[t] - cps:.2f}" for t in TIERS)
     )
-    ret_actual = 1.0 - inp["payout_3y"]
+    roe_old = {t: eps[t] / bps_open[t] for t in TIERS}
     print(
-        "模型视同派出、实际留存的现金 / 股 (B bucket, disclosure only) L/M/H = "
-        + "/".join(f"{(ret_actual - b1[t]) * unbooked:.2f}" for t in TIERS)
-        + f"  [(1 - payout {inp['payout_3y']:.2f} - b1) x unbooked {unbooked:.2f}]"
+        f"tier RONIC L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f}"
+        f" (pre-correction consolidated ROE {'/'.join(f'{roe_old[t]:.4f}' for t in TIERS)});"
+        f" b = g2/RONIC = {b1['L']:.4f}/{b1['M']:.4f}/{b1['H']:.4f}; constraint 2: g2 {g2:.0%} <= (1 - d {inp['payout_3y']:g}) x RONIC: "
+        + str(all(g2 <= (1 - inp["payout_3y"]) * roe[t] for t in TIERS))
+    )
+    if any(g2 > (1 - inp["payout_3y"]) * roe[t] for t in TIERS):
+        errors.append("g2 above (1 - d) x RONIC (valuation-rules ③ 约束 2)")
+    e27_op = unbooked - ips
+    print(
+        "多留部分 (④, disclosure; lambda 1 -> PV not in anchors) L/M/H 比例 = "
+        + "/".join(f"{1 - b1[t] - inp['payout_3y']:.4f}" for t in TIERS)
+        + " -> /sh on unbooked FY27 E_op "
+        + f"{e27_op:.3f} = "
+        + "/".join(f"{(1 - b1[t] - inp['payout_3y']) * e27_op:.2f}" for t in TIERS)
     )
     for t in TIERS:
-        print(f"{t}: eps {eps[t]:.4f} x {pe[t]:.2f}x = {eps[t] * pe[t]:.2f}  [perpetual_pe, payout {1 - b1[t]:.3f}]")
+        print(
+            f"{t}: E_op {e_op[t]:.4f} (EPS {eps[t]:.4f} - {ips:.4f}) x {pe[t]:.2f}x = {e_op[t] * pe[t]:.2f}"
+            f" + C_ex {cps:.2f} = {e_op[t] * pe[t] + cps:.2f}  [perpetual_pe, payout {1 - b1[t]:.3f}]"
+        )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
         f"candidate (A19, guide {inp['eps_fy28_guide']:g} -> H' only): "
-        f"L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}  [eps {eps_c:.3f} x {pe_c:.2f}x, ROE {roe_c:.3f}]"
+        f"L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}  [E_op {eps_c - ips:.3f} x {pe_c:.2f}x + {cps:.2f}, RONIC {roe_c:.4f}]"
     )
     flags = {t: "" if in_band(pe[t]) else " OUT" for t in TIERS}
     print(
         f"guardrail (③ asserts M only): multiples L {pe['L']:.2f}{flags['L']} / M {pe['M']:.2f}{flags['M']}"
         f" / H {pe['H']:.2f}{flags['H']}x (H' {pe_c:.2f}{'' if in_band(pe_c) else ' OUT'}x) vs own band "
-        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; on FY27 basis M {M / eps27_adj:.1f}x H {H / eps27_adj:.1f}x"
+        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (operating; C_ex(t) = 0 at both edge dates, A17 / A24);"
+        f" operating on FY27 basis M {(M - cps) / (eps27_adj - ips):.1f}x H {(H - cps) / (eps27_adj - ips):.1f}x"
     )
     for t in TIERS:
         g_lo, ok_lo = implied_g(inp["pe_own_min"], roe[t], r)
         g_hi, ok_hi = implied_g(inp["pe_own_max"], roe[t], r)
         print(
-            f"band-edge implied g @ ROE_{t} {roe[t]:.3f}: [{g_lo:+.2%}{'' if ok_lo else ' (ill-conditioned)'}, "
+            f"band-edge implied g @ RONIC_{t} {roe[t]:.3f}: [{g_lo:+.2%}{'' if ok_lo else ' (ill-conditioned)'}, "
             f"{g_hi:+.2%}{'' if ok_hi else ' (ill-conditioned)'}] — g2 {g2:.2%} inside: {g_lo <= g2 <= g_hi}"
         )
     print(f"flat-multiple ladder @ M {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
-        f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f}"
-        f" | H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f}"
+        f"L/M {L / M:.3f} (operating {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f})"
+        f" | H/M {H / M:.3f} (operating {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f})"
         f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
     )
     print(
@@ -550,20 +607,20 @@ def main() -> int:
         nm_lo = lo_opm * op_to_net
         print(f"  sens normal OPM {tag}: V_M/V_H = {v_alt('M', nm_lo, pe_opt['M']):.2f}/{v_alt('H', nm_lo, pe_opt['H']):.2f}")
     fy27_axis = {
-        "L": eps["L"] * pe["L"],
-        "M": eps27_adj * tier(eps27_adj)[1],
-        "H": 25.27 * haircut * tier(25.27 * haircut)[1],
+        "L": L,
+        "M": val(eps27_adj),
+        "H": val(25.27 * haircut),
     }
     print(
         f"cross-check, FY27 axis (21.643 x k_l / 21.643 / 25.27, no FY28): "
         f"{fy27_axis['L']:.2f}/{fy27_axis['M']:.2f}/{fy27_axis['H']:.2f}"
     )
     eps_lo = inp["eps_fy28_l"] * haircut
-    print(f"FY28 consensus-low coordinate: {eps_lo:.3f} x {tier(eps_lo)[1]:.2f}x = {eps_lo * tier(eps_lo)[1]:.2f} -> {zone_of(eps_lo * tier(eps_lo)[1], L, M, H)}")
+    print(f"FY28 consensus-low coordinate: E_op {eps_lo - ips:.3f} x {tier(eps_lo)[1]:.2f}x + {cps:.2f} = {val(eps_lo):.2f} -> {zone_of(val(eps_lo), L, M, H)}")
     print(f"implied mcap (bn USD) L/M/H = {mcap(L):.1f}/{mcap(M):.1f}/{mcap(H):.1f}")
     # Sensitivities the doc quotes (Outputs 敏感性)
     for g in (g2 - 0.01, g2 + 0.01, 0.0664, 0.04):
-        vals = [eps[t] * tier(eps[t], g)[1] for t in TIERS]  # book re-rolls at the perturbed g
+        vals = [val(eps[t], g) for t in TIERS]  # book re-rolls at the perturbed g
         tag = " (above cap, reference only)" if g > g_cap(r) + 1e-9 else ""
         print(f"  sens g2={g:.4f}{tag}: {vals[0]:.2f}/{vals[1]:.2f}/{vals[2]:.2f}")
     # Bias bound of the whole-company mount (A10 / A16): Systems revenue share priced at the
@@ -572,22 +629,29 @@ def main() -> int:
     g_mix = (1 - s_sys) * g2 + s_sys * g_p
     mix = []
     for t in TIERS:
-        roe_mix = eps[t] / (bps0 / (1.0 - g_mix * unbooked / eps[t]))
-        mix.append(eps[t] * ((1 - s_sys) * perpetual_pe(g2, roe_mix, r) + s_sys * perpetual_pe(g_p, roe_mix, r)))
+        roe_mix = (eps[t] - ips) / (bps0 / (1.0 - g_mix * unbooked / eps[t]) - cps)
+        mix.append(
+            (eps[t] - ips) * ((1 - s_sys) * perpetual_pe(g2, roe_mix, r) + s_sys * perpetual_pe(g_p, roe_mix, r))
+            + cps * lam
+        )
     print(f"  sens Systems {s_sys:.1%} of EPS at module g2 {g_p:.2%} (bias bound, A16): {mix[0]:.2f}/{mix[1]:.2f}/{mix[2]:.2f}")
     for f in (0.9, 1.1):
         e = eps["M"] * f
-        print(f"  sens FY28 consensus x{f:g}: M {e * tier(e)[1]:.2f}")
+        print(f"  sens FY28 consensus x{f:g}: M {val(e):.2f}")
     for s in (0.06, 0.13):
         e = {t: eps[t] / haircut * (1 - s) for t in TIERS}
-        print(f"  sens sbc_haircut={s}: {e['L'] * tier(e['L'])[1]:.2f}/{e['M'] * tier(e['M'])[1]:.2f}/{e['H'] * tier(e['H'])[1]:.2f}")
+        print(f"  sens sbc_haircut={s}: {val(e['L']):.2f}/{val(e['M']):.2f}/{val(e['H']):.2f}")
     for k in (0.45, 0.573, 0.60):
         e = eps27_adj * k
-        print(f"  sens k_l={k}: L {e * tier(e)[1]:.2f}")
+        print(f"  sens k_l={k}: L {val(e):.2f}")
     eq_fy28 = inp["equity"] + (inp["eps_fy27"] + inp["eps_fy28_m"]) * shares
-    roe_m28 = eps["M"] * shares / eq_fy28
-    print(f"  sens equity at FY28-end book {eq_fy28 / 1e9:.1f}B (ROE_M {roe_m28:.3f}): M {eps['M'] * perpetual_pe(g2, roe_m28, r):.2f} (not adopted)")
-    print(f"  discounted 1y reference (/1.1): {L / 1.1:.1f}/{M / 1.1:.1f}/{H / 1.1:.1f} (not adopted)")
+    roe_m28 = e_op["M"] * shares / (eq_fy28 - c_ex)
+    print(
+        f"  sens equity at FY28-end book {eq_fy28 / 1e9:.1f}B (RONIC_M {roe_m28:.3f}):"
+        f" M {e_op['M'] * perpetual_pe(g2, roe_m28, r) + cps * lam:.2f} (not adopted)"
+    )
+    disc = [(v - cps * lam) / 1.1 + cps * lam for v in (L, M, H)]  # cash is today's, not discounted
+    print(f"  discounted 1y reference (operating /1.1 + C_ex): {disc[0]:.1f}/{disc[1]:.1f}/{disc[2]:.1f} (not adopted)")
     att = {t: optical_attachment(opt_rev[t], t) for t in TIERS}
     print(
         "optical narrow (A14): rev L/M/H = "
@@ -608,7 +672,7 @@ def main() -> int:
         saved = r
         r = r + dr
         try:
-            return tuple(eps[t] * tier(eps[t])[1] for t in TIERS)  # type: ignore[return-value]
+            return tuple(val(eps[t]) for t in TIERS)  # type: ignore[return-value]
         finally:
             r = saved
 
