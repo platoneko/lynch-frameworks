@@ -6,10 +6,14 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
 no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
 or a market-implied reading.
 
-formula_id: sany_consensus_fy28_print_match_gordon_v1
+formula_id: sany_consensus_fy28_print_match_gordon_v2
 
 Main ruler: whole company (construction machinery; segments share one driver,
-no sell-side SOTP), basket 4 r = 10%.
+no sell-side SOTP), basket 4 r = 10%.  Operating value + excess cash
+(valuation-rules「经营价值与超额现金」, 2026-10-15): every earnings figure, ROE
+and historical multiple below is on the operating basis (excess cash and its
+after-tax income taken out); the excess cash is added back per share at face
+value (lambda = 1) on every tier.
 
   numerator  FY2028 company consensus (Eastmoney / 10jqka F10, 17 houses
              published after the 2026-08-31 interim report): M = mean,
@@ -23,13 +27,16 @@ no sell-side SOTP), basket 4 r = 10%.
              of the well-conditioned months.  The peer layer is empty: XCMG
              prices below 1/r on a monotone-zone ROE (unreachable), Zoomlion /
              Liugong / Komatsu sit in the flat zone (cross-domain), CAT is
-             another country.  M 3.20% / H 2.85% — H <= M (the market does not
-             pay up for peak earnings).
-  ROE        FY2028 EPS over the start-of-2028 BPS rolled from the 2026-06-30
-             book with b = g/ROE (valuation-rules ③ 步 2).
-  L          FY2022 trough net profit on recovery_two_stage_pe: own realised
-             recovery to the TTM level over 3.5 years, then the M-tier g2 at
-             the TTM ROE.  Not discounted (trough year = t=1).
+             another country.  Operating basis: price and EPS net of the excess
+             cash visible then.  M 2.85% / H 2.55% — H <= M (the market does
+             not pay up for peak earnings).
+  RONIC      FY2028 operating EPS over the start-of-2028 operating BPS
+             (book − excess cash) rolled from 2026-06-30 with b = g/RONIC.
+  L          FY2022 trough operating profit on recovery_two_stage_pe: own
+             realised recovery to the TTM operating level over 3.5 years, then
+             the M-tier g2 at the TTM operating ROE.  Not discounted.
+  cash       excess cash = extended net cash − declared unpaid dividend −
+             anchor 0, added per share to every tier.
   ③          the M multiple must sit inside the same-earnings band (it is
              generated from that band, so this is a consistency check).
 
@@ -56,7 +63,7 @@ from lib.inputs import (  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600031.SH.md"
-FORMULA_ID = "sany_consensus_fy28_print_match_gordon_v1"
+FORMULA_ID = "sany_consensus_fy28_print_match_gordon_v2"
 YI = 1e8
 NUM_YEAR = 2028
 TODAY_FY = 2026
@@ -72,35 +79,45 @@ LEV_INT_EBIT = 1 / 3
 # and Eastmoney quarterly EPS (2026-10-13).  Only these months fall within ±12%
 # of the M or H numerator; the selection below re-checks that.
 SHARES_THEN = 84.9e8
-MONTHS = [  # (month, close, ttm_eps, bps)
-    ("2020-10", 25.95, 1.7192, 6.2963), ("2020-11", 30.71, 1.7192, 6.2963),
-    ("2020-12", 34.98, 1.7192, 6.2963), ("2021-01", 40.46, 1.7192, 6.2963),
-    ("2021-02", 41.11, 1.7192, 6.2963), ("2021-03", 34.15, 1.8401, 6.6713),
-    ("2021-04", 30.88, 2.2311, 7.3216), ("2021-05", 30.29, 2.2311, 7.3216),
-    ("2021-06", 29.07, 2.2311, 7.3216), ("2021-07", 24.82, 2.2311, 7.3216),
-    ("2021-08", 26.23, 2.0169, 7.2871), ("2021-09", 25.44, 2.0169, 7.2871),
-    ("2021-10", 22.96, 1.8572, 7.5577), ("2021-11", 21.90, 1.8572, 7.5577),
-    ("2021-12", 22.80, 1.8572, 7.5577), ("2022-01", 20.14, 1.8572, 7.5577),
-    ("2022-02", 19.61, 1.8572, 7.5577), ("2022-03", 17.52, 1.8572, 7.5577),
+# Excess cash visible at each month end (extended net cash of the then-latest
+# report, anchor 0; quarterly interest-bearing other current liabilities at the
+# annual 0.72 share) and its after-tax yield then (cash yield ~4.5%, tax ~13%).
+CEX_THEN = {"Q3-20": 63.9e8, "FY20": 82.37e8, "Q1-21": 74.3e8, "H1-21": 92.0e8, "Q3-21": 62.5e8}
+YIELD_THEN = 0.045 * (1 - 0.13)
+MONTHS = [  # (month, close, ttm_eps, bps, visible report)
+    ("2020-10", 25.95, 1.7192, 6.2963, "Q3-20"), ("2020-11", 30.71, 1.7192, 6.2963, "Q3-20"),
+    ("2020-12", 34.98, 1.7192, 6.2963, "Q3-20"), ("2021-01", 40.46, 1.7192, 6.2963, "Q3-20"),
+    ("2021-02", 41.11, 1.7192, 6.2963, "Q3-20"), ("2021-03", 34.15, 1.8401, 6.6713, "FY20"),
+    ("2021-04", 30.88, 2.2311, 7.3216, "Q1-21"), ("2021-05", 30.29, 2.2311, 7.3216, "Q1-21"),
+    ("2021-06", 29.07, 2.2311, 7.3216, "Q1-21"), ("2021-07", 24.82, 2.2311, 7.3216, "Q1-21"),
+    ("2021-08", 26.23, 2.0169, 7.2871, "H1-21"), ("2021-09", 25.44, 2.0169, 7.2871, "H1-21"),
+    ("2021-10", 22.96, 1.8572, 7.5577, "Q3-21"), ("2021-11", 21.90, 1.8572, 7.5577, "Q3-21"),
+    ("2021-12", 22.80, 1.8572, 7.5577, "Q3-21"), ("2022-01", 20.14, 1.8572, 7.5577, "Q3-21"),
+    ("2022-02", 19.61, 1.8572, 7.5577, "Q3-21"), ("2022-03", 17.52, 1.8572, 7.5577, "Q3-21"),
 ]
 
 REQUIRED = [
     "shares", "bps", "np_h1", "cons_np26_m", "cons_np26_h", "cons_np27_l", "cons_np27_m", "cons_np27_h",
     "cons_np28_l", "cons_np28_m", "cons_np28_h", "np_l", "np_ttm", "equity", "n_rec_l",
     "np_fy22", "np_fy25", "np_mid10", "np_peak_own", "np_2016",
-    "r_perp", "g2_m", "g2_h", "payout_obs", "k_l", "k_m", "k_h", "disc_years",
+    "r_perp", "g2_m", "g2_h", "payout_obs", "payout_op", "k_l", "k_m", "k_h", "disc_years",
     "pe_band_min", "pe_band_max", "pb_own_min",
     "net_debt", "net_debt_ext", "ebitda", "ebit", "interest",
+    "net_cash_ext_h1", "div_declared", "c_ex", "cash_yield", "tax_eff",
 ]
 
 
 def print_match(target_np: float, r: float) -> tuple[list[tuple[str, float, float, float, bool]], float | None]:
+    """Same-earnings months on the operating basis: price and EPS net of the
+    excess cash visible then, ROE on equity net of it."""
     lo, hi = target_np * (1 - PAIR_BAND), target_np * (1 + PAIR_BAND)
     rows = []
-    for month, close, eps, bps in MONTHS:
-        if not lo <= eps * SHARES_THEN <= hi:
+    for month, close, eps, bps, rep in MONTHS:
+        cps = CEX_THEN[rep] / SHARES_THEN
+        eps_op = eps - cps * YIELD_THEN
+        if not lo <= eps_op * SHARES_THEN <= hi:
             continue
-        pe, roe = close / eps, eps / bps
+        pe, roe = (close - cps) / eps_op, eps_op / (bps - cps)
         g, ok = implied_g_retaining(pe, roe, r)
         rows.append((month, pe, roe, g, ok))
     good = [g for *_, g, ok in rows if ok]
@@ -131,10 +148,20 @@ def main() -> int:
     if not (inp["k_h"] >= inp["k_m"] >= inp["k_l"]):
         errors.append("cyclical k must satisfy k_H >= k_M >= k_L")
 
-    # --- g2 from same-earnings months (裁决顺序 ④ 第四层) ---------------------------
+    # --- excess cash (经营价值与超额现金 ①②) ------------------------------------------
+    c_ex = inp["net_cash_ext_h1"] - inp["div_declared"]  # anchor 0 (A15)
+    if abs(c_ex - inp["c_ex"]) > 1e6:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_h1 − div_declared {c_ex:.4e}")
+    if c_ex < 0.15 * inp["equity"]:
+        errors.append("c_ex below 15% of equity: the excess-cash line should not exist")
+    c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])  # after-tax income, taken out of every numerator
+    cps = c_ex / sh
+    op = {t: tuple((inp[f"cons_np{y}_{t}"] - c_inc) / sh for y in (26, 27, 28)) for t in ("m", "h")}
+
+    # --- g2 from same-earnings months (自身市场读数，经营口径) -------------------------
     pm = {}
     for t in ("m", "h"):
-        rows, med = print_match(inp[f"cons_np28_{t}"], r)
+        rows, med = print_match(op[t][2] * sh, r)
         pm[t] = (rows, med)
         if med is None:
             errors.append(f"{t.upper()}: fewer than {MIN_GOOD} well-conditioned same-earnings months")
@@ -155,32 +182,41 @@ def main() -> int:
 
     # --- M / H ---------------------------------------------------------------------
     disc = (1 + r) ** inp["disc_years"]
-    eps_h1 = inp["np_h1"] / sh
-    cons = {t: tuple(inp[f"cons_np{y}_{t}"] / sh for y in (26, 27, 28)) for t in ("m", "h")}
+    eps_h1 = (inp["np_h1"] - c_inc / 2) / sh
+    obps = inp["bps"] - cps  # operating book per share (equity − excess cash)
 
     def tier(t: str, g: float) -> dict:
-        e26, e27, e28 = cons[t]
-        roe = e28 / inp["bps"]
-        for _ in range(200):  # BPS roll, b = g/ROE (③ 步 2)
-            bps28 = inp["bps"] + g / roe * ((e26 - eps_h1) + e27)
+        e26, e27, e28 = op[t]
+        roe = e28 / obps
+        for _ in range(200):  # operating BPS roll, b = g/RONIC (③ 步 2)
+            bps28 = obps + g / roe * ((e26 - eps_h1) + e27)
             roe = e28 / bps28
         pe = perpetual_pe(g, roe, r)
-        return dict(eps=e28, roe=roe, bps=bps28, pe=pe, anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc)
+        return dict(eps=e28, roe=roe, bps=bps28, pe=pe,
+                    anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc + cps)
 
     rows = {t: tier(t, inp[f"g2_{t}"]) for t in ("m", "h")}
     for t in ("m", "h"):
         if rows[t]["roe"] - r < 0.03:
-            errors.append(f"{t.upper()}: ROE {rows[t]['roe']:.1%} not in the monotone zone — revisit the domain")
-        errors += check_branch(inp[f"g2_{t}"], rows[t]["roe"], r, inp["payout_obs"], f"g2_{t}")
+            errors.append(f"{t.upper()}: RONIC {rows[t]['roe']:.1%} not in the monotone zone — revisit the domain")
+        errors += check_branch(inp[f"g2_{t}"], rows[t]["roe"], r, inp["payout_op"], f"g2_{t}")
 
-    # --- L: trough + own realised recovery -------------------------------------------
-    roe_mid = inp["np_ttm"] / inp["equity"]
-    if inp["np_l"] / inp["equity"] >= r:
+    # --- L: trough + own realised recovery (operating basis) ---------------------------
+    np_ttm_op, eq_op = inp["np_ttm"] - c_inc, inp["equity"] - c_ex
+    roe_mid = np_ttm_op / eq_op
+    if inp["np_l"] / eq_op >= r:
         errors.append("ROE_L >= r: L is not a trough tier")
-    g1 = (inp["np_ttm"] / inp["np_l"]) ** (1 / inp["n_rec_l"]) - 1
+    g1 = (np_ttm_op / inp["np_l"]) ** (1 / inp["n_rec_l"]) - 1
     pe_l = recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_m"], roe_mid, r)
-    errors += check_branch(inp["g2_m"], roe_mid, r, inp["payout_obs"], "g2 (L tail)")
-    L = inp["np_l"] / sh * pe_l * (1 - inp["k_l"])
+    # RONIC_mid sits within r + 3pp, so check_branch also tests the payout gap.
+    # The gap is the retained-over-b share, and it lands in the excess cash already
+    # split out (λ = 1, A15) → valuation-rules「分支差的合法解释」: report, do not fail.
+    # The sign test (g > 0 while the company retains) still applies.
+    tail_branch = check_branch(inp["g2_m"], roe_mid, r, inp["payout_op"], "g2 (L tail)")
+    if inp["g2_m"] <= 0 or inp["payout_op"] >= 0.95:
+        errors += tail_branch
+    tail_gap = payout_gap(inp["g2_m"], roe_mid, inp["payout_op"])
+    L = inp["np_l"] / sh * pe_l * (1 - inp["k_l"]) + cps
     M, H = rows["m"]["anchor"], rows["h"]["anchor"]
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.3f} {M:.3f} {H:.3f}"])
@@ -190,7 +226,7 @@ def main() -> int:
     # shape (裁决顺序 ⑤): cyclical multiples reverse or flat
     if not (pe_l >= rows["m"]["pe"] >= rows["h"]["pe"] - 1e-9):
         errors.append("multiple shape is not reverse/flat (cyclical, 裁决顺序 ⑤)")
-    flat = [inp["np_l"] / sh * rows["m"]["pe"]] + [rows[t]["eps"] * rows["m"]["pe"] / disc for t in ("m", "h")]
+    flat = [inp["np_l"] / sh * rows["m"]["pe"] + cps] + [rows[t]["eps"] * rows["m"]["pe"] / disc + cps for t in ("m", "h")]
     errors += ladder("flat-multiple", *flat)
     # ③ the generated M multiple must sit inside the same-earnings band
     if not inp["pe_band_min"] <= rows["m"]["pe"] <= inp["pe_band_max"]:
@@ -205,19 +241,24 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}")
     print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus ÷{disc:.2f}; "
           f"同世界门 own FY22→25 NP CAGR {cagr:+.1%}")
+    print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付股息 {inp['div_declared'] / YI:.2f}亿 "
+          f"− 锚 0 = C_ex {c_ex / YI:.2f}亿（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；"
+          f"税后收益 {c_inc / YI:.2f}亿 从各档分子扣除")
     for t in ("m", "h"):
         rws, med = pm[t]
         good = [g for *_, g, ok in rws if ok]
-        print(f"print-match {t.upper()} (NP {inp[f'cons_np28_{t}'] / YI:.2f}亿 ±12%): {len(good)}/{len(rws)} good, "
+        print(f"print-match {t.upper()} (经营利润 {op[t][2] * sh / YI:.2f}亿 ±12%): {len(good)}/{len(rws)} good, "
               f"median g {med:.4%} range [{min(good):.2%}, {max(good):.2%}]")
         for month, pe, roe, g, ok in rws:
             print(f"    {month} PE {pe:5.2f} ROE {roe:.1%} g {g:+.2%}{'' if ok else ' (ill)'}")
     for t in ("m", "h"):
         x = rows[t]
-        print(f"{t.upper()}: EPS28 {x['eps']:.4f} BPS28 {x['bps']:.3f} ROE {x['roe']:.2%} g {inp[f'g2_{t}']:.2%} "
-              f"PE {x['pe']:.2f} payout_model {payout(inp[f'g2_{t}'], x['roe']):.1%} -> {x['anchor']:.2f}")
-    print(f"L: trough {inp['np_l'] / YI:.1f}亿 x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
-          f"段二 ROE {roe_mid:.2%} g {inp['g2_m']:.2%}) -> {L:.2f}")
+        print(f"{t.upper()}: 经营EPS28 {x['eps']:.4f} 经营BPS28 {x['bps']:.3f} RONIC {x['roe']:.2%} g {inp[f'g2_{t}']:.2%} "
+              f"PE {x['pe']:.2f} payout_model {payout(inp[f'g2_{t}'], x['roe']):.1%} -> {x['anchor']:.2f}（含现金 {cps:.2f}）")
+    print(f"L: trough 经营利润 {inp['np_l'] / YI:.2f}亿 x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
+          f"段二 RONIC {roe_mid:.2%} g {inp['g2_m']:.2%}) + 现金 {cps:.2f} -> {L:.2f}")
+    print(f"L 段二分支差（披露）: 模型派息 {tail_gap[0]:.1%} vs 经营口径 {inp['payout_op']:.1%}（差 {tail_gap[1]:+.1%}；"
+          f"多留部分落在已单列超额现金，λ 1）")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     np_m = inp["cons_np28_m"]
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M=0% | "
@@ -235,21 +276,23 @@ def main() -> int:
     print(f"g2_m evidence interval [{inp['g2_h']:.2%}, {lo:.2%}] -> M {m_lo:.2f}–{m_hi:.2f}")
 
     def band(dg: float) -> str:
-        ll = inp["np_l"] / sh * recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_m"] + dg, roe_mid, r)
+        ll = inp["np_l"] / sh * recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_m"] + dg, roe_mid, r) + cps
         return f"{ll:.2f}/{tier('m', inp['g2_m'] + dg)['anchor']:.2f}/{tier('h', inp['g2_h'] + dg)['anchor']:.2f}"
     print(f"敏感性 g2 −1pp {band(-0.01)} | +1pp {band(0.01)}")
-    print(f"M 分子换 FY2028 下沿 {inp['cons_np28_l'] / YI:.2f}亿 -> M {inp['cons_np28_l'] / sh * rows['m']['pe'] / disc:.2f}")
-    print(f"H 坐标·自身实测利润高点 {inp['np_peak_own'] / YI:.1f}亿 x H PE -> {inp['np_peak_own'] / sh * rows['h']['pe'] / disc:.2f}")
+    print(f"M 分子换 FY2028 下沿 {inp['cons_np28_l'] / YI:.2f}亿 -> M "
+          f"{(inp['cons_np28_l'] - c_inc) / sh * rows['m']['pe'] / disc + cps:.2f}")
+    print(f"H 坐标·自身实测利润高点 {inp['np_peak_own'] / YI:.1f}亿 x H PE -> "
+          f"{inp['np_peak_own'] / sh * rows['h']['pe'] / disc + cps:.2f}")
     mid_ratio = np_m / inp["np_mid10"]
     print(f"周期位置: FY28 M NP / 10y mean {inp['np_mid10'] / YI:.1f}亿 = {mid_ratio:.2f}x (demand-cycle, disclosure); "
           f"中枢坐标 10y mean x 1/r = {inp['np_mid10'] / sh / r:.2f}")
     print(f"压力坐标 谷底 x 1/r = {inp['np_l'] / sh / r:.2f}; FY2016 x 1/r = {inp['np_2016'] / sh / r:.2f}; "
           f"地板 PB {inp['pb_own_min']} x BPS = {inp['bps'] * inp['pb_own_min']:.2f}, PB 1.0 = {inp['bps']:.2f}")
-    mod, gap = payout_gap(inp["g2_m"], rows["m"]["roe"], inp["payout_obs"])
+    mod, gap = payout_gap(inp["g2_m"], rows["m"]["roe"], inp["payout_op"])
     excess = (1 - inp["payout_obs"]) - inp["g2_m"] / rows["m"]["roe"]
-    win = (cons["m"][0] - eps_h1) + cons["m"][1]
-    print(f"payout: model {mod:.1%} vs observed {inp['payout_obs']:.1%} (gap {gap:+.1%}); 视同派出 = {excess:.1%} x window EPS "
-          f"{win:.3f} = {excess * win:.2f}/sh (B 桶 net cash, k {inp['k_m']:g}; k 前 / k 后同值)")
+    win = (op["m"][0] - eps_h1) + op["m"][1]
+    print(f"payout: model {mod:.1%} vs 经营口径 {inp['payout_op']:.1%} (gap {gap:+.1%}); 实付现金派息 {inp['payout_obs']:.1%}; "
+          f"多留部分 = {excess:.1%} x 窗口经营 EPS {win:.3f} = {excess * win:.2f}/sh（落在超额现金，λ 1，PV 不进锚点）")
     print(f"杠杆门: 净债/EBITDA {lev1:.2f} (扩展口径 {inp['net_debt_ext'] / inp['ebitda']:.2f}), "
           f"利息/EBIT {lev2:.1%} -> {'triggered' if lev1 > LEV_DEBT_EBITDA or lev2 > LEV_INT_EBIT else 'not triggered'}")
     print(f"证伪线 FY2027 NP 下沿 {inp['cons_np27_l'] / YI:.2f}亿")
