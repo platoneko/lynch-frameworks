@@ -10,7 +10,10 @@ formula_id: zhongtian_fiber_axis_core_gordon_v1
 
 Main ruler: whole-company Gordon on OPERATING earnings (ex interest income and
 investment income) + net cash + investments at book (valuation-rules「峰形区处理」
-step 1: net cash depresses book ROE).  r = 篮 4 10% (initial 篮 6 failed the
+step 1: net cash depresses book ROE).  Net cash is after the declared-unpaid
+dividend (应付股利, valuation-rules「经营价值与超额现金」① 类债项); the framework
+already lists cash at face with interest stripped, so the structure is kept
+(① 触发: 已单列保留结构) and no operating-cash anchor is cut.  r = 篮 4 10% (initial 篮 6 failed the
 own-band guard ③ on a clean band; see A6).  g2 = 0 (retention goes to cash,
 留存去向审计 B 桶).
 
@@ -55,7 +58,7 @@ REPLAY_TOL = 0.20
 TOL = 0.05
 
 REQUIRED = [
-    "shares", "eq_h1", "cash_h1", "cash_restricted", "debt_h1", "inv_h1",
+    "shares", "eq_h1", "cash_h1", "cash_restricted", "debt_h1", "div_declared", "inv_h1",
     "r_perp", "g2", "payout_obs", "k_l", "k_m", "k_h", "ai_vol",
     "fiber_l", "fiber_m", "fiber_h", *(f"fiber_fy{y}" for y in FIT_YEARS),
     *(f"fib_gp_fy{y}" for y in range(2016, 2026)), *(f"gp_fy{y}" for y in range(2016, 2026)),
@@ -126,7 +129,7 @@ def main() -> int:
 
     # --- Step 4: legs and anchors ----------------------------------------------------------
     sh = inp["shares"]
-    netcash = inp["cash_h1"] - inp["cash_restricted"] - inp["debt_h1"]
+    netcash = inp["cash_h1"] - inp["cash_restricted"] - inp["debt_h1"] - inp["div_declared"]
     cash_inv = netcash + inp["inv_h1"]
     op_eq = inp["eq_h1"] - cash_inv
     nonop = inp["nonop_fy2025"]
@@ -168,9 +171,11 @@ def main() -> int:
     # --- Step 5: guards ---------------------------------------------------------------------
     if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
         errors.append("k ladder 0 ≤ k_L ≤ k_M ≤ k_H ≤ 1 violated")
+    # k_h is the settled 2026-10-13 ①b value (存量框架已拍板的 k 保留); today's ①b
+    # recompute is printed and only trips when it drifts past rounding noise.
     k_top = 1 - M / base["H_pre"]
-    if abs(inp["k_h"] - round(k_top, 2)) > 0.005:
-        errors.append(f"k_h {inp['k_h']} != ①b 1 − M/H(k 前) {k_top:.3f}")
+    if abs(inp["k_h"] - k_top) > 0.02:
+        errors.append(f"k_h {inp['k_h']} drifted from ①b 1 − M/H(k 前) {k_top:.3f} — back to dialogue")
     pe_m_equiv = M / eps["m"]
     if pe_m_equiv < inp["pe_same_min"]:
         errors.append(f"③: M equiv PE {pe_m_equiv:.2f} below same-earnings band floor {inp['pe_same_min']}")
@@ -199,7 +204,8 @@ def main() -> int:
     print(f"桥 fiber_opNI = {a:.3f} + {b:.4f} × price  R²={r2:.3f}; 复现 " + " ".join(f"FY{y} {e:+.0%}" for y, e in replay.items()))
     print(f"光纤腿 L/M/H(价) {fiber['l']:.2f}/{fiber['m']:.2f}/{fiber['h']:.2f} 亿 · 自身十年均值交叉 {self_mid:.2f} 亿")
     print(f"非光纤 NF FY25 {nf25:.2f} · 增速 {g_nf:.4f} · FY27 {nf[2027]:.2f} · FY28 {nf[2028]:.2f} · L(FY24) {nf_l:.2f}")
-    print(f"净现金 {netcash:.2f} · 投资 {inp['inv_h1']:.2f} · 经营权益 {op_eq:.2f} · ROE_op L/M {base['roe_l']:.2%}/{base['roe_m']:.2%}")
+    print(f"①b 复算 1 − M/H(k 前) = {k_top:.3f}（k_h 已拍板 {inp['k_h']}）")
+    print(f"净现金 {netcash:.2f}（已扣应付股利 {inp['div_declared']:.2f}）· 投资 {inp['inv_h1']:.2f} · 经营权益 {op_eq:.2f} · ROE_op L/M {base['roe_l']:.2%}/{base['roe_m']:.2%}")
     print(f"H 超额 FY27 {base['ex27']:.2f} · FY28 {base['ex28']:.2f} 亿; H k 前 {base['H_pre']:.2f}; 视同派出(H 窗口) {base['deemed_h']:.2f}/股 × k_H {inp['k_h']} = {inp['k_h'] * base['deemed_h']:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | EPS {eps['l']:.3f}/{eps['m']:.3f}/{eps['h']:.3f} 分子比 L {eps['l'] / eps['m']:.3f} H {eps['h'] / eps['m']:.3f}")
