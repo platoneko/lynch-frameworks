@@ -6,7 +6,7 @@ A/B and the candidate band from the §3 Inputs table and exits 1 on mismatch.
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
 here reads a quote.
 
-formula_id: fn_sotp_ai_auto_fy28_econ_eps_gordon_disc_v1
+formula_id: fn_sotp_ai_auto_fy28_econ_eps_gordon_disc_v2
 
 Main ruler: two-leg SOTP on FY2028 (fiscal year ending ~2028-06).  The company
 discloses revenue by end market only (one reportable segment, no segment
@@ -28,6 +28,15 @@ growth-required retention b = g/ROE with g = the EPS-weighted company g,
 closed form BPS = BPS0 / (1 - g N / EPS) (A11).  The FY28 sum sits at
 2027-06-30 and is discounted t_disc years at r_disc, then net cash/share is
 added.  k = 0 (A12).
+
+Cash (valuation-rules「经营价值与超额现金」①, 2026-10-15 框架纠正): the
+framework already adds the whole net cash back at face as the closing item, so
+that structure is kept (not re-cut at the new operating-cash anchor).  What is
+removed is the double count: the after-tax income on that net cash
+(net cash x cash_yield x (1 - tax_eff)) comes out of every tier's economic EPS
+and out of the FY27 unbooked profit, and the net cash comes out of the FY26
+book before the roll — numerator, ROE base and closing item now each see the
+cash once (A13).
 
 Candidate band (A22, never a base anchor): Building 10 capacity is a level
 (construction §7h): the FY29 AI-leg revenue is pinned at the pre-expansion base
@@ -76,7 +85,7 @@ from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "FN.US.md"
-FORMULA_ID = "fn_sotp_ai_auto_fy28_econ_eps_gordon_disc_v1"
+FORMULA_ID = "fn_sotp_ai_auto_fy28_econ_eps_gordon_disc_v2"
 TICKER = "FN.US"
 LISTING_CCY = "USD"
 TOL = 0.05
@@ -89,7 +98,7 @@ REQUIRED = [
     "eps_fy28_l", "eps_fy28_m", "eps_fy28_h", "rev_fy28_l", "rev_fy28_m", "rev_fy28_h",
     "p2_q1_guide", "eps_ng_q1_guide", "sbc_q1_guide", "shares_guide",
     "sbc_ps_fy26", "shares_fy26", "rev_fy26", "warrant_unvested", "warrant_tsm",
-    "equity_fy26", "cash_st", "debt", "rev_auto_fy26", "g_auto_yoy",
+    "equity_fy26", "cash_st", "debt", "cash_yield", "tax_eff", "rev_auto_fy26", "g_auto_yoy",
     "r_perp", "g2_ai", "g2_auto", "r_disc", "t_disc", "k_l", "k_m", "k_h", "payout_obs",
     "pe_own_min", "pe_own_max", "cap_add_m", "cap_add_h", "plug_share", "g2_plug",
     "capex_l", "capex_m", "capex_h",
@@ -121,6 +130,8 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         e.append("warrant_tsm must be in (0, 1]")
     if inp["cash_st"] - inp["debt"] < 0:
         e.append("closing item is net cash by construction (A13); net debt would need the leverage gate")
+    if not (0 < inp["cash_yield"] < 0.10 and 0 <= inp["tax_eff"] < 0.5):
+        e.append("cash_yield / tax_eff out of range (A13)")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         e.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -154,14 +165,17 @@ def main() -> int:
     rev = {"L": inp["rev_fy27_cons"], "M": inp["rev_fy28_m"], "H": inp["rev_fy28_h"]}
     ng = {"L": inp["eps_fy27_m"], "M": inp["eps_fy28_m"], "H": inp["eps_fy28_h"]}
     sbc = {t: max(sbc_floor, sbc_ratio * rev[t]) for t in TIERS}
-    eps = {t: ng[t] * (1 - p2) - sbc[t] / sh for t in TIERS}
+    # After-tax income on the net cash added back at face (A13): out of every numerator, once.
+    c_ex = inp["cash_st"] - inp["debt"]
+    i_ps = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"]) / sh
+    eps = {t: ng[t] * (1 - p2) - sbc[t] / sh - i_ps for t in TIERS}
     rev_auto = inp["rev_auto_fy26"] * (1 + inp["g_auto_yoy"]) ** 2
     eps_au = {t: eps[t] * rev_auto / rev[t] for t in TIERS}
     eps_ai = {t: eps[t] - eps_au[t] for t in TIERS}
 
     # ---- Step 2: FY28 opening book (A11) ----
-    bps0 = inp["equity_fy26"] / sh
-    unbooked = inp["eps_fy27_m"] * (1 - p2)
+    bps0 = (inp["equity_fy26"] - c_ex) / sh  # operating book: the net cash sits in the closing item
+    unbooked = inp["eps_fy27_m"] * (1 - p2) - i_ps
     disc = (1 + inp["r_disc"]) ** (-inp["t_disc"])
     net_cash = (inp["cash_st"] - inp["debt"]) / sh
 
@@ -248,6 +262,10 @@ def main() -> int:
           f" {sbc_ratio:.4%} x revenue): " + " ".join(f"{t} {sbc[t]:.2f}" for t in TIERS) + " $M")
     print(f"auto leg FY28 revenue {rev_auto:.2f} | BPS0 {bps0:.3f} | unbooked FY27 {unbooked:.4f}"
           f" | disc {disc:.4f} | net cash/sh {net_cash:.3f}")
+    print(f"cash (A13, structure kept): net cash {c_ex:.1f} ({c_ex / inp['equity_fy26']:.1%} of equity) at face in the"
+          f" closing item; after-tax income {c_ex * inp['cash_yield'] * (1 - inp['tax_eff']):.2f} $M"
+          f" = {i_ps:.4f}/sh (yield {inp['cash_yield']:.2%}, tax {inp['tax_eff']:.2%}) out of every EPS and the FY27"
+          f" unbooked profit; operating book {inp['equity_fy26'] - c_ex:.1f} $M")
     for t in TIERS:
         d = s[t]
         print(f"{t}: econ EPS {eps[t]:.4f} (AI {eps_ai[t]:.4f} / auto {eps_au[t]:.4f}) | g_co {d['g_co']:.4%}"
@@ -295,14 +313,14 @@ def main() -> int:
     for label, g in (("-1pp", g_au - 0.01), ("+1pp", g_au + 0.01)):
         print(f"  sens g2_auto {label} {g:.2%}: " + "/".join(f"{x:.2f}" for x in band(g_ai, g)))
 
-    # Street basis: no Pillar Two, no SBC deduction (A6).
+    # Street basis: no Pillar Two, no SBC deduction (A6); the cash income still comes out (A13).
     street = []
     for t in TIERS:
-        e = ng[t]
+        e = ng[t] - i_ps
         ea = e * rev_auto / rev[t]
         ei = e - ea
         gco = (ei * g_ai + ea * g_au) / e
-        bps = bps0 / (1 - gco * inp["eps_fy27_m"] / e)
+        bps = bps0 / (1 - gco * (inp["eps_fy27_m"] - i_ps) / e)
         roe = e / bps
         street.append((ei * perpetual_pe(g_ai, roe, r) + ea * perpetual_pe(g_au, roe, r)) * disc * (1 - k[t]) + net_cash)
     print("  street basis (no Pillar Two, no SBC): " + "/".join(f"{x:.2f}" for x in street))
