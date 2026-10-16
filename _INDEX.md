@@ -127,8 +127,8 @@
 - [`_AXIS.glass-core-substrate`](./axes/glass-core-substrate.md) — 玻璃芯封装载板 · 挂载票：— ｜ 参照：000725.SZ
 - [`_AXIS.hdd-glass-substrate`](./axes/hdd-glass-substrate.md) — HDD 玻璃基板 · 挂载票：— ｜ 参照：HOCPY.US
 - [`_AXIS.hvlp-copper-foil`](./axes/hvlp-copper-foil.md) — 高频高速电子铜箔（RTF / HVLP）同业尺轴 · 挂载票：— ｜ 参照：0148.HK | 候选：301511.SZ（德福科技）、301217.SZ（铜冠铜箔）、5706.T（三井金属）、5801.T（古河电工）、8358.TWO（金居）——未入库，只作尺的提供方
-- [`_AXIS.inp-laser`](./axes/inp-laser.md) — 磷化铟基激光芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US · AAOI.US | 候选：COHR.US（激光 / 器件腿拆不出：产品收入无披露、磷化铟基激光芯片大半自用，见 §1；本票未迁移）
-- [`_AXIS.leading-edge-foundry`](./axes/leading-edge-foundry.md) — 先进逻辑晶圆代工 · 挂载票：— ｜ 参照：INTC.US | 候选：TSM.US（尺的提供方：本轴借它的实测营业利润率作上界；其框架未按本轴拆腿，输入不变）
+- [`_AXIS.inp-laser`](./axes/inp-laser.md) — 磷化铟基激光芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US · AAOI.US · COHR.US（数通腿，只引用本轴「稳态回报」「高回报期」两行，见 §1 / §1c）
+- [`_AXIS.leading-edge-foundry`](./axes/leading-edge-foundry.md) — 先进逻辑晶圆代工 · 挂载票：— ｜ 参照：INTC.US · 0981.HK（先进制程腿：利润率尺、g2、对齐年份、稳态回报） | 候选：TSM.US（尺的提供方：本轴借它的实测营业利润率作上界；其框架未按本轴拆腿，输入不变）
 - [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 - [`_AXIS.optical-electrical-chip`](./axes/optical-electrical-chip.md) — 光模块电芯片同业尺轴 · 挂载票：— ｜ 参照：MTSI.US | 候选：MRVL.US（Connectivity 腿含光 DSP、驱动 / TIA，但与交换、CXL、DCI 模块混在一腿，本次只作尺提供方——借用过渡年的贷方，未迁移）· CRDO.US（主业有源电缆 DSP / SerDes，属同层；本次只作 \(g_2\) 互证与尺提供方，未迁移）· AVGO.US（光 DSP 与驱动混在半导体网络业务里，拆不出）· SMTC.US（信号完整性分部是本腿，但公司另有物联网、模拟业务，主业构成未核实，未入库）
