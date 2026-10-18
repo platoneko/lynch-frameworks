@@ -46,16 +46,18 @@ sell-side house sizes it, so the tiers are: L = 0 (digestion world, fab not
 needed); M = one fab at today's measured output per InP fab (Q4 FY26
 Components annualised / inp_fabs), valued at t_opt; H = full capacity as the
 company states it (gso_rev_full, CEO answering the Greensboro capacity
-question), valued at t_opt_h.  The margin is time-dependent (`_AXIS.inp-laser`
-§1b, user 2026-10-05): the shortage-era margin (ebit_margin_inp_peer) holds
-only through t_shortage_end (2027); both tiers realise after it, so both take
-the axis normal (non-shortage) margin ebit_margin_inp_normal (LITE's own
-FY19-FY22 non-GAAP operating income / revenue, recomputed here from the raw
-sums), converted to net with this ticker's FY28 consensus net margin /
+question), valued at t_opt_h.  The margin fades along the laser-chip
+high-return window (`_AXIS.inp-laser` §1b / §1c, user 2026-10-16; no step at
+t_shortage_end, which is the substrate shortage end and is only cross-checked):
+the shortage-era margin (ebit_margin_inp_peer) through y1, linear to the axis
+normal (non-shortage) margin ebit_margin_inp_normal (LITE's own FY19-FY22
+non-GAAP operating income / revenue, recomputed here from the raw sums) at y2,
+normal after; converted to net with this ticker's FY28 consensus net margin /
 OFC-model operating margin om_lite_model.  The leg's perpetual growth is the
-axis non-bottleneck value g2_inp_laser_normal (4%), not the shortage-era 6%.
-Each tier on this ticker's own ruler (perpetual_pe at g2_gso, ROE_tier, r),
-discounted to FY28 at r, less the unspent
+axis non-bottleneck value g2_inp_laser_normal (4%), not the shortage-era 6%;
+its new-investment return rides the same path to ss_return.
+Each tier on this ticker's own ruler (path_value at g2_gso, RONIC_tier, r),
+discounted to FY28 at r (the net value then tau to today), less the unspent
 capital that tier's quantity requires: the retrofit floor (budget gso_k_budget
 - spent gso_k_spent, even over gso_k_n years from gso_k_y0, years after FY28
 discounted; the $38.0M purchase is sunk), topped up to Q_k x today's capital
@@ -119,7 +121,43 @@ AXIS_ROWS = (
     ("g2_gso", "g2_inp_laser_normal", AXIS_LASER),
     ("t_shortage_end", "t_shortage_end", AXIS_LASER),
     ("g2_plug_ref", "g2_pluggable", AXIS_PLUG),
+    ("ss_return", "ss_return_inp", AXIS_LASER),
+    ("y1", "y1_inp", AXIS_LASER),
+    ("y2", "y2_inp", AXIS_LASER),
 )
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float,
+               m_from: float = 1.0, m_to: float = 1.0) -> float:
+    """Gordon multiple on next-period earnings with the three-segment RONIC path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段; gordon.py's three-segment function is
+    [待建], so it lives here).  t = 1 <-> fiscal year t0; RONIC = forward through Y1, linear to
+    min(forward, R_s) at Y2, Gordon tail after.  For the option leg the unit margin rides the
+    same path (m_from through Y1, linear to m_to at Y2; valuation-rules「未建模期权」: unit
+    economics fade along the high-return window, no step) and the result is per unit of revenue
+    x net-margin conversion; the main ruler uses m_from = m_to = 1."""
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        m = _lin(cal, y1, y2, m_from, m_to)
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * m * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * m * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 FORMULA_ID = "lite_cycle_normalized_nongaap_eps_pe_gordon_v9"
 TOL = 0.05  # outputs are rounded to 2 decimals
 MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
@@ -222,8 +260,10 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         )
     if inp["g2_gso"] > inp["g2"]:
         errors.append("option-leg g2 (non-bottleneck) must not exceed the shortage-era axis g2 (A22)")
-    if min(inp["t_opt"], inp["t_opt_h"]) <= inp["t_shortage_end"]:
-        errors.append("an option tier realises inside the shortage era — it must take the shortage margin (axis §1b)")
+    if not (NUM_YEAR <= inp["y1"] < inp["y2"]):
+        errors.append("high-return window must satisfy numerator year <= Y1 < Y2 (A25)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        errors.append("tau out of range (A26)")
     if inp["gso_rev_full"] <= inp["comp_q4_fy26"] * 4.0 / max(inp["inp_fabs"], 1):
         errors.append("stated full capacity below one average fab — H would sit under M (A22)")
     if inp["ppe_net_fy26"] <= 0 or inp["rev_q4_fy26"] <= 0:
@@ -298,6 +338,10 @@ def main() -> int:
         "c_ex",
         "cash_yield",
         "tax_eff",
+        "ss_return",
+        "y1",
+        "y2",
+        "tau",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -350,6 +394,7 @@ def main() -> int:
     cps = c_ex / shares
     ips = c_inc / shares
     lam = 1.0  # no evidence the cash cannot reach shareholders (A24)
+    y1, y2, tau = int(inp["y1"]), int(inp["y2"]), inp["tau"]  # A25 / A26
 
     def tier(eps: float, g: float = g2) -> tuple[float, float]:
         """(RONIC, Gordon multiple) for one FY28 numerator — no transition stage.
@@ -361,11 +406,18 @@ def main() -> int:
             raise ValueError(f"book roll diverges: g*N/EPS = {g * unbooked / eps:.3f}")
         bps_open = bps0 / (1.0 - g * unbooked / eps)
         ronic = (eps - ips) / (bps_open - cps)
-        return ronic, perpetual_pe(g, ronic, r)
+        return ronic, path_value(NUM_YEAR, y1, y2, inp["ss_return"], g, ronic, r)
+
+    def window(ronic: float, g: float = g2) -> float:
+        """Window distributable profit (A26): unbooked FY27 operating EPS (same basis as the
+        numerator: SBC haircut, cash income out) not retained for growth (1 - b, b = g/RONIC,
+        the book roll's rate), discounted tau / 2."""
+        return (unbooked - ips) * (1.0 - min(1.0, max(0.0, g / ronic))) / (1.0 + r) ** (tau / 2)
 
     def val(eps: float, g: float = g2) -> float:
-        """Per-share value = E_op x PE(RONIC) + C_ex/share x lambda."""
-        return (eps - ips) * tier(eps, g)[1] + cps * lam
+        """Per-share value today = E_op x PE(path) / (1+r)^tau + window + C_ex/share x lambda."""
+        ronic, pe_ = tier(eps, g)
+        return (eps - ips) * pe_ / (1.0 + r) ** tau + window(ronic, g) + cps * lam
 
     # ---- Step 1: one FY28 numerator axis, three points (裁决顺序 ②, A2e-2a) ----
     eps = {
@@ -393,14 +445,15 @@ def main() -> int:
     def in_band(mult: float) -> bool:
         return inp["pe_own_min"] <= mult <= inp["pe_own_max"]
 
-    if not in_band(pe["M"]):
+    # ---- Step 4-5: anchors (today: V_op / (1+r)^tau + window + C_ex), cut points ----
+    L, M, H = (val(eps[t]) for t in TIERS)
+    # Guardrail reads today's operating value / operating profit (same basis as the band).
+    pe_today = {t: (v - cps * lam) / e_op[t] for t, v in zip(TIERS, (L, M, H))}
+    if not in_band(pe_today["M"]):
         errors.append(
-            f"M multiple {pe['M']:.2f}x outside own realised band "
+            f"M multiple {pe_today['M']:.2f}x outside own realised band "
             f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] — ③ 出带, stop, back to dialogue"
         )
-
-    # ---- Step 4-5: anchors, cut points ----
-    L, M, H = (e_op[t] * pe[t] + cps * lam for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
     if not (L < M < H):
@@ -427,12 +480,16 @@ def main() -> int:
     op_to_net = nm_cons / inp["om_lite_model"]  # this ticker's operating -> net ratio
 
     def leg_nm(year: float) -> float:
-        """Axis §1b: shortage-era margin through t_shortage_end, normal margin after."""
-        opm = inp["opm_inp_shortage"] if year <= inp["t_shortage_end"] else inp["opm_inp_normal"]
-        return opm * op_to_net
+        """Axis §1b (2026-10-16): the unit margin fades with the high-return window — shortage-era
+        margin through Y1, linear to the normal margin at Y2 (no step)."""
+        return _lin(int(year), y1, y2, inp["opm_inp_shortage"], inp["opm_inp_normal"]) * op_to_net
 
     g_opt = inp["g2_gso"]  # axis non-bottleneck g2 (A22)
-    pe_opt = {t: perpetual_pe(g_opt, roe[t], r) for t in TIERS}
+    # Option leg on the same calendar path from its realisation year: margin and RONIC fade
+    # together (A22 / A25); value per unit of revenue x op->net, then x revenue x (1 - SBC).
+    opt_year = {"M": int(inp["t_opt"]), "H": int(inp["t_opt_h"])}
+    pe_opt = {t: path_value(opt_year.get(t, NUM_YEAR), y1, y2, inp["ss_return"], g_opt, roe[t], r,
+                            inp["opm_inp_shortage"], inp["opm_inp_normal"]) for t in TIERS}
     fab_rev = inp["comp_q4_fy26"] * 4.0 / inp["inp_fabs"]  # USD / yr, measured per fab
     opt_q = {
         "M": (fab_rev, leg_nm(inp["t_opt"]), inp["t_opt"]),
@@ -440,10 +497,11 @@ def main() -> int:
     }
     v_k, v_gross_k, inc_k, k_k = {"L": 0.0}, {"L": 0.0}, {"L": 0.0}, {"L": 0.0}
     for t, (rev_t, nm_t, yr) in opt_q.items():
-        inc_k[t] = rev_t * nm_t * haircut / shares
-        v_gross_k[t] = inc_k[t] * pe_opt[t] / (1.0 + r) ** (yr - NUM_YEAR)
+        inc_k[t] = rev_t * nm_t * haircut / shares  # first-year earnings (margin at the realisation year)
+        v_gross_k[t] = rev_t * op_to_net * haircut / shares * pe_opt[t] / (1.0 + r) ** (yr - NUM_YEAR)
         k_k[t] = k_ps + max(0.0, rev_t * k_int - k_remain) / k_top_df / shares
-        v_k[t] = v_gross_k[t] - k_k[t]
+        # The leg sits at FY28 like the main ruler: discount tau to today (timing alignment).
+        v_k[t] = (v_gross_k[t] - k_k[t]) / (1.0 + r) ** tau
     v_opt = v_k["H"]
     if not (0.0 <= v_k["M"] <= v_opt):
         errors.append(f"option tiers not ordered: V_M {v_k['M']:.2f} vs V_H {v_opt:.2f}")
@@ -452,15 +510,15 @@ def main() -> int:
     a_opt = (opt_band[0] + opt_band[1]) / 2
     b_opt = (opt_band[1] + opt_band[2]) / 2
     # Disclosed alternative: H deducts only the $600M retrofit floor (pre-2026-10-05 reading).
-    v_h_floor = v_gross_k["H"] - k_ps
+    v_h_floor = (v_gross_k["H"] - k_ps) / (1.0 + r) ** tau
 
-    # ---- A2e-2c flat ladder + A2e-5 decomposition ----
-    _, flat_op = flat_multiple_ladder((e_op["L"], e_op["M"], e_op["H"]), pe["M"])
+    # ---- A2e-2c flat ladder + A2e-5 decomposition (today's operating multiples) ----
+    _, flat_op = flat_multiple_ladder((e_op["L"], e_op["M"], e_op["H"]), pe_today["M"])
     flat = tuple(v + cps * lam for v in flat_op)  # same cash on every rung
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
     # Decompose the operating values (cash is the same on every tier, added after).
-    dec = decompose(tuple(v - cps * lam for v in (L, M, H)), (pe["L"], pe["M"], pe["H"]))
+    dec = decompose(tuple(v - cps * lam for v in (L, M, H)), (pe_today["L"], pe_today["M"], pe_today["H"]))
 
     # ---- Step 7: reconcile against the stated Outputs ----
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -537,20 +595,28 @@ def main() -> int:
         + f"{e27_op:.3f} = "
         + "/".join(f"{(1 - b1[t] - inp['payout_3y']) * e27_op:.2f}" for t in TIERS)
     )
+    print(
+        f"steady return {inp['ss_return']:.1%} (_AXIS.inp-laser ss_return_inp; per tier min(RONIC, it)) · high-return"
+        f" window Y1 {y1} / Y2 {y2} · tau {tau:g} (V_op / 1.1^tau) · window profit PV "
+        + "/".join(f"{window(roe[t]):.2f}" for t in TIERS)
+    )
     for t in TIERS:
         print(
-            f"{t}: E_op {e_op[t]:.4f} (EPS {eps[t]:.4f} - {ips:.4f}) x {pe[t]:.2f}x = {e_op[t] * pe[t]:.2f}"
-            f" + C_ex {cps:.2f} = {e_op[t] * pe[t] + cps:.2f}  [perpetual_pe, payout {1 - b1[t]:.3f}]"
+            f"{t}: E_op {e_op[t]:.4f} (EPS {eps[t]:.4f} - {ips:.4f}) x {pe[t]:.2f}x (FY28 opening, path) / 1.1^{tau:g}"
+            f" = {e_op[t] * pe[t] / (1 + r) ** tau:.2f} + window {window(roe[t]):.2f} + C_ex {cps:.2f}"
+            f" = {(L, M, H)[TIERS.index(t)]:.2f}  [today {pe_today[t]:.2f}x, payout {1 - b1[t]:.3f}]"
         )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    pe_c_today = (cand[2] - cps * lam) / (eps_c - ips)
     print(
         f"candidate (A19, guide {inp['eps_fy28_guide']:g} -> H' only): "
-        f"L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}  [E_op {eps_c - ips:.3f} x {pe_c:.2f}x + {cps:.2f}, RONIC {roe_c:.4f}]"
+        f"L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}  [E_op {eps_c - ips:.3f} x {pe_c:.2f}x path, RONIC {roe_c:.4f}]"
     )
-    flags = {t: "" if in_band(pe[t]) else " OUT" for t in TIERS}
+    flags = {t: "" if in_band(pe_today[t]) else " OUT" for t in TIERS}
     print(
-        f"guardrail (③ asserts M only): multiples L {pe['L']:.2f}{flags['L']} / M {pe['M']:.2f}{flags['M']}"
-        f" / H {pe['H']:.2f}{flags['H']}x (H' {pe_c:.2f}{'' if in_band(pe_c) else ' OUT'}x) vs own band "
+        f"guardrail (③ asserts M only; today's operating value / operating profit): multiples L {pe_today['L']:.2f}{flags['L']}"
+        f" / M {pe_today['M']:.2f}{flags['M']} / H {pe_today['H']:.2f}{flags['H']}x"
+        f" (H' {pe_c_today:.2f}{'' if in_band(pe_c_today) else ' OUT'}x) vs own band "
         f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (operating; C_ex(t) = 0 at both edge dates, A17 / A24);"
         f" operating on FY27 basis M {(M - cps) / (eps27_adj - ips):.1f}x H {(H - cps) / (eps27_adj - ips):.1f}x"
     )
@@ -561,23 +627,22 @@ def main() -> int:
             f"band-edge implied g @ RONIC_{t} {roe[t]:.3f}: [{g_lo:+.2%}{'' if ok_lo else ' (ill-conditioned)'}, "
             f"{g_hi:+.2%}{'' if ok_hi else ' (ill-conditioned)'}] — g2 {g2:.2%} inside: {g_lo <= g2 <= g_hi}"
         )
-    print(f"flat-multiple ladder @ M {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print(f"flat-multiple ladder @ M today {pe_today['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
         f"L/M {L / M:.3f} (operating {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f})"
         f" | H/M {H / M:.3f} (operating {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f})"
         f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}"
     )
     print(
-        f"option (A22): normal OPM {inp['opm_inp_normal']:.4f} (FY19-22 {inp['opi_ng_fy19_22']:.1f}/{inp['rev_fy19_22']:.1f})"
-        f" x op->net {op_to_net:.4f} [{nm_cons:.4f}/{inp['om_lite_model']:g}] = NM {opt_q['H'][1]:.4f};"
-        f" g2_gso {g_opt:.2%} -> PE_opt M {pe_opt['M']:.2f} / H {pe_opt['H']:.2f}"
-        f" (shortage-era g2 {g2:.0%}: {pe['M']:.2f} / {pe['H']:.2f})"
+        f"option (A22): OPM path {inp['opm_inp_shortage']:.4f} (shortage, through Y1 {y1}) -> {inp['opm_inp_normal']:.4f}"
+        f" (normal, FY19-22 {inp['opi_ng_fy19_22']:.1f}/{inp['rev_fy19_22']:.1f}, from Y2 {y2}) x op->net {op_to_net:.4f}"
+        f" [{nm_cons:.4f}/{inp['om_lite_model']:g}]; first-year NM M {opt_q['M'][1]:.4f} / H {opt_q['H'][1]:.4f};"
+        f" g2_gso {g_opt:.2%}; path factor (per unit of revenue x op->net) M {pe_opt['M']:.3f} / H {pe_opt['H']:.3f}"
     )
     print(
-        f"  L 0 | M 1 fab ${fab_rev / 1e6:.1f}M x NM {opt_q['M'][1]:.4f} x (1-SBC) = {inc_k['M']:.4f}/sh"
-        f" x {pe_opt['M']:.2f} / {1 + r:g}^{int(inp['t_opt']) - NUM_YEAR} = {v_gross_k['M']:.2f}"
-        f" | H full ${inp['gso_rev_full'] / 1e9:.1f}B x NM {opt_q['H'][1]:.4f}"
-        f" x (1-SBC) = {inc_k['H']:.4f}/sh x {pe_opt['H']:.2f} / {1 + r:g}^{int(inp['t_opt_h']) - NUM_YEAR} = {v_gross_k['H']:.2f}"
+        f"  L 0 | M 1 fab ${fab_rev / 1e6:.1f}M (FY{int(inp['t_opt'])}) first-year {inc_k['M']:.4f}/sh -> at FY28 {v_gross_k['M']:.2f}"
+        f" | H full ${inp['gso_rev_full'] / 1e9:.1f}B (FY{int(inp['t_opt_h'])}) first-year {inc_k['H']:.4f}/sh -> at FY28 {v_gross_k['H']:.2f};"
+        f" net of capital, / 1.1^{tau:g} to today"
     )
     print(
         f"  unspent capital: floor {k_ps:.2f}/sh [(${inp['gso_k_budget'] / 1e6:.0f}M - ${inp['gso_k_spent'] / 1e6:.0f}M) over FY{k_years[0]}-FY{k_years[-1]}, to FY{NUM_YEAR} at r];"
@@ -587,25 +652,20 @@ def main() -> int:
         f" p_k {p_k['L']:.4f}/{p_k['M']:.4f}/{p_k['H']:.4f} -> zone+V {opt_band[0]:.2f}/{opt_band[1]:.2f}/{opt_band[2]:.2f}"
         f" A'={a_opt:.2f} B'={b_opt:.2f}"
     )
-    def v_alt(t: str, nm: float, mult: float) -> float:
+    def v_alt(t: str, m_from: float, m_to: float) -> float:
         rev_t, _, yr = opt_q[t]
-        return rev_t * nm * haircut / shares * mult / (1.0 + r) ** (yr - NUM_YEAR) - k_k[t]
+        f = path_value(int(yr), y1, y2, inp["ss_return"], g_opt, roe[t], r, m_from, m_to)
+        return (rev_t * op_to_net * haircut / shares * f / (1.0 + r) ** (yr - NUM_YEAR) - k_k[t]) / (1.0 + r) ** tau
 
-    nm_short = inp["opm_inp_shortage"] * op_to_net
+    print(f"  alt: H capital = $600M floor only -> V_H {v_h_floor:.2f} (p_M {v_k['M'] / v_h_floor:.4f})")
+    sh_m = inp["opm_inp_shortage"]
     print(
-        f"  alt: H capital = $600M floor only -> V_H {v_h_floor:.2f} (p_M {v_k['M'] / v_h_floor:.4f});"
-        f" H realised FY29 (undiscounted 2nd yr) -> V_H {inc_k['H'] * pe_opt['H'] / (1 + r) - k_k['H']:.2f}"
-    )
-    print(
-        "  sens (shortage persists past 2027): V_M/V_H at shortage NM "
-        f"{nm_short:.4f} + g2 {g2:.0%} = {v_alt('M', nm_short, pe['M']):.2f}/{v_alt('H', nm_short, pe['H']):.2f}"
-        f" (H = the pre-rework V_H; old M used the FY28 consensus NM); normal NM + g2 {g2:.0%}"
-        f" = {v_alt('M', opt_q['M'][1], pe['M']):.2f}/{v_alt('H', opt_q['H'][1], pe['H']):.2f};"
-        f" FY28 consensus NM {nm_cons:.4f} + g2_gso = {v_alt('M', nm_cons, pe_opt['M']):.2f}/{v_alt('H', nm_cons, pe_opt['H']):.2f}"
+        f"  sens margin: shortage margin held forever -> V_M/V_H {v_alt('M', sh_m, sh_m):.2f}/{v_alt('H', sh_m, sh_m):.2f};"
+        f" normal margin from the start (old step reading) -> {v_alt('M', inp['opm_inp_normal'], inp['opm_inp_normal']):.2f}"
+        f"/{v_alt('H', inp['opm_inp_normal'], inp['opm_inp_normal']):.2f}"
     )
     for lo_opm, tag in ((0.205, "FY19 trough-of-normal 20.5%"), (0.105, "COHR Networking FY22 GAAP segment 10.5%")):
-        nm_lo = lo_opm * op_to_net
-        print(f"  sens normal OPM {tag}: V_M/V_H = {v_alt('M', nm_lo, pe_opt['M']):.2f}/{v_alt('H', nm_lo, pe_opt['H']):.2f}")
+        print(f"  sens normal OPM {tag}: V_M/V_H = {v_alt('M', sh_m, lo_opm):.2f}/{v_alt('H', sh_m, lo_opm):.2f}")
     fy27_axis = {
         "L": L,
         "M": val(eps27_adj),
@@ -630,10 +690,9 @@ def main() -> int:
     mix = []
     for t in TIERS:
         roe_mix = (eps[t] - ips) / (bps0 / (1.0 - g_mix * unbooked / eps[t]) - cps)
-        mix.append(
-            (eps[t] - ips) * ((1 - s_sys) * perpetual_pe(g2, roe_mix, r) + s_sys * perpetual_pe(g_p, roe_mix, r))
-            + cps * lam
-        )
+        pe_mix = ((1 - s_sys) * path_value(NUM_YEAR, y1, y2, inp["ss_return"], g2, roe_mix, r)
+                  + s_sys * path_value(NUM_YEAR, y1, y2, inp["ss_return"], g_p, roe_mix, r))
+        mix.append((eps[t] - ips) * pe_mix / (1 + r) ** tau + window(roe_mix, g_mix) + cps * lam)
     print(f"  sens Systems {s_sys:.1%} of EPS at module g2 {g_p:.2%} (bias bound, A16): {mix[0]:.2f}/{mix[1]:.2f}/{mix[2]:.2f}")
     for f in (0.9, 1.1):
         e = eps["M"] * f
@@ -644,14 +703,15 @@ def main() -> int:
     for k in (0.45, 0.573, 0.60):
         e = eps27_adj * k
         print(f"  sens k_l={k}: L {val(e):.2f}")
-    eq_fy28 = inp["equity"] + (inp["eps_fy27"] + inp["eps_fy28_m"]) * shares
-    roe_m28 = e_op["M"] * shares / (eq_fy28 - c_ex)
-    print(
-        f"  sens equity at FY28-end book {eq_fy28 / 1e9:.1f}B (RONIC_M {roe_m28:.3f}):"
-        f" M {e_op['M'] * perpetual_pe(g2, roe_m28, r) + cps * lam:.2f} (not adopted)"
-    )
-    disc = [(v - cps * lam) / 1.1 + cps * lam for v in (L, M, H)]  # cash is today's, not discounted
-    print(f"  discounted 1y reference (operating /1.1 + C_ex): {disc[0]:.1f}/{disc[1]:.1f}/{disc[2]:.1f} (not adopted)")
+    for rs_alt in (0.15, 0.20):
+        alt = []
+        for t in TIERS:
+            ronic_ = tier(eps[t])[0]
+            pe_alt = path_value(NUM_YEAR, y1, y2, rs_alt, g2, ronic_, r)
+            alt.append((eps[t] - ips) * pe_alt / (1 + r) ** tau + window(ronic_) + cps * lam)
+        print(f"  sens steady return {rs_alt:.0%}: {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+    pre = [e_op[t] * perpetual_pe(g2, roe[t], r) + cps * lam for t in TIERS]
+    print(f"  pre-correction reference (forward RONIC forever, no timing): {pre[0]:.2f}/{pre[1]:.2f}/{pre[2]:.2f}")
     att = {t: optical_attachment(opt_rev[t], t) for t in TIERS}
     print(
         "optical narrow (A14): rev L/M/H = "

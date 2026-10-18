@@ -28,10 +28,38 @@ scenario prints a negative EPS, so L = FY27 opening book per share.  Every
 anchor then takes the holder-optimal lower of the diluted and the debt reading
 of the 2030 convertible (A20).
 
-Option (A13): ELSFP named capacity x Raymond James low price x the
-`_AXIS.inp-laser` normal-period margin and g (realised 2028 > shortage end
-2027), valued on this ticker's ruler at H, discounted one year at the journey
-rate, less full-capacity capital.  p_L / p_M / p_H are constants, never Inputs.
+Steady return three segments (valuation-rules「经营价值与超额现金」② 稳态回报三段,
+2026-10-16 框架纠正, A23): the whole company rides `_AXIS.pluggable-module`'s
+ss_return_plug / y1_plug / y2_plug (module assembly, medium barrier): forward
+ROE through Y1 2028, linear to min(forward, 18%) at Y2 2032, Gordon tail after
+(gordon.py's three-segment function is [待建], so `path_value` lives here).
+k 0.19 stays (user 2026-10-16: the basket-pair rule's mandatory "never arrives"
+discount on the whole operating value is a named rule object) and is re-derived
+on the path multiples.
+
+Timing alignment (valuation-rules ③, A24): the Gordon value sits at the FY27
+opening (2027-01-01); tau = balance-sheet date 2026-06-30 -> 0.5 year,
+discounted at the JOURNEY rate (basket pair: the tau leg uses r_j).  L is the
+asset floor (book at the FY27 opening) and is not moved.
+
+Growth-period funding gap (valuation-rules ①, A25; user 2026-10-18 delegated
+the reading to the assistant): G = H2-2026 capex (H1 PP&E purchases repeated)
++ the H1 equipment prepayment once - H2 operating cash flow read as H2
+consensus NI + D&A (H1 actual D&A).  With a gap the window distributable profit
+is 0 (OCF already holds the window profit).  Cash is not carried at face value
+(C_ex < 0, no separate row), so only the part of G the usable cash cannot pay
+(G - (extended net cash ex-convertible - operating cash anchor 0), floored at
+0) is deducted per share as a debt-like item from M / H (and the candidate
+band), before the holder-optimal convertible step.
+
+Option (A13): ELSFP named capacity x Raymond James low price x a margin that
+fades along the `_AXIS.inp-laser` laser-chip high-return window (shortage
+margin through y1_inp 2029, linear to the normal margin at y2_inp 2035; user
+2026-10-16, no step at t_shortage_end) with g2_inp_laser_normal and the
+new-investment return fading from ROE_H to ss_return_inp, valued on this
+ticker's ruler at H, discounted one year at the journey rate, less
+full-capacity capital, then tau to today.  p_L / p_M / p_H are constants,
+never Inputs.
 
 Run:  python3 frameworks/eval/AAOI.US.py
 """
@@ -53,10 +81,8 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_k_declared,
     check_transition_years,
-    payout,
     payout_gap,
     perpetual_pe,
-    two_stage_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -90,7 +116,44 @@ REQUIRED = [
     "k_l", "k_m", "k_h", "payout_obs", "elsfp_units_month", "elsfp_price", "t_opt",
     "tax_opt", "ebit_margin_inp_normal", "g2_inp_laser_normal", "t_shortage_end",
     "cap_intensity", "rj_eps_runrate", "rj_eps_runrate_hi",
+    "ss_return", "y1", "y2", "tau", "ebit_margin_inp_peer", "ss_return_opt", "y1_opt", "y2_opt",
+    "cash_h1", "bank_debt", "bank_accept", "lease_liab", "cash_anchor",
+    "capex_h1", "prepay_h1", "da_h1", "ocf_h1", "fab4_contract",
 ]
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float,
+               g1: float = 0.0, n: int = 0, m_from: float = 1.0, m_to: float = 1.0) -> float:
+    """Gordon multiple on next-period earnings with the three-segment RONIC path; t = 1 <->
+    year t0.  Optional n transition years at g1 (payout 1 - g1/ROE, uncapped).  For the option
+    leg the unit margin rides the same path (m_from through Y1, linear to m_to at Y2) and the
+    result is per unit of revenue x (1 - tax); the main ruler uses m_from = m_to = 1."""
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(int(n)):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        m = _lin(cal, y1, y2, m_from, m_to)
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * m * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * m * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def first_float(pattern: str, text: str) -> float | None:
@@ -131,8 +194,14 @@ def sanity(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         e.append("FY27 consensus range must be ordered low < mean < high")
     if not (0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] < 1):
         e.append("k must satisfy 0 <= k_L <= k_M <= k_H < 1 (cyclical)")
-    if inp["t_opt"] <= inp["t_shortage_end"]:
-        e.append("t_opt inside the shortage period: the option must take the shortage margin, not the normal one")
+    if not (NUM_YEAR <= inp["y1"] < inp["y2"]):
+        e.append("main-ruler high-return window must satisfy numerator year <= Y1 < Y2 (A23)")
+    if not (inp["y1_opt"] < inp["y2_opt"]):
+        e.append("option high-return window must satisfy Y1 < Y2 (A13)")
+    if inp["ebit_margin_inp_normal"] >= inp["ebit_margin_inp_peer"]:
+        e.append("normal margin must sit below the shortage-era margin (_AXIS.inp-laser §1b)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        e.append("tau out of range (A24)")
     if inp["t_opt"] <= NUM_YEAR:
         e.append("option realisation year must lie after the numerator year")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
@@ -152,12 +221,21 @@ def main() -> int:
         return report(errors)
     baskets = parse_baskets(md)
     errors = sanity(inp, baskets)
-    errors += axis_check(AXIS_PLUG, {"g2": "g2_pluggable"}, inp, "_AXIS.pluggable-module")
+    errors += axis_check(AXIS_PLUG, {"g2": "g2_pluggable", "ss_return": "ss_return_plug",
+                                     "y1": "y1_plug", "y2": "y2_plug"}, inp, "_AXIS.pluggable-module")
     errors += axis_check(AXIS_LASER, {
         "ebit_margin_inp_normal": "ebit_margin_inp_normal",
+        "ebit_margin_inp_peer": "ebit_margin_inp_peer",
         "g2_inp_laser_normal": "g2_inp_laser_normal",
         "t_shortage_end": "t_shortage_end",
+        "ss_return_opt": "ss_return_inp",
+        "y1_opt": "y1_inp",
+        "y2_opt": "y2_inp",
     }, inp, "_AXIS.inp-laser")
+    y0, y1, y2, rs = NUM_YEAR, int(inp["y1"]), int(inp["y2"]), inp["ss_return"]
+
+    def pp(g: float, roe: float, r: float) -> float:  # main-ruler path multiple (A23)
+        return path_value(y0, y1, y2, rs, g, roe, r)
 
     sh, g2 = inp["shares_dil"], inp["g2"]
     sbc_ps = 4 * inp["sbc_q2"] / sh
@@ -179,9 +257,36 @@ def main() -> int:
                 break
             bps = nxt
         roe = e / bps
-        return bps, roe, perpetual_pe(g, roe, r)
+        return bps, roe, pp(g, roe, r)
 
     r_j, r_t = inp["r_journey"], inp["r_terminal"]
+    tau = inp["tau"]
+    w_ps = inp["ni_h2_cons"] / sh  # H2-2026 consensus NI not yet booked (A24)
+
+    # ---- Growth-period funding gap (A25) ----
+    # Extended net cash ex-convertible (the convertible is handled by lower_of); restricted cash out.
+    cash_free = (inp["cash_h1"] + inp["atm_post"] * (1 - inp["atm_fee"]) - inp["bank_debt"]
+                 - inp["bank_accept"] - inp["lease_liab"] - inp["cash_anchor"])
+    ocf_h2 = inp["ni_h2_cons"] + inp["da_h1"]
+    capex_h2 = inp["capex_h1"] + inp["prepay_h1"]  # H1 pace repeated + the prepayment once
+
+    def short_ps(g_gap: float, cash: float = cash_free, shares: float = sh) -> float:
+        return max(0.0, g_gap - cash) / shares
+
+    gap = max(0.0, capex_h2 - ocf_h2)
+    gap_ps = short_ps(gap)
+    c_ex = cash_free - gap
+    if c_ex >= 0.15 * eq0:
+        errors.append(f"C_ex {c_ex:.1f} >= 15% of equity — excess cash must be listed (A25)")
+    if gap_ps > 0 and c_ex >= 0:
+        errors.append("gap deduction while C_ex >= 0 — cash pays the gap, deduct nothing")
+
+    def timed(pre_k: float, g: float, roe: float, rj: float, gps: float | None = None) -> float:
+        """A24 / A25: FY27-opening value -> today at the journey rate; window profit only when
+        there is no funding gap (OCF already holds it); less the unfunded gap per share."""
+        gps = gap_ps if gps is None else gps
+        win = 0.0 if gap > 0 else w_ps * (1 - min(1.0, max(0.0, g / roe))) * (1 + rj) ** (-tau / 2)
+        return pre_k * (1 + rj) ** (-tau) + win - gps
     k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
     eps = {"M": inp["eps_fy27_m"] - sbc_ps, "H": inp["eps_fy27_h"] - sbc_ps}
 
@@ -197,8 +302,8 @@ def main() -> int:
         for t in ("M", "H"):
             bps, roe, pe = tier(eps[t], g, rt)
             pre = eps[t] * pe
-            out[t] = lower_of(pre * (1 - ks[t]))
-            info[t] = (bps, roe, pe, perpetual_pe(g, roe, rj), pre)
+            out[t] = lower_of(timed(pre * (1 - ks[t]), g, roe, rj))
+            info[t] = (bps, roe, pe, pp(g, roe, rj), pre)
         return out, info
 
     anchors, info = band(r_j, r_t)
@@ -218,21 +323,27 @@ def main() -> int:
         errors.append("flat ladder: M >= H at the M multiple (A2e-2c)")
 
     # ---- Option (A13) ----
+    # Unit margin and new-investment return fade along the laser-chip window (A13, user 2026-10-16).
     rev_opt = 12 * inp["elsfp_units_month"] * inp["elsfp_price"]  # 百万 USD (百万只 x USD)
-    ni_opt = rev_opt * inp["ebit_margin_inp_normal"] * (1 - inp["tax_opt"])
-    eps_opt = ni_opt / sh
     roe_h = info["H"][1]
-    pe_opt = perpetual_pe(inp["g2_inp_laser_normal"], roe_h, r_t)
-    val_t = eps_opt * pe_opt * (1 - k["H"])
+    t_o = int(inp["t_opt"])
+    m0 = _lin(t_o, int(inp["y1_opt"]), int(inp["y2_opt"]), inp["ebit_margin_inp_peer"], inp["ebit_margin_inp_normal"])
+    ni_opt = rev_opt * m0 * (1 - inp["tax_opt"])  # first-year NI on the path
+    eps_opt = ni_opt / sh
+    path_opt = path_value(t_o, int(inp["y1_opt"]), int(inp["y2_opt"]), inp["ss_return_opt"],
+                          inp["g2_inp_laser_normal"], roe_h, r_t,
+                          m_from=inp["ebit_margin_inp_peer"], m_to=inp["ebit_margin_inp_normal"])
+    pe_opt = path_opt / m0  # multiple on the first-year EPS, for the printout
+    val_t = rev_opt * (1 - inp["tax_opt"]) / sh * path_opt * (1 - k["H"])
     disc = (1 + r_j) ** (inp["t_opt"] - NUM_YEAR)
     capital = rev_opt * inp["cap_intensity"] / sh
-    v_opt = val_t / disc - capital
+    v_opt = (val_t / disc - capital) * (1 + r_j) ** (-tau)  # FY27 opening -> today (A24)
     plus_v = tuple(x + p * v_opt for x, p in zip((L, M, H), P_TIERS))
 
     def v_at(price: float) -> float:
         rv = 12 * inp["elsfp_units_month"] * price
-        return (rv * inp["ebit_margin_inp_normal"] * (1 - inp["tax_opt"]) / sh * pe_opt
-                * (1 - k["H"]) / disc - rv * inp["cap_intensity"] / sh)
+        return ((rv * (1 - inp["tax_opt"]) / sh * path_opt * (1 - k["H"]) / disc
+                 - rv * inp["cap_intensity"] / sh) * (1 + r_j) ** (-tau))
 
     # ---- Candidate band (A19): RJ run-rate as one FY28 transition year ----
     # A capacity run-rate is a level, not a growth rate: M′ reaches the midpoint, H′ is
@@ -242,7 +353,8 @@ def main() -> int:
     cand = {"L": L}
     for t in ("M", "H"):
         roe = info[t][1]
-        cand[t] = lower_of(eps[t] * two_stage_pe(g1_by[t], 1, g2, roe, r_t) * (1 - k[t]))
+        pe_c = path_value(y0, y1, y2, rs, g2, roe, r_t, g1=g1_by[t], n=1)
+        cand[t] = lower_of(timed(eps[t] * pe_c * (1 - k[t]), g1_by[t], roe, r_j))  # b = g1/ROE > 1 -> window 0
     if not cand["L"] < cand["M"] < cand["H"]:
         errors.append("candidate band not ordered")
 
@@ -252,6 +364,11 @@ def main() -> int:
     said_v = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
     if said_v is None or abs(said_v - v_opt) > TOL:
         errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
+    gl = re.search(r"增长期资金缺口 G = \*\*([0-9.]+)\*\*.*?每股 \*\*([0-9.]+)\*\*", out_sec)
+    if gl is None:
+        errors.append("funding-gap line (增长期资金缺口 G = **…** … 每股 **…**) not found in Outputs")
+    elif abs(float(gl.group(1)) - gap) > 0.5 or abs(float(gl.group(2)) - gap_ps) > TOL:
+        errors.append(f"funding gap: stated {gl.groups()} vs recomputed G {gap:.1f} / {gap_ps:.3f}")
     p_line = re.search(r"p_L/p_M/p_H\\\) = \*\*([0-9.]+) / ([0-9.]+) / ([0-9.]+)\*\*", out_sec)
     if p_line is None or tuple(float(x) for x in p_line.groups()) != P_TIERS:
         errors.append(f"Outputs p_L/p_M/p_H must state {P_TIERS}")
@@ -272,7 +389,7 @@ def main() -> int:
     print(f"L: scenario EPS {eps_l_scn:.3f} (< 0) -> floor {floor:.2f} -> holder-optimal {L:.2f}")
     for t in ("M", "H"):
         bps, roe, pe, pe_j, pre = info[t]
-        mod, gap = payout_gap(g2, roe, inp["payout_obs"])
+        mod, _ = payout_gap(g2, roe, inp["payout_obs"])
         print(f"{t}: EPS {eps[t]:.4f} BPS {bps:.2f} ROE {roe:.3f} PE {pe:.2f} (PE@journey {pe_j:.2f}, "
               f"k derived {FAIL_SHARE * (1 - pe_j / pe):.3f}) -> {pre:.2f} x (1-k {k[t]}) = {pre * (1 - k[t]):.2f}"
               f" -> holder-optimal {anchors[t]:.2f}  [payout_gap: model {mod:.1%} vs paid {inp['payout_obs']:.0%}]")
@@ -282,10 +399,12 @@ def main() -> int:
     num_hm = eps["H"] / eps["M"]
     print(f"L/M {L / M:.3f} (num n/a, floor) | H/M {H / M:.3f} = num {num_hm:.3f} x rest {H / M / num_hm:.3f}"
           f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"ELSFP option: rev {rev_opt:.0f} x margin {inp['ebit_margin_inp_normal']} x (1-{inp['tax_opt']}) = NI {ni_opt:.1f}"
-          f" -> EPS {eps_opt:.3f} x PE {pe_opt:.2f} (g {inp['g2_inp_laser_normal']:.0%}, ROE_H {roe_h:.3f},"
-          f" payout {payout(inp['g2_inp_laser_normal'], roe_h):.3f}) x (1-k_H) = {val_t:.2f} / {disc:.2f} = {val_t / disc:.2f}"
-          f" - capital {capital:.2f} = V_opt {v_opt:.2f}")
+    print(f"ELSFP option: rev {rev_opt:.0f} x first-year margin {m0:.4f} (path {inp['ebit_margin_inp_peer']} through"
+          f" {int(inp['y1_opt'])} -> {inp['ebit_margin_inp_normal']} at {int(inp['y2_opt'])}) x (1-{inp['tax_opt']})"
+          f" = NI {ni_opt:.1f} -> EPS {eps_opt:.3f} x PE {pe_opt:.2f} (g {inp['g2_inp_laser_normal']:.0%},"
+          f" ROE_H {roe_h:.3f} -> {min(roe_h, inp['ss_return_opt']):.3f}) x (1-k_H) = {val_t:.2f} / {disc:.2f}"
+          f" = {val_t / disc:.2f} - capital {capital:.2f} = {val_t / disc - capital:.2f} (at FY27 opening)"
+          f" / {1 + r_j:.2f}^{tau:g} = V_opt {v_opt:.2f}")
     print(f"  +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}  A' {(plus_v[0] + plus_v[1]) / 2:.2f}"
           f" B' {(plus_v[1] + plus_v[2]) / 2:.2f}; price $750 -> {v_at(750):.2f}, $1000 -> {v_at(1000):.2f}")
     print(f"candidate (RJ run-rate level: M -> {inp['rj_eps_runrate']} g1 {g1_by['M']:+.1%}, H capped at "
@@ -307,7 +426,7 @@ def main() -> int:
         bps, roe, pe, _, _ = info[t]
         sotp = (eps[t] * (1 - s) * pe * (1 - k[t])
                 + eps[t] * s * perpetual_pe(0.0, roe, inp["r_catv_cross"]))
-        v = lower_of(sotp)
+        v = lower_of(timed(sotp, g2, roe, r_j))
         print(f"CATV split cross {t}: share {s:.3f} at r {inp['r_catv_cross']:g} g 0 -> {v:.2f} ({v / anchors[t] - 1:+.1%})")
     # Third ATM fully drawn (A1): ~$600M at ~$120 -> +5.0M shares; consensus EPS diluted pro rata.
     atm3, px = 600 * (1 - inp["atm_fee"]), 120.0
@@ -316,7 +435,22 @@ def main() -> int:
     vals = []
     for t in ("M", "H"):
         bps, roe, pe = tier(dil[t], g2, r_t, atm3, sh3)
-        vals.append(pe * dil[t] * (1 - k[t]))
+        vals.append(timed(pe * dil[t] * (1 - k[t]), g2, roe, r_j, short_ps(gap, cash_free + atm3, sh3)))
+    print(f"funding gap (A25): capex H2 {inp['capex_h1']} + prepayment {inp['prepay_h1']} = {capex_h2:.1f}"
+          f" - OCF H2 (NI {inp['ni_h2_cons']} + D&A {inp['da_h1']}) {ocf_h2:.1f} = G {gap:.1f};"
+          f" usable cash {cash_free:.1f} -> C_ex {c_ex:.1f}; unfunded {max(0.0, gap - cash_free):.1f}"
+          f" / {sh} = {gap_ps:.2f}/share; window profit 0")
+
+    def gap_sens(label: str, gps: float) -> None:
+        b_ = {t: lower_of(timed(eps[t] * info[t][2] * (1 - k[t]), g2, info[t][1], r_j, gps)) for t in ("M", "H")}
+        print(f"  sens gap {label}: deduct {gps:.2f}/share -> {L:.2f}/{b_['M']:.2f}/{b_['H']:.2f}")
+
+    ocf_obs = inp["ocf_h1"]
+    gap_sens(f"H1 actual OCF {ocf_obs} repeated (G {capex_h2 - ocf_obs:.1f})", short_ps(capex_h2 - ocf_obs))
+    gap_sens(f"prepayment not counted (G {inp['capex_h1'] - ocf_h2:.1f})", short_ps(inp["capex_h1"] - ocf_h2))
+    gap_sens(f"full G {gap:.1f}, cash not netted", gap / sh)
+    gap_sens(f"Houston FAB4 {inp['fab4_contract']} moved to the option capital (G {gap - inp['fab4_contract']:.1f})",
+             short_ps(gap - inp["fab4_contract"]))
     print(f"  sens 3rd ATM fully drawn (+{600 / px:.1f}M sh, +{atm3:.0f} equity): "
           f"floor {(eq0 + atm3 + inp['ni_h2_cons']) / sh3:.2f} M {vals[0]:.2f} H {vals[1]:.2f} (pre-convertible)")
 

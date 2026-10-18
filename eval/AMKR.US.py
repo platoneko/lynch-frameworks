@@ -17,12 +17,22 @@ at b1 = g2/ROE, A6).  After-tax net interest is stripped from the numerator,
 net debt (incl. leases and the 0% 2031 convertible at par, A11) is a closing
 item, and the Arizona phase-1 capital not yet earning in FY27 is charged at
 (ROIC_proj / r - 1) x net capital as a second closing item (D bucket, A10).
-FY27 = current FY + 1: no discount.
+
+Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金」, A18):
+  * steady-state-return path (② 稳态回报三段): RONIC = tier forward ROE through
+    Y1 = FY2027 (visible end), linear to the steady 15% (OSAT, user-set) by
+    Y2 = 2031 (barrier 中 -> 4 years), capped at the tier's forward value;
+  * time alignment (③): the Gordon value sits at the start of FY27; today =
+    V_op / (1+r)^tau + window distributable profit (FY26H2 unbooked core EPS x
+    (1 - b1), at tau/2), tau = 2026-06-30 -> 2027-01-01 = 0.5;
+  * the deemed-distribution k is dropped (it multiplied the whole operating value).
+anchor_x = core_x x path_pe x (1+r)^-tau + window_x + closing.
 
 V_opt: the count comes only from a quantity Amkor itself named — the 2030
 revenue target less the FY27 consensus revenue already priced in H (A16).
 Unit economics = FY27 mean-consensus core earnings per revenue dollar; valued
-at the H multiple in 2030 and discounted back three years at the basket r.
+at the H path multiple (folded by tau) in 2030 and discounted back three years
+at the basket r.
 
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
 here reads one.
@@ -46,9 +56,7 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
     g_cap,
-    implied_g,
     payout_gap,
-    perpetual_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -73,12 +81,42 @@ PEER_PE_SAME_RULER = (18.65, 20.33)  # A12 ⑤: PTI / ASE at r 10%, g 6% (KYEC 1
 REQUIRED = [
     "shares", "shares_out", "equity", "cash", "debt", "lease_fin", "lease_op", "net_cash",
     "int_q", "tax", "eps_fy26_m", "eps_h1_26", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
-    "payout_3y", "r_perp", "g2", "g_peer_median", "g_peer_low", "k_l", "k_m", "k_h",
+    "payout_3y", "r_perp", "g2", "g_peer_median", "g_peer_low",
     "az_rev", "az_gm", "opex_ratio", "az_tax", "az_capex", "az_itc", "az_grant",
     "mgmt_rev_2030", "mgmt_eps_2030", "rev_fy27_m", "rev_fy27_h", "t_opt", "t_num",
     "pb_low", "band_pe_min", "band_pe_max",
+    "tau", "y1", "y2", "rs_steady",
 ]
 TIERS = ("L", "M", "H")
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+
+    Calendar years, t = 1 is the numerator year t0; the retention of year c earns from c+1.
+    RONIC = the tier's forward value through Y1, falls linearly to the steady value R_s by Y2,
+    and stays there (R_s capped at the tier's forward value).  With R_s >= forward this is
+    exactly perpetual_pe(g, roe, r)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / rs_eff) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g / ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -110,10 +148,15 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if abs(nc - inp["net_cash"]) > 0.05:
         errs.append(f"net_cash {inp['net_cash']} != cash - debt - leases {nc:.1f} (A5)")
 
-    # A10: deemed-distributed discount k, per tier, cyclical ordering.
-    ks = (inp["k_l"], inp["k_m"], inp["k_h"])
-    if not all(0.0 <= k < 1.0 for k in ks) or not ks[0] <= ks[1] <= ks[2]:
-        errs.append(f"k_l/k_m/k_h = {ks} must lie in [0,1) with k_H >= k_M >= k_L (A10)")
+    # A18: the steady-state-return path and the time alignment.
+    if not int(inp["t_num"]) <= int(inp["y1"]) < int(inp["y2"]):
+        errs.append("need t_num <= y1 < y2 (A18)")
+    if not inp["r_perp"] <= inp["rs_steady"]:
+        errs.append("rs_steady must not fall below r (A18)")
+    if not 0.0 <= inp["tau"] < 2.0:
+        errs.append(f"tau {inp['tau']} out of range (A18)")
+    if any(k in inp for k in ("k_l", "k_m", "k_h")):
+        errs.append("k_* rows present — the k on the whole operating value was dropped (A18)")
 
     # A10: Arizona capital nets positive after credits and grants.
     if not inp["az_capex"] > inp["az_itc"] + inp["az_grant"] > 0:
@@ -147,7 +190,8 @@ def main() -> int:
     r, g2 = inp["r_perp"], inp["g2"]
     cap = g_cap(r)
     street = {"L": inp["eps_fy27_l"], "M": inp["eps_fy27_m"], "H": inp["eps_fy27_h"]}
-    k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
+    tau, t0 = inp["tau"], int(inp["t_num"])
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
 
     # ---- Step 1: core EPS with the after-tax net interest stripped (A5) ----
     int_ps = inp["int_q"] * 4 * (1.0 - inp["tax"]) * MILLION / inp["shares"]
@@ -171,14 +215,24 @@ def main() -> int:
             raise ValueError(f"book roll diverges: g·N/core = {share:.2f} >= 1 (BLOCKED-by-rule)")
         return bps0 / (1.0 - share)
 
+    def gordon_today(g: float, roe_x: float, rr: float) -> float:
+        """Path Gordon at the start of FY27 folded back tau years (no window)."""
+        return path_pe(g, roe_x, rr, t0, y1, y2, rs) * (1.0 + rr) ** -tau
+
+    def window(g: float, roe_x: float, rr: float) -> float:
+        """FY26H2 unbooked core EPS x (1 - b1), floored at 0, at tau/2 (A18)."""
+        return max(n_unbooked * (1.0 - g / roe_x), 0.0) * (1.0 + rr) ** -(tau / 2)
+
     def deck(g: float, rr: float) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
         bps_ = {t: opening_bps(core[t], g) for t in TIERS}
         roe_ = {t: core[t] / bps_[t] for t in TIERS}
-        pe_ = {t: perpetual_pe(g, roe_[t], rr) for t in TIERS}
-        val = {t: core[t] * pe_[t] * (1.0 - k[t]) + closing for t in TIERS}
+        # today's operating multiple: path Gordon folded by tau + window per unit of core EPS
+        pe_ = {t: gordon_today(g, roe_[t], rr) + window(g, roe_[t], rr) / core[t] for t in TIERS}
+        val = {t: core[t] * pe_[t] + closing for t in TIERS}
         return bps_, roe_, pe_, val
 
     bps, roe, pes, scen = deck(g2, r)
+    win = {t: window(g2, roe[t], r) for t in TIERS}
     b1 = {t: g2 / roe[t] for t in TIERS}
     ret_actual = 1.0 - inp["payout_3y"]
     excess_cash = {t: (ret_actual - b1[t]) * n_unbooked for t in TIERS}  # disclosure only
@@ -221,7 +275,17 @@ def main() -> int:
     core_margin = core["M"] * inp["shares"] / (inp["rev_fy27_m"] * MILLION)
     d_core = d_rev * MILLION * core_margin / inp["shares"]
     years = inp["t_opt"] - inp["t_num"]
-    v_opt = d_core * pes["H"] / (1.0 + r) ** years
+    # A16 (2026-10-19): the option is valued in its realisation year on that year's return path --
+    # the H path is calendar (Y1 2027 / Y2 2031), so by 2030 three quarters of the fall is done.
+    # The increment is the same packaging business already shipping at scale, so no fresh period.
+    # Was gordon_today (the FY27-start multiple), which priced 2030 earnings at 2027 returns.
+    t_opt = int(inp["t_opt"])
+    pe_opt = path_pe(g2, roe["H"], r, t_opt, y1, y2, rs) * (1.0 + r) ** -tau
+    pe_opt_fy27 = gordon_today(g2, roe["H"], r)
+    v_opt = d_core * pe_opt / (1.0 + r) ** years
+    v_opt_fy27 = d_core * pe_opt_fy27 / (1.0 + r) ** years
+    if pe_opt > pe_opt_fy27 + 1e-12:
+        errors.append("option multiple at t_opt above the FY27-start multiple -- the fall cannot restart")
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     meta = load_framework(FRAMEWORK)
@@ -244,12 +308,14 @@ def main() -> int:
     for t in TIERS:
         modelled, gap = payout_gap(g2, roe[t], inp["payout_3y"])
         print(f"{t}: street {street[t]:.4f} -> core {core[t]:.4f}  BPS_op {bps[t]:.3f}  ROE {roe[t]:.4f}  "
-              f"payout {modelled:.3f} (paid {inp['payout_3y']:.3f}, gap {gap:+.3f})  PE {pes[t]:.4f}x -> "
-              f"{ex_close[t]:.4f} x (1-k {k[t]:g}) + closing = {scen[t]:.4f}")
+              f"payout {modelled:.3f} (paid {inp['payout_3y']:.3f}, gap {gap:+.3f})  today PE {pes[t]:.4f}x "
+              f"(path Gordon {gordon_today(g2, roe[t], r) * core[t]:.4f} + window {win[t]:.4f}) + closing = {scen[t]:.4f}")
+    print(f"path (A18): forward ROE through Y1 {y1}, linear to R_s {rs:.0%} (capped at forward) by Y2 {y2}; "
+          f"tau {tau:g}, window = FY26H2 unbooked x (1 - b1) at tau/2")
     print(f"ROE basis (A6): op BPS 2026-06-30 {bps0:.3f} rolled over FY26H2 unbooked {n_unbooked:.4f}/sh at b1 "
           f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}")
-    print(f"deemed-distributed cash (actual retention {ret_actual:.0%} − b1) × FY26H2 unbooked → "
-          f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (k = 0; disclosure only)")
+    print(f"retained beyond the model (actual retention {ret_actual:.0%} − b1) × FY26H2 unbooked → "
+          f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (no k; disclosure only)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+closing): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"③ same-earnings band [{inp['band_pe_min']:g}, {inp['band_pe_max']:g}]x; PE_M {pes['M']:.2f}x above the band (not 出带)")
@@ -267,18 +333,24 @@ def main() -> int:
     no_az = [scen[t] - az_ps for t in TIERS]
     print(f"without the Arizona charge: {no_az[0]:.2f}/{no_az[1]:.2f}/{no_az[2]:.2f}")
     print(f"V_opt={v_opt:.2f} = (target {inp['mgmt_rev_2030']:g}M - FY27 H consensus {inp['rev_fy27_h']:g}M = {d_rev:g}M) "
-          f"x core margin {core_margin:.2%} = dEPS {d_core:.4f} x PE_H {pes['H']:.2f}x = {d_core * pes['H']:.2f} / {1 + r:g}^{years:g}")
+          f"x core margin {core_margin:.2%} = dEPS {d_core:.4f} x PE_H(path @{t_opt}, tau) {pe_opt:.2f}x = {d_core * pe_opt:.2f} / {1 + r:g}^{years:g}"
+          f"  (FY27-start multiple {pe_opt_fy27:.2f}x, pre-2026-10-19 read: {v_opt_fy27:.2f})")
     c30 = inp["mgmt_eps_2030"] - int_ps
     print(f"V_opt cross-check on the target EPS (company margin, not used): ({c30:.4f} - H {core['H']:.4f}) x PE_H / "
-          f"{1 + r:g}^{years:g} = {(c30 - core['H']) * pes['H'] / (1.0 + r) ** years:.2f}")
+          f"{1 + r:g}^{years:g} = {(c30 - core['H']) * pe_opt / (1.0 + r) ** years:.2f}")
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
     for tp in (65.0, 73.5, 92.0):
-        g_tp, ok = implied_g((tp - closing) / core["M"], roe["M"], r)
-        print(f"street TP {tp:g} on this ruler (A17): implied perpetual g {g_tp:.4f}{'' if ok else ' (ill-conditioned)'}")
+        target = (tp - closing) / core["M"]
+        lo_g, hi_g = -0.30, r - 1e-4
+        for _ in range(200):
+            mid = (lo_g + hi_g) / 2
+            v = gordon_today(mid, roe["M"], r) + window(mid, roe["M"], r) / core["M"]
+            lo_g, hi_g = (mid, hi_g) if v < target else (lo_g, mid)
+        print(f"street TP {tp:g} on this ruler (A17): implied perpetual g {(lo_g + hi_g) / 2:.4f} (same path, book held)")
 
     # r_f readings (_AXIS.rates): Δr_f moves r_perp 1:1; the Arizona charge is held at the basket r.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        s = [core[t] * perpetual_pe(g2, roe[t], r + dr) * (1.0 - k[t]) + closing for t in TIERS]
+        s = [core[t] * (gordon_today(g2, roe[t], r + dr) + window(g2, roe[t], r + dr) / core[t]) + closing for t in TIERS]
         return s[0], s[1], s[2]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)

@@ -21,7 +21,15 @@ g_cap(r) (A7), r = 10% basket 4 常规经营 (A8), and tier ROE = FY27 core EPS
 over the FY27 OPENING operating book: book equity less net cash and the
 Technoprobe carrying value at 2026-06-28, rolled over the FY26 second half
 not yet booked at the growth-required retention b1 = g2/ROE (A9).
-FY27 = current FY + 1: no discount.
+Stable-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段): the
+retention of calendar year c earns the tier's forward ROE while c <= y1, fades
+linearly to the stable return ronic_ss by y2, and earns ronic_ss from y2 on
+(ronic_ss = own full-cycle return, same formula as the forward ROE; L's forward
+sits below it and keeps its own).  Time alignment (③): the Gordon value sits at
+the FY27 opening (t_n), so it is discounted tau years back to the 2026-06-28
+balance-sheet date and the FY26H2 window's distributable profit
+N x (1 - b1) x parent share is added at tau/2.  Parent share also scales the
+net-cash row (①「归母份额」).
 
 V_opt = 0 (A12: management's undated target model sits inside FY27
 consensus; market sizes are TAM, not named quantities).  One candidate band
@@ -50,8 +58,7 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     g_cap,
     implied_g,
-    perpetual_pe,
-    two_stage_pe,
+    payout,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -81,6 +88,43 @@ REQUIRED = [
 ]
 TIERS = ("L", "M", "H")
 CANDIDATE_TIERS = ("M", "H")  # A13: the L world carries no transition growth
+REQUIRED += ["t0", "y1", "y2", "ronic_ss", "tau", "minority"]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float,
+            g1: float = 0.0, n: int = 0) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path.
+
+    Year t = 1 is calendar t0 (the numerator year).  n transition years at g1 keep
+    the forward ROE and the unfloored b1 = g1/ROE (as `two_stage_pe`).  Then at g:
+    the retention of calendar c earns ROE while c <= y1, fades linearly to the
+    stable return by y2, and the stable return from y2 on (Gordon tail).  The stable
+    return is capped at the tier's forward ROE and floored at r.  With ROE <= stable
+    the path is flat and this equals `perpetual_pe` / `two_stage_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -156,8 +200,9 @@ def main() -> int:
     strip = int_ps + tp_eps
     core = {t: street[t] - strip for t in TIERS}
 
-    # ---- Step 2: closing items per share ----
-    cash_ps = inp["net_cash"] * MILLION / sh
+    # ---- Step 2: closing items per share (net cash x parent share, ①「归母份额」) ----
+    parent = inp["equity"] / (inp["equity"] + inp["minority"])
+    cash_ps = inp["net_cash"] * MILLION / sh * parent
     tp_after = inp["tp_fv"] - (inp["tp_fv"] - inp["tp_book"]) * inp["tp_tax"]
     tp_ps = tp_after * MILLION / sh
     closing = cash_ps + tp_ps
@@ -176,11 +221,19 @@ def main() -> int:
             raise ValueError(f"book roll diverges: g·N/core = {share:.2f} >= 1 (BLOCKED-by-rule)")
         return bps0 / (1.0 - share)
 
-    def deck(g: float, rr: float) -> tuple[dict, dict, dict, dict]:
+    t0, y1, y2, rs, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"], inp["tau"]
+
+    def window(roe_x: float, g: float, rr: float) -> float:
+        """FY26H2 distributable profit N x (1 - b1) x parent, discounted tau/2 (③ 时点对齐)."""
+        return n_unbooked * max(1.0 - g / roe_x, 0.0) * parent / (1 + rr) ** (tau / 2)
+
+    def deck(g: float, rr: float, rs_: float | None = None) -> tuple[dict, dict, dict, dict]:
+        rs_ = rs if rs_ is None else rs_
         bps = {t: opening_bps(core[t], g) for t in TIERS}
         roe_ = {t: core[t] / bps[t] for t in TIERS}
-        pe_ = {t: perpetual_pe(g, roe_[t], rr) for t in TIERS}
-        val = {t: core[t] * pe_[t] * (1.0 - k[t]) + closing for t in TIERS}
+        pe_ = {t: path_pe(g, roe_[t], rr, t0, y1, y2, rs_) for t in TIERS}
+        val = {t: core[t] * pe_[t] * (1.0 - k[t]) / (1 + rr) ** tau + window(roe_[t], g, rr) + closing
+               for t in TIERS}
         return bps, roe_, pe_, val
 
     bps, roe, pes, scen = deck(g2, r)
@@ -196,10 +249,10 @@ def main() -> int:
     # ---- A2e-2c flat ladder + decomposition ----
     if not (core["L"] < core["M"] < core["H"]):
         errors.append(f"numerator ladder broken: core EPS {core['L']:.3f}/{core['M']:.3f}/{core['H']:.3f} (A2e-2c)")
-    flat = [core[t] * pes["M"] + closing for t in TIERS]
+    flat = [core[t] * pes["M"] / (1 + r) ** tau + window(roe[t], g2, r) + closing for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
-    ex_close = {t: core[t] * pes[t] for t in TIERS}
+    ex_close = {t: scen[t] - closing for t in TIERS}
 
     # ---- ③ guardrail not applicable (no same-earnings months, A10): reconciliation coordinates ----
     e_over_r = core["M"] / r + closing
@@ -219,8 +272,8 @@ def main() -> int:
         share = g1 * n_unbooked / core[t]
         bps_c = bps0 / (1.0 - share)
         roe_c = core[t] / bps_c
-        cand_pe[t] = two_stage_pe(g1, 1, g2, roe_c, r)
-        cand[t] = core[t] * cand_pe[t] * (1.0 - k[t]) + closing
+        cand_pe[t] = path_pe(g2, roe_c, r, t0, y1, y2, rs, g1=g1, n=1)
+        cand[t] = core[t] * cand_pe[t] * (1.0 - k[t]) / (1 + r) ** tau + window(roe[t], g2, r) + closing
     if not cand["L"] < cand["M"] < cand["H"]:
         errors.append(f"candidate band not ordered: {cand}")
 
@@ -242,12 +295,16 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}")
     print(f"r={r:g} (篮 {baskets.get('r_perp')}) g2={g2:.4f} (peer median {inp['g_peer_median']:.4f} truncated to g_cap(r) {cap:.3f})")
     print(f"strip from street EPS: interest {int_ps:.4f} + Technoprobe pick-up {tp_eps:.4f} = {strip:.4f}/sh")
-    print(f"closing: net cash {cash_ps:.4f} + Technoprobe after tax {tp_ps:.4f} "
+    print(f"path: forward ROE through {y1}, linear fade to stable {rs:.1%} by {y2} (t0 {t0}); tau {tau} "
+          f"(Gordon value at FY27 opening -> 2026-06-28); parent share {parent:.4f}")
+    print("window FY26H2 N x (1 - b1) x parent, PV: " + " / ".join(f"{window(roe[t], g2, r):.2f}" for t in TIERS))
+    print(f"closing: net cash x parent {cash_ps:.4f} + Technoprobe after tax {tp_ps:.4f} "
           f"(fv {inp['tp_fv']:g}M - ({inp['tp_fv']:g} - {inp['tp_book']:g}) x {inp['tp_tax']:g} = {tp_after:.1f}M) = {closing:.4f}/sh")
     print(f"operating equity {equity_op:.3f}M -> BPS0 {bps0:.4f}; FY26H2 unbooked core {n_unbooked:.4f}/sh")
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> core {core[t]:.4f}  BPS_op {bps[t]:.3f}  ROE {roe[t]:.4f}  "
-              f"payout {1 - b1[t]:.3f}  PE {pes[t]:.4f}x -> {ex_close[t]:.4f} x (1-k {k[t]:g}) + closing = {scen[t]:.4f}")
+              f"payout {1 - b1[t]:.3f}  PE(path) {pes[t]:.4f}x -> core x PE / 1.1^tau + window {ex_close[t]:.4f} "
+              f"(k {k[t]:g}) + closing = {scen[t]:.4f}")
     print(f"deemed-distributed cash (actual retention {ret_actual:.1%} − b1) × FY26H2 unbooked → "
           f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (k = 0; disclosure only)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -274,8 +331,8 @@ def main() -> int:
     # r_f readings (_AXIS.rates): Δr_f moves r_perp 1:1 — the only priced r; the
     # rolled ROE, g2, core numerator and closing items stay put.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        s = [core[t] * perpetual_pe(g2, roe[t], r + dr) * (1.0 - k[t]) + closing for t in TIERS]
-        return s[0], s[1], s[2]
+        _, _, _, s = deck(g2, r + dr)
+        return s["L"], s["M"], s["H"]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

@@ -70,7 +70,7 @@ REQUIRED = [
     "m_center_total", "np_parent_fy25", "np_total_fy25",
     "m_h", "np_h_4q", "kg_h_4q",
     "bps", "r_perp", "g2", "pe_band_min", "pe_band_max",
-    "k_l", "k_m", "k_h", "m_consensus_2027", "payout_fy25", "pb_low_5y",
+    "m_consensus_2027", "payout_fy25", "pb_low_5y",
     "cost_full", "price_realized_2024", "m_center_clear",
 ]
 
@@ -123,9 +123,11 @@ def main() -> int:
     if extra:
         errors.append(f"only r_perp may carry a 篮 N tag; also found {extra} (AGENTS.md 篮子声明)")
     errors += check_g_cap(inp["g2"], r, "g2")
-    ks = (inp["k_l"], inp["k_m"], inp["k_h"])
-    if not (ks[2] >= ks[1] >= ks[0]):
-        errors.append(f"cyclical k must satisfy k_H >= k_M >= k_L, got {ks}")
+    # No discount k (A20): the old k = 0 sat on the modelled-as-distributed retention, which
+    # valuation-rules「经营价值与超额现金」④ moves to λ (= 1 here); the row is removed, not zeroed.
+    leaked_k = sorted(k for k in inp if k in ("k_l", "k_m", "k_h"))
+    if leaked_k:
+        errors.append(f"discount k rows must not reappear (A20): {leaked_k}")
 
     # --- numerator: margin per kg x kg / shares -------------------------------------
     # Steady-state volume is the policy sow cap times measured output per sow (A2).
@@ -150,8 +152,6 @@ def main() -> int:
 
     # --- anchors ---------------------------------------------------------------------
     L, M, H, pe_m = band(eps, roe_m, r, inp["g2"])
-    k_after = (L * (1 - ks[0]), M * (1 - ks[1]), H * (1 - ks[2]))
-    L, M, H = k_after
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
     A, B = cut_points(L, M, H)
@@ -210,7 +210,8 @@ def main() -> int:
           f"ROE_M {roe_m:.2%} (monotone, ROE-r {roe_m - r:+.1%}); PE_M {pe_m:.3f}x")
     for t, lab in (("L", "worst 4Q 2021Q3-2022Q2"), ("M", "center 1.2/kg x 归母转化"), ("H", "best 4Q 2024Q3-2025Q2")):
         print(f"{t}: {lab:26} m={m[t]:+.4f}/kg  EPS={eps[t]:+.4f}")
-    print(f"k L/M/H = {ks[0]:g}/{ks[1]:g}/{ks[2]:g} (retention bucket A)")
+    print("no discount k (A20); excess cash not split (net debt), timing alignment n/a "
+          "(center numerator; L / H explicit paths from the valuation date)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} V_opt/M 0 | "
           f"分子比 L={eps['L'] / eps['M']:.3f} H={eps['H'] / eps['M']:.3f}")

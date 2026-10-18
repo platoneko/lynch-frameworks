@@ -41,8 +41,21 @@ other ticker's.  This script recomputes the band, the 降篮 path and the
 band-edge δ (表2′), and prints the ③ verdict as a diagnostic.
 
 The street's EV/EBIT read (JPM 13x / HSBC 14x on OCI EBIT) is recomputed as a
-cross-check only.  Net debt is taken at face at the start of FY28 and the
-mandatory convertible preferred at its liquidation preference (A11).
+cross-check only.  The mandatory convertible preferred is taken at its
+liquidation preference (A11).
+
+Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
+correction 2026-10-16):
+  * time alignment (③): both legs are valued at the FY2028 opening (2027-06-01);
+    discounted tau = 0.75 years to the 2026-08-31 balance sheet -- software and the
+    non-OpenAI OCI sub-leg at their basket r, the OpenAI sub-leg at its journey
+    basket r_oci_open.  The closure is today's net debt (no roll to FY28).
+  * growth-period funding gap (①): rest-FY27 capex beyond rest-FY27 OCF, times the
+    parent share, deducted as a debt-like item -- the capacity starts at FY28 and
+    its output is in the numerator year.  With a gap the window profit is 0.
+  * stable-return path (②): the software leg retains at its forward ROE through
+    y1, fading linearly to ronic_ss_sw by y2 (fallback 30%).  The OCI D-bucket
+    leg has no perpetual g, so the path does not touch it.
 
 Run:  python3 frameworks/eval/ORCL.US.py
 """
@@ -184,7 +197,45 @@ REQUIRED = [
     "pe_own_max",
     "xchk_ev_ebit_low",
     "xchk_ev_ebit_high",
+    "tau",
+    "t0",
+    "y1",
+    "y2",
+    "ronic_ss_sw",
+    "equity_parent_aug",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  The retention of calendar c earns the forward return
+    while c <= y1, fades linearly to the stable return by y2, and the stable return
+    from y2 on.  Stable return capped at the forward return and floored at r; a flat
+    path equals `perpetual_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
+
+
 R_FIELDS = ("r_perp", "r_oci_non", "r_oci_open", "r_oci_open_t")
 
 TIERS = ("l", "m", "h")
@@ -298,6 +349,8 @@ def main() -> int:
     sh = inp["shares_fy28"]
     n_win = int(inp["window_years"])
     share_open = inp["rpo_share_openai"]
+    t0, y1, y2, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
+    sw_disc = (1 + r) ** tau  # ③ FY2028 opening -> 2026-08-31
 
     # ---- Step 1: software annuity leg, FY28E numerator (A4/A5) ----
     def rev_sw(years: int) -> float:
@@ -314,10 +367,12 @@ def main() -> int:
         nopat = ebit * keep
         ic = (inp["equity_aug"] + inp["debt_aug"] - inp["cash_aug"]) - inp["oci_ppe_now"]
         roe = nopat / ic
-        return nopat, ic, roe, perpetual_pe(g_sw, roe, r)
+        # ② forward ROE through y1, fading to the 30% fallback by y2.
+        return nopat, ic, roe, path_pe(g_sw, roe, r, t0, y1, y2, inp["ronic_ss_sw"])
 
     nopat_sw, ic_sw, roe_sw, pe_sw_m = software_leg(inp["oci_gm_est"], inp["g2_sw"])
-    v_sw = nopat_sw * pe_sw_m
+    v_sw = nopat_sw * pe_sw_m / sw_disc
+    pe_sw_flat = perpetual_pe(inp["g2_sw"], roe_sw, r)  # disclosure: no fade
     oci_contrib_fy26 = inp["oci_rev_fy26"] * inp["oci_gm_est"] - inp["sm_total_fy26"] * inp["oci_sm_share"]
     sw_margin_pct = (inp["seg_margin_fy26"] - oci_contrib_fy26) / rev_sw_fy26
 
@@ -409,6 +464,9 @@ def main() -> int:
         kr = k_remain[t] if kr is None else kr
         bn, wn = sub_leg(k * (1 - share), r_n, r_n, roe, kr * (1 - share), True, n)
         bo, wo = sub_leg(k * share, r_ot, r_o, roe, kr * share, open_window[t], n, 1.0 - kl)
+        # ③ valued at the FY2028 opening; tau back at each sub-leg's road rate.
+        dn, do = (1 + r_n) ** tau, (1 + r_o) ** tau
+        bn, wn, bo, wo = bn / dn, wn / dn, bo / do, wo / do
         return {"base_non": bn, "win_non": wn, "base_open": bo, "win_open": wo, "total": bn + wn + bo + wo}
 
     parts = {t: oci_value(t) for t in TIERS}
@@ -418,10 +476,15 @@ def main() -> int:
             errors.append(f"OCI value {t.upper()} = {v_oci[t]:.0f} <= 0 — the OCI leg must not be negative (A6)")
 
     # ---- Step 5: closing item (A11) ----
+    # Today's net debt and preferred (no roll to FY28); the rest-FY27 capex beyond
+    # OCF is the ① growth-period funding gap x parent share, debt-like.  Dividends
+    # paid after the valuation date are not added back (the price is ex-dividend).
     net_debt_aug = inp["debt_aug"] - inp["cash_aug"]
     burn_rest_fy27 = inp["capex_rest_fy27"] - inp["ocf_rest_fy27"] + inp["div_rest_fy27"]
-    net_debt_fy28 = net_debt_aug + burn_rest_fy27
-    closure = -(net_debt_fy28 + inp["pref_liq"])
+    parent = inp["equity_parent_aug"] / inp["equity_aug"]
+    gap = max(inp["capex_rest_fy27"] - inp["ocf_rest_fy27"], 0.0) * parent
+    net_debt_fy28 = net_debt_aug + burn_rest_fy27  # old roll, disclosure only
+    closure = -(net_debt_aug + inp["pref_liq"] + gap)
 
     def per_share(v_oci_leg: float, v_sw_leg: float = v_sw, close: float = closure, shares: float = sh) -> float:
         return (v_sw_leg + v_oci_leg + close) / shares
@@ -515,10 +578,16 @@ def main() -> int:
             f"   {v_oci[t] / BN:8.1f}B {v_oci[t] / k_spent:5.2f}x {v_oci[t] / sh:7.2f}"
         )
     print(
-        f"closure: net debt 08-31 {net_debt_aug / BN:.1f}B + rest-FY27 burn {burn_rest_fy27 / BN:.1f}B"
-        f" (capex {inp['capex_rest_fy27'] / BN:.1f} - OCF {inp['ocf_rest_fy27'] / BN:.1f} + div {inp['div_rest_fy27'] / BN:.1f})"
-        f" = {net_debt_fy28 / BN:.1f}B; pref {inp['pref_liq'] / BN:.1f}B -> {closure / sh:.2f}/sh"
+        f"closure: net debt 08-31 {net_debt_aug / BN:.1f}B + pref {inp['pref_liq'] / BN:.1f}B"
+        f" + funding gap (capex {inp['capex_rest_fy27'] / BN:.1f} - OCF {inp['ocf_rest_fy27'] / BN:.1f}) x parent {parent:.4f}"
+        f" = {gap / BN:.2f}B ({gap / sh:.2f}/sh) -> {closure / sh:.2f}/sh; window profit 0 (gap present)"
+        f" | old FY28 roll {net_debt_fy28 / BN:.1f}B (disclosure)"
         f" | depreciation lag capex_q1/dep_q1 = {inp['capex_q1'] / inp['dep_q1']:.1f}x (A10)"
+    )
+    print(
+        f"tau {tau} (2026-08-31 -> FY2028 opening; software + OCI non-OpenAI at {r:.0%}, OpenAI at journey {r_open:.0%});"
+        f" software path t0 {t0} y1 {y1} y2 {y2}: ROE {roe_sw:.1%} -> stable {min(roe_sw, max(inp['ronic_ss_sw'], r)):.1%},"
+        f" PE {pe_sw_m:.2f}x (no fade {pe_sw_flat:.2f}x)"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print("  leg $/sh   software(PE)   oci nonOpenAI   oci OpenAI   closure     total")
@@ -587,9 +656,12 @@ def main() -> int:
     print(f"sensitivity K_spent net-of-prepay {k_net / BN:.1f}B (x{k_net / k_spent:.2f}, ROE_proj unchanged): {fmt(band_at(k=k_net))}")
     for dg in G_SW_SENSITIVITY:
         n_, _, _, pe_ = software_leg(inp["oci_gm_est"], inp["g2_sw"] + dg)
-        print(f"sensitivity g_sw={inp['g2_sw'] + dg:.1%}: software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_):.2f}")
+        print(f"sensitivity g_sw={inp['g2_sw'] + dg:.1%}: software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_ / sw_disc):.2f}")
     n_, _, _, pe_ = software_leg(inp["oci_gm_est"], G_SW_PEER)
-    print(f"sensitivity g_sw peer-implied {G_SW_PEER:.2%} (A5, not adopted): software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_):.2f}")
+    print(f"sensitivity g_sw peer-implied {G_SW_PEER:.2%} (A5, not adopted): software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_ / sw_disc):.2f}")
+    print(f"sensitivity software stable-return path off (ROE {roe_sw:.1%} permanent): M {per_share(v_oci['m'], nopat_sw * pe_sw_flat / sw_disc):.2f}")
+    print("sensitivity OCI D-bucket not discounted by tau (not adopted, round-9 ruling): M "
+          f"{per_share(v_oci['m'] * 1.0 + sum(parts['m'][k] * ((1 + (r_non if 'non' in k else r_open)) ** tau - 1) for k in ('base_non', 'win_non', 'base_open', 'win_open'))):.2f}")
     print(
         f"sensitivity net debt ±{NET_DEBT_SENSITIVITY / BN:.0f}B: M = "
         f"{per_share(v_oci['m'], close=closure + NET_DEBT_SENSITIVITY):.2f} / "

@@ -319,7 +319,13 @@ def main() -> int:
         errors.append(f"H-side implied gamma {gamma_band['H']:+.3f} != gamma_pe {inp['gamma_pe']:+.3f} (A6/A15 construction)")
 
     # --- Step 4: anchors -----------------------------------------------------
-    L, M, H = (eps[t] * pe[t] for t in TIERS)
+    L, M, H_persist = (eps[t] * pe[t] for t in TIERS)
+    # A17 (valuation-rules「经营价值与超额现金」② 一致性 / 2026-10-16 裁定): the H tier is the
+    # 2026Q2 peak spread read as passing through (A15 already prices it 峰值后归一).  The peak
+    # holds for one year, then the M world: year-1 earnings EPS_H, retention only what the M
+    # world's growth needs, then the M perpetuity -> H = M + (EPS_H - EPS_M) / (1 + r).  The
+    # persistent-peak reading H_persist stays the construction that spaces M (elasticity, A15).
+    H = M + (eps["H"] - eps["M"]) / (1.0 + r)
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
     # 校验步骤 7: H guarded on the anchor side too (A5).
@@ -388,16 +394,18 @@ def main() -> int:
     lo, hi = inp["g_print_h"], g_cap(r)
     for _ in range(60):
         mid = (lo + hi) / 2
-        if eps["M"] * perpetual_pe(mid, roe["M"], r) < H:
+        # upper evidence edge: M must stay under the persistent-peak reading it is spaced from (A15)
+        if eps["M"] * perpetual_pe(mid, roe["M"], r) < H_persist:
             lo = mid
         else:
             hi = mid
     hi_g = lo
+    h_excess = (eps["H"] - eps["M"]) / (1.0 + r)   # H passes through: H = M + one year's excess (A17)
     lever = []
     for g in (lo_g, 0.03, g2["M"], hi_g):
         m_g = eps["M"] * perpetual_pe(g, roe["M"], r)
         l_g = eps["L"] * perpetual_pe(g, roe["L"], r)
-        a_g, b_g = cut_points(l_g, m_g, H)
+        a_g, b_g = cut_points(l_g, m_g, m_g + h_excess)
         lever.append((g, l_g, m_g, a_g, b_g))
 
     # --- report --------------------------------------------------------------
@@ -441,6 +449,8 @@ def main() -> int:
         f"带隐含 gamma H={gamma_band['H']:+.3f} (= 实测 {inp['gamma_pe']:+.3f}), L={gamma_band['L']:+.3f} (ROE 门, 同向)"
     )
     d = decompose((L, M, H), (pe["L"], pe["M"], pe["H"]))
+    print(f"H 路过 (A17): persistent-peak H {H_persist:.2f} (spaces M only) -> H = M + (EPS_H - EPS_M)/(1+r) "
+          f"= {M:.2f} + ({eps['H']:.4f} - {eps['M']:.4f})/{1 + r:.2f} = {H:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder (A2e-2c, all tiers at PE_M={pe['M']:.3f}): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(
@@ -449,7 +459,7 @@ def main() -> int:
         f"| 倍数比 L={d['pe_lm']:.4f} H={d['pe_hm']:.4f}"
     )
     print("g 杠杆 (7b): " + " | ".join(
-        f"g_M {g:+.2%}: {l_g:.1f}/{m_g:.1f}/{H:.1f} A {a_g:.1f} B {b_g:.1f}" for g, l_g, m_g, a_g, b_g in lever
+        f"g_M {g:+.2%}: {l_g:.1f}/{m_g:.1f}/{m_g + h_excess:.1f} A {a_g:.1f} B {b_g:.1f}" for g, l_g, m_g, a_g, b_g in lever
     ))
     print(
         f"V_opt (A9) = {inp['opt_cap']:.0f}万吨 x {inp['opt_price']:.0f}/(1+{inp['vat']}) = {opt_rev_yi:.2f}亿 x "
@@ -483,10 +493,12 @@ def main() -> int:
         leg: inp[f"rev_{leg}"] * 0.01 * 2.0 * inp["conv"] * YI / inp["shares"] * pe["M"]
         for leg in ("pu", "pc", "nm")
     }
-    sens_h = [eps["H"] * perpetual_pe(g2["H"] + dg, roe["H"], r) for dg in (-0.01, 0.01)]
+    # g_H ±1pp moves the persistent-peak reading, hence M (elasticity spacing), hence H = M + excess.
+    sens_m = [eps["H"] * perpetual_pe(g2["H"] + dg, roe["H"], r) * (eps["M"] / eps["H"]) ** b_elastic
+              for dg in (-0.01, 0.01)]
     print(
         f"敏感性 (@PE_M): +1pct PU/PC/NM margin -> anchor {per_pct['pu']:+.2f}/{per_pct['pc']:+.2f}/{per_pct['nm']:+.2f} CNY; "
-        f"g_H ±1pp -> H {sens_h[0]:.2f}/{sens_h[1]:.2f} (M 随 H 折回同步)"
+        f"g_H ±1pp -> M {sens_m[0]:.2f}/{sens_m[1]:.2f}, H {sens_m[0] + h_excess:.2f}/{sens_m[1] + h_excess:.2f}"
     )
     return report(errors)
 

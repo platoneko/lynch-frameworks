@@ -125,7 +125,7 @@ LEG_CN = {"a": "周期装备", "b": "两翼", "c": "燃机"}
 
 REQUIRED = (
     ["ni_cons_fy27_lo", "ni_cons_fy27_mean", "ni_cons_fy27_hi", "ni_cons_fy28_lo", "ni_ttm",
-     "ni_mid5", "disc_years", "payout_obs", "pb_own_min", "m_prev", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
+     "ni_mid5", "tau", "eps_fy26_m", "eps_fy26_h", "ni_h1_26", "payout_obs", "pb_own_min", "m_prev", "shares", "bps", "fx_hkdcny", "r_perp", "equity",
      "net_cash", "tp_street", "leg_c_weight_cap", "ni_trough_fy2024",
      "pe_own_lo", "pe_own_hi", "pe_own_mid", "pe_own_a_mid", "jv_stake",
      "g50_price", "g50_k", "r_disc", "usdcny", "g50_mw",
@@ -211,16 +211,28 @@ def to_hkd(inp: dict[str, float], cny: float) -> float:
 
 
 def disc(inp: dict[str, float], tag: str) -> float:
-    """Discount factor of a tier's numerator: M / H are FY2028E consensus
-    (current FY + 2) -> back one year at the basket r; L is the realised FY2025
-    year and is not discounted (A1 / A9)."""
-    return 1.0 if tag == "l" else (1.0 + inp["r_perp"]) ** inp["disc_years"]
+    """Discount factor of a tier's numerator (valuation-rules「经营价值与超额现金」③ 时点对齐,
+    A22): M / H are FY2028E consensus -> the Gordon value sits at 2028-01-01, back tau years
+    to the balance-sheet date 2026-06-30 at the basket r; L is the realised FY2025 year (a
+    steady-state year that does not drift with the calendar) and is not discounted."""
+    return 1.0 if tag == "l" else (1.0 + inp["r_perp"]) ** inp["tau"]
+
+
+def window_cny(inp: dict[str, float], tag: str) -> float:
+    """Window (2026H2 + FY2027) distributable profit, 亿 CNY, M / H only (A22): unbooked
+    consensus parent profit x (1 - b); b = 0 because the composite g is negative and the
+    multiple caps the payout at 100%.  Discounted at tau/2."""
+    if tag == "l":
+        return 0.0
+    fy26 = inp[f"eps_fy26_{tag}"] * inp["shares"] / 1e8 - inp["ni_h1_26"]
+    fy27 = inp["ni_cons_fy27_mean"] if tag == "m" else inp["ni_cons_fy27_hi"]
+    return (fy26 + fy27) / (1.0 + inp["r_perp"]) ** (inp["tau"] / 2)
 
 
 def incumbent_cny(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
-    """存量三腿 CNY 市值（亿元，已折现）。G50 不进底牌（A2e-7）。"""
+    """存量三腿 CNY 市值（亿元，时点对齐到中报日，含窗口可分配利润）。G50 不进底牌（A2e-7）。"""
     pe = flat_pe if flat_pe is not None else multiple(inp, tag)
-    return inp[f"ni_{tag}"] * pe / disc(inp, tag)
+    return inp[f"ni_{tag}"] * pe / disc(inp, tag) + window_cny(inp, tag)
 
 
 def anchor(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
@@ -276,7 +288,11 @@ def option_parts(inp: dict[str, float], tag: str) -> tuple[float, float]:
     if gross <= 0:
         return 0.0, 0.0
     k = capex_k(inp, tag)
-    return g50 - k * g50 / gross, g200 - k * g200 / gross
+    # Timing (A22): the option's lag puts it at the numerator year's opening like the deck
+    # (lag 0 = 2027-01-01 world of the old t=1, lag 1 = 2028-01-01); the deck moved from a
+    # whole year to tau years, so the option rides the same extra (tau - 1) years.
+    shift = (1.0 + inp["r_disc"]) ** (inp["tau"] - 1.0)
+    return (g50 - k * g50 / gross) / shift, (g200 - k * g200 / gross) / shift
 
 
 def g200_ps(inp: dict[str, float], tag: str) -> float:
@@ -331,7 +347,7 @@ def variant_band(inp: dict[str, float], mode: str) -> tuple[list[float], list[fl
         w = variant_weights(inp, t, mode)
         g = sum(w[leg] * inp[f"g2_{leg}_{t}"] for leg in LEGS)
         pe = perpetual_pe(g, forward_roe(inp, t), inp["r_perp"])
-        anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe / disc(inp, t)))
+        anchors.append(to_hkd(inp, inp[f"ni_{t}"] * pe / disc(inp, t) + window_cny(inp, t)))
         wc.append(w["c"])
     return anchors, wc
 
@@ -553,8 +569,11 @@ def main() -> int:
     # 分子」): M / H are the FY2028E consensus mean / high; the low is a coordinate.
     if not (inp["ni_cons_fy28_lo"] <= inp["ni_m"] < inp["ni_h"]):
         errors.append(f"FY2028E consensus ladder lo {inp['ni_cons_fy28_lo']} <= M {inp['ni_m']} < H {inp['ni_h']} violated")
-    if inp["disc_years"] != 1:
-        errors.append(f"disc_years={inp['disc_years']} — FY2028 = FY2026 + 2 -> back one year")
+    if abs(inp["tau"] - 1.5) > 1e-9:
+        errors.append(f"tau={inp['tau']} — balance-sheet date 2026-06-30 -> numerator-year opening 2028-01-01 is 1.5 years")
+    print(f"timing (A22): M / H ÷(1+r)^{inp['tau']:g} = ÷{disc(inp, 'm'):.4f}; window 2026H2 + FY2027 distributable "
+          f"(b = 0) PV M {window_cny(inp, 'm'):.1f} / H {window_cny(inp, 'h'):.1f} 亿 = "
+          f"{to_hkd(inp, window_cny(inp, 'm')):.3f} / {to_hkd(inp, window_cny(inp, 'h')):.3f} HKD; option x(1+r)^-{inp['tau'] - 1:g}")
     mid_ratio = inp["ni_m"] / inp["ni_mid5"]
     print(f"数据优先级: M/H = FY2028E consensus {inp['ni_cons_fy28_lo']}/{inp['ni_m']}/{inp['ni_h']} 亿 ÷{disc(inp, 'm'):.2f}; "
           f"FY2027E {inp['ni_cons_fy27_lo']}/{inp['ni_cons_fy27_mean']}/{inp['ni_cons_fy27_hi']} (cross); TTM {inp['ni_ttm']}")
@@ -645,7 +664,7 @@ def main() -> int:
     w_m = w["m"]
     g_stress = (w_m["a"] * inp["g2_a_m"] + w_m["b"] * inp["g2_b_m"] + w_m["c"] * stress)
     pe_stress = perpetual_pe(g_stress, forward_roe(inp, "m"), r)
-    m_stress = inp["ni_m"] * pe_stress / disc(inp, "m") * 1e8 / inp["shares"] / fx
+    m_stress = to_hkd(inp, inp["ni_m"] * pe_stress / disc(inp, "m") + window_cny(inp, "m"))
     print(f"腿 C 压力测试：g_C {inp['g2_c_m']:.0%} -> {stress:.0%} 时 M {M:.2f} -> {m_stress:.2f} HKD "
           f"({m_stress / M - 1:+.1%})")
 
@@ -655,7 +674,8 @@ def main() -> int:
         band = []
         for t in TIERS:
             g_d = sum(w[t][leg] * (inp[f"g2_{leg}_{t}"] + delta) for leg in LEGS)
-            band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r) / disc(inp, t)))
+            band.append(to_hkd(inp, inp[f"ni_{t}"] * perpetual_pe(g_d, forward_roe(inp, t), r) / disc(inp, t)
+                               + window_cny(inp, t)))
         print(f"敏感区 三腿 g₂ {delta:+.0%}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}"
               f"  H+V={band[2] + v_opt:.2f}")
 
@@ -683,7 +703,7 @@ def main() -> int:
         gt = sum(w[t][leg] * tiered[leg][i] for leg in LEGS)
         pe_tier.append(perpetual_pe(gt, forward_roe(inp, t), r))
     print(f"被否决口径 分档 g（A −6/−4/−2, B 0/+3/+5, C 0/0/+2）→ PE {pe_tier[0]:.2f}/{pe_tier[1]:.2f}/{pe_tier[2]:.2f} 同向 "
-          f"→ 带 {to_hkd(inp, inp['ni_l'] * pe_tier[0]):.2f}/{to_hkd(inp, inp['ni_m'] * pe_tier[1] / disc(inp, 'm')):.2f}/{to_hkd(inp, inp['ni_h'] * pe_tier[2] / disc(inp, 'h')):.2f}"
+          f"→ 带 {to_hkd(inp, inp['ni_l'] * pe_tier[0]):.2f}/{to_hkd(inp, inp['ni_m'] * pe_tier[1] / disc(inp, 'm') + window_cny(inp, 'm')):.2f}/{to_hkd(inp, inp['ni_h'] * pe_tier[2] / disc(inp, 'h') + window_cny(inp, 'h')):.2f}"
           f"（cyclical 同向倍数，裁决顺序 ⑤ 不采用）")
     print(f"谷底压力坐标 (A1): FY2024 {inp['ni_trough_fy2024']:.2f} 亿 x 1/r = {to_hkd(inp, inp['ni_trough_fy2024'] / r):.2f} HKD")
     print(f"flat-multiple @PE={pe['m']:.2f}: {flat['l']:.2f}/{flat['m']:.2f}/{flat['h']:.2f}")

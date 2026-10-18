@@ -113,8 +113,23 @@ def leg_value(s: dict[str, float], g2: float, r_es: float, r_spec: float) -> tup
     return s["eps_es"] * pe_es, s["eps_spec"] * pe_spec, pe_es, pe_spec
 
 
+def h_passby(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float) -> tuple[float, float]:
+    """A15: the lithium axis H tier passes through — on the lithium (ES) leg only.  The ES leg
+    holds the H world for one year, then the M world, at its own r:
+    [E_H x payout(g2, ROE_H) + V_M x (1 + g2)] / (1 + r_es).  The Specialties leg (bromine and the
+    other non-lithium businesses) is not on the lithium axis and stays in its own H world: its H
+    value is the persistent H-tier value (user 2026-10-18; it previously followed the company ROE
+    and the EBITDA-weighted closing item down the lithium pass-by)."""
+    vm = leg_value(S["m"], g2, r_es, r_spec)
+    h = S["h"]
+    es = (h["eps_es"] * payout(g2, h["roe"]) + vm[0] * (1 + g2)) / (1 + r_es)
+    sp = leg_value(h, g2, r_es, r_spec)[1]
+    return es, sp
+
+
 def band(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float) -> tuple[float, float, float]:
-    return tuple(sum(leg_value(S[t], g2, r_es, r_spec)[:2]) for t in ("l", "m", "h"))  # type: ignore[return-value]
+    l, m = (sum(leg_value(S[t], g2, r_es, r_spec)[:2]) for t in ("l", "m"))
+    return l, m, sum(h_passby(S, g2, r_es, r_spec))
 
 
 def main() -> int:
@@ -209,6 +224,9 @@ def main() -> int:
         )
     print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bps, disclosed only, A8)  scenario_L={scenario_L:.2f}  "
           f"floor vs band: {zone_of(floor, L, M, H)}")
+    hp = h_passby(S, g2, r_es, r_spec)
+    print(f"H 路过 (A15): persistent H {legs['h'][0] + legs['h'][1]:.2f} (ES {legs['h'][0]:.2f} / Spec {legs['h'][1]:.2f}) "
+          f"-> ES one year then M world {hp[0]:.2f} / Spec stays in its H world {hp[1]:.2f} = {H:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     blended = tuple(v / e for v, e in zip((L, M, H), eps3))
     for line in tier_report((L, M, H), blended, eps3):

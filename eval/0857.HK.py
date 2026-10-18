@@ -96,12 +96,14 @@ REQUIRED = [
     *SEGS, "op_group_fy25",
     "ni_h1_26", "fcf_fy25", "eps_trough_fy2020", "eps_fy2022",
     "px_same_p25", "px_same_med", "px_same_p75", "pb_own_med", "pb_own_min",
+    "tau",
 ]
 # Reference rows: present in Inputs, never in an anchor path (校验步骤 11).
+# eps_cons_fy26_mean and ni_h1_26 now feed the window distributable profit (A17) and are out of this list.
 NOT_FORMULA = (
     "crude_fy25", "ep_slope_reg_lo", "ep_slope_reg_hi", "pe_own_med", "g_peer_us",
-    "eps_cons_fy26_mean", "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi", "tp_cons_h",
-    "ni_h1_26", "fcf_fy25", "eps_trough_fy2020", "eps_fy2022",
+    "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi", "tp_cons_h",
+    "fcf_fy25", "eps_trough_fy2020", "eps_fy2022",
     "px_same_p25", "px_same_med", "px_same_p75", "pb_own_med", "pb_own_min",
 )
 
@@ -262,11 +264,34 @@ def main() -> int:
                 per_share(base * share["seg_rc"]) / r["r_rc"],
                 per_share(base * share["seg_mk"]) / r["r_mk"])
 
-    def band(r: dict[str, float] = r_leg, g: float = inp["g2_m"], b: float = inp["b_growth"], **kw) -> tuple[float, float, float]:
-        return tuple(sum(legs_at(t, r, g, b, **kw)) for t in TIERS)  # type: ignore[return-value]
+    # Time alignment (valuation-rules「经营价值与超额现金」③, A17): the numerator is FY2027 on the
+    # calendar-tagged「2027 油价 regime」axis -> each leg's Gordon value sits at t_n = 2027-01-01;
+    # valuation date = the 2026-06-30 balance sheet, tau = 0.5 year; each leg discounted at its own r.
+    # Window distributable profit: not-yet-booked 2H26 consensus parent profit (FY26E mean x shares
+    # − 1H26 actual), numerator basis (less half a year of capex_maint_excess), split by M-tier leg
+    # earnings, x (1 − b_leg) (E&P b = b_growth, downstream b = 0), at tau/2.  No growth-period gap.
+    tau = inp["tau"]
+    leg_keys = ("r_perp", "r_ng", "r_rc", "r_mk")
 
-    legs = {t: legs_at(t, r_leg, inp["g2_m"], inp["b_growth"]) for t in TIERS}
-    L, M, H = (sum(legs[t]) for t in TIERS)
+    def window(r: dict[str, float], b: float, beta_x: float = beta, maint: float = inp["capex_maint_excess"]) -> float:
+        base = inp["ni_fy25"]
+        e = (base * share["seg_ep"] + beta_x * (brent["m"] - inp["brent_2025"]) - maint,
+             base * share["seg_ng"], base * share["seg_rc"], base * share["seg_mk"])
+        es = sum(e)
+        prof = inp["eps_cons_fy26_mean"] * shares / MN - inp["ni_h1_26"] - maint / 2
+        bl = (b, 0.0, 0.0, 0.0)
+        return sum(per_share(prof * ek / es) * (1 - bk) / (1 + r[rk]) ** (tau / 2)
+                   for ek, bk, rk in zip(e, bl, leg_keys))
+
+    def band(r: dict[str, float] = r_leg, g: float = inp["g2_m"], b: float = inp["b_growth"], **kw) -> tuple[float, float, float]:
+        w = window(r, b, **kw)
+        return tuple(sum(v / (1 + r[rk]) ** tau for v, rk in zip(legs_at(t, r, g, b, **kw), leg_keys)) + w
+                     for t in TIERS)  # type: ignore[return-value]
+
+    legs = {t: tuple(v / (1 + r_leg[rk]) ** tau for v, rk in zip(legs_at(t, r_leg, inp["g2_m"], inp["b_growth"]), leg_keys))
+            for t in TIERS}
+    win_ps = window(r_leg, inp["b_growth"])
+    L, M, H = band()
     if not (L < M < H):
         return report(errors + [f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}"])
     A, B = cut_points(L, M, H)
@@ -289,7 +314,7 @@ def main() -> int:
 
     # --- Step 5: 纠正对账门 coordinates (M moved > 25% from v2 10.51) ----------
     zero_g = band(g=0.0, b=0.0)
-    r_vw = sum(v * r_leg[leg] for v, leg in zip(legs["m"], LEGS)) / M
+    r_vw = sum(v * r_leg[leg] for v, leg in zip(legs["m"], LEGS)) / sum(legs["m"])  # leg weights only, window excluded
     d1 = payout_fy25 * eps["m"] / fx * (1.0 + inp["g2_m"])
     ddm = d1 / (r_vw - inp["g2_m"])
     bps_hkd = inp["equity"] * MN / shares / fx
@@ -329,6 +354,8 @@ def main() -> int:
     print(f"分部 (FY2025 OP): E&P {share['seg_ep']:.1%} / 天然气 {share['seg_ng']:.1%} / 炼化 {share['seg_rc']:.1%} / 销售 {share['seg_mk']:.1%}; "
           f"四分部 {seg_sum:,.0f} − 集团 {inp['op_group_fy25']:,.0f} = 总部与抵销 {seg_sum - inp['op_group_fy25']:,.0f} (按份额摊入各腿)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    print(f"时点对齐 (A17): τ {tau:g} 年，各腿 ×(1+r)^−τ（13% 腿 {(1.13) ** -tau:.4f}、10% 腿 {(1.10) ** -tau:.4f}）；"
+          f"窗口可分配利润 2H26 = {inp['eps_cons_fy26_mean']} × 股本 − 1H26 {inp['ni_h1_26']:,.0f} − ½ 维持超额 → 每股 {win_ps:.3f} HKD；增长期资金缺口 0")
     d = decompose((L, M, H), (pe_eff["l"], pe_eff["m"], pe_eff["h"]))
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | 分子比 L={d['num_lm']:.3f} H={d['num_hm']:.3f} | 有效倍数比 L={d['pe_lm']:.3f} H={d['pe_hm']:.3f}")
     print("纠正对账门 (v2 M 10.51 → " + f"{M:.2f}, {M / 10.51 - 1:+.0%}): "

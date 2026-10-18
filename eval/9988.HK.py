@@ -48,6 +48,21 @@ r_ala, g2_ecom, H-tier company ROE) in the aligned year + 2 (no timing anchor)
 and discounted back to FY2028 (A19).  No peer multiple is borrowed.  r_ala
 was basket 7 until 2026-10-03 (loss-making / unproven monetisation is no
 basket-7 reason; A20).
+v4 framework correction (2026-10-16, valuation-rules「经营价值与超额现金」, A22):
+  * steady-return path: new-investment return = forward return through
+    y1_ret, linear fade to the steady return by y2_ret, steady from then on
+    (cloud: fallback 15% 有壁垒的重资产; e-com / ALA: platform 30%, capped at the
+    forward ROE so the path is flat).  gordon.py has no three-segment helper
+    yet, so `path_pe` below implements it (same convention as two_stage_pe).
+  * timing: the Gordon legs are the value at the opening of FY2028
+    (2027-04-01) -> x (1+r)^-tau_yr to the 2026-06-30 base date; V_opt too.
+  * growth-period funding gap: Citi FY27E capex over the tau window minus
+    OCF (window consensus NI x 3y OCF/NI), counted only for the share of the
+    20GW plan online by FY2028 year-end (linear base -> end-2032); deducted
+    from net cash at the parent share; with a gap the window distributable
+    profit is 0 (else unbooked op. profit x (1 - b1), discounted tau/2).
+  * net cash x parent share (equity / (equity + NCI)); the placement is the
+    listed parent's -> 100%.
 
 Checks beyond the anchor comparison:
   1. A9b closure: non-operating pre-tax equals the announcement's bridge value
@@ -75,7 +90,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.gordon import (  # noqa: E402
-    check_g_cap, check_r, implied_g, perpetual_pe, two_stage_pe,
+    check_g_cap, check_r, implied_g, payout, perpetual_pe,
 )
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
@@ -103,6 +118,9 @@ REQUIRED = (
     "nav_cny", "d_l", "d_m", "d_h",
     "net_cash_cny", "placement_hkd",
     "eps27_m_cny", "eps_1q27_cny", "payout_3y",
+    "tau_yr", "equity_parent_cny", "nci_cny", "capex_fy27_cny", "ocf_ni_3y",
+    "t_base", "t_fy28_end", "t_plan_end",
+    "ss_return_cloud", "ss_return_ecom", "t0_ret", "y1_ret", "y2_ret",
 )
 
 SCENARIOS = ("l", "m", "h")
@@ -185,6 +203,38 @@ def parse_stated(md: str) -> dict:
 
 # ---------------------------------------------------------------- computation
 
+def path_pe(g1: float, n: int, g2: float, roe: float, r: float, r_s: float, v: dict[str, float]) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year (t = 1 <-> calendar
+    t0_ret), same convention as two_stage_pe: n transition years at g1 earn the forward
+    return; then at g2 the retention of calendar year c earns the forward return while
+    c <= y1_ret, falls linearly to the steady return by y2_ret, and the steady return holds
+    in a Gordon tail from y2_ret.  The steady return is capped at the forward return.
+    With n = 0 and r_s >= roe this equals perpetual_pe(g2, roe, r)."""
+    t0, y1, y2 = int(v["t0_ret"]), int(v["y1_ret"]), int(v["y2_ret"])
+    rs = min(roe, r_s)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(int(n)):  # stage-1 payout deliberately not floored (two_stage_pe convention)
+        pv += e * (1.0 - g1 / roe) / (1.0 + r) ** t
+        e *= 1.0 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g2, rs) / ((r - g2) * (1.0 + r) ** (t - 1))
+        pv += e * payout(g2, ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g2
+        t += 1
+
+
 def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = False) -> dict:
     """Recompute the chain per framework §3 Formula (source of truth: the MD)."""
     fx = v["fx_cny_hkd"]
@@ -221,19 +271,39 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     roe = {k: e_full[k] / bps_open[k] for k in SCENARIOS}
     b1 = {k: w_ecom * v["g2_ecom"] / roe[k] + b_cloud for k in SCENARIOS}
     excess_cash = {k: ((1.0 - v["payout_3y"]) - b1[k]) * unbooked for k in SCENARIOS}  # B bucket, disclosure only
-    pe_ecom = {k: perpetual_pe(v["g2_ecom"], roe[k], r) for k in SCENARIOS}
+    # 稳态回报三段 (A22): e-com / ALA steady = platform fallback 30% (capped at the forward
+    # ROE -> flat path); cloud steady = fallback 15% 有壁垒的重资产 (floored at r).
+    rs_ecom = max(v["ss_return_ecom"], r)
+    rs_cloud = max(v["ss_return_cloud"], r)
+    pe_ecom = {k: path_pe(0.0, 0, v["g2_ecom"], roe[k], r, rs_ecom, v) for k in SCENARIOS}
     if candidate:
-        pe_cloud = {k: two_stage_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], v["roic_cloud"], r)
-                    for k in SCENARIOS}
+        pe_cloud = {k: path_pe(v["g1_cloud_cand"], int(v["n_cloud_cand"]), v["g2_cloud"], v["roic_cloud"], r,
+                               rs_cloud, v) for k in SCENARIOS}
     else:
-        pe_cloud = {k: perpetual_pe(v["g2_cloud"], v["roic_cloud"], r) for k in SCENARIOS}
+        pe_cloud = {k: path_pe(0.0, 0, v["g2_cloud"], v["roic_cloud"], r, rs_cloud, v) for k in SCENARIOS}
 
+    # 时点对齐 (A22): the Gordon legs are the value at the opening of FY2028; V_opt is
+    # discounted to FY2028 first, then by the same tau.
+    f_tau = (1.0 + r) ** -v["tau_yr"]
     # V_opt (A19): one own realised ALA leg (snapshot lower bound) x own AEG
     # EBITA margin (shared rule, 拍值) x (1 - t), own ruler, timed + discounted.
     margin_ala = v["ebita_aeg_q_cny"] / v["rev_aeg_q_cny"]
     ala_np = v["rev_ala_q_cny"] * 4 * margin_ala * (1.0 - v["tax_rate"])
-    pe_ala = perpetual_pe(v["g2_ecom"], roe["h"], v["r_ala"])
-    v_opt = ala_np * pe_ala / (1.0 + v["r_ala"]) ** (v["t_opt"] - v["t_num"]) * fx / v["shares"]
+    pe_ala = path_pe(0.0, 0, v["g2_ecom"], roe["h"], v["r_ala"], max(v["ss_return_ecom"], v["r_ala"]), v)
+    v_opt = (ala_np * pe_ala / (1.0 + v["r_ala"]) ** (v["t_opt"] - v["t_num"]) * fx / v["shares"]) * f_tau
+
+    # 增长期资金缺口 (A22): Citi FY27E capex over the tau window (2Q-4Q FY27) minus OCF
+    # (window consensus NI x 3y OCF/NI), only the share online by the end of FY2028
+    # (20GW plan, linear from the base date to end-2032); deducted from net cash at the
+    # parent share.  Parent share also scales the consolidated net cash.
+    parent = v["equity_parent_cny"] / (v["equity_parent_cny"] + v["nci_cny"])
+    ocf_window = (v["eps27_m_cny"] - v["eps_1q27_cny"]) * v["shares"] * v["ocf_ni_3y"]
+    gap_full = max(0.0, v["capex_fy27_cny"] * v["tau_yr"] - ocf_window)
+    online = (v["t_fy28_end"] - v["t_base"]) / (v["t_plan_end"] - v["t_base"])
+    gap = gap_full * online
+    cash_adj_ps = cash_ps - (v["net_cash_cny"] * fx * (1.0 - parent) + gap * parent * fx) / v["shares"]
+    # window distributable profit: 0 while a gap exists (OCF already carries it)
+    unbooked_op = (v["eps27_m_cny"] - v["eps_1q27_cny"] - nonop_ps * v["tau_yr"]) * fx
 
     legs: dict[str, dict[str, float]] = {}
     anchors: dict[str, float] = {}
@@ -241,11 +311,13 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         pe_e = pe_ecom["m"] if flat_at_m else pe_ecom[k]
         pe_c = pe_cloud["m"] if flat_at_m else pe_cloud[k]
         d = v["d_m"] if flat_at_m else v[f"d_{k}"]
+        window = 0.0 if gap > 0 else unbooked_op * (1.0 - b1[k]) * (1.0 + r) ** (-v["tau_yr"] / 2.0)
         legs[k] = {
-            "ecom": e_ops[k] * w_ecom * pe_e,
-            "cloud": e_ops[k] * w_cloud * pe_c,
+            "ecom": e_ops[k] * w_ecom * pe_e * f_tau,
+            "cloud": e_ops[k] * w_cloud * pe_c * f_tau,
+            "window": window,
             "nav": nav_ps * (1 - d),
-            "cash": cash_ps,
+            "cash": cash_adj_ps,
         }
         anchors[k.upper()] = sum(legs[k].values())
 
@@ -253,6 +325,8 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     return {
         "nonop_ps": nonop_ps, "w_ecom": w_ecom, "w_cloud": w_cloud,
         "nav_ps": nav_ps, "cash_ps": cash_ps, "legs": legs, "V_opt": v_opt,
+        "f_tau": f_tau, "parent": parent, "ocf_window": ocf_window, "gap_full": gap_full,
+        "online": online, "gap": gap, "cash_adj_ps": cash_adj_ps, "unbooked_op": unbooked_op,
         "margin_ala": margin_ala, "ala_np": ala_np, "pe_ala": pe_ala,
         "e_full": e_full, "e_ops": e_ops, "roe": roe, "pe_ecom": pe_ecom, "pe_cloud": pe_cloud,
         "g_roll": g_roll, "unbooked": unbooked, "bps_open": bps_open, "b1": b1, "excess_cash": excess_cash,
@@ -338,6 +412,7 @@ def main() -> int:
         if row is None:
             continue
         got = c["legs"][tag]
+        checks.append((got["window"] == 0.0, f"leg table {tag.upper()}: window profit 0 (funding gap present, A22)"))
         want = [got["ecom"], got["cloud"], got["nav"], got["cash"], sum(got.values())]
         for name, stated_v, exp in zip(("电商", "云", "NAV", "净现金", "合计"), row, want):
             checks.append((abs(stated_v - exp) <= TOL,
@@ -377,6 +452,16 @@ def main() -> int:
     print(f"B bucket  : (actual retention {1 - v['payout_3y']:.0%} − b1) × unbooked = "
           f"{c['excess_cash']['l']:.2f}/{c['excess_cash']['m']:.2f}/{c['excess_cash']['h']:.2f} HKD/share "
           f"modelled-as-distributed, actually retained (disclosure only; not a leg, not in BPS)")
+    print(f"timing    : tau {v['tau_yr']} y -> x {c['f_tau']:.4f}; window distributable profit "
+          f"{c['legs']['m']['window']:.2f} (gap present -> 0; would be unbooked op {c['unbooked_op']:.2f} x (1 - b1))")
+    print(f"gap       : capex {v['capex_fy27_cny'] / YI:.0f}亿 x {v['tau_yr']} - OCF {c['ocf_window'] / YI:.0f}亿 "
+          f"(window NI x {v['ocf_ni_3y']}) = {c['gap_full'] / YI:.0f}亿 x online share {c['online']:.4f} = "
+          f"{c['gap'] / YI:.1f}亿 -> {c['gap'] * c['parent'] * v['fx_cny_hkd'] / v['shares']:.2f} HKD/share; "
+          f"parent share {c['parent']:.4f}; cash/share {c['cash_ps']:.2f} -> {c['cash_adj_ps']:.2f}")
+    print(f"steady    : cloud roic {v['roic_cloud']:.3f} -> {max(v['ss_return_cloud'], v['r_perp']):.2f} "
+          f"({int(v['y1_ret'])}->{int(v['y2_ret'])}), pe_cloud {c['pe_cloud']['m']:.3f} vs flat "
+          f"{perpetual_pe(v['g2_cloud'], v['roic_cloud'], v['r_perp']):.3f}; e-com capped at forward ROE "
+          f"(steady {v['ss_return_ecom']:.0%} > ROE)")
     print(f"anchors   : L {c['L']:.2f} · M {c['M']:.2f} · H {c['H']:.2f} (A {c['A']:.2f} · B {c['B']:.2f})")
     print(f"candidate : cloud two_stage g1={v['g1_cloud_cand']} n={int(v['n_cloud_cand'])} -> "
           f"{cand['L']:.2f} / {cand['M']:.2f} / {cand['H']:.2f}  (book rolled at company g {cand['g_roll']:.2%}: "
@@ -400,12 +485,13 @@ def main() -> int:
           + f"  band [{v['pe_own_min']}, {v['pe_own_max']}]")
     # 裁决顺序 ③「带即证据」: g the band edges pay at the M-tier ROE (weak band, reported not enforced)
     for edge in (v["pe_own_min"], v["pe_own_max"]):
-        pe_edge = (edge * v["eps_ttm_gaap"] - c["legs"]["m"]["nav"] - c["legs"]["m"]["cash"]) / c["e_ops"]["m"]
+        pe_edge = ((edge * v["eps_ttm_gaap"] - c["legs"]["m"]["nav"] - c["legs"]["m"]["cash"]
+                    - c["legs"]["m"]["window"]) / (c["e_ops"]["m"] * c["f_tau"]))
         g_edge, ok = implied_g(pe_edge, c["roe"]["m"], v["r_perp"])
         print(f"  band edge {edge}x -> ops PE {pe_edge:.2f} -> g {g_edge:+.2%}{'' if ok else ' (ill-conditioned)'}")
     print(f"V_opt     : {c['V_opt']:.2f} HKD (ALA rev x4 {v['rev_ala_q_cny'] * 4 / YI:.2f}亿 x AEG margin {c['margin_ala']:.4f} x (1-t)"
           f" = {c['ala_np'] / YI:.2f}亿 x PE {c['pe_ala']:.2f} (r {v['r_ala']}, g {v['g2_ecom']}, ROE_H {c['roe']['h']:.3f})"
-          f" / {1 + v['r_ala']}^{v['t_opt'] - v['t_num']:.0f})  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
+          f" / {1 + v['r_ala']}^{v['t_opt'] - v['t_num']:.0f} x {c['f_tau']:.4f} tau)  p={stated['p_L']}/{stated['p_M']}/{stated['p_H']}"
           f"  V_opt/M={c['V_opt'] / c['M']:.1%}")
     print(f"zone+V    : L {c['L'] + stated['p_L'] * c['V_opt']:.2f} · M {c['M'] + stated['p_M'] * c['V_opt']:.2f}"
           f" · H {c['H'] + stated['p_H'] * c['V_opt']:.2f}")
@@ -418,9 +504,10 @@ def main() -> int:
     if "eps_rr_cny" in v:
         e_rr = (v["eps_rr_cny"] - c["nonop_ps"]) * v["fx_cny_hkd"]
         print(f"pressure  : run-rate non-GAAP EPS {v['eps_rr_cny']} CNY -> ops {e_rr:.2f} HKD; "
-              f"@L blend {e_rr * c['blend']['l'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f} · "
-              f"@M blend {e_rr * c['blend']['m'] + c['legs']['m']['nav'] + c['legs']['m']['cash']:.1f} · "
-              f"x 1/r {e_rr / v['r_perp'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f}")
+              f"@L blend {e_rr * c['blend']['l'] * c['f_tau'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f} · "
+              f"@M blend {e_rr * c['blend']['m'] * c['f_tau'] + c['legs']['m']['nav'] + c['legs']['m']['cash']:.1f} · "
+              f"x 1/r {e_rr / v['r_perp'] * c['f_tau'] + c['legs']['l']['nav'] + c['legs']['l']['cash']:.1f}"
+              f"  (ops x (1+r)^-tau, cash after parent share and gap)")
     print("sensitivity:")
     for g in (v["g2_ecom"] - 0.01, v["g2_ecom"] + 0.01):
         alt = compute(dict(v, g2_ecom=g))

@@ -105,6 +105,7 @@ REQUIRED = (
     "d_invest_l", "d_invest_m", "d_invest_h",
     "pe_own_min", "pe_own_max", "eps_ttm_gaap",
     "opt_units", "rev_ev_h1", "r_ev", "g2_ev_opt", "t_opt", "t_num",
+    "tau_yr", "nci_cny",
 )
 
 BANDS = ("l", "m", "h")
@@ -247,6 +248,14 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
                 "excess_eco": ((1.0 - v["payout_3y"]) - b1_ec) * unbooked * (1.0 - w_phone)}
 
     pe_m = multiples("m")
+    # 时点对齐 (valuation-rules「经营价值与超额现金」③): both Gordon legs are values at the
+    # opening of FY2027 (t_n); today = base date 2026-06-30 -> x (1+r)^-tau, plus the window
+    # distributable profit = the 2H26 unbooked operating profit x (1 - b), b the roll's b1 per
+    # leg, discounted (1+r)^-(tau/2).  The EV PS leg and the closing item are today's values.
+    f_tau = (1.0 + r) ** -v["tau_yr"]
+    f_win = (1.0 + r) ** (-v["tau_yr"] / 2.0)
+    # 归母份额: net cash x equity / (equity + NCI) (no subsidiary-level cash disclosure)
+    parent = v["equity_cny"] / (v["equity_cny"] + v["nci_cny"])
     tiers: dict[str, dict[str, float]] = {}
     for b in BANDS:
         mult = multiples(b)
@@ -258,10 +267,13 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
             ps, d = v[f"ps_ev_{b}"], v[f"d_invest_{b}"]
         ni_phone = ni[b] * w_phone
         ni_eco = ni[b] * (1.0 - w_phone)
-        phone = ni_phone * pe_ph
-        eco = ni_eco * pe_ec
+        mb = multiples(b)
+        win_ph = unbooked * w_phone * (1.0 - mb["b1_phone"])
+        win_ec = unbooked * (1.0 - w_phone) * (1.0 - mb["b1_eco"])
+        phone = ni_phone * pe_ph * f_tau + win_ph * f_win
+        eco = ni_eco * pe_ec * f_tau + win_ec * f_win
         ev = rev_ev * ps
-        closing = net_cash + v["invest_cny"] * (1.0 - d)
+        closing = net_cash * parent + v["invest_cny"] * (1.0 - d)
         tiers[b] = {
             "ni": ni[b], "ni_phone": ni_phone, "ni_eco": ni_eco,
             "pe_phone": pe_ph, "pe_eco": pe_ec, "roe_eco": roe_ec,
@@ -282,7 +294,9 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
     opt_np = opt_rev * gm_ev * (1.0 - v["tax_rate"])
     pe_opt = perpetual_pe(v["g2_ev_opt"], 1.0, v["r_ev"])  # g2 = 0 -> 1/r, ROE not consumed
     disc_years = max(0.0, v["t_opt"] - v["t_num"])
-    v_opt = opt_np * pe_opt / (1.0 + v["r_ev"]) ** disc_years * per_share
+    # valued at the numerator year's opening -> same tau to the base date (时点对齐)
+    v_opt = (opt_np * pe_opt / (1.0 + v["r_ev"]) ** disc_years * per_share
+             * (1.0 + v["r_ev"]) ** -v["tau_yr"])
 
     return {
         "opex_core_h1": opex_core_h1, "opex_ev_h1": opex_ev_h1,

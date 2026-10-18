@@ -63,7 +63,7 @@ REQUIRED = [
     "eps27_l_cny", "eps27_m_cny", "eps27_h_cny", "bps_hkd", "eps26_m_cny", "ni_1h26_cny", "payout_3y",
     "r_perp", "g2", "g1_fy28_hsbc", "n_fy28_cand", "pe_own_min", "pe_own_max", "eps_ttm_ifrs",
     "w_dom", "w_intl", "w_ads", "w_fbs",
-    "nav_hkd", "d_l", "d_m", "d_h", "net_cash_cny",
+    "nav_hkd", "d_l", "d_m", "d_h", "net_cash_cny", "tau", "parent_ratio",
 ]
 
 
@@ -101,12 +101,21 @@ def scenario(inp: dict[str, float], tag: str, pe_override: float | None = None,
         pe = two_stage_pe(inp["g1_fy28_hsbc"], int(inp["n_fy28_cand"]), inp["g2"], roe, inp["r_perp"])
     else:
         pe = perpetual_pe(inp["g2"], roe, inp["r_perp"])
-    ops = eps * pe
+    # Timing (valuation-rules「经营价值与超额现金」③ 时点对齐, A15): eps x pe is the value at the
+    # numerator year's opening (2027-01-01); discount tau years to the balance-sheet date and add
+    # the window's distributable profit (2H26 unbooked x (1 - b1), the roll's own b1) at tau/2.
+    # Non-IFRS numerator does not deduct SBC, so neither does the window.  NAV and net cash are
+    # balance-sheet-date items and are not moved; net cash counts the parent share only.
+    r, tau = inp["r_perp"], inp["tau"]
+    gordon = eps * pe
+    window = unbooked * (1.0 - b1)
+    ops = gordon / (1 + r) ** tau + window / (1 + r) ** (tau / 2)
     legs = {leg: ops * inp[f"w_{leg}"] for leg in LEGS}
     nav = inp["nav_hkd"] * (1.0 - inp[f"d_{tag}"]) / inp["shares"]
-    cash = inp["net_cash_cny"] * inp["fx"] / inp["shares"]
+    cash = inp["net_cash_cny"] * inp["fx"] / inp["shares"] * inp["parent_ratio"]
     out = dict(legs)
-    out.update(eps=eps, roe=roe, pe=pe, ops=ops, nav=nav, cash=cash, anchor=ops + nav + cash,
+    out.update(eps=eps, roe=roe, pe=pe, gordon=gordon, window=window, ops=ops, nav=nav, cash=cash,
+               anchor=ops + nav + cash,
                g_roll=g_roll, unbooked=unbooked, bps_open=bps_open, b1=b1, excess_cash=excess_cash)
     return out
 
@@ -253,7 +262,8 @@ def main() -> int:
     for t in TIERS:
         s = S[t]
         print(f"{t.upper()}: eps27 {inp[f'eps27_{t}_cny']:.2f} CNY = {s['eps']:.2f} HKD roe {s['roe']:.4f} pe {s['pe']:.3f}"
-              f"  ops {s['ops']:.1f} nav {s['nav']:.1f} cash {s['cash']:.1f} -> {s['anchor']:.1f}"
+              f"  gordon@2027 {s['gordon']:.1f} ÷{(1 + inp['r_perp']) ** inp['tau']:.4f} + window {s['window']:.2f}"
+              f" -> ops {s['ops']:.1f} nav {s['nav']:.1f} cash {s['cash']:.2f} -> {s['anchor']:.1f}"
               f"  | own-band {s['anchor'] / inp['eps_ttm_ifrs']:.2f}x in [{inp['pe_own_min']}, {inp['pe_own_max']}]")
     print(f"ROE basis: BPS_open 2027 = {'/'.join(f'{S[t]['bps_open']:.2f}' for t in TIERS)} HKD "
           f"(H1'26 book {inp['bps_hkd']:.2f} rolled over unbooked 2H26 {S['m']['unbooked']:.2f} HKD at "
@@ -276,7 +286,10 @@ def main() -> int:
           f"{S['h']['eps'] / S['m']['eps']:.3f} x pe {S['h']['pe'] / S['m']['pe']:.3f} (+NAV d)")
     # 裁决顺序 ③「带即证据」: g the band edges pay at the M-tier ROE
     for edge in (inp["pe_own_min"], inp["pe_own_max"]):
-        pe_edge = (edge * inp["eps_ttm_ifrs"] - S["m"]["nav"] - S["m"]["cash"]) / S["m"]["eps"]
+        # today's operating value at the band edge, carried back to the numerator-year opening
+        r_, tau_ = inp["r_perp"], inp["tau"]
+        op_today = edge * inp["eps_ttm_ifrs"] - S["m"]["nav"] - S["m"]["cash"]
+        pe_edge = ((op_today - S["m"]["window"] / (1 + r_) ** (tau_ / 2)) * (1 + r_) ** tau_) / S["m"]["eps"]
         g_edge, ok = implied_g(pe_edge, S["m"]["roe"], inp["r_perp"])
         print(f"  band edge {edge}x -> ops PE {pe_edge:.2f} -> g {g_edge:+.2%}{'' if ok else ' (ill-conditioned)'}")
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")

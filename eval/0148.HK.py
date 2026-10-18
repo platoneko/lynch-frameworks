@@ -123,7 +123,38 @@ AXIS_ROWS = {
 OPT_REQUIRED = [
     "gf_citi_share", "np_gp_kl", "gf_kilns_total", "gf_kilns_new", "gf_kilns_unspent", "gf_t_per_kiln",
     "gf_yield", "gf_years", "cu_tons", "cu_yield", "cu_years", "fx_cny_hkd",
-] + [k for ks in AXIS_ROWS.values() for k in ks]
+    "gf_y1", "gf_y2", "rs_gf", "cu_y1", "cu_y2", "rs_cu",
+] +[k for ks in AXIS_ROWS.values() for k in ks]
+OPT_NUM_YEAR = 2026  # numerator year FY2026; realisation year = OPT_NUM_YEAR + gf_years / cu_years
+
+
+def lin(cal: int, y1: int, y2: int, end: float) -> float:
+    """1 through calendar Y1, linear to `end` by Y2, `end` after."""
+    if cal <= y1:
+        return 1.0
+    if cal >= y2:
+        return end
+    return 1.0 + (end - 1.0) * (cal - y1) / (y2 - y1)
+
+
+def path_pe(g2: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-stage return path Gordon (library function not built yet): the forward return holds to
+    calendar Y1, falls linearly to the steady return by Y2, steady after; per unit of t0 earnings.
+    The unit economics fade on the same path (options.md「未建模期权」, user 2026-10-19): earnings
+    x lin(cal, Y1, Y2, rs/roe), i.e. the shortage margin falls to the normal margin = steady return
+    x the leg's own capital by Y2, not held forever."""
+    rs = min(roe, r_s)
+    end = rs / roe
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        f = lin(cal, y1, y2, end)
+        if cal > y1 and cal >= y2:
+            return pv + e * f * min(1.0, 1.0 - g2 / rs) / ((r - g2) * (1.0 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (rs - roe) * (cal - y1) / (y2 - y1)
+        pv += e * f * min(1.0, 1.0 - g2 / ro) / (1.0 + r) ** t
+        e *= 1.0 + g2
+        t += 1
 
 
 def option_values(inp: dict[str, float]) -> dict:
@@ -147,12 +178,26 @@ def option_values(inp: dict[str, float]) -> dict:
     k_gf = cap_m * inp["capex_per_m_ai_gf"] * fx / 1e9
     k_cu = inp["cu_tons"] * inp["capex_per_t_hvlp"] * 1e4 * fx / 1e9
 
-    def leg(np_: float, k: float, years: float, unspent: float, rev: float) -> dict[str, float]:
+    def leg(np_: float, k: float, years: float, unspent: float, rev: float, kind: str) -> dict[str, float]:
         if np_ <= 0:
             return {"rev": rev, "np": 0.0, "k": k, "roe": 0.0, "pe": 0.0, "value": 0.0,
                     "years": years, "unspent": 0.0, "v1888": 0.0, "ps": 0.0}
         roe = np_ / k
-        pe = perpetual_pe(g2, roe, r) if roe > r - 0.03 else 1.0 / r
+        if roe <= r - 0.03:
+            pe = 1.0 / r
+        elif kind == "gf":
+            # Three-stage return path (valuation-rules「经营价值与超额现金」② 稳态回报三段): >= 5-year
+            # mature same-business peers exist (日东纺 3110.T, 宏和科技), so the leg fades from its forward
+            # return and margin to the steady return rs_gf over gf_y1 -> gf_y2 (high entry barrier:
+            # 6 years); valued from the realisation year, A9.
+            pe = path_pe(g2, roe, r, OPT_NUM_YEAR + int(years), int(inp["gf_y1"]), int(inp["gf_y2"]),
+                         max(inp["rs_gf"], r))
+        else:
+            # HVLP copper foil: a >= 5-year mature same-business peer exists (金居 8358.TWO, PCB copper
+            # foil incl. RTF / HVLP) -> not 叙事换代; valued from the realisation year (2029), the
+            # shortage window is the HVLP3 stage's (cu_y1 2028), medium barrier 4 years to cu_y2, A9.
+            pe = path_pe(g2, roe, r, OPT_NUM_YEAR + int(years), int(inp["cu_y1"]), int(inp["cu_y2"]),
+                         max(inp["rs_cu"], r))
         value = np_ * pe
         unspent_pv = unspent / (1 + r)
         v = value / (1 + r) ** years - unspent_pv
@@ -168,9 +213,9 @@ def option_values(inp: dict[str, float]) -> dict:
             out["cap_rev_h"], out["citi_rev"] = cap_rev, citi_rev
             out["citi_px"] = citi_rev / (cap_m * inp["gf_yield"] * fx / 1e9)
             rev = max(cap_rev, citi_rev)
-        gf = leg(rev * inp[f"nm_ai_gf_{x}"], k_gf, inp["gf_years"], unspent_gf, rev)
+        gf = leg(rev * inp[f"nm_ai_gf_{x}"], k_gf, inp["gf_years"], unspent_gf, rev, "gf")
         cu_np = inp["cu_tons"] * inp["cu_yield"] * inp[f"pt_hvlp_{x}"] * 1e4 * fx / 1e9 if x == "h" else 0.0
-        cu = leg(cu_np, k_cu, inp["cu_years"], k_cu, 0.0)
+        cu = leg(cu_np, k_cu, inp["cu_years"], k_cu, 0.0, "cu")
         out[x] = {"gf": gf, "cu": cu, "total": gf["ps"] + cu["ps"]}
     return out
 
@@ -312,9 +357,11 @@ def main() -> int:
     # --- k: cyclical ordering and the ①b top discount -------------------------
     if not inp["k_l"] <= inp["k_m"] <= inp["k_h"]:
         errors.append("k must satisfy k_l <= k_m <= k_h (valuation-rules「視同派出」)")
+    # The ①b k sat on the 「多留部分」 (retained-but-deemed-paid cash), not on a named transaction;
+    # removed 2026-10-16 (valuation-rules「经营价值与超额现金」④, λ = 1).  The ①b ratio is printed only.
     k_h_rule = 1 - tiers["m"]["pre_k"] / tiers["h"]["pre_k"]
-    if abs(inp["k_h"] - k_h_rule) > 0.005:
-        errors.append(f"k_h={inp['k_h']} but ①b 1 - V_M/V_H = {k_h_rule:.4f}")
+    if any(inp[f"k_{x}"] != 0.0 for x in "lmh"):
+        errors.append("k must be 0: no named transaction for a k to sit on (A12)")
 
     # --- flat-multiple ladder on the laminate numerators (A2e-2c) ------------
     e_lam = (inp["na_lam"] * inp["ret_lam_l"] * (1 - t), lam_mid, inp["e_lam_26"])
@@ -350,6 +397,12 @@ def main() -> int:
                 errors.append(f"{k} {inp[k]:g} != _AXIS.{axis} {peer.get(k)} — the leg ruler drifted")
         if axis == "hvlp-copper-foil" and abs(peer.get("yield_hvlp3", -1) - inp["cu_yield"]) > 1e-9:
             errors.append(f"cu_yield {inp['cu_yield']:g} != _AXIS.hvlp-copper-foil yield_hvlp3 {peer.get('yield_hvlp3')}")
+    # Same company, same normal (A9, user 2026-10-19): both options fade to the laminate leg's own
+    # cycle return after tax (the main leg's M / H steady end), not below it.
+    own_steady = inp["ret_lam_m"] * (1 - inp["tax"])
+    if abs(inp["rs_gf"] - inp["rs_cu"]) > 1e-9 or inp["rs_gf"] < own_steady - 5e-4:
+        errors.append(f"rs_gf {inp['rs_gf']} / rs_cu {inp['rs_cu']} must be equal and >= laminate own-cycle "
+                      f"steady {own_steady:.4f} (A9)")
     opt = option_values(inp)
     v_l, v_m, v_h = (opt[x]["total"] for x in "lmh")
     if not 0 <= v_l <= v_m <= v_h:
@@ -405,6 +458,13 @@ def main() -> int:
     if "cap_rev_h" in opt:
         print(f"glass fabric H: capacity rev {opt['cap_rev_h']:.2f}bn vs Citi-path rev {opt['citi_rev']:.2f}bn"
               f" -> Citi implies {opt['citi_px']:.1f} CNY/m on the new capacity")
+    rs_gf_eff, rs_cu_eff = max(inp["rs_gf"], inp["r_lam"]), max(inp["rs_cu"], inp["r_lam"])
+    gf_norm = "/".join(f"{rs_gf_eff * opt[x]['gf']['k'] / opt[x]['gf']['rev']:.1%}" for x in "lmh")
+    gf_short = "/".join(f"{inp[f'nm_ai_gf_{x}']:.1%}" for x in "lmh")
+    cu_tons_out = inp["cu_tons"] * inp["cu_yield"]
+    cu_norm_pt = rs_cu_eff * opt["h"]["cu"]["k"] * 1e9 / inp["fx_cny_hkd"] / cu_tons_out / 1e4  # 万 CNY / t
+    print(f"normal after fade (A9): glass fabric net margin {gf_norm} by {int(inp['gf_y2'])} (shortage {gf_short});"
+          f" HVLP profit {cu_norm_pt:.2f} 万 CNY/t by {int(inp['cu_y2'])} (shortage {inp['pt_hvlp_h']:g})")
     print(f"V_opt={v_h:.2f} p_L/p_M/p_H={p_rule[0]:.3f}/{p_rule[1]:.3f}/1.0 V_opt/M={v_h / M:.2f}")
     print(f"zone+V: {L + p_rule[0] * v_h:.2f}/{M + p_rule[1] * v_h:.2f}/{H + v_h:.2f}")
     for g in (inp["g2_lam"] - 0.01, inp["g2_lam"] + 0.01):

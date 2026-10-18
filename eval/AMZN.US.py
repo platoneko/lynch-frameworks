@@ -32,6 +32,20 @@ segment margin (A5); L and H are the two ends of the same 52-house FY2027E
 distribution (A2e-2a).  No V_opt: the post-FY2027 second stage has no
 consensus anchor; the single-house FY2028E point estimate is a candidate band.
 
+Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
+correction 2026-10-16):
+  * time alignment (③): the Gordon legs sit at the FY2027 opening; discounted
+    tau = 0.5 years to the 2026-06-30 balance sheet -- AWS non-lab and retail at
+    r_perp, the lab sub-leg at its journey basket r_aws_lab (basket pair).
+  * growth-period funding gap (①): 2H26 capex - (2H26 OCF - SBC), per share,
+    deducted as a debt-like item; with a gap the window's distributable profit is 0.
+  * stable-return path (②): retained earnings of calendar c earn the tier's
+    forward return while c <= y1, fade linearly to the leg's stable return by y2.
+    Retail's stable return = mature-retail through-cycle median (ronic_ss_ret);
+    the AWS legs already retain at the sell-side marginal steady-state ROIC, so
+    their path is flat.  Stable return capped at the forward return, floored at r.
+  * candidate band: FY2028 operating legs discounted tau + 1 years, same gap.
+
 Run:  python3 frameworks/eval/AMZN.US.py
 """
 
@@ -46,7 +60,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_lab_mount  # noqa: E402
-from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, payout  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -113,7 +127,39 @@ REQUIRED = [
     "capex_guide", "net_debt_ebitda", "interest_ebit",
     "eps_fy28e_single", "r_disc",
     "v_opt",
+    "tau", "t0", "y1", "y2", "ronic_ss_ret",
+    "capex_2h26", "ocf_2h26", "sbc_2h26",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  The retention of calendar c earns the forward return
+    while c <= y1, fades linearly to the stable return by y2, and the stable return
+    from y2 on.  Stable return capped at the forward return and floored at r; a flat
+    path equals `perpetual_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def main() -> int:
@@ -186,36 +232,51 @@ def main() -> int:
             raise ValueError("opening-capital roll diverges")
         return e / (ic0 / (1.0 - g * unbooked / e))
 
+    t0, y1, y2, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
+    # ① growth-period funding gap: 2H26 capex beyond 2H26 OCF net of SBC (debt-like, parent 1.0)
+    gap_ps = max(inp["capex_2h26"] - (inp["ocf_2h26"] - inp["sbc_2h26"]), 0.0) / sh
+
     def tier(t: str, k: float, ic_scale: float = 1.0, roic_marg: float | None = None,
              share_lab: float | None = None, r_lab: float | None = None, k_lab: float | None = None,
              g_aws: float | None = None, g_ret: float | None = None, flat: dict | None = None,
-             retreat: bool = True) -> dict:
+             retreat: bool = True, r_lab_tau: float | None = None, disc_years: float | None = None,
+             rs_ret: float | None = None) -> dict:
         roic_marg = inp["roic_marg_aws"] if roic_marg is None else roic_marg
         share_lab = inp["share_lab_aws"] if share_lab is None else share_lab
         r_lab = r7t if r_lab is None else r_lab
+        r_lab_tau = r7 if r_lab_tau is None else r_lab_tau
         k_lab = inp["k_lab"] if k_lab is None else k_lab
         g_aws = inp["g2_aws"] if g_aws is None else g_aws
         g_ret = inp["g2_ret"] if g_ret is None else g_ret
+        rs_ret = inp["ronic_ss_ret"] if rs_ret is None else rs_ret
+        dy = tau if disc_years is None else disc_years
         scale = aws_retreat if (t == "l" and retreat) else 1.0
         n_aws = nopat_aws * scale
         out: dict = {}
         legs = (
-            ("aws", n_aws * (1 - share_lab), inp["ic_aws"] * ic_scale * (1 - share_lab), g_aws, r4, roic_marg * scale),
-            ("lab", n_aws * share_lab, inp["ic_aws"] * ic_scale * share_lab, g_aws, r_lab, roic_marg * scale),
-            ("ret", nopat_ret, ic_ret * ic_scale, g_ret, r4, None),
+            ("aws", n_aws * (1 - share_lab), inp["ic_aws"] * ic_scale * (1 - share_lab), g_aws, r4, roic_marg * scale, r4),
+            ("lab", n_aws * share_lab, inp["ic_aws"] * ic_scale * share_lab, g_aws, r_lab, roic_marg * scale, r_lab_tau),
+            ("ret", nopat_ret, ic_ret * ic_scale, g_ret, r4, None, r4),
         )
-        for name, n, ic, g, r, rm in legs:
+        for name, n, ic, g, r, rm, r_tau in legs:
             e, unb = n * k, n / 2.0                      # unbooked 2H26
             roe_avg = roe_open(e, ic, g, unb)
             roe_ret = roe_avg if rm is None else rm      # A4: cloud retains at the marginal ROIC
-            pe = perpetual_pe(g, roe_ret, r) if flat is None else flat[name]
+            # ② AWS retains at the marginal steady-state ROIC already -> flat path;
+            # retail fades to the mature-retail through-cycle return.
+            rs = rs_ret if name == "ret" else roe_ret
+            pe = path_pe(g, roe_ret, r, t0, y1, y2, rs) if flat is None else flat[name]
             # k_lab leaves the lab sub-leg's value only, never its multiple (axis §3b).
             haircut = (1.0 - k_lab) if name == "lab" else 1.0
             out[name] = dict(e=e, roe=roe_avg, roe_ret=roe_ret, pe=pe, b1=g / roe_ret, unb=unb,
-                             val=e * pe * haircut / sh)
+                             rs=min(roe_ret, max(rs, r)),
+                             val=e * pe * haircut / sh / (1 + r_tau) ** dy)
         d = inp[f"d_port_{t}"]
         out["port"] = dict(val=port_net * (1 - d) / sh, d=d)
         out["cash"] = dict(val=net_cash / sh)
+        out["gap"] = dict(val=-gap_ps)
+        # With a funding gap the window's distributable profit is booked as 0 (OCF carries it);
+        # the deemed-distributed row is a disclosure only (k = 0).
         deemed = sum(max(1 - inp["payout_3y"] - out[n]["b1"], 0.0) * out[n]["unb"] for n in ("aws", "lab", "ret")) / sh
         pre = sum(v["val"] for v in out.values())
         out["deemed"], out["pre"] = deemed, pre
@@ -253,9 +314,14 @@ def main() -> int:
         return 1
 
     # Candidate band: single-house FY2028E point estimate swapped into the M
-    # numerator, tier ratios kept, discounted one year (FY+2, r_disc).
+    # numerator, tier ratios kept; the operating legs sit at the FY2028 opening and
+    # are discounted tau + 1 years at r_disc; asset legs and gap undiscounted.
     kk = {t: inp["eps_fy28e_single"] / core_eps * (inp[f"k_eps_{t}"] / inp["k_eps_m"]) for t in "lmh"}
-    cand = {t: tier(t, kk[t])["total"] / (1 + inp["r_disc"]) for t in "lmh"}
+    cand = {}
+    for t in "lmh":
+        c = tier(t, kk[t], disc_years=0.0)
+        op = c["aws"]["val"] + c["lab"]["val"] + c["ret"]["val"]
+        cand[t] = op / (1 + inp["r_disc"]) ** (tau + 1) + c["port"]["val"] + c["cash"]["val"] + c["gap"]["val"]
 
     out_sec = md.split("### Outputs", 1)[-1]
     stated = {
@@ -285,19 +351,25 @@ def main() -> int:
     print(f"IC0($B): AWS {inp['ic_aws'] / BN:.1f} retail {ic_ret / BN:.1f} | avg ROIC on IC0: AWS {nopat_aws / inp['ic_aws']:.1%} retail {nopat_ret / ic_ret:.1%}"
           f" | AWS retention at marginal ROIC {inp['roic_marg_aws']:.1%} (A4)")
     print(f"asset legs $/sh: portfolio net {port_net / sh:.2f} (gross {inp['port_gross'] / BN:.1f}B − DTL) | net cash {net_cash / sh:.2f}")
-    print("  tier  k_eps   AWS-non PE(ROEavg/ret)   lab PE   retail PE(ROE)   port(d)   cash   deemed  total")
+    print(f"tau {tau} (2026-06-30 -> FY2027 opening; AWS non-lab + retail at {r4:.0%}, lab at journey {r7:.0%});"
+          f" path t0 {t0} y1 {y1} y2 {y2}, retail stable {inp['ronic_ss_ret']:.2%}, AWS flat at the marginal ROIC;"
+          f" funding gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:,.0f} - (OCF {inp['ocf_2h26']:,.0f} - SBC {inp['sbc_2h26']:,.0f})) / sh;"
+          " window profit 0 (gap present)")
+    print("  tier  k_eps   AWS-non PE(ROEavg/ret)   lab PE   retail PE(ROE->stable)   port(d)   cash   gap   deemed  total  (legs / (1+r)^tau)")
     for t in "lmh":
         x = base[t]
         print(f"    {t.upper()}  {inp[f'k_eps_{t}']:.4f}  {x['aws']['val']:7.2f} {x['aws']['pe']:5.2f}x({x['aws']['roe']:.1%}/{x['aws']['roe_ret']:.1%})"
-              f"  {x['lab']['val']:6.2f} {x['lab']['pe']:5.2f}x  {x['ret']['val']:6.2f} {x['ret']['pe']:5.2f}x({x['ret']['roe']:.1%})"
-              f"  {x['port']['val']:6.2f}(-{x['port']['d']:.0%}) {x['cash']['val']:6.2f}  {x['deemed']:5.2f}x k{inp[f'k_{t}']:.2f}  {x['total']:7.2f}")
+              f"  {x['lab']['val']:6.2f} {x['lab']['pe']:5.2f}x  {x['ret']['val']:6.2f} {x['ret']['pe']:5.2f}x({x['ret']['roe']:.1%}->{x['ret']['rs']:.1%})"
+              f"  {x['port']['val']:6.2f}(-{x['port']['d']:.0%}) {x['cash']['val']:6.2f} {x['gap']['val']:6.2f}  {x['deemed']:5.2f}x k{inp[f'k_{t}']:.2f}  {x['total']:7.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder (A2e-2c): {flat_l:.2f}/{M:.2f}/{flat_h:.2f}")
     print(f"ratios: L/M {L / M:.3f} H/M {H / M:.3f} (H-L)/2M {(H - L) / 2 / M:.3f} | numerator ratio L/M {inp['k_eps_l'] / inp['k_eps_m']:.3f} H/M {inp['k_eps_h'] / inp['k_eps_m']:.3f}"
           f" | AWS L retreat x{aws_retreat:.4f}")
     print(f"guardrail: own 5y trailing PE band top {inp['pe_own_top']:.2f}x / p50 {inp['pe_own_p50']:.2f}x is DISTORTED (2022 loss year) — disclosure only;"
           f" L/M/H on core EPS {L / core_eps:.1f}/{M / core_eps:.1f}/{H / core_eps:.1f}x; M on FY27E mean {M / inp['eps_fy27e_consensus']:.1f}x")
-    print(f"candidate band (JPM FY2028E {inp['eps_fy28e_single']}, single house, 1y @{inp['r_disc']:.0%}): L′={cand['l']:.2f} M′={cand['m']:.2f} H′={cand['h']:.2f}")
+    print(f"candidate band (JPM FY2028E {inp['eps_fy28e_single']}, single house, operating legs tau+1 = {tau + 1}y @{inp['r_disc']:.0%}): L′={cand['l']:.2f} M′={cand['m']:.2f} H′={cand['h']:.2f}")
+    sr = band(rs_ret=1.0)
+    print(f"stable-return path off (retail permanent at the forward ROE): L/M/H {sr['l']['total']:.2f}/{sr['m']['total']:.2f}/{sr['h']['total']:.2f}")
     sens = [
         ("AWS marginal ROIC 16.4% (own realised avg-asset basis)", dict(roic_marg=0.164)),
         ("AWS marginal ROIC 13% (realised first-year lower bound)", dict(roic_marg=0.13)),
@@ -318,16 +390,16 @@ def main() -> int:
           f" | capex axis constituent: 2026 guide ${inp['capex_guide'] / 1e9:.0f}B")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # every priced r 1:1 — r_perp (AWS non-lab + retail) and the lab sub-leg's
-    # terminal basket r_aws_lab_t.  The journey rate r_aws_lab prices nothing in
-    # the base deck and r_disc only the candidate band, so neither moves; g, ROE,
-    # k_lab, k and the asset legs stay put.  Disclosure only.
+    # every priced r 1:1 — r_perp (AWS non-lab + retail), the lab sub-leg's
+    # terminal basket r_aws_lab_t and its journey basket r_aws_lab (the tau
+    # discount).  r_disc prices only the candidate band, so it does not move;
+    # g, ROE, k_lab, k, the gap and the asset legs stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
         nonlocal r4
         saved = r4
         r4 = r4 + dr
         try:
-            b = band(r_lab=r7t + dr)
+            b = band(r_lab=r7t + dr, r_lab_tau=r7 + dr)
             return b["l"]["total"], b["m"]["total"], b["h"]["total"]
         finally:
             r4 = saved

@@ -11,7 +11,10 @@ formula_id: nvda_fy28_scenario_rev_gm_gordon_v3
 Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     eps_i = (rev_i * gm_i - opex_fy28) * (1 - tax_rate) / shares_fy28
     ROE_i = eps_i / BPS_open_FY28_i      (E_{n+1} / B_n, A24)
-    anchor_i = eps_i * perpetual_pe(g2, ROE_i, r_perp)
+    anchor_i = eps_i * path_pe(g2, ROE_i, r_perp; Y1 / Y2 / R_s) / (1 + r)^tau + window_i
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段 / ③ 时点对齐, A26; framework
+    correction 2026-10-16: steady return 22%, Y1 2030 / Y2 2035, tau 0.50, window =
+    2H FY27 unbooked x (1 - g2/ROE) at tau/2)
 The multiple is generated, not borrowed: one perpetual g2 shared by all three
 tiers (peer cross-section reverse-solve, capped at the mega-hardware g_cap --
 FY28 revenue is far above MEGA_HW_REVENUE_USD and no pricing-power exemption,
@@ -129,6 +132,11 @@ REQUIRED = [
     "eps_1h_fy27",
     "payout_3y",
     "t_opt",
+    "tau",
+    "t0_cal",
+    "y1",
+    "y2",
+    "rs_steady",
 ]
 
 _ANCHORS = re.compile(
@@ -166,6 +174,35 @@ def parse_inputs(md: str) -> dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+
+    Calendar years, t = 1 is the numerator year t0; the retention of year c earns from c+1.
+    RONIC = the tier's forward value through Y1, falls linearly to the steady value R_s by Y2,
+    and stays there (R_s capped at the tier's forward value).  With R_s >= forward this is
+    exactly perpetual_pe(g, roe, r)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / rs_eff) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g / ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def eps_of(rev: float, gm: float, opex: float, tax: float, shares: float) -> float:
@@ -245,8 +282,20 @@ def main() -> int:
     roe_l, roe_m, roe_h = roe_t["l"], roe_t["m"], roe_t["h"]
     ret_actual = 1.0 - inp["payout_3y"]
     excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in b1}  # disclosure only
-    pe_l, pe_m, pe_h = (perpetual_pe(g2, roe, r) for roe in (roe_l, roe_m, roe_h))
-    # Guardrail (裁决顺序 ③, A19): inside the ticker's own realised next-FY PE band.
+    # Operating value and time alignment (valuation-rules「经营价值与超额现金」② / ③, A26):
+    # the Gordon value sits at the start of the numerator year FY2028; today's value =
+    # V_op(t_n) / (1+r)^tau + window distributable profit (2H FY27 unbooked x (1 - b1), at
+    # tau/2, floored at 0).  The multiples below are TODAY's operating multiples (anchor / eps).
+    tau, t0 = inp["tau"], int(inp["t0_cal"])
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+
+    def today_pe(g: float, roe: float, rr: float, e: float, b1_: float) -> float:
+        win = max(unbooked * (1.0 - b1_), 0.0) * (1 + rr) ** -(tau / 2)
+        return path_pe(g, roe, rr, t0, y1, y2, rs) * (1 + rr) ** -tau + win / e
+
+    eps_t = {"l": eps_l, "m": eps_m, "h": eps_h}
+    pe_l, pe_m, pe_h = (today_pe(g2, roe_t[t], r, eps_t[t], b1[t]) for t in ("l", "m", "h"))
+    # Guardrail (裁决顺序 ③, A19): today's operating multiple inside the own realised next-FY PE band.
     for label, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
         if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
             errors.append(
@@ -260,7 +309,7 @@ def main() -> int:
         lo, hi = -0.30, r - 1e-4
         for _ in range(200):
             mid = (lo + hi) / 2
-            if perpetual_pe(mid, roe_m, r) < target:
+            if today_pe(mid, roe_m, r, eps_m, mid / roe_m) < target:
                 lo = mid
             else:
                 hi = mid
@@ -351,7 +400,9 @@ def main() -> int:
     if inp["t_opt"] <= NUM_YEAR:
         errors.append(f"t_opt {inp['t_opt']:g} must lie after the numerator year {NUM_YEAR}")
     disc = (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
-    v_opt = d_eps_opt * pe_h / disc
+    # Option unit economics on the same return path (from the realisation year), folded to
+    # FY2028 and then by tau to today (valuation-rules「经营价值与超额现金」③ 时点对齐).
+    v_opt = d_eps_opt * path_pe(g2, roe_h, r, int(inp["t_opt"]), y1, y2, rs) / disc * (1 + r) ** -tau
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -428,7 +479,7 @@ def main() -> int:
     # A22 candidate band: same formula, only g2 -> g2_cand (the post-horizon
     # runway the mega-hardware cap keeps out of the base).
     g2c = inp["g2_cand"]
-    pe_c = tuple(perpetual_pe(g2c, roe, r) for roe in (roe_l, roe_m, roe_h))
+    pe_c = tuple(today_pe(g2c, roe_t[t], r, eps_t[t], b1[t]) for t in ("l", "m", "h"))
     cand = (eps_l * pe_c[0], eps_m * pe_c[1], eps_h * pe_c[2])
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not a ladder: {cand}")
@@ -448,7 +499,7 @@ def main() -> int:
     # priced r; Δr_f moves it 1:1 in each tier's Gordon multiple while the FY28 EPS
     # bridge, tier ROE and g2 stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        return tuple(e * perpetual_pe(g2, roe, r + dr) for e, roe in ((eps_l, roe_l), (eps_m, roe_m), (eps_h, roe_h)))
+        return tuple(eps_t[t] * today_pe(g2, roe_t[t], r + dr, eps_t[t], b1[t]) for t in ("l", "m", "h"))
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

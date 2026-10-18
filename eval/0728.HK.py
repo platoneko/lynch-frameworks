@@ -73,7 +73,7 @@ REQUIRED = [
     "g2_l", "g2_m", "g2_h",
     "g_evid_min", "g_evid_max",
     "pe_own_min", "pe_own_max",
-    "net_cash", "v_opt",
+    "net_cash", "v_opt", "tau",
 ]
 
 
@@ -160,14 +160,26 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (guardrail)")
 
-    anchor = {t: eps[t] * pe[t] / fx for t in TIERS}
+    # Timing (valuation-rules「经营价值与超额现金」③ 时点对齐, 2026-10-15): Gordon gives the
+    # value at the numerator year's opening (2027-01-01); discount it tau years to the
+    # balance-sheet date (2026-06-30) and add the window's distributable profit = the
+    # 2H26 unbooked consensus profit x (1 - b1), b1 = the roll's g2/ROE, at tau/2.
+    tau = inp["tau"]
+    window = {t: n_unbooked * (1.0 - b1[t]) for t in TIERS}  # CNY/share
+
+    def value(t: str, rr: float) -> float:
+        return (eps[t] * perpetual_pe(g2[t], roe[t], rr) / (1 + rr) ** tau
+                + window[t] / (1 + rr) ** (tau / 2)) / fx
+
+    anchor = {t: value(t, r) for t in TIERS}
     L, M, H = anchor["l"], anchor["m"], anchor["h"]
     errors += ladder("anchor", L, M, H)
     A, B = cut_points(L, M, H)
 
     # Evidence interval = payout policy 80% / 70% (A13): disclosed bands.
     band_ev = {
-        g_ev: tuple(eps[t] * perpetual_pe(g_ev, roe[t], r) / fx for t in TIERS)
+        g_ev: tuple((eps[t] * perpetual_pe(g_ev, roe[t], r) / (1 + r) ** tau
+                     + n_unbooked * (1.0 - g_ev / roe[t]) / (1 + r) ** (tau / 2)) / fx for t in TIERS)
         for g_ev in (inp["g_evid_min"], inp["g_evid_max"])
     }
 
@@ -208,6 +220,8 @@ def main() -> int:
           f"{[round(excess_cash[t] / fx, 4) for t in TIERS]} HKD/share modelled-as-distributed, "
           f"actually retained (disclosure only; not a leg, not in BPS)")
     print(f"PE_l/m/h={[round(pe[t], 4) for t in TIERS]}")
+    print(f"timing: tau {tau:g}y (2026-06-30 -> 2027-01-01) ÷{(1 + r) ** tau:.4f}; window distributable "
+          f"2H26 profit x (1 - b1) = {[round(window[t] / fx, 4) for t in TIERS]} HKD/share at tau/2")
     print(f"L/M/H={[round(anchor[t], 4) for t in TIERS]} A={A:.4f} B={B:.4f}")
     for g_ev, band in band_ev.items():
         print(f"g_evid={g_ev} L/M/H={[round(x, 2) for x in band]} (A13 evidence interval, disclosure only)")
@@ -231,7 +245,7 @@ def main() -> int:
     # the H-share r_perp 1:1; EPS, g2, ROE and fx stay put.  r_perp_a prices only
     # the A-share cross band above, not L/M/H, so it is not shifted.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        return tuple(eps[t] * perpetual_pe(g2[t], roe[t], r + dr) / fx for t in TIERS)
+        return tuple(value(t, r + dr) for t in TIERS)
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 0.02 for x, y in zip(band_rf(0.0), (L, M, H))):

@@ -21,7 +21,10 @@ Two pieces, added:
 
 Numerator year = FY2027 (nearest-year rule for commodity-type mid-cycle,
 valuation-rules 2026-10-04: FY2026 carries ~39亿 of one-offs and is 3/4 gone).
-FY2027 = current FY + 1 -> t = 1, no discount.  M / H = FY2027E consensus mean /
+Time alignment (valuation-rules「经营价值与超额现金」③): the M / H perpetual segment and tail are
+values at the numerator-year start 2027-01-01 -> x (1+r)^-tau (tau = 0.5 from the 2026-06-30 balance
+sheet) plus the window distributable profit (2H26) x (1+r)^-(tau/2); L (measured-year construction)
+is not aligned.  The two options sit at FY2027 too and take the same tau.  M / H = FY2027E consensus mean /
 high (Eastmoney, 17 houses); L = FY2023 measured trough with its measured
 two-year recovery (recovery_two_stage_pe), all three on the same economic-D
 adjustment (each year with its own accounting D).
@@ -86,7 +89,7 @@ REQUIRED = [
     "b16_years", "v_opt",
     "b16_budget", "b16_progress", "b20_budget", "b20_progress", "b20_share", "unspent_years",
     "gcs_rev_ms", "gcs_wpm", "gcs_capex", "gcs_share", "gcs_years", *GCS_SHARED,
-    "ocf_l", "ocf_m", "ocf_h", "interest", "band_lo", "band_hi", "pb_floor", "m_prev",
+    "ocf_l", "ocf_m", "ocf_h", "interest", "band_lo", "band_hi", "pb_floor", "m_prev", "tau",
 ]
 
 
@@ -142,6 +145,15 @@ def deduction(x: dict[str, float], r: float) -> float:
     return unspent_owned(x) / (1 + r) ** x["unspent_years"] / x["shares"]
 
 
+def window_profit(x: dict[str, float], t: str, ed: float) -> float:
+    """Window distributable profit, yuan/share (valuation-rules「经营价值与超额现金」③ 时点对齐):
+    2H26 unbooked consensus 归母 on the numerator basis (+ half a year of (accounting D - economic D)
+    x (1 - t) x s, FY2025 D as the FY2026 proxy) x (1 - b), b = the book-roll retention 1 - payout.
+    Floored at 0 (DECISIONS: b > 1 cases belong to the funding-gap line)."""
+    unb = x[f"ni26_{t}"] - x["ni_2026h1"] + 0.5 * (x["da_2025"] - ed) * (1 - x["tax"]) * x["parent_share"]
+    return max(0.0, unb * x["payout"] / x["shares"])
+
+
 def deck(inp: dict[str, float], dg: float = 0.0, r: float | None = None,
          over: dict[str, float] | None = None) -> dict[str, dict[str, float]]:
     x = dict(inp, **(over or {}))
@@ -158,8 +170,10 @@ def deck(inp: dict[str, float], dg: float = 0.0, r: float | None = None,
         pe, g, g_raw = policy_pe(roe, r, po, dg)
         tl = tail(x, t, r)
         perp = eps * pe
+        win = window_profit(x, t, ed)
+        a = (perp + tl["v"]) * (1 + r) ** -x["tau"] + win * (1 + r) ** -(x["tau"] / 2) - ded
         out[t] = dict(ed=ed, ni_adj=ni_adj, eps=eps, eps_book=x[f"ni27_{t}"] / sh, bps=bps, roe=roe,
-                      g=g, g_raw=g_raw, pe=pe, perp=perp, tail=tl, ded=ded, a=perp + tl["v"] - ded)
+                      g=g, g_raw=g_raw, pe=pe, perp=perp, tail=tl, ded=ded, win=win, a=a)
     ed = econ_d(x, "l")
     eps_l = adj_ni(x["ni_l"], x["da_2023"], ed, x) / sh
     eps_rec = adj_ni(x["ni_l_rec"], x["da_2025"], ed, x) / sh
@@ -297,10 +311,16 @@ def main() -> int:
         errors.append(f"gcs_price_h_usd {inp['gcs_price_h_usd']} != Absolics target / capacity x panel {price_h:.0f}")
 
     # --- option ------------------------------------------------------------------------------
-    v_h = b16_option(inp, inp["b16_margin_h"], r)
-    v_m = b16_option(inp, inp["b16_margin_m"], r)
+    # Both option values sit at the numerator year (FY2027 basis) -> same tau as the base (time alignment).
+    # Glass-core leg = 叙事换代 (B5b): no own history, no >= 5-year mature peer -> steady = min(fwd, 30%),
+    # no fade, so the leg keeps the plain Gordon multiple.
+    tf = (1 + r) ** -inp["tau"]
+    v_h = b16_option(inp, inp["b16_margin_h"], r) * tf
+    v_m = b16_option(inp, inp["b16_margin_m"], r) * tf
     b16 = {"l": 0.0, "m": 0.5 * v_m, "h": v_h}          # p_M(B16) = 0.5 x V_M/V_H (B5)
     gcs = {t: gcs_option(inp, t, r) for t in TIERS}
+    for t in TIERS:
+        gcs[t]["v"] *= tf
     gcs_vh = gcs["h"]["v"]
     gcs_p = {t: (gcs[t]["v"] / gcs_vh if gcs_vh > 0 else 0.0) for t in TIERS}   # p_k = V_k / V_H
     v_tot = v_h + gcs_vh
@@ -328,7 +348,8 @@ def main() -> int:
         note = f" (raw {x['g_raw']:.2%} capped → payout ruler)" if x["g"] != x["g_raw"] else ""
         print(f"{t.upper()}: NI27 book {inp[f'ni27_{t}'] / 1e8:.2f} → adj {x['ni_adj'] / 1e8:.2f}亿 EPS {x['eps']:.4f} "
               f"BPS(beg 2027) {x['bps']:.3f} ROE {x['roe']:.2%} g {x['g']:.2%}{note} PE {x['pe']:.2f} "
-              f"perp {x['perp']:.2f} + tail {x['tail']['v']:.2f} = {x['a']:.2f}")
+              f"(perp {x['perp']:.2f} + tail {x['tail']['v']:.2f}) x (1+r)^-{inp['tau']:g} + window "
+              f"{x['win']:.4f} x (1+r)^-{inp['tau'] / 2:g} - ded {x['ded']:.2f} = {x['a']:.2f}")
     x = d["l"]
     print(f"L: FY2023 adj EPS {x['eps']:.4f} → FY2025 adj {x['eps_rec']:.4f} g1 {x['g1']:.1%} n {int(inp['n_rec'])} "
           f"PE {x['pe']:.2f} perp {x['perp']:.2f} + tail {x['tail']['v']:.2f} = {x['a']:.2f}")

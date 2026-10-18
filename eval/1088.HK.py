@@ -69,7 +69,7 @@ REQUIRED = [
     *(f"seg_{s}_fy{y}" for s in ("coal", "power", "unalloc") for y in YEARS),
     *(f"pbt_fy{y}" for y in REPLAY_YEARS + (2025,)), *(f"ni_fy{y}" for y in REPLAY_YEARS + (2025,)),
     "pbt_coal_pf", "pbt_power_pf", "pbt_power_fy25_exassoc", "pbt_rail_pf", "pbt_shipchem", "pbt_resid_pf",
-    "vol_scale", *LEGS,
+    "vol_scale", "h_pass_years", *LEGS,
     "payout_fy25", "pe_own_min", "pe_own_max",
     "px_same_p25", "px_same_med", "px_same_p75", "pb_own_med",
     "eps_cons_fy26_mean", "eps_cons_fy27_lo", "eps_cons_fy27_mean", "eps_cons_fy27_hi", "tp_cons_h",
@@ -149,8 +149,19 @@ def main() -> int:
 
     r0 = {leg: inp[leg] for leg in LEGS}
 
+    leg_r = {"coal": "r_coal", "power": "r_power", "rail": "r_rail"}
+    n_pass = inp["h_pass_years"]
+    if not n_pass > 0:
+        errors.append(f"h_pass_years {n_pass} must be > 0 (H = 周期高年 passes, MUST NOT be capitalised as a regime)")
+
     def band(r: dict[str, float] = r0, **kw) -> tuple[float, float, float]:
-        return tuple(sum(v for k, v in legs(t, r, **kw).items() if k != "pbt") for t in TIERS)  # type: ignore[return-value]
+        """H passes through (valuation-rules「经营价值与超额现金」② 商品腿豁免「每档 MUST 与该档的世界状态
+        一致」; axis H = 周期高年「一个年均」): each leg earns its H-world profit for `h_pass_years`,
+        then the M world; every leg is g = 0 / 1/r, so the H excess is an n-year annuity per leg."""
+        lt = {t: legs(t, r, **kw) for t in TIERS}
+        h = sum(lt["m"][k] + (lt["h"][k] - lt["m"][k]) * (1 - (1 + r[rk]) ** -n_pass) for k, rk in leg_r.items())
+        return (sum(v for k, v in lt["l"].items() if k != "pbt"),
+                sum(v for k, v in lt["m"].items() if k != "pbt"), h)
 
     lg = {t: legs(t, r0) for t in TIERS}
     ni = {t: lg[t]["pbt"] * inp["conv"] for t in TIERS}

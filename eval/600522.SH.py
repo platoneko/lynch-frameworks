@@ -25,8 +25,12 @@ fiber-price axis (_AXIS.optical-fiber, CRU China G.652.D bare-fibre spot):
 
     L = (NF_FY2024 + fiber(axis L)) × PE + cash            regime (glut persists)
     M = (NF_FY2027 + fiber(axis M)) × PE + cash
-    H = M + PV(fiber excess FY2027, FY2028 at consensus high) − k_H × deemed-retained
-                                                             point (decays to M)
+    H = M + PV(fiber excess FY2027, FY2028 at consensus high)   point (decays to M)
+
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」): net cash x parent ratio;
+the numerator strips only the parent share of interest; time alignment tau on the calendar parts
+(non-fiber leg, H excess; the fiber leg at an axis regime / cycle-centre price is not aligned) plus
+the 2H26 window distributable profit; the k on the deemed-retained cash is removed.
 
 Run:  python3 frameworks/eval/600522.SH.py
 """
@@ -65,6 +69,7 @@ REQUIRED = [
     *(f"ni_fy{y}" for y in RATIO_YEARS), *(f"nonop_fy{y}" for y in RATIO_YEARS),
     "cons27_lo", "cons27_mean", "cons27_hi", "cons28_mean", "cons28_hi",
     "pe_same_min", "pe_same_n", "pb_own_min", "ebitda_fy25", "ebit_fy25", "interest_fy25",
+    "minority_h1", "int_fy2025", "int_fy2024", "tau", "cons26_mean", "ni_h1_2026",
 ]
 
 _RUNG = re.compile(r"^\|\s*\*\*([LMH])\*\*\s*\|[^|]*\|\s*\*\*([0-9.]+)\*\*")
@@ -130,30 +135,45 @@ def main() -> int:
     # --- Step 4: legs and anchors ----------------------------------------------------------
     sh = inp["shares"]
     netcash = inp["cash_h1"] - inp["cash_restricted"] - inp["debt_h1"] - inp["div_declared"]
-    cash_inv = netcash + inp["inv_h1"]
-    op_eq = inp["eq_h1"] - cash_inv
-    nonop = inp["nonop_fy2025"]
+    # Parent share (valuation-rules「经营价值与超额现金」① 归母份额): no subsidiary-level cash disclosure
+    # -> parent equity / (parent + minority); applied to the net cash (investments are not cash) and to
+    # the interest stripped from the numerator (parent NI only carries the parent share of it).
+    pr = inp["eq_h1"] / (inp["eq_h1"] + inp["minority_h1"])
+    cash_inv = netcash * pr + inp["inv_h1"]
+    op_eq = inp["eq_h1"] - (netcash + inp["inv_h1"])
+    int_minor25 = (1 - pr) * inp["int_fy2025"] * 0.85
+    nonop = inp["nonop_fy2025"] - int_minor25
     nf25 = inp["ni_fy2025"] - nonop - fib[2025]
     g_nf = ((inp["gp_fy2025"] - inp["fib_gp_fy2025"]) / (inp["gp_fy2023"] - inp["fib_gp_fy2023"])) ** 0.5 - 1
     nf = {2027: nf25 * (1 + g_nf) ** 2, 2028: nf25 * (1 + g_nf) ** 3}
-    nf_l = inp["ni_fy2024"] - inp["nonop_fy2024"] - fib[2024]
+    nf_l = inp["ni_fy2024"] - (inp["nonop_fy2024"] - (1 - pr) * inp["int_fy2024"] * 0.85) - fib[2024]
     g2 = inp["g2"]
+    tau = inp["tau"]
+    # Window distributable profit (valuation-rules「经营价值与超额现金」③ 时点对齐): 2H26 unbooked
+    # consensus 归母 (FY2026E - 1H26 actual) less half a year of non-operating items (numerator basis),
+    # x (1 - b), b = g2 / RONIC = 0; discounted tau/2.
+    win = max(0.0, inp["cons26_mean"] - inp["ni_h1_2026"] - 0.5 * inp["nonop_fy2025"]) / sh
 
     def anchors(rr: float, vol: float = 1.0) -> dict[str, float]:
+        """Fiber leg sits at an axis regime / cycle-centre price -> no tau (周期中枢不适用); the
+        non-fiber leg and H's FY27/FY28 excess are calendar values -> x (1+r)^-tau."""
         f = {t: fiber[t] * vol for t in TIERS}
+        d = (1 + rr) ** -tau
+        w = win * (1 + rr) ** -(tau / 2)
         e_m = nf[2027] + f["m"]
         e_l = nf_l + f["l"]
         roe_m, roe_l = e_m / op_eq, e_l / op_eq
-        v_m = e_m * perpetual_pe(g2, roe_m, rr) + cash_inv
-        v_l = e_l * perpetual_pe(g2, roe_l, rr) + cash_inv
+        pe_m, pe_l = perpetual_pe(g2, roe_m, rr), perpetual_pe(g2, roe_l, rr)
+        v_m = f["m"] * pe_m + nf[2027] * pe_m * d + cash_inv
+        v_l = f["l"] * pe_l + nf_l * pe_l * d + cash_inv
         ex = {2027: inp["cons27_hi"] - nonop - nf[2027] - f["m"],
               2028: inp["cons28_hi"] - nonop - nf[2028] - f["m"]}
-        pv_ex = ex[2027] / (1 + rr) + ex[2028] / (1 + rr) ** 2
-        h_pre = (v_m + pv_ex) / sh
+        pv_ex = (ex[2027] / (1 + rr) + ex[2028] / (1 + rr) ** 2) * d
+        h_pre = (v_m + pv_ex) / sh + w
         deemed_h = (1 - inp["payout_obs"]) * (inp["cons27_hi"] + inp["cons28_hi"]) / sh
         g1 = (e_m / e_l) ** 0.5 - 1
         return {
-            "L": v_l / sh, "M": v_m / sh, "H_pre": h_pre, "H": h_pre - inp["k_h"] * deemed_h,
+            "L": v_l / sh + w, "M": v_m / sh + w, "H_pre": h_pre, "H": h_pre - inp["k_h"] * deemed_h,
             "deemed_h": deemed_h, "e_m": e_m, "e_l": e_l, "roe_m": roe_m, "roe_l": roe_l,
             "ex27": ex[2027], "ex28": ex[2028],
             "L_point": (e_l * recovery_two_stage_pe(g1, 2, g2, roe_m, rr) + cash_inv) / sh,
@@ -171,11 +191,11 @@ def main() -> int:
     # --- Step 5: guards ---------------------------------------------------------------------
     if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
         errors.append("k ladder 0 ≤ k_L ≤ k_M ≤ k_H ≤ 1 violated")
-    # k_h is the settled 2026-10-13 ①b value (存量框架已拍板的 k 保留); today's ①b
-    # recompute is printed and only trips when it drifts past rounding noise.
+    # k on the 「多留部分」 is removed (2026-10-16 框架纠正: a k may only sit on a named transaction;
+    # the retained-but-deemed-paid cash is carried by λ = 1).  Guard: no k on this ticker.
     k_top = 1 - M / base["H_pre"]
-    if abs(inp["k_h"] - k_top) > 0.02:
-        errors.append(f"k_h {inp['k_h']} drifted from ①b 1 − M/H(k 前) {k_top:.3f} — back to dialogue")
+    if any(inp[k] != 0.0 for k in ("k_l", "k_m", "k_h")):
+        errors.append("k must be 0: this ticker has no named transaction for a k to sit on (A12)")
     pe_m_equiv = M / eps["m"]
     if pe_m_equiv < inp["pe_same_min"]:
         errors.append(f"③: M equiv PE {pe_m_equiv:.2f} below same-earnings band floor {inp['pe_same_min']}")
@@ -204,7 +224,7 @@ def main() -> int:
     print(f"桥 fiber_opNI = {a:.3f} + {b:.4f} × price  R²={r2:.3f}; 复现 " + " ".join(f"FY{y} {e:+.0%}" for y, e in replay.items()))
     print(f"光纤腿 L/M/H(价) {fiber['l']:.2f}/{fiber['m']:.2f}/{fiber['h']:.2f} 亿 · 自身十年均值交叉 {self_mid:.2f} 亿")
     print(f"非光纤 NF FY25 {nf25:.2f} · 增速 {g_nf:.4f} · FY27 {nf[2027]:.2f} · FY28 {nf[2028]:.2f} · L(FY24) {nf_l:.2f}")
-    print(f"①b 复算 1 − M/H(k 前) = {k_top:.3f}（k_h 已拍板 {inp['k_h']}）")
+    print(f"①b 读数 1 − M/H(k 前) = {k_top:.3f}（只披露；k 已去掉）· 归母比例 {pr:.4f} · τ {tau:g} · 窗口可分配利润 {win:.3f}/股")
     print(f"净现金 {netcash:.2f}（已扣应付股利 {inp['div_declared']:.2f}）· 投资 {inp['inv_h1']:.2f} · 经营权益 {op_eq:.2f} · ROE_op L/M {base['roe_l']:.2%}/{base['roe_m']:.2%}")
     print(f"H 超额 FY27 {base['ex27']:.2f} · FY28 {base['ex28']:.2f} 亿; H k 前 {base['H_pre']:.2f}; 视同派出(H 窗口) {base['deemed_h']:.2f}/股 × k_H {inp['k_h']} = {inp['k_h'] * base['deemed_h']:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")

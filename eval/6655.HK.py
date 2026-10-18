@@ -74,6 +74,14 @@ deducted at its payment year.  A negative net value is printed and the option
 is carried at 0 (the deal is signed, so a negative reading is a disclosure,
 not an option).
 
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」, A22): H is the
+value at the start of FY2028, discounted tau = num_year_h - t_base = 1.5 years at
+each leg's r (replacing "FY+2 -> one year") plus the window distributable profit
+(2H26 + FY2027 consensus x (1 - the roll's b)) discounted tau/2; L / M numerator
+years have begun -> tau 0.  g > 0 legs price new investment on the three-segment
+return path (forward leg ROE to y1_ret, linear fade to max(ss_return, r) by
+y2_ret).  The HPI option keeps its FY+1 discount basis (net value negative -> 0).
+
 Guards:
 
   * the zero-growth floor on the overseas leg's H (A10): g_ovs_H >= 0.
@@ -136,6 +144,7 @@ REQUIRED = [
     "rev_ovs", "opt_rev_usd", "opt_stake", "opt_price_usd", "fx_usdcny", "t_opt", "t_opt_pay",
     "num_year_m", "num_year_h", "div_fy2025", "ni_2026", "ni_2027", "ni_2028_hi", "ni_2028_zt",
     "close_hi_listing",
+    "t_base", "ni_1h26", "ss_return_ovs", "ss_return_dom", "y1_ret", "y2_ret",
 ]
 
 
@@ -213,10 +222,64 @@ def legs(inp: dict[str, float], tag: str, ni_l: dict[str, float]) -> dict[str, f
     return {"ovs": group * share, "dom": group * (1.0 - share)}
 
 
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year (t = 1 <-> calendar
+    t0): retention of calendar year c earns the forward roe while c <= y1, falls linearly to
+    the steady return by y2, and the steady return (capped at roe) holds in a Gordon tail
+    from y2.  g <= 0 consumes no return -> perpetual_pe."""
+    if g <= 0:
+        return perpetual_pe(g, roe, r)
+    rs = min(roe, r_s)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
+
+
+def num_start(inp: dict[str, float], tag: str) -> int:
+    """Calendar year of the tier's numerator: L = FY2025 actual read as the FY2026 case."""
+    return 2026 if tag == "l" else int(inp[f"num_year_{tag}"])
+
+
 def leg_pe(inp: dict[str, float], leg: str, tag: str, roe: float, r_shift: float = 0.0,
            g_override: float | None = None) -> float:
+    """Leg multiple; new-investment return on the three-segment path (A21): forward leg ROE
+    to y1_ret, linear fade, steady max(ss_return_<leg>, r) from y2_ret."""
     g = inp[f"g2_{leg}_{tag}"] if g_override is None else g_override
-    return perpetual_pe(g, roe, inp[R_ROWS[leg]] + r_shift)
+    r = inp[R_ROWS[leg]] + r_shift
+    return path_pe(g, roe, r, num_start(inp, tag), int(inp["y1_ret"]), int(inp["y2_ret"]),
+                   max(inp[f"ss_return_{leg}"], r))
+
+
+def window_cny(inp: dict[str, float], equity25: dict[str, float], share: float, tag: str) -> dict[str, float]:
+    """Window distributable profit per leg, 亿元 CNY (valuation-rules ③ 时点对齐; A21): the
+    consensus profit not yet booked between the 2026-06-30 base date and the numerator year
+    (2H26 = ni_2026 - ni_1h26, then each full year) x (1 - b), b = the book roll's
+    max(0, g/ROE) for that leg and year (same roll as roll_book).  Undiscounted."""
+    split = {"ovs": share, "dom": 1.0 - share}
+    book = {leg: equity25[leg] - inp["div_fy2025"] * split[leg] for leg in LEGS}
+    out = {leg: 0.0 for leg in LEGS}
+    for year in range(2026, int(inp[f"num_year_{tag}"])):
+        unbooked = inp[f"ni_{year}"] - (inp["ni_1h26"] if year == 2026 else 0.0)
+        for leg in LEGS:
+            ni = inp[f"ni_{year}"] * split[leg]
+            b = max(0.0, 1.0 - payout(inp[f"g2_{leg}_{tag}"], ni / book[leg]))
+            out[leg] += unbooked * split[leg] * (1.0 - b)
+            book[leg] += ni * b
+    return out
 
 
 def roll_book(inp: dict[str, float], equity25: dict[str, float], share: float, tag: str) -> dict[str, float]:
@@ -245,17 +308,26 @@ class Model:
         self.ni = {t: legs(inp, t, self.ni_l) for t in TIERS}
         self.roe = {t: {leg: self.ni[t][leg] / self.book[t][leg] for leg in LEGS} for t in TIERS}
         self.pe = {t: {leg: leg_pe(inp, leg, t, self.roe[t][leg]) for leg in LEGS} for t in TIERS}
-        # FY+0 / FY+1 undiscounted, FY+2 one year (construction.md §3).
-        self.n = {"l": 0, **{t: max(0, int(inp[f"num_year_{t}"]) - BASIS_YEAR) for t in ("m", "h")}}
+        # 时点对齐 (A21): tau = base date -> start of the numerator year, in years; a numerator
+        # year already begun (L read as FY2026, M = FY2026) takes tau 0 and no window.
+        self.n = {"l": 0.0, **{t: max(0.0, inp[f"num_year_{t}"] - inp["t_base"]) for t in ("m", "h")}}
+        self.window = {t: (window_cny(inp, self.equity, share, t) if self.n[t] > 0 else {leg: 0.0 for leg in LEGS})
+                       for t in TIERS}
 
     def value_cny(self, tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
-        """Leg values discounted from the numerator year to the deck basis at each leg's r."""
+        """Leg values at the start of the numerator year, discounted tau years to the base
+        date at each leg's r (window profit excluded -- see window_pv_cny)."""
         pe = pes or self.pe[tag]
         return sum(self.ni[tag][leg] * pe[leg] / (1.0 + self.inp[R_ROWS[leg]] + r_shift) ** self.n[tag]
                    for leg in LEGS)
 
+    def window_pv_cny(self, tag: str, r_shift: float = 0.0) -> float:
+        """Window distributable profit discounted tau/2 at each leg's r (A21)."""
+        return sum(self.window[tag][leg] / (1.0 + self.inp[R_ROWS[leg]] + r_shift) ** (self.n[tag] / 2.0)
+                   for leg in LEGS)
+
     def per_share_cny(self, tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
-        return self.value_cny(tag, pes, r_shift) * 1e8 / self.inp["shares"]
+        return (self.value_cny(tag, pes, r_shift) + self.window_pv_cny(tag, r_shift)) * 1e8 / self.inp["shares"]
 
     def anchor(self, tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
         """HKD per share."""

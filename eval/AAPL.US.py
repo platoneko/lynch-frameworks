@@ -21,6 +21,12 @@ Retention enters through ROIC, not book ROE: buybacks have shrunk equity the
 way leverage does (A13), and Apple holds net cash, so invested capital =
 equity − net cash.  Book ROE and the LLY-style 60% cap are sensitivity rows.
 
+Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金」): the
+two-stage value is discounted tau years from the FY2027 opening to the balance
+sheet and the FY26 Q4 window's distributable profit is added (A16); the haircut
+k on the deemed-paid row is removed (A14 / A16); the stable-return path is flat
+because the own-cycle return on the same formula is above every tier (A17).
+
 Run:  python3 frameworks/eval/AAPL.US.py
 """
 
@@ -52,7 +58,7 @@ REQUIRED = [
     "eps_fy26e", "eps_9m_26", "bps_q3_26", "net_cash_q3_26",
     "r_perp", "g2_hw", "g2_svc", "w_hw", "g2", "g2_cand", "payout_actual", "k_l", "k_m", "k_h",
     "eps_ttm", "pe_own_min", "pe_own_top", "net_debt_ebitda", "interest_ebit",
-    "tac_eps", "v_opt",
+    "tac_eps", "v_opt", "tau", "ronic_ss",
 ]
 FIXED_POINT_ITERS = 60
 ROE_CAP_LLY = 0.60  # LLY.US A4 convention, shown only as a sensitivity row
@@ -112,12 +118,20 @@ def main() -> int:
     # Step 3 — two-stage Gordon on the FY2027E numerator, plus net cash, minus the
     # haircut on cash the model treats as paid but Apple spends on buybacks (A14):
     # two-stage form → (actual retention − b1) × window EPS (valuation-rules「视同派出」).
+    # Time alignment (valuation-rules「经营价值与超额现金」③, A16): the two-stage value sits
+    # at the FY2027 opening (2026-09-27); discount tau years to the 2026-06-27 balance sheet
+    # and add the FY26 Q4 window's distributable profit = unbooked EPS x (1 - b1) at tau/2.
+    # Stable-return path (②, A17): the own-cycle return on the same formula (ronic_ss) is
+    # above every tier's forward ROIC, so the three-stage path is flat and two_stage_pe is it.
+    tau = inp["tau"]
+
     def price(t: str, g2_: float, r_: float, ret: float, b: float) -> tuple[float, float, float]:
         e = eps[t]
         pe = two_stage_pe(g1, n, g2_, ret, r_)
         window_eps = sum(e * (1 + g1) ** j for j in range(n))
         deemed = max(1 - inp["payout_actual"] - b, 0.0) * window_eps
-        return pe, deemed, e * pe + net_cash_ps - inp[f"k_{t}"] * deemed
+        window = unbooked_26 * max(1 - b, 0.0) / (1 + r_) ** (tau / 2)
+        return pe, deemed, e * pe / (1 + r_) ** tau + window + net_cash_ps - inp[f"k_{t}"] * deemed
 
     def tier(t: str, g2_: float = g2, r_: float = r) -> dict[str, float]:
         ic, roic, b = capital_base(eps[t], ic0, None)
@@ -126,6 +140,10 @@ def main() -> int:
 
     rows = {t: tier(t) for t in TIERS}
     L, M, H = (rows[t]["anchor"] for t in TIERS)
+    for t in TIERS:
+        if rows[t]["roic"] > inp["ronic_ss"]:
+            errors.append(f"{t}: forward ROIC {rows[t]['roic']:.2f} > stable {inp['ronic_ss']:.2f} — the three-stage "
+                          "path binds and must be implemented here (A17)")
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
     flat_errs, flat = flat_multiple_ladder(tuple(eps[t] for t in TIERS), rows["m"]["pe"])
@@ -182,7 +200,8 @@ def main() -> int:
     print(f"  sens k = 0        M {rows['m']['anchor'] + inp['k_m'] * rows['m']['deemed']:.1f}")
     perp_deemed = max(1 - inp["payout_actual"] - g2 / rows["m"]["roic"], 0) * eps["m"] / (r - g2)
     print(f"  sens single-stage perpetual deemed-paid form (LLY): −{inp['k_m'] * perp_deemed:.1f} on M (disclosure)")
-    tac = (eps["m"] - inp["tac_eps"]) * rows["m"]["pe"] + net_cash_ps - inp["k_m"] * rows["m"]["deemed"]
+    tac = ((eps["m"] - inp["tac_eps"]) * rows["m"]["pe"] / (1 + r) ** tau
+           + (rows["m"]["anchor"] - eps["m"] * rows["m"]["pe"] / (1 + r) ** tau))
     print(f"  stress TAC loss (M world − {inp['tac_eps']} EPS): {tac:.1f}")
     print(f"  E_M/r + net cash = {eps['m'] / r + net_cash_ps:.1f}")
 

@@ -11,7 +11,8 @@ formula_id: spcx_sotp_fy27_starlink_b4_compute_b7_v1
 
 Unlevered SOTP (USD bn → per share), every leg priced on FY2027 (t=1):
 
-    Starlink   篮 4   FY2027 bottom-up NOPAT (subs × ARPU + E&G) × perpetual_pe(g2, ROIC, r)
+    Starlink   篮 4   FY2027 bottom-up NOPAT (subs × ARPU + E&G) × Gordon on the steady-return
+                      path (ROIC to y1, linear to rs_steady by y2) ÷ (1+r)^tau (A17)
     Launch     篮 4   external launch EBIT ex-Starship R&D, g = 0
     Compute    篮 7   Dec-2026 signed-contract run-rate NOPAT × 1/r (contracts are
                       90-day cancellable, so no basket pair) + consensus YE2027
@@ -43,7 +44,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe  # noqa: E402
 from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
 from lib.zones import cut_points  # noqa: E402
 from lib.frameworks import load_framework  # noqa: E402
@@ -63,17 +64,55 @@ REQUIRED = [
     "r_compute", "opex_pct", "gpu_life", "ai_capex_cum", "gw0",
     "cash", "mkt_sec", "debt", "h2_interest", "h2_capex", "carry_q", "carry_n",
     "subs_2030_jpm", "n_cand",
+    "tau", "y1", "y2", "rs_steady",
 ]
 AXES = Path(__file__).resolve().parents[1] / "axes"
 # Rows copied from the peer-ruler axis (contracts.md「同业尺轴」): one source per field.
 AXIS_ROWS = {"direct-to-cell": ["d2c_px_l", "d2c_px_m", "d2c_px_h", "d2c_margin"]}
 OPT_REQUIRED = [
     "d2c_users0", "d2c_v1_sats", "d2c_users_l", "d2c_rev_db", "d2c_sats_first", "d2c_sats_full",
-    "d2c_sat_cost", "d2c_spec_cap", "d2c_spec_unspent", "d2c_years",
+    "d2c_sat_cost", "d2c_spec_cap", "d2c_spec_unspent", "d2c_years", "y1_d2c", "y2_d2c",
 ] + [k for ks in AXIS_ROWS.values() for k in ks]
 OPT_TOL = 0.01
 CAND_TOL = 0.05
 LISTING_CCY = "USD"
+NUM_YEAR = 2027        # Starlink numerator year; t_n = 2027-01-01
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0) -> float:
+    """Multiple on numerator-year earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2; n stage-1 years at payout 1 - g1/roe.
+    With rs >= roe this equals perpetual_pe / two_stage_pe.  (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
+
+
+def starlink_pe(inp: dict, r: float, g2: float | None = None, roe: float | None = None, t0: int = NUM_YEAR) -> float:
+    """Starlink ruler on the steady-return path (A17): forward ROIC to y1, linear to rs_steady by y2."""
+    g2 = inp["g2_starlink"] if g2 is None else g2
+    roe = inp["roic_starlink"] if roe is None else roe
+    return three_segment_pe(t0, int(inp["y1"]), int(inp["y2"]), inp["rs_steady"], g2, roe, r)
 
 
 def starlink_nopat(inp: dict, t: str) -> tuple[float, float]:
@@ -118,7 +157,8 @@ def d2c_option(inp: dict) -> dict:
     (today's devices x axis L price, grown with the base E&G line for 1.5 years
     and g2 to the realisation year) -> NOPAT at the axis margin.  Capital = the
     spectrum consideration + the tier's satellites at SpaceX's own realised
-    per-satellite capex; Gordon on the Starlink ruler (1/r when ROE < r - 3pp),
+    per-satellite capex; Gordon on the Starlink ruler with the leg's own
+    high-return window y1_d2c / y2_d2c (1/r when ROE < r - 3pp),
     discounted to FY2027, less unspent spectrum consideration (closing Nov 2027,
     not discounted) and satellites (built 2027-28, one year).  Per share on today's
     count (the 261.8M consideration shares are costed at their fixed contract value).
@@ -133,9 +173,14 @@ def d2c_option(inp: dict) -> dict:
         nopat = max(rev - in_base, 0.0) * inp["d2c_margin"] * (1 - tax)
         k = inp["d2c_spec_cap"] + sats * inp["d2c_sat_cost"]
         roe = nopat / k
-        pe = perpetual_pe(g2, roe, r) if roe >= r - 0.03 else 1 / r
+        # the leg's own high-return window (A13 / A17, user 2026-10-19): Y1 = its visible-year end =
+        # realisation year 2030 (gen-2 D2C sats first fly mid-2027), fade 6y like Starlink; the first
+        # earning year is NUM_YEAR + yrs (value folded yrs years to 2027-01-01)
+        pe = (three_segment_pe(NUM_YEAR + int(yrs), int(inp["y1_d2c"]), int(inp["y2_d2c"]),
+                               inp["rs_steady"], g2, roe, r) if roe >= r - 0.03 else 1 / r)
+        # folded to FY2027 (t_n 2027-01-01), then the deck's tau to the 2026-06-30 book (A17)
         v = (nopat * pe / (1 + r) ** yrs - inp["d2c_spec_unspent"]
-             - sats * inp["d2c_sat_cost"] / (1 + r))
+             - sats * inp["d2c_sat_cost"] / (1 + r)) * (1 + r) ** (-inp["tau"])
         return {"rev": rev, "nopat": nopat, "k": k, "roe": roe, "pe": pe, "v": v, "ps": v / inp["shares"]}
 
     out = {
@@ -170,7 +215,11 @@ def main() -> int:
     errors += check_g_cap(inp["g_space"], r4s, "g_space")
 
     sh = inp["shares"]
-    pe_s = perpetual_pe(inp["g2_starlink"], inp["roic_starlink"], r4)
+    # Starlink: steady-return path, value at t_n 2027-01-01 discounted tau years to the 2026-06-30
+    # book (A17).  No window add-on: the closure's H2 EBITDA - capex is the growth-funding gap
+    # (H2 capex far above operating cash flow), so the window's distributable profit is 0.
+    pe_s = starlink_pe(inp, r4)
+    df_s = (1 + r4) ** (-inp["tau"])
     pe_sp = perpetual_pe(inp["g_space"], inp["roic_space"], r4s)
     carry = inp["carry_q"] * inp["carry_n"]
     net_cash0 = inp["cash"] + inp["mkt_sec"] - inp["debt"]
@@ -181,7 +230,7 @@ def main() -> int:
         signed, build, net_gw = compute_leg(inp, t, r7)
         closure = net_cash0 + inp[f"h2_ebitda_{t}"] - inp["h2_interest"] - inp["h2_capex"] - carry
         legs = {
-            "starlink": nopat_s * pe_s,
+            "starlink": nopat_s * pe_s * df_s,
             "launch": inp[f"space_ebit_{t}"] * (1 - inp["tax"]) * pe_sp,
             "compute": signed + build,
             "closure": closure,
@@ -214,6 +263,11 @@ def main() -> int:
         for k in keys:
             if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
                 errors.append(f"{k} {inp[k]:g} != _AXIS.{axis} {peer.get(k)} — the leg ruler drifted")
+    if int(inp["y2_d2c"]) - int(inp["y1_d2c"]) != int(inp["y2"]) - int(inp["y1"]):
+        errors.append(f"D2C fade {int(inp['y2_d2c'] - inp['y1_d2c'])}y != Starlink fade "
+                      f"{int(inp['y2'] - inp['y1'])}y (same entry barrier, A17)")
+    if int(inp["y1_d2c"]) != NUM_YEAR + int(inp["d2c_years"]):
+        errors.append(f"y1_d2c {int(inp['y1_d2c'])} != realisation year {NUM_YEAR + int(inp['d2c_years'])} (A17)")
     opt = d2c_option(inp)
     v_l, v_m, v_h = (opt[t]["credit"] for t in "lmh")
     if not 0 <= v_l <= v_m <= v_h or v_h <= 0:
@@ -228,10 +282,14 @@ def main() -> int:
     # Candidate band: Starlink transition g1 from JPM 2030 subscribers (single house).
     s27_m = inp["subs0"] + 6 * inp["adds_q_m"]
     g1 = (inp["subs_2030_jpm"] / s27_m) ** (1 / inp["n_cand"]) - 1
-    pe_c = two_stage_pe(g1, int(inp["n_cand"]), inp["g2_starlink"], inp["roic_starlink"], r4)
+    # same path with the visible years extended to 2030 (Y1 = 2027 + n, same fall length), same tau (A17)
+    n_c = int(inp["n_cand"])
+    y1c = NUM_YEAR + n_c
+    pe_c = three_segment_pe(NUM_YEAR, y1c, y1c + int(inp["y2"] - inp["y1"]), inp["rs_steady"],
+                            inp["g2_starlink"], inp["roic_starlink"], r4, g1=g1, n=n_c)
     cand = {"l": L}
     for t in ("m", "h"):
-        cand[t] = rows[t]["total"] + rows[t]["nopat_s"] * (pe_c - pe_s) / sh
+        cand[t] = rows[t]["total"] + rows[t]["nopat_s"] * (pe_c - pe_s) * df_s / sh
     Lc, Mc, Hc = cand["l"], cand["m"], cand["h"]
     if not (Lc < Mc < Hc):
         errors.append(f"candidate L′<M′<H′ violated: {Lc:.2f} {Mc:.2f} {Hc:.2f}")
@@ -244,7 +302,8 @@ def main() -> int:
 
     print(f"formula_id={FORMULA_ID}  shares {sh:.4f}bn  tax {inp['tax']:.0%}")
     print(f"r: starlink {r4:g} (篮 {baskets.get('r_starlink')})  launch {r4s:g} (篮 {baskets.get('r_space')})  compute {r7:g} (篮 {baskets.get('r_compute')})")
-    print(f"PE: starlink {pe_s:.2f} (g2 {inp['g2_starlink']:g}, ROIC {inp['roic_starlink']:g})  launch {pe_sp:.2f}  compute 1/r {1 / r7:.2f}")
+    print(f"PE: starlink {pe_s:.2f} (g2 {inp['g2_starlink']:g}, ROIC {inp['roic_starlink']:g} → steady {inp['rs_steady']:g}, "
+          f"Y1 {int(inp['y1'])} → Y2 {int(inp['y2'])}; × {df_s:.4f} tau {inp['tau']:g}y)  launch {pe_sp:.2f}  compute 1/r {1 / r7:.2f}")
     for t in TIERS:
         row = rows[t]
         per = {k: round(v / sh, 2) for k, v in row["legs"].items()}
@@ -262,7 +321,7 @@ def main() -> int:
     print(f"candidate (JPM 2030 subs {inp['subs_2030_jpm']:g}M, g1 {g1:.2%}, n {int(inp['n_cand'])}, stage-1 payout {1 - g1 / inp['roic_starlink']:+.2f} = 发股融资的增长): "
           f"PE {pe_c:.2f} → L′ {Lc:.2f} M′ {Mc:.2f} H′ {Hc:.2f}")
     for g2 in (inp["g2_starlink"] - 0.01, inp["g2_starlink"] + 0.01):
-        d = (perpetual_pe(g2, inp["roic_starlink"], r4) - pe_s) / sh
+        d = (starlink_pe(inp, r4, g2=g2) - pe_s) * df_s / sh
         print(f"g2 {g2:.0%}: L/M/H {L + rows['l']['nopat_s'] * d:.2f}/{M + rows['m']['nopat_s'] * d:.2f}/{H + rows['h']['nopat_s'] * d:.2f}")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves all
     # three leg baskets 1:1 (Starlink / launch Gordon, compute 1/r and its one-year
@@ -271,7 +330,7 @@ def main() -> int:
         tot = []
         for t in TIERS:
             row = rows[t]
-            s = row["nopat_s"] * perpetual_pe(inp["g2_starlink"], inp["roic_starlink"], r4 + dr)
+            s = row["nopat_s"] * starlink_pe(inp, r4 + dr) * (1 + r4 + dr) ** (-inp["tau"])
             sp = inp[f"space_ebit_{t}"] * (1 - inp["tax"]) * perpetual_pe(inp["g_space"], inp["roic_space"], r4s + dr)
             signed, build, _ = compute_leg(inp, t, r7 + dr)
             tot.append((s + sp + signed + build + row["legs"]["closure"]) / sh)

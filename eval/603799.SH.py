@@ -36,24 +36,27 @@ The L anchor is the earnings scenario; the measured PB floor of 1.0228 (printed
 at the 2024-06 low of 20.82) is disclosure only and is never max()-ed into L.
 Guard 6 below is the skill A2e-1 test — if the earnings scenario drops below
 30% of M, the earnings ruler has failed at L and the framework must go back to
-conversation rather than quietly ship.
+conversation rather than quietly ship.  Per the user ruling of 2026-10-18
+(A23) the guard reads the L earnings scenario BEFORE the Pomalaa unspent-capital
+penalty: the penalty is a capital deduction on a named project, not a sign
+that the earnings ruler stopped describing the downside.
 
 Pomalaa (12 kt/yr Ni, first output ~end-2026) never enters the base: it is an
 option priced at k=1 x the ticker's own realised MHP unit gross profit,
-discounted one year, then scaled to the capex share already spent (A11): the
-unspent remainder is funded by the retention row and already carried at
-ROIC/r inside the k haircut (A21), so pricing its output again here would
-double count; 表3 = base_k + p_k x V_opt with P_K an eval constant.
+discounted one year, then scaled to the capex share already spent (A11).  The
+unspent remainder is the named-project rule (A22, valuation-rules「经营价值与
+超额现金」①): its output lands after the numerator year, so it is not a
+growth-period funding gap; because the project return is below r, each anchor
+is cut by unspent × (1 − ROIC_x / r) per share, ROIC_x read in that tier's
+world (L 6.4% / M 10.3% / H 10.3%).
 
 Retention (A21, valuation-rules「留存去向审计」): the single-stage Gordon
 implies a ~99% payout while the company pays ~15%; the audit buckets that
-retention as D (named window 2026H2–FY2028: Pomalaa remainder / 华星 /
-Sorowako / Ewoyaa).  The excess retention is therefore priced as the
-「模型视同派出、实际留存的现金/股」row = (1 − payout_actual − g2/ROE_x) × EPS_x ×
-window_years, and the anchor is leg value − k_x × row (k from realised project
-returns, A21).  `check_branch` fires on the payout gap; per the 2026-09-21 rule
-the red light is downgraded to a printed `payout_gap` disclosure because the
-framework carries the D-bucket conclusion and the priced k row.
+retention as D (named window 2026H2–FY2028).  The 「模型视同派出、实际留存的
+现金/股」row is kept as a DISCLOSURE only — the old k haircut on it was removed
+(A22: the 多留部分 sits on cash and belongs to λ; k is kept only for named
+deals).  `check_branch` fires on the payout gap; the red light is downgraded to
+a printed `payout_gap` disclosure because §2 carries the D-bucket conclusion.
 
 Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
 
@@ -92,7 +95,8 @@ BASE_NP_PARENT_YI = 70.1481
 BASE_NP_TOL_YI = 0.5
 
 # skill A2e-1: if the earnings scenario falls below this share of M the
-# earnings ruler has failed at L and must be re-opened.
+# earnings ruler has failed at L and must be re-opened.  Read on the L scenario
+# before the Pomalaa unspent-capital penalty (user ruling 2026-10-18, A23).
 SCENARIO_L_MIN_RATIO = 0.30
 # A12: 2025H1 eight-leg gross profit annualised (58.92 x 2), for the rigid-opex
 # L reading only — the number that shows why L pairs opex with its own period.
@@ -125,10 +129,11 @@ REQUIRED = [
     "pe_print_lo", "pe_print_hi", "g_print_m", "g_print_lo", "g_print_hi", "n_print_m",
     "pomalaa_kt", "mhp_unit_gp", "t_opt", "pomalaa_spent_share",
     "eps_cons_lo", "eps_cons_mean", "eps_cons_hi",
-    "payout_actual", "window_years", "k_l", "k_m", "k_h",
+    "payout_actual", "window_years",
+    "pom_budget", "roic_pom_l", "roic_pom_m", "roic_pom_h",
 ]
 # A21: the D-bucket conclusion that licenses the check_branch downgrade must be
-# written in §2, not just implied by the k inputs.
+# written in §2, not just implied by the inputs.
 D_BUCKET_TAG = "D 桶"
 CONSENSUS_BAND = 0.20  # ②-b: |EPS_M / consensus mean - 1| beyond this needs a named measured variable
 
@@ -184,8 +189,14 @@ def main() -> int:
         errors.append(f"payout_actual={inp['payout_actual']} outside (0,1)")
     if inp["window_years"] <= 0:
         errors.append("window_years must be > 0 (D 桶窗口终点 MUST 具名, A21)")
-    if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
-        errors.append(f"haircut ladder k_L ≤ k_M ≤ k_H within [0,1] violated: {inp['k_l']}/{inp['k_m']}/{inp['k_h']}")
+    # A22 Pomalaa project return per tier world: worse world, lower return.
+    if not (0.0 < inp["roic_pom_l"] <= inp["roic_pom_m"] <= inp["roic_pom_h"] < 1.0):
+        errors.append(
+            f"Pomalaa ROIC ladder L ≤ M ≤ H within (0,1) violated: "
+            f"{inp['roic_pom_l']}/{inp['roic_pom_m']}/{inp['roic_pom_h']}"
+        )
+    if inp["pom_budget"] <= 0:
+        errors.append("pom_budget must be > 0 (A22)")
     if errors:
         print("FAIL:", "; ".join(errors), file=sys.stderr)
         return 1
@@ -223,35 +234,42 @@ def main() -> int:
         return legs + copper_leg(p_cu)
 
     r, g2 = inp["r_perp"], inp["g2"]
-    K = (inp["k_l"], inp["k_m"], inp["k_h"])
+    ROIC_POM = (inp["roic_pom_l"], inp["roic_pom_m"], inp["roic_pom_h"])
+    unspent = inp["pom_budget"] * (1.0 - inp["pomalaa_spent_share"])
 
-    def anchor(pretax: float, conv: float, g: float, r_: float = r, k: float = 0.0) -> tuple[float, ...]:
+    def penalty(roic: float, r_: float = r) -> float:
+        # A22 named-project rule: unspent capex earning below r costs
+        # unspent × (1 − ROIC/r); a project at or above r costs nothing.
+        return unspent * max(1.0 - roic / r_, 0.0) * YI / inp["shares"]
+
+    def anchor(pretax: float, conv: float, g: float, r_: float = r, roic: float = 1.0) -> tuple[float, ...]:
         # Tier ROE on parent book; the multiple is Gordon on that ROE with the
         # shared g (A13). ROE <= r pins the multiple at 1/r — a result, not a bug.
-        # The multiple already treats retention beyond g/ROE as paid out; the
-        # 「视同派出」row is that excess over the named D window and k_x of it
-        # is taken off the anchor (A21). k never enters the multiple.
+        # The 「视同派出」row is disclosure only (A21 / A22); the anchor is the
+        # earnings value less the Pomalaa unspent-capital penalty in that
+        # tier's world. Neither enters the multiple.
         np_parent = pretax * conv
         eps = np_parent * YI / inp["shares"]
         roe = np_parent / inp["equity_parent"]
         pe = perpetual_pe(g, roe, r_)
-        pre_k = eps * pe
+        pre = eps * pe
         row = max(1.0 - inp["payout_actual"] - g / roe, 0.0) * eps * inp["window_years"]
-        return np_parent, eps, roe, pe, pre_k, row, pre_k - k * row
+        pen = penalty(roic, r_)
+        return np_parent, eps, roe, pe, pre, row, pen, pre - pen
 
     gp_m = gross_profit("m", inp["p_cu_m"])
     gp_h = gross_profit("h", inp["p_cu_h"])
     pretax_m, pretax_h = gp_m - inp["opex"], gp_h - inp["opex"]
 
-    def tiers(g: float, r_: float = r, ks: tuple[float, float, float] = K) -> tuple[tuple, tuple, tuple]:
+    def tiers(g: float, r_: float = r, roics: tuple[float, float, float] = ROIC_POM) -> tuple[tuple, tuple, tuple]:
         # H carries g <= M's (post-peak normalisation, A13) — equal here.
         return (
-            anchor(inp["pretax_l"], inp["conv_l"], g, r_, ks[0]),
-            anchor(pretax_m, inp["conv_m"], g, r_, ks[1]),
-            anchor(pretax_h, inp["conv_h"], min(g, g), r_, ks[2]),
+            anchor(inp["pretax_l"], inp["conv_l"], g, r_, roics[0]),
+            anchor(pretax_m, inp["conv_m"], g, r_, roics[1]),
+            anchor(pretax_h, inp["conv_h"], min(g, g), r_, roics[2]),
         )
 
-    (np_l, eps_l, roe_l, pe_l, pre_l, row_l, scenario_l), (np_m, eps_m, roe_m, pe_m, pre_m, row_m, M), (np_h, eps_h, roe_h, pe_h, pre_h, row_h, H) = tiers(g2)
+    (np_l, eps_l, roe_l, pe_l, pre_l, row_l, pen_l, scenario_l), (np_m, eps_m, roe_m, pe_m, pre_m, row_m, pen_m, M), (np_h, eps_h, roe_h, pe_h, pre_h, row_h, pen_h, H) = tiers(g2)
 
     # The PB floor is disclosure only (§13 峰形区地板条款): L is the scenario.
     floor = inp["pb_floor"] * inp["bps"]
@@ -276,11 +294,13 @@ def main() -> int:
 
     # skill A2e-1: an earnings scenario this far below M means the earnings
     # ruler no longer describes the downside — that is a conversation, not a
-    # number to ship.
-    ratio = scenario_l / M if M else 0.0
+    # number to ship.  Read before the Pomalaa penalty (user ruling 2026-10-18,
+    # A23): the penalty is a named-project capital deduction, not the ruler.
+    ratio = pre_l / M if M else 0.0
+    ratio_post = scenario_l / M if M else 0.0
     if ratio < SCENARIO_L_MIN_RATIO:
         errors.append(
-            f"A2e-1: scenario_L/M={ratio:.3f} < {SCENARIO_L_MIN_RATIO} "
+            f"A2e-1: pre-penalty scenario_L/M={ratio:.3f} < {SCENARIO_L_MIN_RATIO} "
             "— earnings ruler has failed at L, reopen the framework"
         )
 
@@ -305,7 +325,8 @@ def main() -> int:
     # Payout branch (valuation-rules「选分支」): the shared g2 implies a ~99%
     # payout at ROE_M while the company pays payout_actual. The red light is
     # downgraded to a payout_gap disclosure only when §2 carries the D-bucket
-    # conclusion and the k row is priced (A21); otherwise it stays an error.
+    # conclusion (A21; the unspent Pomalaa capital is priced by the A22
+    # penalty); otherwise it stays an error.
     branch = check_branch(g2, roe_m, r, inp["payout_actual"], "M")
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_actual"])
     d_bucket = D_BUCKET_TAG in md
@@ -317,26 +338,27 @@ def main() -> int:
         errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-    # The 「视同派出」 row and its haircut as stated in Outputs must match.
+    # The 「视同派出」 disclosure row and the Pomalaa penalty as stated in Outputs must match.
     import re
     out_sec = outputs_section(md)
     for label, want, rx in (("视同派出 M", row_m, r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*"),
-                            ("k 后 H", K[2] * row_h, r"k 后[^|]*?H −\*\*([0-9.]+)\*\*")):
+                            ("未投资本罚项 L", pen_l, r"未投资本罚项[^|]*?L −\*\*([0-9.]+)\*\*"),
+                            ("未投资本罚项 H", pen_h, r"未投资本罚项[^|]*?H −\*\*([0-9.]+)\*\*")):
         got = re.search(rx, out_sec)
         if got is None or abs(float(got.group(1)) - want) > TOL:
             errors.append(f"{label}: stated {got.group(1) if got else None} vs recomputed {want:.4f}")
 
     # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): L/M/H are re-read
     # at g2 ± 1pp and across the print evidence range — disclosed, not a blocker.
-    def band_at(g: float, r_: float = r) -> tuple[float, float, float]:
-        return tuple(t[6] for t in tiers(g, r_))
+    def band_at(g: float, r_: float = r, roics: tuple[float, float, float] = ROIC_POM) -> tuple[float, float, float]:
+        return tuple(t[7] for t in tiers(g, r_, roics))
 
     lever = {tag: band_at(g) for tag, g in (
         ("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP),
         ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"]))}
 
     # --- Pomalaa option (A11): own realised MHP unit x 12 kt, conv_m, M multiple, one year,
-    # x spent share — the unspent capex is the retention row, already priced at ROIC/r via k (A21) ---
+    # x spent share — the unspent capex is priced by the named-project penalty (A22) ---
     if not 0 < inp["pomalaa_spent_share"] <= 1:
         errors.append(f"pomalaa_spent_share {inp['pomalaa_spent_share']} outside (0, 1]")
     v_opt_full = inp["pomalaa_kt"] * inp["mhp_unit_gp"] * inp["conv_m"] * pe_m * YI / inp["shares"] / (1 + r) ** inp["t_opt"]
@@ -373,30 +395,34 @@ def main() -> int:
     )
     print(
         f"L: pretax={inp['pretax_l']:7.2f} conv={inp['conv_l']:.4f} np={np_l:7.2f}亿 "
-        f"eps={eps_l:.4f} roe={roe_l:.4%} pe={pe_l:.4f} pre-k={pre_l:.4f} row={row_l:.4f} k={K[0]:g} scenario_L={scenario_l:.4f}"
+        f"eps={eps_l:.4f} roe={roe_l:.4%} pe={pe_l:.4f} pre-penalty={pre_l:.4f} penalty={pen_l:.4f} scenario_L={scenario_l:.4f}"
     )
     print(
         f"   floor={floor:.4f} (pb {inp['pb_floor']:g} x bps {inp['bps']:g}; disclosure only, not max()-ed; "
         f"{'inside' if L < floor < H else 'outside'} [L, H], floor/M={floor / M:.3f}) -> L={L:.4f} (scenario), "
-        f"scenario_L/M={ratio:.3f}"
+        f"A2e-1 guard pre-penalty scenario_L/M={ratio:.3f} (A23; post-penalty {ratio_post:.3f}, disclosure)"
     )
-    for tag, gp, pretax, conv, np_, eps, roe, pe, pre, row, k, anc in (
-        ("M", gp_m, pretax_m, inp["conv_m"], np_m, eps_m, roe_m, pe_m, pre_m, row_m, K[1], M),
-        ("H", gp_h, pretax_h, inp["conv_h"], np_h, eps_h, roe_h, pe_h, pre_h, row_h, K[2], H),
+    for tag, gp, pretax, conv, np_, eps, roe, pe, pre, pen, anc in (
+        ("M", gp_m, pretax_m, inp["conv_m"], np_m, eps_m, roe_m, pe_m, pre_m, pen_m, M),
+        ("H", gp_h, pretax_h, inp["conv_h"], np_h, eps_h, roe_h, pe_h, pre_h, pen_h, H),
     ):
         print(
             f"{tag}: gp={gp:7.2f} cu_leg={copper_leg(inp['p_cu_m'] if tag == 'M' else inp['p_cu_h']):6.2f} "
             f"pretax={pretax:7.2f} conv={conv:.4f} np={np_:7.2f}亿 eps={eps:.4f} roe={roe:.4%} "
-            f"pe={pe:.4f} pre-k={pre:.4f} row={row:.4f} k={k:g} anchor={anc:.4f}"
+            f"pe={pe:.4f} pre-penalty={pre:.4f} penalty={pen:.4f} anchor={anc:.4f}"
         )
     print(
-        f"视同派出现金/股 (A21, D 桶窗口 {inp['window_years']:g} 年, payout_actual {inp['payout_actual']:.1%}) k 前 → k 后: "
-        + " | ".join(f"{t} {row:.2f} × k {k:g} = −{k * row:.2f} (锚点 {pre:.2f} → {post:.2f})"
-                     for t, row, k, pre, post in (("L", row_l, K[0], pre_l, L), ("M", row_m, K[1], pre_m, M), ("H", row_h, K[2], pre_h, H)))
+        f"Pomalaa 未投资本罚项 (A22): unspent {inp['pom_budget']:g} x (1 - {inp['pomalaa_spent_share']:.3f}) = {unspent:.2f}亿; "
+        + " | ".join(f"{t} ROIC {roic:.1%} -> −{pen:.2f} (锚点 {pre:.2f} → {post:.2f})"
+                     for t, roic, pen, pre, post in (("L", ROIC_POM[0], pen_l, pre_l, L), ("M", ROIC_POM[1], pen_m, pre_m, M), ("H", ROIC_POM[2], pen_h, pre_h, H)))
     )
     print(
-        f"payout_gap (check_branch {'downgraded to disclosure: D 桶 conclusion + k row priced' if branch and d_bucket else 'clean'}): "
-        f"modelled payout {modelled_payout:.1%} at g2 {g2:.2%} / ROE_M {roe_m:.2%} vs actual {inp['payout_actual']:.1%} -> gap {gap:+.1%}; bucket D, window {inp['window_years']:g}y, k {K}"
+        f"视同派出现金/股 (A21 disclosure only, D 桶窗口 {inp['window_years']:g} 年, payout_actual {inp['payout_actual']:.1%}): "
+        f"L {row_l:.2f} | M {row_m:.2f} | H {row_h:.2f}"
+    )
+    print(
+        f"payout_gap (check_branch {'downgraded to disclosure: D 桶 conclusion' if branch and d_bucket else 'clean'}): "
+        f"modelled payout {modelled_payout:.1%} at g2 {g2:.2%} / ROE_M {roe_m:.2%} vs actual {inp['payout_actual']:.1%} -> gap {gap:+.1%}; bucket D, window {inp['window_years']:g}y"
     )
     print(f"flat-multiple ladder @pe_M={pe_m:.4f}: " + " < ".join(f"{v:.2f}" for v in flat))
     print(f"②-b: consensus FY26E {inp['eps_cons_lo']}/{inp['eps_cons_mean']}/{inp['eps_cons_hi']} vs EPS tiers {eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}: "
@@ -412,20 +438,28 @@ def main() -> int:
         print(f"  r {r_:.0%} {tag}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}")
     # Sensitivities the doc quotes (conv / trade leg / copper / g2), Gordon-consistent.
     def m_at(pretax: float, conv: float, g: float = g2) -> float:
-        return anchor(pretax, conv, g, r, K[1])[6]
+        return anchor(pretax, conv, g, r, ROIC_POM[1])[7]
+
+    def h_at(pretax: float, conv: float) -> float:
+        return anchor(pretax, conv, g2, r, ROIC_POM[2])[7]
     print(f"  sens conv_m +1pp -> M {m_at(pretax_m, inp['conv_m'] + 0.01):.2f} ({m_at(pretax_m, inp['conv_m'] + 0.01) - M:+.2f});"
-          f" conv_h +1pp -> H {anchor(pretax_h, inp['conv_h'] + 0.01, g2, r, K[2])[6]:.2f};"
+          f" conv_h +1pp -> H {h_at(pretax_h, inp['conv_h'] + 0.01):.2f};"
+          f" conv_h 67.64% (2026Q1) -> H {h_at(pretax_h, 0.6764):.2f};"
           f" conv 73.36% (FY2025) -> M {m_at(pretax_m, 0.7336):.2f}")
-    print(f"  sens trade leg -10亿 -> M {m_at(pretax_m - 10, inp['conv_m']):.2f} ({m_at(pretax_m - 10, inp['conv_m']) - M:+.2f}), H {anchor(pretax_h - 10, inp['conv_h'], g2, r, K[2])[6]:.2f}")
+    print(f"  sens trade leg -10亿 -> M {m_at(pretax_m - 10, inp['conv_m']):.2f} ({m_at(pretax_m - 10, inp['conv_m']) - M:+.2f}), H {h_at(pretax_h - 10, inp['conv_h']):.2f}")
     d_cu = copper_leg(inp["p_cu_m"] + 1000) - copper_leg(inp["p_cu_m"])
     print(f"  sens LME Cu +1000 $/t -> gp {d_cu:+.2f}亿 -> M {m_at(pretax_m + d_cu, inp['conv_m']):.2f} ({m_at(pretax_m + d_cu, inp['conv_m']) - M:+.2f})")
     print(f"  sens g2 -1pp/+1pp -> M {lever['-1pp'][1]:.2f}/{lever['+1pp'][1]:.2f} ({lever['-1pp'][1] - M:+.2f}/{lever['+1pp'][1] - M:+.2f})")
     l43, m43, h43 = band_at(0.0043)
     print(f"  sens g2 0.43% (peer-cluster blend, coordinate) -> {l43:.2f}/{m43:.2f}/{h43:.2f}")
+    # A22: the old k tier mapping (L untouched, H at the worst-world 6.4%) as a coordinate.
+    old_map = band_at(g2, r, (1.0, ROIC_POM[1], ROIC_POM[0]))
+    print(f"  sens old k tier mapping (L no penalty, H at ROIC {ROIC_POM[0]:.1%}) -> {old_map[0]:.2f}/{old_map[1]:.2f}/{old_map[2]:.2f}")
+    print(f"  sens no Pomalaa penalty -> {pre_l:.2f}/{pre_m:.2f}/{pre_h:.2f}")
     # A12: L with the 2025H1 gross profit but today's rigid opex.
-    rigid_l = anchor(GP_2025H1_ANNUALISED - inp["opex"], inp["conv_l"], g2, r, K[0])[6]
-    print(f"  sens L with rigid opex {inp['opex']:.2f} on 2025H1 gp {GP_2025H1_ANNUALISED:.2f} -> scenario_L {rigid_l:.2f}, ratio {rigid_l / M:.3f} (A2e-1 would trip; A12)")
-    print(f"option Pomalaa: {inp['pomalaa_kt']:g} 万吨 x {inp['mhp_unit_gp']:.4f} 亿/万吨 x conv_m {inp['conv_m']:.4f} x PE_M {pe_m:.2f} / shares / (1+r)^{inp['t_opt']:g} = {v_opt_full:.4f} (whole project) x spent share {inp['pomalaa_spent_share']:.3f} -> V_opt {v_opt:.4f} (unspent {1 - inp['pomalaa_spent_share']:.1%} sits in the k row, A21)")
+    rigid = anchor(GP_2025H1_ANNUALISED - inp["opex"], inp["conv_l"], g2, r, ROIC_POM[0])
+    print(f"  sens L with rigid opex {inp['opex']:.2f} on 2025H1 gp {GP_2025H1_ANNUALISED:.2f} -> pre-penalty scenario_L {rigid[4]:.2f}, ratio {rigid[4] / M:.3f} (A2e-1 would trip; A12); after penalty {rigid[7]:.2f}")
+    print(f"option Pomalaa: {inp['pomalaa_kt']:g} 万吨 x {inp['mhp_unit_gp']:.4f} 亿/万吨 x conv_m {inp['conv_m']:.4f} x PE_M {pe_m:.2f} / shares / (1+r)^{inp['t_opt']:g} = {v_opt_full:.4f} (whole project) x spent share {inp['pomalaa_spent_share']:.3f} -> V_opt {v_opt:.4f} (unspent {1 - inp['pomalaa_spent_share']:.1%} priced by the A22 penalty)")
     print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={adj_a:.2f} B'={adj_b:.2f}")
 
     if errors:

@@ -52,7 +52,39 @@ REQUIRED = [
     "ebit27_ms", "ebit28_ms", "n_stage", "equity", "debt", "cash", "pension_def", "opeb_def",
     "r_perp", "g2", "peer_g_median", "peer_g_defense", "payout_observed",
     "net_debt_ebitda_fy25", "interest_ebit_fy25", "ebitda28_ms", "fcf28_ms", "k_l", "k_m", "k_h",
+    "tau", "eps26_cons", "eps_h1_26", "parent_share", "y1", "y2", "rs_own_cycle",
 ]
+NUM_YEAR = 2027  # numerator FY2027 = calendar year; t_n = 2027-01-01
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0, recovery: bool = False) -> float:
+    """Multiple on numerator-year earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2.  Stage-1 years pay out in full when `recovery`
+    (recovery_two_stage_pe form) else 1 - g1/roe.  With rs >= roe this equals
+    perpetual_pe / recovery_two_stage_pe exactly.  (gordon.py three-segment helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 if recovery else 1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 def mcp_shares(price: float, inp: dict[str, float]) -> float:
@@ -104,18 +136,42 @@ def main() -> int:
     roic27 = {k: v / ic for k, v in nopat.items()}
     roic28 = {k: v * (1 + g1) / ic for k, v in nopat.items()}
 
-    # Step 3 — multiples on FY2027 NOPAT.
-    pe_l = perpetual_pe(g2, roic27["low"], r)
-    pe_m = recovery_two_stage_pe(g1, n, g2, roic28["mean"], r)
-    pe_h = recovery_two_stage_pe(g1, n, g2, roic28["high"], r)
+    # Step 3 — multiples on FY2027 NOPAT, on the steady-return path (A15): forward ROIC
+    # through Y1, linear to the steady return by Y2.  The steady return is the own full-cycle
+    # floor (rs_own_cycle), above every tier's forward ROIC, so each tier stays at its forward.
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_own_cycle"]
+
+    def tier_pes(r_: float) -> dict[str, float]:
+        return {
+            "L": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, roic27["low"], r_),
+            "M": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, roic28["mean"], r_, g1=g1, n=n, recovery=True),
+            "H": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, roic28["high"], r_, g1=g1, n=n, recovery=True),
+        }
+
+    pes = tier_pes(r)
+    pe_l, pe_m, pe_h = pes["L"], pes["M"], pes["H"]
+    if abs(pe_l - perpetual_pe(g2, roic27["low"], r)) > 1e-9 or abs(
+            pe_m - recovery_two_stage_pe(g1, n, g2, roic28["mean"], r)) > 1e-9:
+        print("note: steady-return path binds (rs below a tier's forward ROIC)")
     for tier, roic in (("M", roic28["mean"]), ("H", roic28["high"])):
         errors += check_branch(g2, roic, r, inp["payout_observed"], f"{tier} tail")
 
-    # Step 4 — EV → equity → per share; × (1 − k) for cash the model treats as paid out
-    # while the company retains it (A bucket: debt paydown, so k = 0 by source ②).
+    # Step 4 — timing (A15): the Gordon value is at t_n = 2027-01-01; discount tau years to the
+    # 2026-06-30 balance sheet and add the window's distributable NOPAT (2026H2 consensus,
+    # x (1 - b): M / H stage 1 is the recovery form, b = 0; L b = g2 / ROIC27_L) at tau / 2.
+    # EV → equity → per share; × (1 − k) (A bucket, k = 0 by source ②).
+    tau = inp["tau"]
+    win_nopat = (inp["eps26_cons"] - inp["eps_h1_26"]) * inp["shares_basic"] + addback / 2
+    win_b = {"L": g2 / roic27["low"], "M": 0.0, "H": 0.0}
     claims = net_debt + (inp["pension_def"] + inp["opeb_def"]) * (1 - t)
-    ev = {"L": nopat["low"] * pe_l, "M": nopat["mean"] * pe_m, "H": nopat["high"] * pe_h}
     ks = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
+
+    def tier_ev(pes_: dict[str, float], r_: float) -> dict[str, float]:
+        return {k: nopat[j] * pes_[k] / (1 + r_) ** tau
+                + max(win_nopat * (1 - win_b[k]), 0.0) * inp["parent_share"] / (1 + r_) ** (tau / 2)
+                for k, j in (("L", "low"), ("M", "mean"), ("H", "high"))}
+
+    ev = tier_ev(pes, r)
     anchors, shares = {}, {}
     for k, v in ev.items():
         value, shares[k] = per_share(v - claims, inp)
@@ -125,7 +181,8 @@ def main() -> int:
         errors.append(f"L<M<H violated: {L:.2f} {M:.2f} {H:.2f}")
 
     # construction §2c — flat multiple (M's) on every tier's numerator must still ladder.
-    flat = {k: per_share(nopat[j] * pe_m - claims, inp)[0] for k, j in (("L", "low"), ("M", "mean"), ("H", "high"))}
+    flat_ev = tier_ev({"L": pe_m, "M": pe_m, "H": pe_m}, r)
+    flat = {k: per_share(flat_ev[k] - claims, inp)[0] for k in ("L", "M", "H")}
     errors += ladder("flat-multiple", flat["L"], flat["M"], flat["H"])
 
     A, B = cut_points(L, M, H)
@@ -134,6 +191,9 @@ def main() -> int:
     post = {"L": nopat["low"], "M": nopat["mean"] * (1 + g1), "H": nopat["high"] * (1 + g1)}
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (peer median {inp['peer_g_median']:g} → cap {g_cap(r):g})  g1={g1:.4f} n={n}")
     print(f"addback {addback:.0f}  net debt {net_debt:.0f}  IC {ic:.0f}  claims {claims:.0f}")
+    print(f"timing (A15): tau {tau:g}y → Gordon EV × {(1 + r) ** -tau:.4f}; window 2026H2 NOPAT {win_nopat:.0f} "
+          f"× (1 − b) b L {win_b['L']:.3f} / M,H 0 × parent {inp['parent_share']:g} at tau/2; "
+          f"steady path Y1 {y1} → Y2 {y2}, steady {rs:.1%} (own cycle) ≥ forward → tiers stay at forward")
     for k, j in (("L", "low"), ("M", "mean"), ("H", "high")):
         pe = {"L": pe_l, "M": pe_m, "H": pe_h}[k]
         print(f"{k}: NOPAT27 {nopat[j]:.0f}  ROIC27 {roic27[j]:.1%}  ROIC28 {roic28[j]:.1%}  PE(t=1) {pe:.2f}  "
@@ -147,13 +207,25 @@ def main() -> int:
 
     # Disclosures (do not price).
     pe_m_retain = two_stage_pe(g1, n, g2, roic27["mean"], r)
-    m_retain = per_share(nopat["mean"] * pe_m_retain - claims, inp)[0]
+    m_retain = per_share(tier_ev({**pes, "M": pe_m_retain}, r)["M"] - claims, inp)[0]
     print(f"cross two_stage_pe (stage-1 retention charged at ROIC27 {roic27['mean']:.1%}, payout {1 - g1 / roic27['mean']:.2f}): PE {pe_m_retain:.2f} → M {m_retain:.2f}")
     for label, gg in (("g2 −1pp", g2 - 0.01), ("defense cluster", inp["peer_g_defense"])):
-        mm = per_share(nopat["mean"] * recovery_two_stage_pe(g1, n, gg, roic28["mean"], r) - claims, inp)[0]
-        hh = per_share(nopat["high"] * recovery_two_stage_pe(g1, n, gg, roic28["high"], r) - claims, inp)[0]
-        ll = per_share(nopat["low"] * perpetual_pe(gg, roic27["low"], r) - claims, inp)[0]
+        pes_g = {
+            "L": three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roic27["low"], r),
+            "M": three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roic28["mean"], r, g1=g1, n=n, recovery=True),
+            "H": three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roic28["high"], r, g1=g1, n=n, recovery=True),
+        }
+        ev_g = tier_ev(pes_g, r)
+        ll, mm, hh = (per_share(ev_g[k] - claims, inp)[0] for k in ("L", "M", "H"))
         print(f"sensitivity {label} g2={gg:.4f}: L {ll:.2f} M {mm:.2f} H {hh:.2f}")
+    for lab, rs_alt in (("steady at mature-peer / fallback 15%", 0.15),):
+        pes_s = {
+            "L": three_segment_pe(NUM_YEAR, y1, y2, rs_alt, g2, roic27["low"], r),
+            "M": three_segment_pe(NUM_YEAR, y1, y2, rs_alt, g2, roic28["mean"], r, g1=g1, n=n, recovery=True),
+            "H": three_segment_pe(NUM_YEAR, y1, y2, rs_alt, g2, roic28["high"], r, g1=g1, n=n, recovery=True),
+        }
+        ev_s = tier_ev(pes_s, r)
+        print(f"sensitivity {lab}: " + " / ".join(f"{per_share(ev_s[k] - claims, inp)[0]:.2f}" for k in ("L", "M", "H")))
     for k, j in (("L", "low"), ("M", "mean"), ("H", "high")):
         # Stage 1 (or L's first year) pays out 100% in the model; the company pays 0.
         deemed = nopat[j] / shares[k]
@@ -171,11 +243,7 @@ def main() -> int:
     # (the conversion count still solves at each column's value).  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
         rr = r + dr
-        ev_r = {
-            "L": nopat["low"] * perpetual_pe(g2, roic27["low"], rr),
-            "M": nopat["mean"] * recovery_two_stage_pe(g1, n, g2, roic28["mean"], rr),
-            "H": nopat["high"] * recovery_two_stage_pe(g1, n, g2, roic28["high"], rr),
-        }
+        ev_r = tier_ev(tier_pes(rr), rr)
         lmh = [per_share(ev_r[k] - claims, inp)[0] * (1 - ks[k]) for k in ("L", "M", "H")]
         return lmh[0], lmh[1], lmh[2]
 

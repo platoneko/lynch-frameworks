@@ -87,6 +87,10 @@ FORMULA_FIELDS = frozenset({
     "nic_l", "nic_m", "nic_h",
     "g2_l", "g2_m", "g2_h",
     "smoore_book", "smoore_mv", "disc_m", "disc_h",
+    # valuation-rules「经营价值与超额现金」: timing, growth-period funding gap, parent share,
+    # steady-return path (B18)
+    "tau_yr", "capex_2h26", "ni_2h26_cons", "ocf_ni_3y", "gap_online_share", "core_2h26",
+    "equity_parent", "nci_cny", "ss_return", "t0_ret", "y1_ret", "y2_ret",
 })
 
 # V_opt's own inputs (B15).  Disjoint from FORMULA_FIELDS on purpose: the
@@ -121,13 +125,81 @@ def core_roe(inp: dict[str, float], tag: str) -> float:
     return inp[f"nic_{tag}"] / core_equity(inp, tag)
 
 
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year t0 (t = 1): the
+    retention of calendar year c earns the forward roe while c <= y1, falls linearly to the
+    steady return by y2, and from y2 on the steady return holds in a Gordon tail.  r_s is
+    capped at the forward roe.  g <= 0 never consumes RONIC -> plain perpetuity."""
+    if g <= 0:
+        return perpetual_pe(g, roe, r)
+    rs = min(roe, r_s)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
+
+
+def leg_pe(inp: dict[str, float], g: float, roe: float) -> float:
+    """A-leg multiple on the FY2027E numerator: steady return = max(ss_return, r) (B18)."""
+    return path_pe(g, roe, inp["r_perp"], int(inp["t0_ret"]), int(inp["y1_ret"]), int(inp["y2_ret"]),
+                   max(inp["ss_return"], inp["r_perp"]))
+
+
 def multiple(inp: dict[str, float], tag: str) -> float:
-    return perpetual_pe(inp[f"g2_{tag}"], core_roe(inp, tag), inp["r_perp"])
+    return leg_pe(inp, inp[f"g2_{tag}"], core_roe(inp, tag))
+
+
+def parent_ratio(inp: dict[str, float]) -> float:
+    return inp["equity_parent"] / (inp["equity_parent"] + inp["nci_cny"])
+
+
+def funding_gap(inp: dict[str, float]) -> tuple[float, float, float]:
+    """Growth-period funding gap (valuation-rules「经营价值与超额现金」① 增长期资金缺口, B18).
+    Window 2H26.  取数序 tier 2 (no sell-side cash-flow forecast, no company capex guidance):
+    capex = 1H26 measured pace (in-construction budget remaining well above it); operating
+    cash flow = window consensus profit x the 3-year measured OCF / net income — NOT the 1H26
+    OCF, whose -3.88亿 is the inventory build (B8), a timing item.  Only the share producing
+    inside FY2027 counts.  Returns (raw capex - OCF, OCF estimate, gap)."""
+    ocf = inp["ni_2h26_cons"] * inp["ocf_ni_3y"]
+    raw = inp["capex_2h26"] - ocf
+    return raw, ocf, max(0.0, raw) * inp["gap_online_share"]
+
+
+def window_profit(inp: dict[str, float], tag: str) -> float:
+    """Window distributable profit (③ 时点对齐): 2H26 core profit not yet booked x (1 - b),
+    b = g / forward ROE, discounted tau/2.  Recorded as 0 whenever a funding gap exists."""
+    if funding_gap(inp)[2] > 0:
+        return 0.0
+    b = min(1.0, max(0.0, inp[f"g2_{tag}"] / core_roe(inp, tag)))
+    return inp["core_2h26"] * (1.0 - b) * (1.0 + inp["r_perp"]) ** (-inp["tau_yr"] / 2)
+
+
+def timed(inp: dict[str, float], tag: str, value_tn: float) -> float:
+    """时点对齐 (B18): the M/H A leg is a value at the opening of FY2027 -> today = x (1+r)^-tau,
+    plus the window distributable profit, less any funding gap (debt-like, x parent ratio).
+    L reads FY2025 on today's book: numerator year already past -> tau 0, no window, no gap."""
+    if tag == "l":
+        return value_tn
+    return (value_tn * (1.0 + inp["r_perp"]) ** -inp["tau_yr"] + window_profit(inp, tag)
+            - funding_gap(inp)[2] * parent_ratio(inp))
 
 
 def leg_a(inp: dict[str, float], tag: str, flat_pe: float | None = None) -> float:
     pe = flat_pe if flat_pe is not None else multiple(inp, tag)
-    return inp[f"nic_{tag}"] * pe
+    return timed(inp, tag, inp[f"nic_{tag}"] * pe)
 
 
 def leg_b(inp: dict[str, float], tag: str) -> float:
@@ -154,8 +226,9 @@ def convergence_option(inp: dict[str, float], base_h: float) -> dict[str, float]
     delta_ni = delta_gp * (1.0 - inp["tax_conv"])
     nic_conv = inp["nic_h"] + delta_ni
     roe_conv = nic_conv / core_equity(inp, "h")
-    pe_conv = perpetual_pe(inp["g2_h"], roe_conv, inp["r_perp"])
-    anchor_conv = (nic_conv * pe_conv + leg_b(inp, "h")) * 1e8 / inp["shares"]
+    pe_conv = leg_pe(inp, inp["g2_h"], roe_conv)
+    # same timing as H: the difference to H is then F x (converged - H) on the t_n basis
+    anchor_conv = (timed(inp, "h", nic_conv * pe_conv) + leg_b(inp, "h")) * 1e8 / inp["shares"]
     return {
         "gap": gap, "delta_gp": delta_gp, "delta_ni": delta_ni,
         "nic_conv": nic_conv, "roe_conv": roe_conv, "pe_conv": pe_conv,
@@ -352,6 +425,16 @@ def main() -> int:
           f"({inp['opt_strike'] / H - 1:+.1%}) → 三档内全部价外 ✓")
     print(f"  SBC H1 {inp['sbc_h1']:.2f} 亿已含在扣非分子内，不重复扣（B14）；"
           f"经营现金流 {inp['ocf_h1']:+.2f} 亿、净债务 {inp['net_debt']:.2f} 亿（B8）")
+    raw, ocf, gap = funding_gap(inp)
+    print(f"  增长期资金缺口（B18）：2H26 资本开支 {inp['capex_2h26']:.2f} − 经营现金流估计 {ocf:.2f}"
+          f"（共识利润 {inp['ni_2h26_cons']:.2f} × 近 3 年经营现金流 ÷ 净利 {inp['ocf_ni_3y']:.4f}）"
+          f" = {raw:+.2f} → 缺口 {gap:.2f} 亿；窗口可分配利润 M {window_profit(inp, 'm'):.2f} / "
+          f"H {window_profit(inp, 'h'):.2f} 亿")
+    # Sensitivity: the superseded 1H26-OCF reading (gap 47.76 incl. the inventory build, window 0).
+    alt = dict(inp, ni_2h26_cons=inp["ocf_h1"] / inp["ocf_ni_3y"])
+    print(f"  敏感性：经营现金流按 1H26 实测 {inp['ocf_h1']:+.2f} 外推（含存货占用）→ 缺口 "
+          f"{funding_gap(alt)[2]:.2f}、窗口 0 → {anchor(alt, 'l'):.2f} / {anchor(alt, 'm'):.2f} / "
+          f"{anchor(alt, 'h'):.2f}")
 
     return report(errors)
 

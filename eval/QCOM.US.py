@@ -93,6 +93,7 @@ REQUIRED = (
     ["shares", "tax_rate", "equity", "r_op", "pe_own_min", "pe_own_max"]
     + ["dc_target_rev", "dc_cons_rev", "hsbc_eps_fy27", "hsbc_dc_uplift", "hsbc_dc_drev", "g2_dc_src", "t_opt"]
     + ["eps_fy26_cons", "eps_9m_fy26", "payout_3y"]
+    + ["g2_auto_today", "tau", "t0_cal", "y1", "y2", "rs_steady"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"om_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -136,7 +137,8 @@ def stated_v_opt(md: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def option_value(inp: dict[str, float], roe_m: float, g2_dc: float, r: float) -> tuple[float, float, float, float]:
+def option_value(inp: dict[str, float], roe_m: float, g2_dc: float, r: float,
+                 pe_fn=None) -> tuple[float, float, float, float]:
     """A10: Data Center option, closed by public data (valuation-rules 2026-10-03).
 
     Units: company FY29 DC target minus the FY27 guidance consensus already
@@ -149,8 +151,34 @@ def option_value(inp: dict[str, float], roe_m: float, g2_dc: float, r: float) ->
     eps_per_rev = inp["hsbc_eps_fy27"] * inp["hsbc_dc_uplift"] / (inp["hsbc_dc_drev"] * MM)
     inc = opt_rev * eps_per_rev
     margin = eps_per_rev * inp["shares"] / (1.0 - inp["tax_rate"])
-    pe = perpetual_pe(g2_dc, roe_m, r)
+    pe = perpetual_pe(g2_dc, roe_m, r) if pe_fn is None else pe_fn(g2_dc, roe_m, r)
     return inc * pe / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR), inc, margin, pe
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+    Calendar years, t = 1 is year t0; RONIC = roe through Y1, linear to min(rs, roe) by Y2,
+    steady after.  With rs >= roe this equals perpetual_pe(g, roe, r)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / rs_eff) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g / ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def check_no_p_leak(base_l: float, row_l: float) -> list[str]:
@@ -185,6 +213,9 @@ def main() -> int:
     # Actual retention beyond b1 is the B bucket, printed as a disclosure only.
     unbooked = inp["eps_fy26_cons"] - inp["eps_9m_fy26"]  # per share, Q4 FY26 only
     bps_q3 = inp["equity"] / inp["shares"]
+    # The Auto leg prices on the path-re-solved peer g2 (A17); g2_auto keeps the source reading.
+    g2_auto_src = inp["g2_auto"]
+    inp["g2_auto"] = inp["g2_auto_today"]
     eps_m_legs = eps_by_tier_map[1]
     g_roll = sum(eps_m_legs[leg] * inp[f"g2_{leg}"] for leg in OP_LEGS) / eps_by_tier[1]
     bps_open = bps_q3 / (1.0 - g_roll * unbooked / eps_by_tier[1])
@@ -194,22 +225,45 @@ def main() -> int:
         errors += [f"growth-required retention b1 = {b1:.3f} outside (0,1)"]
     excess_cash = (1.0 - inp["payout_3y"] - b1) * unbooked  # disclosure only
 
-    # Operating legs: one Gordon PE each, shared by all three tiers (flat, A2e-5).
-    pe_op = {leg: perpetual_pe(inp[f"g2_{leg}"], roe_m, inp["r_op"]) for leg in OP_LEGS}
+    # Operating legs: one Gordon PE each, shared by all three tiers (flat, A2e-5), on the
+    # steady-state-return path (legs with g2 > 0) and discounted from the FY27 opening to the
+    # balance-sheet date by tau; the QTL EV/EBIT annuity leg is outside the operating-value
+    # section and is not time-aligned (A17; valuation-rules「经营价值与超额现金」② / ③).
+    tau, t0 = inp["tau"], int(inp["t0_cal"])
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+
+    def leg_pe(g: float, rr: float) -> float:
+        v = path_pe(g, roe_m, rr, t0, y1, y2, rs) if g > 0 else perpetual_pe(g, roe_m, rr)
+        return v * (1 + rr) ** -tau
+
+    pe_op = {leg: leg_pe(inp[f"g2_{leg}"], inp["r_op"]) for leg in OP_LEGS}
     ev_ebit = [inp[f"ev_ebit_ts_{t}"] for t in TIERS]
+    # Window: Q4 FY26 unbooked x (1 - b1), credited at the Gordon legs' share of M-tier EBT
+    # (the QTL leg's own window sits in its today-dated EV/EBIT value), at tau/2.
+    qtl_share = ebt_by_tier[1]["qtl"] / sum(ebt_by_tier[1].values())
+
+    def window(rr: float) -> float:
+        return max(unbooked * (1.0 - b1), 0.0) * (1.0 - qtl_share) * (1 + rr) ** -(tau / 2)
+
+    win = window(inp["r_op"])
 
     leg_vals: list[dict[str, float]] = []
     base: list[float] = []
     for i, t in enumerate(TIERS):
         vals = {leg: eps_by_tier_map[i][leg] * pe_op[leg] for leg in OP_LEGS}
         vals["qtl"] = ebt_by_tier[i]["qtl"] * ev_ebit[i]
+        vals["win"] = win
         leg_vals.append(vals)
         base.append(sum(vals.values()))
     L, M, H = base
     A, B = cut_points(L, M, H)
-    # A10: recomputed on this ticker's ruler (v2); see option_value.
+    # A10: recomputed on this ticker's ruler (v2); see option_value.  Unit economics on the
+    # same return path from the realisation year, folded to FY27 and then by tau (A17).
     g2_dc = min(inp["g2_dc_src"], g_cap(inp["r_op"]))
-    v_opt, opt_inc, dc_margin, pe_dc = option_value(inp, roe_m, g2_dc, inp["r_op"])
+    v_opt, opt_inc, dc_margin, pe_dc = option_value(
+        inp, roe_m, g2_dc, inp["r_op"],
+        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1, y2, rs))
+    v_opt *= (1 + inp["r_op"]) ** -tau
     adj = [base[i] + P_K[i] * v_opt for i in range(3)]
 
     print(f"formula_id: {FORMULA_ID}")
@@ -248,16 +302,18 @@ def main() -> int:
     flat_m = [
         ebt_by_tier[i]["qtl"] * ev_ebit[1]
         + sum(eps_by_tier_map[i][leg] * pe_op[leg] for leg in OP_LEGS)
+        + win
         for i in range(3)
     ]
     print(f"Flat@{ev_ebit[1]:g}×  L={flat_m[0]:.2f} M={flat_m[1]:.2f} H={flat_m[2]:.2f}")
 
     # Disclosure only (A15): the g2 lever.  It never reaches the base.
     def anchors_at(r: float, g2_shift: dict[str, float]) -> list[float]:
-        pe = {leg: perpetual_pe(inp[f"g2_{leg}"] + g2_shift.get(leg, 0.0), roe_m, r) for leg in OP_LEGS}
+        pe = {leg: leg_pe(inp[f"g2_{leg}"] + g2_shift.get(leg, 0.0), r) for leg in OP_LEGS}
         return [
             ebt_by_tier[i]["qtl"] * ev_ebit[i]
             + sum(eps_by_tier_map[i][leg] * pe[leg] for leg in OP_LEGS)
+            + window(r)
             for i in range(3)
         ]
 
@@ -273,6 +329,25 @@ def main() -> int:
     ):
         lmh = anchors_at(inp["r_op"], shift)
         print(f"g2 lever {label:12} L={lmh[0]:.2f} M={lmh[1]:.2f} H={lmh[2]:.2f}")
+    # Disclosure only: single-leg g2 readings, the Auto PE ladder, the MediaTek Handsets
+    # reading, the retired QTL ladder and the V_opt g2_dc sensitivity, all on the current ruler.
+    for leg in OP_LEGS:
+        for d in (-0.01, +0.01):
+            if inp[f"g2_{leg}"] + d <= cap + 1e-9:
+                print(f"g2 single {leg:4} {d:+.0%}  M={anchors_at(inp['r_op'], {leg: d})[1]:.2f}")
+    print("pe_auto at g2 -1pp / today / cap: " + " / ".join(
+        f"{leg_pe(g, inp['r_op']):.2f}" for g in (inp["g2_auto"] - 0.01, inp["g2_auto"], cap)))
+    hs_cap = anchors_at(inp["r_op"], {"hs": cap - inp["g2_hs"]})
+    print(f"g2_hs @cap (MediaTek reading, not adopted): pe_hs {leg_pe(cap, inp['r_op']):.2f}  "
+          f"L={hs_cap[0]:.2f} M={hs_cap[1]:.2f} H={hs_cap[2]:.2f}")
+    old_ladder = [base[i] + ebt_by_tier[i]["qtl"] * (m - ev_ebit[i]) for i, m in enumerate((9, 12, 16))]
+    print(f"retired QTL ladder 9/12/16: L={old_ladder[0]:.2f} M={old_ladder[1]:.2f} H={old_ladder[2]:.2f} "
+          f"H+V={old_ladder[2] + v_opt:.2f}")
+    v_alt_path = option_value(
+        inp, roe_m, 0.04, inp["r_op"],
+        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1, y2, rs))[0] * (1 + inp["r_op"]) ** -tau
+    print(f"V_opt path ruler: FY29 value {opt_inc * pe_dc:.2f}; g2_dc 4% -> {v_alt_path:.2f}; "
+          f"p_M 0.25/0.35/0.50 -> M' " + " / ".join(f"{M + p * v_opt:.2f}" for p in (0.25, 0.35, 0.50)))
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # r_op 1:1 on the three Gordon legs; the QTL leg prices on EV/EBIT (no r), and
     # ROE_M / numerators stay put.  Disclosure only: base L/M/H are the 中枢 column.

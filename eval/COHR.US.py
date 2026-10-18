@@ -23,9 +23,23 @@ closed form BPS = BPS0 / (1 - g·N/EPS) (valuation-rules 裁决表 ② as of
 the actual retention above b1 is printed as the B-bucket disclosure only.  Datacom g2 is the AI-optical peer cross-section reverse-solved
 and truncated at the repo cap; Industrial g2 = 0 (flat revenue, 无同业锚).  One g2
 per leg is shared across tiers (`fast_grower` primary), so the tier ladder lives
-in the numerator and the multiple only moves with ROE.  The sum is discounted
-from 2027-06-30 (where a forward PE on FY2028 earnings sits) back to today, then
-net debt per share is added.
+in the numerator and the multiple only moves with ROE.
+
+Steady return three segments (valuation-rules「经营价值与超额现金」② 稳态回报三段,
+2026-10-16 框架纠正, A23): new-investment return is not the FY28 forward ROE
+forever.  The datacom leg takes `_AXIS.inp-laser`'s ss_return_inp / y1_inp /
+y2_inp (InP laser-chip link; user 2026-10-16): forward ROE through Y1 2029,
+linear to min(forward, 27.5%) at Y2 2035, Gordon tail after (gordon.py's
+three-segment function is [待建], so `path_value` lives here).  The industrial
+leg has g2 = 0, where the path does nothing (payout 100%, 1/r).
+
+Timing alignment (valuation-rules ③ 时点对齐, A24): Gordon gives the value at
+the FY28 opening (2027-07-01); t_disc is now tau = balance-sheet date
+2026-06-30 -> FY28 opening = 1.0 year.  Window distributable profit = FY27
+unbooked profit on the numerator basis (FY27 consensus non-GAAP x the M-tier
+econ / street ratio, i.e. SBC and corporate cost out) x (1 - b1), b1 = the
+book roll's g_co / ROE, discounted tau / 2.  Then net debt per share is added
+(no excess-cash line: the company is in net debt).
 
 Option (A12, never in the base): the SiC subsidiary has no computable numerator
 (loss-making, no standalone consensus) but a one-off external mark — the
@@ -67,6 +81,9 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "COHR.US.md"
+AXIS_LASER = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "inp-laser.md"
+# (this ticker's Inputs key, axis Inputs key): the datacom leg cites only these two rows of the axis (A23).
+AXIS_ROWS = (("ss_return", "ss_return_inp"), ("y1", "y1_inp"), ("y2", "y2_inp"))
 FORMULA_ID = "cohr_sotp_dcc_industrial_pe_fy28_disc_gordon_v2_sic_vopt"
 LISTING_CCY = "USD"
 TOL = 0.05  # outputs rounded to 2 decimals
@@ -104,6 +121,32 @@ def parse_inputs(md: str) -> dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float) -> float:
+    """Gordon multiple on next-period earnings with the three-segment RONIC path; t = 1 <->
+    fiscal year t0; RONIC = forward through Y1, linear to min(forward, r_s) at Y2, tail after."""
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def first_float(pattern: str, md: str) -> float | None:
@@ -153,6 +196,10 @@ def main() -> int:
         "sic_stake",
         "sic_deal_value",
         "sic_nci_loss",
+        "ss_return",
+        "y1",
+        "y2",
+        "num_year",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -200,6 +247,18 @@ def main() -> int:
         guards.append("equity must be positive")
     if not (0 < inp["sic_stake"] < 1):
         guards.append(f"sic_stake={inp['sic_stake']} must be a minority-partner split in (0, 1)")
+    if not (inp["num_year"] <= inp["y1"] < inp["y2"]):
+        guards.append("high-return window must satisfy numerator year <= Y1 < Y2 (A23)")
+    if not (0.0 <= inp["t_disc"] < 3.0):
+        guards.append("t_disc (tau) out of range (A24)")
+    # Peer-ruler axis rows the datacom leg cites (contracts.md「同业尺轴」): single-edit drift is red.
+    if not AXIS_LASER.is_file():
+        guards.append("axes/inp-laser.md missing — ss_return / y1 / y2 unchecked")
+    else:
+        ax = parse_inputs(AXIS_LASER.read_text(encoding="utf-8"))
+        for mine, theirs in AXIS_ROWS:
+            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
+                guards.append(f"{mine} {inp[mine]:g} != _AXIS.inp-laser {theirs} {ax.get(theirs)} (A23)")
     if guards:
         print("FAIL:", "; ".join(guards), file=sys.stderr)
         return 1
@@ -236,8 +295,9 @@ def main() -> int:
             raise ValueError(f"opening-book roll diverges: g·N/EPS = {g_co * unbooked / eps:.3f} ≥ 1")
         bps_open = bps0 / (1.0 - g_co * unbooked / eps)
         roe = eps / bps_open
-        pe_dcc = perpetual_pe(g_dcc, roe, inp["r_perp"])
-        pe_ind = perpetual_pe(g_ind, roe, inp["r_perp"])
+        y0, y1, y2, rs = int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["ss_return"]
+        pe_dcc = path_value(y0, y1, y2, rs, g_dcc, roe, inp["r_perp"])  # A23
+        pe_ind = path_value(y0, y1, y2, rs, g_ind, roe, inp["r_perp"])  # g 0 -> 1/r, path inert
         v_dcc = eps_dcc * pe_dcc
         v_ind = eps_ind * pe_ind
         return {
@@ -283,8 +343,15 @@ def main() -> int:
         return 1
 
     # --- Step 3: discount to today, then close with net debt --------------
+    # Timing alignment (A24): FY28-opening value / (1+r)^tau + window distributable profit.
     disc = (1.0 + inp["r_disc"]) ** (-inp["t_disc"])
-    anchors = {t: s[t]["sum"] * disc + inp["net_debt_ps"] for t in TIERS}
+    win_eps = inp["eps_cons_fy27"] * s["M"]["eps"] / inp["eps_cons_fy28"]  # FY27 unbooked, numerator basis
+
+    def window(b1: float, rd: float) -> float:
+        return win_eps * (1.0 - min(1.0, max(0.0, b1))) * (1.0 + rd) ** (-inp["t_disc"] / 2)
+
+    win = {t: window(s[t]["b1"], inp["r_disc"]) for t in TIERS}
+    anchors = {t: s[t]["sum"] * disc + win[t] + inp["net_debt_ps"] for t in TIERS}
     L, M, H = (anchors[t] for t in TIERS)
     A = (L + M) / 2
     B = (M + H) / 2
@@ -322,7 +389,8 @@ def main() -> int:
     flat_errs, _ = flat_multiple_ladder((s["L"]["eps"], s["M"]["eps"], s["H"]["eps"]), s["M"]["blend"])
     errors += flat_errs
     flat = tuple(
-        (s[t]["eps_dcc"] * s["M"]["pe_dcc"] + s[t]["eps_ind"] * s["M"]["pe_ind"]) * disc + inp["net_debt_ps"]
+        (s[t]["eps_dcc"] * s["M"]["pe_dcc"] + s[t]["eps_ind"] * s["M"]["pe_ind"]) * disc + win["M"]
+        + inp["net_debt_ps"]
         for t in TIERS
     )
     if not (flat[0] < flat[1] < flat[2]):
@@ -400,6 +468,11 @@ def main() -> int:
         f"  (disc={disc:.4f})"
     )
     print(f"表1 工业  L/M/H = {s['L']['v_ind'] * disc:.2f}/{s['M']['v_ind'] * disc:.2f}/{s['H']['v_ind'] * disc:.2f}")
+    print(
+        f"steady return {inp['ss_return']:.1%} (_AXIS.inp-laser; datacom per tier min(ROE, it)) · "
+        f"high-return window Y1 {int(inp['y1'])} / Y2 {int(inp['y2'])} · tau {inp['t_disc']:g} · "
+        f"window FY27 unbooked {win_eps:.4f} x (1 - b1) -> PV L/M/H {win['L']:.2f}/{win['M']:.2f}/{win['H']:.2f}"
+    )
     print(f"表1 闭合项 = {inp['net_debt_ps']}")
     print(f"undisc dcc  L/M/H = {s['L']['v_dcc']:.2f}/{s['M']['v_dcc']:.2f}/{s['H']['v_dcc']:.2f}")
     print(f"undisc ind  L/M/H = {s['L']['v_ind']:.2f}/{s['M']['v_ind']:.2f}/{s['H']['v_ind']:.2f}")
@@ -459,7 +532,7 @@ def main() -> int:
         out = []
         for t in TIERS:
             sc = scenario(inp[f"rev_dcc_{t.lower()}"], inp[f"m_dcc_{t.lower()}"], inp[f"m_ind_{t.lower()}"], g_dcc, g_ind)
-            out.append(sc["sum"] * disc + inp["net_debt_ps"])
+            out.append(sc["sum"] * disc + window(sc["b1"], inp["r_disc"]) + inp["net_debt_ps"])
         return tuple(out)
 
     for g in (inp["g2_dcc"] - 0.01, inp["g2_dcc"] + 0.01, 0.0606):
@@ -478,11 +551,10 @@ def main() -> int:
         inp["r_perp"], inp["r_disc"] = saved[0] + dr, saved[1] + dr
         try:
             disc_r = (1.0 + inp["r_disc"]) ** (-inp["t_disc"])
-            lmh = [
-                scenario(inp[f"rev_dcc_{t.lower()}"], inp[f"m_dcc_{t.lower()}"], inp[f"m_ind_{t.lower()}"])["sum"]
-                * disc_r + inp["net_debt_ps"]
-                for t in TIERS
-            ]
+            lmh = []
+            for t in TIERS:
+                sc = scenario(inp[f"rev_dcc_{t.lower()}"], inp[f"m_dcc_{t.lower()}"], inp[f"m_ind_{t.lower()}"])
+                lmh.append(sc["sum"] * disc_r + window(sc["b1"], inp["r_disc"]) + inp["net_debt_ps"])
             return lmh[0], lmh[1], lmh[2]
         finally:
             inp["r_perp"], inp["r_disc"] = saved

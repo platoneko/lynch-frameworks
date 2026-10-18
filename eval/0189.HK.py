@@ -171,8 +171,26 @@ REQUIRED = [
     "pe_ref", "pe_poly", "pe_sil", "pe_oth",
     "net_cash", "cash_attrib", "pb_floor",
     "div_declared", "c_ex", "cash_yield", "tax_eff", "cash_grp_avg", "equity_grp_avg",
+    "rs_poly", "y1_poly", "y2_poly", "tau", "eps_2026_h", "ni_h1_2026",
 ]
 CEX_TOL = 1.0  # RMB thousand
+
+
+def path_pe(g2: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-stage return path Gordon (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    library three-stage function is not built yet, so it lives here).  Value per unit of t0 earnings:
+    the forward return holds to calendar Y1, falls linearly to the steady return by Y2, steady after;
+    retention b = g2 / return each year; tail Gordon at Y2 on the steady return."""
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rs) / ((r - g2) * (1.0 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (rs - roe) * (cal - y1) / (y2 - y1)
+        pv += e * min(1.0, 1.0 - g2 / ro) / (1.0 + r) ** t
+        e *= 1.0 + g2
+        t += 1
 
 
 def first_float(pattern: str, text: str) -> float | None:
@@ -259,9 +277,14 @@ def main() -> int:
     roe_sil = inp["res_sil_h"] * (1.0 - inp["tax"]) / inp["equity_sil_avg"]
 
     def gordon(r_: float) -> dict[str, float]:
+        # Fluoropolymer leg (g2 > 0, not commodity-axis bridged) on the three-stage path: steady
+        # return = max(layers, r) -- own cycle unusable (group basis != entity forward formula),
+        # no >= 5-year mature same-business peer, fallback 11% < r -> the basket r (A10).
+        rs = max(inp["rs_poly"], r_)
         return {
             "ref": perpetual_pe(inp["g2_ref"], roe_poly, r_),
-            "poly": perpetual_pe(inp["g2_poly"], roe_poly, r_),
+            "poly": path_pe(inp["g2_poly"], roe_poly, r_, int(inp["t_num"]), int(inp["y1_poly"]),
+                            int(inp["y2_poly"]), rs),
             "sil": perpetual_pe(inp["g2_sil"], roe_sil, r_),
             "oth": perpetual_pe(inp["g2_oth"], 0.139, r_),  # ROE drops out at g2 < 0
         }
@@ -372,6 +395,25 @@ def main() -> int:
         errors.append("eps_2027 l/m/h not ascending")
     if s_h < 1.0:
         errors.append(f"H scale {s_h:.4f} < 1: consensus high below the H-world run-rate")
+
+    # Time alignment (valuation-rules「经营价值与超额现金」③): only H has a forward numerator year
+    # (FY2027E consensus high) -> its legs are values at 2027-01-01, x (1+r)^-tau, plus the 2H26
+    # window distributable profit on the same (consensus-high) basis x (1+r)^-(tau/2).  L / M are
+    # named price scenarios + actual operating years (not calendar-drifting) -> not aligned.
+    eps_h1 = inp["ni_h1_2026"] * scale
+    int_ps = inc_attrib * scale
+
+    def value_of(x: str, t: dict[str, float], pe: dict[str, float], r_: float) -> tuple[float, float]:
+        if x != "h":
+            return t["value"], 0.0
+        np_poly = t["poly"] / pe["poly"] / scale
+        b = inp["g2_poly"] / roe_poly * np_poly / t["np"]
+        win = max(0.0, inp["eps_2026_h"] - eps_h1 - int_ps / 2) * (1.0 - b)
+        legs = t["value"] - t["cash"]
+        return legs * (1.0 + r_) ** -inp["tau"] + win * (1.0 + r_) ** -(inp["tau"] / 2) + t["cash"], win
+
+    for x in "lmh":
+        tiers[x]["value"], tiers[x]["win"] = value_of(x, tiers[x], gen, r)
     L, M, H = (tiers[x]["value"] for x in "lmh")
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
@@ -418,7 +460,9 @@ def main() -> int:
     k_df = sum((1.0 + r) ** -(y - inp["t_num"]) for y in k_years) / max(len(k_years), 1)
     k_pv = k_remain * inp["own_poly"] * k_df * scale  # HKD/share at t_num
     v_gross = v_at_t / (1.0 + r) ** (inp["t_opt"] - inp["t_num"])
-    v_opt = v_gross - k_pv
+    # The option is valued at the numerator year (t_num) -> same tau as H (time alignment); its
+    # multiple is the fluoropolymer leg's three-stage pe_poly (option legs take the same path).
+    v_opt = (v_gross - k_pv) * (1.0 + r) ** -inp["tau"]
 
     # --- compare against the stated Outputs ---------------------------------
     out_sec = outputs_section(md)
@@ -493,10 +537,11 @@ def main() -> int:
           + ("③ 出带 (M/H below band min, disclosed)" if M / eps["m"] < OWN_PE_BAND_MIN else "in band"))
     for label, r_alt in (("r +50bp", r + 0.005), ("r -50bp", r - 0.005), ("篮 7 15%", 0.15), ("篮 4 10%", 0.10)):
         pe_alt = gordon(r_alt)
-        band = [scenario(x, inp[f"upt_{x}"], pe_alt, scale_of[x])["value"] for x in "lmh"]
+        band = [value_of(x, scenario(x, inp[f"upt_{x}"], pe_alt, scale_of[x]), pe_alt, r_alt)[0] for x in "lmh"]
         print(f"  sens {label}: {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
-    pe_book = {**gen, "poly": perpetual_pe(inp["g2_poly"], roe_poly_book, r)}
-    band = [scenario(x, inp[f"upt_{x}"], pe_book, scale_of[x])["value"] for x in "lmh"]
+    pe_book = {**gen, "poly": path_pe(inp["g2_poly"], roe_poly_book, r, int(inp["t_num"]), int(inp["y1_poly"]),
+                                      int(inp["y2_poly"]), max(inp["rs_poly"], r))}
+    band = [value_of(x, scenario(x, inp[f"upt_{x}"], pe_book, scale_of[x]), pe_book, r)[0] for x in "lmh"]
     print(f"  sens RONIC_poly 账面 {roe_poly_book:.1%} (现金不分摊): {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
     d_full = inp["div_declared"] * (1.0 - inp["cash_attrib"]) * scale
     print(f"  sens 已宣派股息全额由归母承担（不乘归母比例）: −{d_full:.2f} -> {L - d_full:.2f}/{M - d_full:.2f}/{H - d_full:.2f}")
@@ -509,10 +554,13 @@ def main() -> int:
     print(f"  less unspent capital: ({inp['opt_k']:,.0f}k - spent {inp['opt_k_spent']:,.0f}k) x own_poly {inp['own_poly']}"
           f" x mean DF {k_df:.4f} ({inp['opt_k_y0']:.0f}-{inp['opt_k_y1']:.0f} @ r to {inp['t_num']:.0f}) = {k_pv:.3f} HKD"
           f" -> V_opt {v_opt:.3f} (gross {v_gross:.3f}, V_opt/M {v_opt / M:.1%})")
+    tf = (1.0 + r) ** -inp["tau"]
     for t_alt in (inp["t_opt"] - 1, inp["t_opt"] + 1):
-        print(f"  sens t_opt {t_alt:.0f}: V_opt {v_at_t / (1.0 + r) ** (t_alt - inp['t_num']) - k_pv:.2f}")
+        print(f"  sens t_opt {t_alt:.0f}: V_opt {(v_at_t / (1.0 + r) ** (t_alt - inp['t_num']) - k_pv) * tf:.2f}")
     print(f"  sens capital at t_opt in one lump (optimistic): V_opt "
-          f"{v_gross - k_remain * inp['own_poly'] * scale / (1.0 + r) ** (inp['t_opt'] - inp['t_num']):.2f}")
+          f"{(v_gross - k_remain * inp['own_poly'] * scale / (1.0 + r) ** (inp['t_opt'] - inp['t_num'])) * tf:.2f}")
+    print(f"  H window distributable profit {tiers['h']['win']:.4f} HKD/sh x (1+r)^-{inp['tau'] / 2:g}; "
+          f"H legs x (1+r)^-{inp['tau']:g}")
     if meta.v_opt is not None and meta.p_tiers:
         print(f"V_opt={meta.v_opt:.2f} (not in deck) p_tiers={meta.p_tiers}  zone+V: "
               + "/".join(f"{b + p * meta.v_opt:.2f}" for b, p in zip((L, M, H), meta.p_tiers)))
@@ -521,7 +569,7 @@ def main() -> int:
     # and fx stay put.  Disclosure only — the anchors above are the 中枢 column.
     def band_rf(dr: float) -> tuple[float, float, float]:
         pe_rf = gordon(r + dr)
-        return tuple(scenario(x, inp[f"upt_{x}"], pe_rf, scale_of[x])["value"] for x in "lmh")
+        return tuple(value_of(x, scenario(x, inp[f"upt_{x}"], pe_rf, scale_of[x]), pe_rf, r + dr)[0] for x in "lmh")
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

@@ -33,9 +33,27 @@ today (valuation-rules「未建模期权」capacity rule, 2026-10-04).  Where th
 more than the company does (H tier connector, E bucket) the anchor is cut by
 k_h; k_l = k_m = 0 because those tiers' model payout equals the paid payout.
 
-Both legs basket 4 (A17); basket 6 (13%) printed as a control band.  FY2028 =
-current FY + 2 -> tiers discounted one year; the project value is already
-today's.  ③: same-earnings weeks exist, the band floor month is distorted
+Both legs basket 4 (A17); basket 6 (13%) printed as a control band.
+
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」; net debt -> no
+excess-cash line, parent share n/a; the Yueqing project's unspent capital is
+already deducted as a named item -> no growth-period funding gap):
+  * time alignment: the tier values sit at 2028-01-01 -> x (1+r)^-tau, tau 1.5
+    from the 2026-06-30 balance sheet (replaces the one-year discount), plus
+    the window distributable profit (2H26 + FY2027 unbooked profit on each
+    tier's numerator basis: L / M the own trend path n_conn + solar path, H the
+    consensus less 1H26 actual) x (1 - b), solar b = 0, at tau/2.  The project
+    value is already today's.  2026-10-18 窗口留存口径改正: the connector b =
+    g_win/ROE cut to [0, 1], g_win = the tier's connector path FY2026 -> FY2028
+    (L flat 0; M the trend g_c; H consensus FY2026E less solar -> H numerator),
+    and the book rolls n_conn at that same b; the multiple's g (peer g2 /
+    payout-policy g) is read at the resulting ROE (was: b = multiple g / ROE).
+  * three-stage return on the peer-g2 branch (H): forward ROE through Y1 2028,
+    linear to the steady 18.6% by Y2 2032 (medium barrier); steady = mature
+    same-business peer TE Connectivity's 9-year through-cycle return (above
+    the 18% light-asset-assembly floor; own cycle has no connector-leg history).
+    L / M sit on the policy g / dividend ruler (ROE < r + 3pp): untouched.
+  * k_H 0.3 sat on the whole H connector value -> removed (no named transaction).  ③: same-earnings weeks exist, the band floor month is distorted
 (step 1b) -> not decidable -> correction gate.
 
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」).
@@ -92,15 +110,33 @@ REQUIRED = [
     "nr_ttm_2q26", "nr_ttm_2q24", "nr_ttm_3q24", "nr_fy24", "nr_q4_25", "nr_h1_26",
     "ni_group_fy25", "ni_ttm_2q26", "ni_ttm_2q24", "ni_solar_fy25r", "disposal_fy25", "ni_solar_l",
     "cons_fy27_m", "cons_fy28_l", "cons_fy28_m", "cons_fy28_h",
-    "g2", "g2_solar", "r_conn", "r_solar", "r_ctl", "years_to_fy28", "disc_years", "payout_fy25",
+    "g2", "g2_solar", "r_conn", "r_solar", "r_ctl", "years_to_fy28", "tau", "payout_fy25",
+    "y1", "y2", "ronic_ss", "ronic_ss_te", "ronic_ss_floor", "cons_fy26_m", "ni_group_h1_26",
     "proj_k_spent", "proj_k_total", "proj_years_to_cod", "k_l", "k_m", "k_h",
     "m_prev", "bps", "pb_own_min", "roe_peer_lo", "roe_peer_med", "roe_peer_hi", "ttm_eps",
     "band_pe_min", "band_eps", "band_fwd_growth",
     # derived, recomputed below
     "equity_conn", "rev_conn_ttm", "rev_solar_ttm", "g_conn", "g_solar", "g_own_profit", "g_own_recurring",
     "ni_solar_ttm", "ni_conn_ttm", "ni_conn_l", "ni_conn_m", "ni_conn_h", "ni_solar_m", "n_conn",
-    "roe_conn_l", "roe_conn_m", "roe_conn_h", "v_proj",
+    "roe_conn_l", "roe_conn_m", "roe_conn_h", "v_proj", "conn_fy26_h", "g_win_h",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_ss: float) -> float:
+    """Three-stage retention Gordon (valuation-rules ② 稳态回报三段) at the start of t0 per unit of t0
+    earnings: ROE through y1, linear to min(roe, r_ss) by y2, perpetual after."""
+    if r - g <= 0:
+        raise ValueError("r <= g")
+    ss = min(roe, r_ss)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / ss) / ((r - g) * (1 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (ss - roe) * (cal - y1) / (y2 - y1)
+        pv += e * min(1.0, 1.0 - g / ro) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def domain(roe: float, r: float) -> str:
@@ -207,24 +243,38 @@ def main() -> int:
     n_conn = 0.5 * conn["L"] + c27          # 2H26 + FY2027 on the M path
     derived("n_conn", n_conn, AMT_TOL)
 
-    def conn_tier(c: float, r_: float, peer_g: float) -> tuple[float, float, float, str]:
-        g = peer_g
-        for _ in range(200):
-            roe = c / (eq_c0 / (1.0 - g * n_conn / c))
-            if roe - r_ >= ROE_NEAR_R:
-                g_new, form = peer_g, "peer g2"
-                pe = perpetual_pe(g_new, roe, r_)
+    y1, y2, r_ss = int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"]
+    if not (y1 == 2028 and y2 == y1 + 4):
+        errors.append("Y1 must be the visible-year end 2028 and Y2 = Y1 + 4 (medium entry barrier)")
+    if abs(r_ss - max(inp["ronic_ss_te"], inp["ronic_ss_floor"])) > 5e-4:
+        errors.append(f"ronic_ss {r_ss} != max(mature peer TE {inp['ronic_ss_te']}, floor {inp['ronic_ss_floor']})")
+    if any(inp[f"k_{x}"] != 0.0 for x in ("l", "m", "h")):
+        errors.append("k must be 0: no named transaction for a k to sit on (k on the whole value removed 2026-10-16)")
+
+    def conn_tier(c: float, r_: float, peer_g: float, gw: float) -> tuple[float, float, float, str, float]:
+        """(multiple g, ROE, PE, form, window b).  The book rolls n_conn at the window retention
+        b = g_win/ROE cut to [0, 1] -- the segment's own growth, the same b as the window profit
+        (valuation-rules ③ 时点对齐; 2026-10-18 窗口留存口径改正: was the multiple's perpetual g).
+        The multiple's g (peer g2 / payout-policy g) is then read at that ROE."""
+        bps = eq_c0
+        for _ in range(500):
+            nxt = eq_c0 + min(1.0, max(0.0, gw * bps / c)) * n_conn
+            if abs(nxt - bps) < 1e-3:
+                break
+            bps = nxt
+        roe = c / bps
+        bw = min(1.0, max(0.0, gw / roe))
+        if roe - r_ >= ROE_NEAR_R:
+            g, form = peer_g, f"peer g2, 三段 → {r_ss:.1%}"
+            pe = path_pe(g, roe, r_, 2028, y1, y2, r_ss)
+        else:
+            g_raw = (1.0 - pay) * roe
+            g = min(g_raw, g_cap(r_))
+            if g_raw > g_cap(r_) and (pay >= DIV_PAYOUT or g_raw - g_cap(r_) <= CLIP_TOL):
+                pe, form = capped_payout_pe(g_raw, roe, r_, pay), f"policy g {g_raw:.2%} clipped -> dividend ruler"
             else:
-                g_raw = (1.0 - pay) * roe
-                g_new = min(g_raw, g_cap(r_))
-                if g_raw > g_cap(r_) and (pay >= DIV_PAYOUT or g_raw - g_cap(r_) <= CLIP_TOL):
-                    pe, form = capped_payout_pe(g_raw, roe, r_, pay), f"policy g {g_raw:.2%} clipped -> dividend ruler"
-                else:
-                    pe, form = perpetual_pe(g_new, roe, r_), f"policy g {g_new:.2%}"
-            if abs(g_new - g) < 1e-12:
-                return g_new, roe, pe, form
-            g = g_new
-        raise RuntimeError("book / g fixed point did not converge")
+                pe, form = perpetual_pe(g, roe, r_), f"policy g {g:.2%}"
+        return g, roe, pe, form, bw
 
     # ---- project value (D bucket, A22) ----
     roe_proj = s_ttm / inp["equity_solar"]
@@ -237,20 +287,41 @@ def main() -> int:
     v_proj = project(r)
     derived("v_proj", v_proj, AMT_TOL)
     k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
+    tau = inp["tau"]
+
+    # Window distributable profit (③ 时点对齐), 2H26 + FY2027 unbooked, on each tier's numerator basis.
+    solar_w = 0.5 * s_ttm * (1 + g_s) ** 0.5 + s_ttm * (1 + g_s) ** 1.5      # solar M path (b = 0: g = 0)
+    cons_w = inp["cons_fy26_m"] - inp["ni_group_h1_26"] + inp["cons_fy27_m"]  # H: consensus path
+    conn_unb = {"L": n_conn, "M": n_conn, "H": cons_w - solar_w}
+    # Window segment growth per tier = the connector leg's own path from FY2026 to the FY2028 numerator,
+    # annualised: L = the M path stopped at FY2026 -> flat, 0; M = the trend path's g_c (the eval's
+    # carry growth); H = the consensus path (FY2026E mean less the solar M path) -> the H numerator.
+    solar_26 = s_ttm * (1 + g_s) ** 0.5
+    conn26_h = inp["cons_fy26_m"] - solar_26
+    derived("conn_fy26_h", conn26_h, AMT_TOL)
+
+    def g_win(cx: dict) -> dict:
+        return {"L": 0.0, "M": g_c, "H": (cx["H"] / conn26_h) ** 0.5 - 1.0}
+
+    derived("g_win_h", g_win(conn)["H"])
 
     def deck(r_: float, cx=conn, sx=solar, peer_g=None, solar_branch="D"):
         peer_g = inp["g2"] if peer_g is None else peer_g
+        gws = g_win(cx)
         rows = {}
         for t in TIERS:
-            g, roe, pe_a, form = conn_tier(cx[t], r_, peer_g)
+            g, roe, pe_a, form, bw = conn_tier(cx[t], r_, peer_g, gws[t])
             roe_s = sx[t] / inp["equity_solar"]
             if solar_branch == "D":
                 pe_b = perpetual_pe(inp["g2_solar"], roe_s, r_)
             else:  # E bucket alternative: retaining branch at the payout-policy g
                 pe_b = perpetual_pe(min((1 - pay) * roe_s, g_cap(r_)), roe_s, r_)
             vp = project(r_) if solar_branch == "D" else 0.0
-            val = (cx[t] * pe_a * (1 - k[t]) + sx[t] * pe_b) / (1 + r_) ** inp["disc_years"] + vp
-            rows[t] = dict(px=val / sh, g=g, roe=roe, pe_a=pe_a, pe_b=pe_b, form=form, roe_s=roe_s)
+            win = conn_unb[t] * (1 - bw) + solar_w
+            val = ((cx[t] * pe_a * (1 - k[t]) + sx[t] * pe_b) * (1 + r_) ** -tau
+                   + win * (1 + r_) ** -(tau / 2) + vp)
+            rows[t] = dict(px=val / sh, g=g, roe=roe, pe_a=pe_a, pe_b=pe_b, form=form, roe_s=roe_s, win=win,
+                           gw=gws[t], bw=bw)
         return rows
 
     base = deck(r)
@@ -261,17 +332,15 @@ def main() -> int:
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-    # k must be declared where the model pays out more than the company (H here); 0 elsewhere with a reason.
-    for t in TIERS:
-        modelled = 1 - base[t]["g"] / base[t]["roe"]
-        capped = "dividend ruler" in base[t]["form"]
-        if not capped and modelled - pay > 0.20 and k[t] <= 0:
-            errors.append(f"k_{t.lower()} = 0 but tier {t} models payout {modelled:.0%} vs paid {pay:.0%} (视同派出 needs k)")
+    # The model's payout above the paid payout (H) is the 「多留部分」: no k any more (valuation-rules ④,
+    # 2026-10-15/16: a k on the whole operating value is the wrong object); disclosed below.
 
-    disc = (1 + r) ** inp["disc_years"]
-    pe_c = {t: (base[t]["px"] * sh - v_proj) * disc / group[t] for t in TIERS}
+    disc = (1 + r) ** tau
+    disc_w = (1 + r) ** (tau / 2)
+    pe_c = {t: (base[t]["px"] * sh - v_proj - base[t]["win"] / disc_w) * disc / group[t] for t in TIERS}
     dec = decompose((L, M, H), (pe_c["L"], pe_c["M"], pe_c["H"]))
-    flat = tuple((conn[t] * base["M"]["pe_a"] * (1 - k[t]) + solar[t] * base[t]["pe_b"]) / disc / sh + v_proj / sh for t in TIERS)
+    flat = tuple((conn[t] * base["M"]["pe_a"] * (1 - k[t]) + solar[t] * base[t]["pe_b"]) / disc / sh
+                 + base[t]["win"] / disc_w / sh + v_proj / sh for t in TIERS)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
@@ -280,14 +349,17 @@ def main() -> int:
         "g2 (单调区 peer) 5%": deck(r, peer_g=0.05),
         "g2 (单调区 peer) 3%": deck(r, peer_g=0.03),
         "solar E bucket (retaining branch, no project)": deck(r, solar_branch="E"),
-        "k_h 0.5": None,
-        "k_h 0": None,
+        "k_h 0.3 (removed 2026-10-16)": None,
     }
-    for kh in (0.5, 0.0):
-        k_save = k["H"]
-        k["H"] = kh
-        sens[f"k_h {kh:g}"] = deck(r)
-        k["H"] = k_save
+    k_save = k["H"]
+    k["H"] = 0.3
+    sens["k_h 0.3 (removed 2026-10-16)"] = deck(r)
+    k["H"] = k_save
+    rss_save = r_ss
+    for rs_alt in (inp["ronic_ss_floor"], 0.15):
+        r_ss = rs_alt
+        sens[f"steady {rs_alt:.0%}"] = deck(r)
+    r_ss = rss_save
     # Solar H1'26 by the gross-profit conversion instead of the subsidiary-table sum (the v5 basis).
     s_alt = inp["ni_solar_fy25r"] + conv * inp["rev_solar_h1_26"] * 0.1099 - conv * gp_h25
     c_alt = inp["ni_ttm_2q26"] - inp["disposal_fy25"] - s_alt
@@ -351,7 +423,14 @@ def main() -> int:
           f"x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0")
     for name, d in sens.items():
         print(f"sens {name}: {d['L']['px']:.2f}/{d['M']['px']:.2f}/{d['H']['px']:.2f}")
-    print(f"H 视同派出 line (E bucket, k before): {line_h:.2f}/sh; k_h {k['H']:g} takes {base['H']['px'] - sens['k_h 0']['H']['px']:+.2f}/sh off H")
+    print(f"H 多留部分 line (E bucket, capitalised, disclosure only, λ 1): {line_h:.2f}/sh; the removed k_h 0.3 would take "
+          f"{base['H']['px'] - sens['k_h 0.3 (removed 2026-10-16)']['H']['px']:+.2f}/sh off H")
+    print("window connector b = g_win/ROE: " + " / ".join(
+        f"{t} g_win {base[t]['gw']:.2%} / ROE {base[t]['roe']:.2%} -> b {base[t]['bw']:.3f} "
+        f"(unbooked {conn_unb[t] / 1e8:.3f}亿; actual retention {1 - pay:.1%})" for t in TIERS)
+        + f"; H path FY2026 connector {conn26_h / 1e8:.4f}亿 (cons {inp['cons_fy26_m'] / 1e8:.4f} - solar {solar_26 / 1e8:.4f})")
+    print("window distributable profit (亿, before ÷1.1^τ/2): " + " / ".join(f"{t} {base[t]['win'] / 1e8:.3f}" for t in TIERS)
+          + f" (solar {solar_w / 1e8:.3f}; H consensus path {cons_w / 1e8:.3f}); τ {tau:g}; 三段 Y1 {y1} Y2 {y2} 稳态 {r_ss:.1%}")
     print(f"③: M anchor / E_M = {pe_m_anchor:.2f}x vs same-earnings floor {inp['band_pe_min']:.2f}x (1c-adjusted {band_floor_1c:.2f}x); "
           f"band-month expected growth {inp['band_fwd_growth']:.1%} vs model {model_growth:.1%} -> {'distorted (1b), not decidable' if distorted else 'clean'}")
     print(f"PB 1.0 = {inp['bps']:.2f}; M/BPS = {M / inp['bps']:.2f}")

@@ -39,6 +39,25 @@ The 2Q26 operating book (equity − interim dividend − C_ex) is rolled over th
 OBPS = OBPS_2Q26 / (1 − g2·N_op/E_op).  Actual retention above b1 is the
 「多留部分」(it lands in excess cash, lambda = 1), printed as a disclosure.
 
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」):
+  * parent share: C_ex x (parent equity less the interim dividend) / (that +
+    minority interest) = 91.51% (no subsidiary-level cash disclosure); the
+    same share drives its income and the operating book.
+  * growth-period funding gap 0: 1H26 capex 250.73 vs OCF 602.17亿, the
+    in-construction budget is paid at ~250亿 a half-year.
+  * time alignment: the Gordon value is at 2027-01-01 -> x (1+r)^-tau, tau 0.5
+    from the 2026-06-30 balance sheet; plus the 2H26 window distributable
+    profit (unbooked operating EPS x (1 - g2/RONIC)) at tau/2.  V_opt x tau.
+  * three-stage return: forward RONIC through Y1 2027 (visible-year end),
+    linear to the steady return by Y2 2031 (medium entry barrier: 4 years),
+    perpetual after.  Steady 22.8% = own-cycle layer on PLAIN ROE (FY2019–25
+    median of parent NI / average parent equity, excess cash NOT deducted — a
+    different basis from the forward return; user ruling 2026-10-18).  The
+    excess-cash-deducted own-cycle reading 39.0% is not used: stripping the
+    cash shrinks the denominator and inflates the return.  Peer layer: only
+    Samsung SDI passes the maturity test, 6.9% < r; floor 11%.  g2 named, not
+    re-solved; (1 − 50%) x 22.8% = 11.4% >= g2_h, no cap.
+
 Run:  python3 frameworks/eval/300750.SZ.py
 """
 
@@ -92,6 +111,8 @@ FORMULA_FIELDS = frozenset({
     "eps_fy26_mean", "ni_1h26",   # only via the 2H26 unbooked earnings in the book roll (A21)
     "net_cash_ext_h1", "div_declared", "rev_fy2025", "cash_ratio_min",
     "cash_yield", "tax_eff",      # excess cash and its after-tax income (A22)
+    "minority_h1",                # parent share of C_ex (A22)
+    "tau", "y1", "y2", "ronic_ss",   # time alignment and the three-stage return (A23)
 })
 
 REQUIRED = sorted(FORMULA_FIELDS | {
@@ -105,7 +126,9 @@ REQUIRED = sorted(FORMULA_FIELDS | {
     "buyback_lo", "buyback_hi", "treasury_shares", "opt_outstanding",
     "cap_now_ann", "cap_build", "util_h1", "t_num", "t_opt",
     "hu_gwh", "hu_budget", "hu_inv_pct", "dom_budget_gwh", "dom_inv_pct", "opt_eq",
+    "parent_ratio", "ronic_ss_floor",
 })
+T0 = 2027                  # numerator year: the Gordon value sits at its start
 
 # 表3 only — never Inputs, never the base band (A2e-7a).
 P_K = (0.0, 0.25, 1.0)
@@ -117,9 +140,41 @@ def cash_anchor(inp: dict[str, float]) -> float:
     return max(min(inp["cash_ratio_min"], ANCHOR_CAP), 0.0) * inp["rev_fy2025"]
 
 
-def excess_cash(inp: dict[str, float]) -> float:
-    """C_ex (亿) = extended net cash − declared / ex-dividend unpaid dividend − anchor."""
+def excess_cash_total(inp: dict[str, float]) -> float:
+    """C_ex (亿, consolidated) = extended net cash − declared / ex-dividend unpaid dividend − anchor."""
     return inp["net_cash_ext_h1"] - inp["div_declared"] - cash_anchor(inp)
+
+
+def parent_ratio(inp: dict[str, float]) -> float:
+    """① 归母份额: no subsidiary-level cash disclosure -> parent equity / (parent + minority),
+    the parent side net of the interim dividend (already out of the cash)."""
+    eq = inp["equity"] - inp["div_declared"]
+    return eq / (eq + inp["minority_h1"])
+
+
+def excess_cash(inp: dict[str, float]) -> float:
+    """Parent-share C_ex (亿) — what enters value, the numerator's cash income and the operating book."""
+    return excess_cash_total(inp) * parent_ratio(inp)
+
+
+def path_pe(inp: dict[str, float], g: float, roe: float, t0: int = T0, fresh: bool = False) -> float:
+    """Three-stage retention Gordon (valuation-rules ② 稳态回报三段), value at the start of t0 per
+    unit of t0 earnings: RONIC = roe through y1, linear to min(roe, ronic_ss) by y2, perpetual on.
+    y1 / y2 are calendar years (default t0 = T0).  `fresh=True` restarts the period at t0
+    (y1 = t0, y2 = t0 + (y2 − y1)) -- the pre-2026-10-19 implicit read of the option, disclosure only."""
+    r, y1, y2 = inp["r_perp"], int(inp["y1"]), int(inp["y2"])
+    if fresh:
+        y1, y2 = t0, t0 + (y2 - y1)
+    ss = min(roe, inp["ronic_ss"])
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, ss) / ((r - g) * (1 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (ss - roe) * (cal - y1) / (y2 - y1)
+        pv += e * payout(g, ro) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def cash_ps(inp: dict[str, float]) -> float:
@@ -151,8 +206,20 @@ def ronic(inp: dict[str, float], e_op: float, g: float) -> float:
 
 
 def op_value(inp: dict[str, float], e_op: float, g: float) -> float:
-    """Operating value per share + excess cash per share (lambda = 1)."""
-    return e_op * perpetual_pe(g, ronic(inp, e_op, g), inp["r_perp"]) + cash_ps(inp)
+    """Operating value at the start of FY2027 per share + excess cash per share (lambda = 1); not aligned."""
+    return e_op * path_pe(inp, g, ronic(inp, e_op, g)) + cash_ps(inp)
+
+
+def window_ps(inp: dict[str, float], e_op: float, g: float) -> float:
+    """2H26 window distributable profit per share: unbooked operating EPS x (1 − b), b = g/RONIC (③)."""
+    return max(unbooked_op_eps(inp) * (1.0 - g / ronic(inp, e_op, g)), 0.0)
+
+
+def aligned(inp: dict[str, float], e_op: float, g: float) -> float:
+    """Today's value: operating value x (1+r)^-tau + window x (1+r)^-(tau/2) + excess cash (③ 时点对齐)."""
+    r, tau = inp["r_perp"], inp["tau"]
+    v = op_value(inp, e_op, g) - cash_ps(inp)
+    return v * (1 + r) ** -tau + window_ps(inp, e_op, g) * (1 + r) ** -(tau / 2) + cash_ps(inp)
 
 
 def e_op(inp: dict[str, float], eps: float) -> float:
@@ -160,7 +227,7 @@ def e_op(inp: dict[str, float], eps: float) -> float:
 
 
 def anchor(inp: dict[str, float], tag: str) -> float:
-    return op_value(inp, e_op(inp, inp[f"eps_{tag}"]), inp[f"g2_{tag}"])
+    return aligned(inp, e_op(inp, inp[f"eps_{tag}"]), inp[f"g2_{tag}"])
 
 
 # --- history on the operating basis (A10 / A22) -----------------------------------
@@ -181,7 +248,9 @@ def op_band(ratio: float) -> dict[int, tuple[float, float, float]]:
     return out
 
 
-def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
+def capacity_option(inp: dict[str, float], base_h: float, fresh: bool = False) -> dict[str, float]:
+    # base_h: the H tier's unaligned value at the start of FY2027 (op_value) -- printed for reference;
+    # the option itself is valued in the realisation year on both sides (2026-10-19, A18).
     """V_opt — the named in-construction capacity beyond what the H tier already
     implies (A18, valuation-rules「未建模期权」2026-10-03), on the same operating
     Gordon ruler as the H tier (H-tier operating opening BPS, g2_h).
@@ -200,9 +269,18 @@ def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     obps_h = obps_open_2027(inp, eop_h, inp["g2_h"])
     eop_post = eop_h + d_eps
     ronic_post = eop_post / obps_h
-    pe_post = perpetual_pe(inp["g2_h"], ronic_post, inp["r_perp"])
+    # Product-stage check (A18, 2026-10-19): the capacity makes the batteries CATL already ships at
+    # scale -- same product, same 环节 -- so it inherits the calendar high-return period Y1 2027 /
+    # Y2 2031 and is valued in t_opt with the fall already under way.  Both sides (with and without
+    # the increment) sit in t_opt on the same path; reusing the 2027-start multiples at t_opt (the
+    # old construction) silently restarted the period at the capacity's start.
+    t_opt = int(inp["t_opt"])
+    pe_post = path_pe(inp, inp["g2_h"], ronic_post, t_opt, fresh)
+    pe_base = path_pe(inp, inp["g2_h"], eop_h / obps_h, t_opt, fresh)
     anchor_post = eop_post * pe_post + cash_ps(inp)
-    disc = (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]))
+    base_t = eop_h * pe_base + cash_ps(inp)
+    # to the numerator year, then tau to the valuation date (③ 时点对齐: V_opt discounted to t_n is aligned too)
+    disc = (1.0 + inp["r_perp"]) ** (-(inp["t_opt"] - inp["t_num"]) - inp["tau"])
     k_hu = inp["hu_budget"]
     k_dom = (inp["cap_build"] - inp["hu_gwh"]) * inp["dom_budget_gwh"]
     k_budget = k_hu + k_dom
@@ -213,19 +291,20 @@ def capacity_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     k_ps = k_opt * 1e8 / inp["shares"]
     return {"vol_full": vol_full, "vol_in_h": vol_in_h, "d_vol": d_vol, "d_ni": d_ni,
             "d_eps": d_eps, "ronic_post": ronic_post, "pe_post": pe_post,
-            "anchor_post": anchor_post, "disc": disc,
+            "anchor_post": anchor_post, "base_t": base_t, "pe_base": pe_base, "disc": disc,
             "k_budget": k_budget, "k_spent": k_spent, "k_remain": k_remain,
             "share_opt": share_opt, "k_opt": k_opt, "k_ps": k_ps,
-            "v_gross": (anchor_post - base_h) * disc,
-            "v_opt": (anchor_post - base_h - k_ps) * disc}
+            "v_gross": (anchor_post - base_t) * disc,
+            "v_opt": (anchor_post - base_t - k_ps) * disc}
 
 
-def band_edge_g(r: float, ron: float, pe_edge: float) -> float:
-    """Perpetual g that lands the operating Gordon multiple on a band edge (③)."""
+def band_edge_g(inp: dict[str, float], ron: float, pe_edge: float) -> float:
+    """Perpetual g that lands the operating multiple (same three-stage path) on a band edge (③)."""
+    r = inp["r_perp"]
     lo, hi = -0.10, g_cap(r)
     for _ in range(200):
         mid = (lo + hi) / 2
-        if perpetual_pe(mid, ron, r) < pe_edge:
+        if path_pe(inp, mid, ron) < pe_edge:
             lo = mid
         else:
             hi = mid
@@ -250,9 +329,20 @@ def main() -> int:
     ratio_obs = min(EXT[y] / REV[y] for y in CASH_WINDOW)
     if abs(ratio_obs - inp["cash_ratio_min"]) > 5e-5:
         errors.append(f"cash_ratio_min {inp['cash_ratio_min']} != FY2018–25 lowest {ratio_obs:.5f}")
+    c_tot = excess_cash_total(inp)
+    if abs(c_tot - inp["c_ex"]) > 0.05:
+        errors.append(f"c_ex {inp['c_ex']} != net_cash_ext_h1 − div_declared − anchor {c_tot:.2f}")
+    pr = parent_ratio(inp)
+    if abs(pr - inp["parent_ratio"]) > 5e-5:
+        errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
     c_ex = excess_cash(inp)
-    if abs(c_ex - inp["c_ex"]) > 0.05:
-        errors.append(f"c_ex {inp['c_ex']} != net_cash_ext_h1 − div_declared − anchor {c_ex:.2f}")
+    tau_calc = ((T0 - 2026) * 12 - 6) / 12          # 2026-06-30 balance sheet -> 2027-01-01
+    if abs(inp["tau"] - tau_calc) > 1e-9:
+        errors.append(f"tau {inp['tau']} != {tau_calc}")
+    if not (inp["y1"] == T0 and inp["y2"] == inp["y1"] + 4):
+        errors.append("Y1 must be the visible-year end FY2027 and Y2 = Y1 + 4 (medium entry barrier, A23)")
+    if inp["ronic_ss"] < max(inp["ronic_ss_floor"], inp["r_perp"]):
+        errors.append("ronic_ss below the business-model floor / r (A23)")
     eq_adj = inp["equity"] - inp["div_declared"]
     if c_ex < EXCESS_TRIGGER * eq_adj:
         errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
@@ -305,7 +395,9 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (convergence/payout)")
 
-    pe = {t: perpetual_pe(inp[f"g2_{t}"], ron[t], r) for t in TIERS}
+    pe = {t: path_pe(inp, inp[f"g2_{t}"], ron[t]) for t in TIERS}
+    win = {t: window_ps(inp, eop[t], inp[f"g2_{t}"]) for t in TIERS}
+    dtau = (1 + r) ** -inp["tau"]
 
     # --- Step 5: the own-year fence on the operating basis (A10) -------------
     band = op_band(min(inp["cash_ratio_min"], ANCHOR_CAP))
@@ -336,12 +428,13 @@ def main() -> int:
     A, B = cut_points(L, M, H)
 
     # Step 6: a flat multiple must still leave a ladder (A2e-2c), cash included.
-    flat = [eop[t] * pe["m"] + cps for t in TIERS]
+    flat = [eop[t] * pe["m"] * dtau + win[t] * (1 + r) ** -(inp["tau"] / 2) + cps for t in TIERS]
     errors += ladder("flat-multiple", *flat)
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # Step 7: V_opt (A18) — held outside the base band; stated values must reproduce.
-    opt = capacity_option(inp, H)
+    h_unal = op_value(inp, eop["h"], inp["g2_h"])
+    opt = capacity_option(inp, h_unal)
     if opt["d_vol"] <= 0 or opt["v_opt"] < 0:
         errors.append(f"capacity option non-positive: d_vol={opt['d_vol']:.1f} V_opt={opt['v_opt']:.2f}")
     for key in ("hu_inv_pct", "dom_inv_pct", "opt_eq"):
@@ -370,18 +463,22 @@ def main() -> int:
 
     # --- report --------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, "
-          f"零增长={1 / r:.1f}x, 单段永续，无过渡段；经营价值 + 超额现金，λ 1)")
+          f"零增长={1 / r:.1f}x, 无过渡段；回报三段 Y1 {inp['y1']:g} → Y2 {inp['y2']:g} 稳态 {inp['ronic_ss']:.1%}；"
+          f"τ {inp['tau']:g} + 2H26 窗口利润；经营价值 + 超额现金，λ 1)")
     print(f"超额现金（A22）：扩展口径净现金 {inp['net_cash_ext_h1']:.2f} − 中期分红 {inp['div_declared']:.2f} "
           f"− 锚 {cash_anchor(inp):.2f}（min(FY2018–25 最低 {inp['cash_ratio_min']:.2%}, 2 个月 {ANCHOR_CAP:.2%}) "
-          f"× FY2025 收入 {inp['rev_fy2025']:.2f}）= C_ex {c_ex:.2f} 亿 = {cps:.2f} 元/股，"
+          f"× FY2025 收入 {inp['rev_fy2025']:.2f}）− 增长期资金缺口 0 = {c_tot:.2f} × 归母比例 {pr:.4f} "
+          f"= C_ex {c_ex:.2f} 亿 = {cps:.2f} 元/股，"
           f"占归母（扣中期分红）{c_ex / eq_adj:.1%}；税后收益 {c_ex * inp['cash_yield'] * (1 - inp['tax_eff']):.2f} 亿 "
           f"= {inc_ps:.3f} 元/股（收益率 {inp['cash_yield']:.2%}、税率 {inp['tax_eff']:.2%}）")
-    print(f"{'档':<3}{'EPS':>8}{'E_op':>8}{'OBPS27':>8}{'RONIC':>8}{'g2':>6}{'派息':>7}{'PE_op':>7}"
-          f"{'经营价值':>9}{'+现金':>7}{'锚点':>9}")
+    print(f"{'档':<3}{'EPS':>8}{'E_op':>8}{'OBPS27':>8}{'RONIC':>8}{'g2':>6}{'PE三段':>8}"
+          f"{'经营价值':>9}{'×折τ':>8}{'+窗口':>7}{'+现金':>7}{'锚点':>9}")
     for t in TIERS:
         g2 = inp[f"g2_{t}"]
         print(f"{t.upper():<3}{inp[f'eps_{t}']:8.3f}{eop[t]:8.3f}{obps_open[t]:8.2f}{ron[t]:8.2%}"
-              f"{g2:6.1%}{payout(g2, ron[t]):7.3f}{pe[t]:7.2f}{eop[t] * pe[t]:9.2f}{cps:7.2f}{anchor(inp, t):9.2f}")
+              f"{g2:6.1%}{pe[t]:8.2f}{eop[t] * pe[t]:9.2f}{eop[t] * pe[t] * dtau:8.2f}"
+              f"{win[t] * (1 + r) ** -(inp['tau'] / 2):7.2f}{cps:7.2f}{anchor(inp, t):9.2f}"
+              f"（单段 PE {perpetual_pe(g2, ron[t], r):.2f}；窗口 {unbooked_op_eps(inp):.2f}×(1−{g2 / ron[t]:.3f})）")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"RONIC basis (A21)：2Q26 经营 BPS {obps_2q26(inp):.2f}（归母 {inp['equity']:.2f} − 中期分红 "
           f"{inp['div_declared']:.2f} − C_ex {c_ex:.2f}）滚过 2H26 经营 EPS {n_op:.2f} @ b1 "
@@ -394,10 +491,16 @@ def main() -> int:
           f" × 2H26 经营 EPS {n_op:.2f} = {'/'.join(f'{keep[t] * n_op:.2f}' for t in TIERS)} 元/股（落在超额现金，λ 1，PV 不进锚点）")
     print(f"V_opt（A18）：建成后量 {opt['vol_full']:.1f} GWh − H 档共识隐含量 {opt['vol_in_h']:.1f} = "
           f"{opt['d_vol']:.1f} GWh × {inp['unit_profit_h1']:.2f} 元/kWh = {opt['d_ni']:.2f} 亿（ΔEPS {opt['d_eps']:.3f}）"
-          f" → RONIC {opt['ronic_post']:.2%}、PE {opt['pe_post']:.2f} → 兑现后锚点 {opt['anchor_post']:.2f} − H "
-          f"= {opt['anchor_post'] - H:.2f}；未投资本 {opt['k_remain']:.2f} 亿 × {opt['share_opt']:.2%} × "
-          f"{inp['opt_eq']:.2%} = {opt['k_ps']:.2f} 元/股 → ({opt['anchor_post'] - H:.2f} − {opt['k_ps']:.2f}) × "
+          f" → RONIC {opt['ronic_post']:.2%}、{inp['t_opt']:g} 年按日历路径 Y1 {inp['y1']:g} / Y2 {inp['y2']:g} 的 PE {opt['pe_post']:.3f}"
+          f"（不含增量 {opt['pe_base']:.3f}）→ 兑现后锚点 {opt['anchor_post']:.2f} − 同年 H {opt['base_t']:.2f} "
+          f"= {opt['anchor_post'] - opt['base_t']:.2f}（兑现年、未折）；未投资本 {opt['k_remain']:.2f} 亿 × {opt['share_opt']:.2%} × "
+          f"{inp['opt_eq']:.2%} = {opt['k_ps']:.2f} 元/股 → ({opt['anchor_post'] - opt['base_t']:.2f} − {opt['k_ps']:.2f}) × "
           f"{opt['disc']:.4f} = {opt['v_opt']:.2f}；V_opt/M={opt['v_opt'] / M:.1%}")
+    opt_fresh = capacity_option(inp, h_unal, fresh=True)
+    print(f"  高回报期在兑现年重开（2026-10-19 前的隐含读法，只披露）：PE {opt_fresh['pe_post']:.3f} / {opt_fresh['pe_base']:.3f} "
+          f"→ V_opt {opt_fresh['v_opt']:.2f}")
+    if opt["pe_post"] > opt_fresh["pe_post"] + 1e-12:
+        errors.append("calendar-path option multiple above the restarted one -- the fall cannot restart")
     print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}  A′={a3:.2f} B′={b3:.2f}")
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%}")
     print(f"经营分子比 L/M={eop['l'] / eop['m']:.3f} H/M={eop['h'] / eop['m']:.3f} | "
@@ -405,8 +508,8 @@ def main() -> int:
     print(f"flat-multiple @PE_M={pe['m']:.2f}（含现金）: {flat[0]:.2f} / {flat[1]:.2f} / {flat[2]:.2f}")
     for y, (lo, hi, opr) in band.items():
         print(f"  经营倍数带 {y}: own-year PE {PE_OWN[y][0]}–{PE_OWN[y][1]} → {lo:.2f}–{hi:.2f}（经营利润/归母 {opr:.3f}）")
-    g_lo = band_edge_g(r, ron["m"], inp["pe_op_lo"])
-    g_hi = band_edge_g(r, ron["m"], inp["pe_op_hi"])
+    g_lo = band_edge_g(inp, ron["m"], inp["pe_op_lo"])
+    g_hi = band_edge_g(inp, ron["m"], inp["pe_op_hi"])
     print(f"三档经营 PE {pe['l']:.2f}/{pe['m']:.2f}/{pe['h']:.2f} ∈ 经营带 [{inp['pe_op_lo']:g}, {inp['pe_op_hi']:g}]；"
           f"PE_H ≤ 2023 年起上沿 {inp['pe_op_hi_recent']:g} ✓；M 档带边反解 g [{g_lo:+.2%}, {g_hi:+.2%}"
           f"{'（截于上限）' if g_hi >= g_cap(r) - 1e-6 else ''}] 含 g2_m → ③ 不触发")
@@ -414,7 +517,7 @@ def main() -> int:
     print(f"每股超额现金今昔：FY2022 末 {cx[2022]:.1f} 亿 / 今 {c_ex:.1f} 亿（差 > 1 倍，市场若对现金打折，历史经营倍数偏高）")
 
     def ruler(eop_x: float, g: float) -> float:
-        return op_value(inp, eop_x, g)
+        return aligned(inp, eop_x, g)
 
     fy26 = tuple(ruler(e_op(inp, inp[k]), inp[f"g2_{t}"]) for k, t in
                  (("eps_fy26_lo", "l"), ("eps_fy26_mean", "m"), ("eps_fy26_hi", "h")))

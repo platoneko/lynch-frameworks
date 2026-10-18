@@ -270,8 +270,11 @@ def main() -> int:
         errors.append("V_opt: build/realisation years out of order, negative option, or spent > budget share")
     band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
     out_sec = md.split("### Outputs", 1)[-1]
-    for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
-                                 ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
+    # k on the retained-beyond-model row was removed (valuation-rules「经营价值与超额现金」④, A16):
+    # all three k are 0, so the former stated haircut_H check has nothing left to match.
+    if any(inp[f"k_{t}"] for t in TIERS):
+        errors.append("A16: k on the 多留部分 row must be 0 (only named transactions may carry k)")
+    for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),):
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > tol:
             errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")

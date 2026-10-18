@@ -67,6 +67,24 @@ priced on the Africa leg's H multiple and discounted from the start-up year
 to the numerator year at r_afr, less Keda's share of the capital not yet
 spent (valuation-rules 2026-10-04).  p_k = 0 / 0.25 / 1.0 lives in table 3 only.
 
+Operating value and excess cash (valuation-rules「经营价值与超额现金」, A23):
+no excess-cash line (net debt).  Time alignment on the Lanke leg only (its
+numerator is the 2027 run-rate): τ = `n_disc` = 0.5 y at the Lanke basket r,
+plus the window distributable profit (Keda's 2026H2 Lanke share, no consensus
+→ the 2026H1 print `lk_h2_parent`, × (1 − g2_li/ROE)) discounted τ/2; the
+Africa / machinery numerators are 2026H1 annualised (no alignment).  Steady
+return three segments (valuation-rules ②) on the legs with g > 0: RONIC =
+forward ROE through `y1_path`, linear to the steady return by `y2_path`
+(entry barrier 中 → 4 years), Gordon tail from there; steady return =
+min(forward, max(rs_leg, r)) — Africa 13% (fallback 11% lifted to r),
+machinery 15% (equipment fallback).  The Lanke leg is a commodity leg (exempt,
+g2 0).  H tier passes by (lithium axis H read as a pass-through, 2026-10-16) on
+the Lanke leg only (user 2026-10-18): one H-world year, then the M lithium world —
+[E_H × payout(g, ROE_H) + E_M × (1 + g) × PE(g, ROE_M, from 2027)] / (1 + r_li).
+The Africa / machinery legs are not on the lithium axis and keep their own H
+value (they used to follow the company ROE down the pass-by; withdrawn); the
+anode charge keeps its H value.
+
 Run:  python3 frameworks/eval/600499.SH.py
 """
 
@@ -122,7 +140,9 @@ REQUIRED = [
     "afr_rev_yoy_fy2025", "tile_sales_fy2025", "tile_sales_yoy_fy2025", "glass_out_fy2025",
     "tile_cap_now", "tile_cap_after", "glass_peru", "glass_ghana", "t_tile", "t_peru", "t_ghana",
     "capex_kisumu2", "prog_kisumu2", "capex_ci2", "prog_ci2", "capex_peru", "prog_peru", "spent_ghana",
+    "lk_h2_parent", "y1_path", "y2_path", "rs_afr", "rs_mac",
 ]
+RS_ROWS = {"afr": "rs_afr", "mac": "rs_mac"}
 NUM_YEAR = 2026            # Africa / machinery numerator = 2026H1 annualised
 P_TIERS = (0.0, 0.25, 1.0)  # A22 — table 3 only, never an input
 TOL = 0.05
@@ -225,10 +245,42 @@ def forward_roe(inp: dict[str, float], tag: str) -> float:
     return (inp["ni_exli"] + lanke_ni(inp, tag)) / inp["equity"]
 
 
+def path_pe(t0: int, g: float, roe: float, rs: float, y1: int, y2: int, r: float) -> float:
+    """A23 three-segment multiple on unit earnings at t = 1 (calendar t0): RONIC = roe through
+    y1, linear to rs by y2, Gordon tail from y2 (valuation-rules ②; gordon.py helper [待建])."""
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal >= y2 and cal > y1:
+            return pv + e * payout(g, rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
+
+
+def leg_rs(inp: dict[str, float], leg: str, roe: float, r_: float) -> float:
+    """Steady return: min(forward, max(rs_leg, r)); forward below r -> forward (持续失败)."""
+    return min(max(inp[RS_ROWS[leg]], r_), roe) if roe >= r_ else roe
+
+
 def leg_pe(inp: dict[str, float], leg: str, tag: str, r_shift: float = 0.0,
-           g_override: float | None = None) -> float:
+           g_override: float | None = None, roe: float | None = None, t0: int | None = None) -> float:
+    """Per-leg multiple.  Lanke (commodity leg, exempt) and g <= 0 legs: plain Gordon; g > 0 legs on
+    the three-segment path (A23).  `roe` / `t0` serve the H pass-by's M-world tail."""
     g = leg_g(inp, leg, tag) if g_override is None else g_override
-    return perpetual_pe(g, forward_roe(inp, tag), inp[R_ROWS[leg]] + r_shift)
+    roe = forward_roe(inp, tag) if roe is None else roe
+    r_ = inp[R_ROWS[leg]] + r_shift
+    if leg == "lk" or g <= 0:
+        return perpetual_pe(g, roe, r_)
+    t0 = NUM_YEAR if t0 is None else t0
+    return path_pe(t0, g, roe, leg_rs(inp, leg, roe, r_), int(inp["y1_path"]), int(inp["y2_path"]), r_)
 
 
 def anode_penalty(inp: dict[str, float], tag: str) -> float:
@@ -237,15 +289,48 @@ def anode_penalty(inp: dict[str, float], tag: str) -> float:
     return inp["capex_anode"] * inp["stake_anode"] * shortfall
 
 
-def value(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    """Sum of legs less the anode K_remain charge, 亿 CNY.  `pes` overrides the per-leg multiples."""
+PASSBY_LEGS = ("lk",)  # A23 (user 2026-10-18): only the lithium-axis leg passes by
+
+
+def leg_values(inp: dict[str, float], tag: str, r_shift: float = 0.0,
+               passby_legs: tuple[str, ...] = PASSBY_LEGS) -> dict[str, float]:
+    """{leg: value 亿}.  H passes by (A23) on the Lanke leg only: one H-world year, then the M
+    lithium world.  The Africa / machinery legs are not on the lithium axis and stay in their own
+    H world (persistent H value), even though their RONIC borrows the company ROE."""
     ni = legs(inp, tag)
-    pe = pes or {leg: leg_pe(inp, leg, tag) for leg in LEGS}
-    return sum(ni[leg] * pe[leg] for leg in LEGS) - anode_penalty(inp, tag)
+    if tag != "h":
+        return {leg: ni[leg] * leg_pe(inp, leg, tag, r_shift) for leg in LEGS}
+    ni_m, roe_h, roe_m = legs(inp, "m"), forward_roe(inp, "h"), forward_roe(inp, "m")
+    out = {}
+    for leg in LEGS:
+        if leg not in passby_legs:
+            out[leg] = ni[leg] * leg_pe(inp, leg, "h", r_shift)
+            continue
+        g = leg_g(inp, leg, "h")
+        r_ = inp[R_ROWS[leg]] + r_shift
+        later = ni_m[leg] * (1.0 + g) * leg_pe(inp, leg, "h", r_shift, roe=roe_m, t0=NUM_YEAR + 1)
+        out[leg] = (ni[leg] * payout(g, roe_h) + later) / (1.0 + r_)
+    return out
 
 
-def anchor(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None) -> float:
-    return value(inp, tag, pes) * YI / inp["shares"]
+def window(inp: dict[str, float], tag: str) -> float:
+    """A23: Lanke-leg window distributable profit per share (Keda's 2026H2 Lanke share at the H1
+    print, × (1 − g2_li/ROE)), discounted τ/2 at the Lanke basket r."""
+    b = max(inp["g2_li"], 0.0) / forward_roe(inp, tag)
+    return inp["lk_h2_parent"] * (1.0 - b) / (1.0 + inp["r_disc"]) ** (inp["n_disc"] / 2.0) * YI / inp["shares"]
+
+
+def value(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
+    """Sum of legs less the anode K_remain charge, 亿 CNY.  `pes` overrides the per-leg multiples
+    (persistent tiers, no pass-by — flat-ladder reading only)."""
+    if pes is not None:
+        ni = legs(inp, tag)
+        return sum(ni[leg] * pes[leg] for leg in LEGS) - anode_penalty(inp, tag)
+    return sum(leg_values(inp, tag, r_shift).values()) - anode_penalty(inp, tag)
+
+
+def anchor(inp: dict[str, float], tag: str, pes: dict[str, float] | None = None, r_shift: float = 0.0) -> float:
+    return value(inp, tag, pes, r_shift) * YI / inp["shares"] + window(inp, tag)
 
 
 def implied_r_shift(inp: dict[str, float], target: float) -> float:
@@ -259,8 +344,7 @@ def implied_r_shift(inp: dict[str, float], target: float) -> float:
     lo, hi = -0.08, 0.20
 
     def f(delta: float) -> float:
-        pes = {leg: leg_pe(inp, leg, "m", r_shift=delta) for leg in LEGS}
-        return anchor(inp, "m", pes) - target
+        return anchor(inp, "m", r_shift=delta) - target
 
     if f(lo) < 0 or f(hi) > 0:
         raise ValueError("implied r shift outside bisection bracket")
@@ -369,6 +453,14 @@ def main() -> int:
     if inp["capex_anode"] <= 0 or not 0.0 < inp["stake_anode"] < 1.0:
         errors.append("capex_anode must be positive and stake_anode in (0, 1)")
     errors += ladder("roic_anode", *(inp[f"roic_anode_{t}"] for t in TIERS))
+    # A23: path years ordered, steady returns at or above their leg's r, window non-negative.
+    if not inp["y1_path"] < inp["y2_path"]:
+        errors.append("y1_path must precede y2_path (A23)")
+    for leg, row in RS_ROWS.items():
+        if inp[row] < r[leg] - 1e-12:
+            errors.append(f"{row}={inp[row]} below r_{leg} — steady return floors at r (valuation-rules ②)")
+    if inp["lk_h2_parent"] < 0:
+        errors.append("lk_h2_parent < 0 — window profit floors at 0")
     if errors:
         return report(errors, "FAIL (guards/axis)")
 
@@ -483,7 +575,20 @@ def main() -> int:
     print(f"负极 K_remain 罚项（A20）: {inp['capex_anode']:g} 亿 × {inp['stake_anode']:.2%} × max(0, 1 − ROIC/{r['mac']:.0%}) "
           f"@ROIC {inp['roic_anode_l']:.1%}/{inp['roic_anode_m']:.1%}/{inp['roic_anode_h']:.1%} → "
           + " / ".join(f"{pen[t]:.2f} 亿 ({pen[t] * YI / inp['shares']:.2f} CNY)" for t in TIERS))
-    no_pen = [(value(inp, t) + pen[t]) * YI / inp["shares"] for t in TIERS]
+    no_pen = [anchor(inp, t) + pen[t] * YI / inp["shares"] for t in TIERS]
+    # A23 readings: window, three-segment path, H pass-by.
+    ps = YI / inp["shares"]
+    vh_pass = leg_values(inp, "h")
+    vh_all = leg_values(inp, "h", passby_legs=LEGS)
+    h_persist = (sum(v["h"].values()) - pen["h"]) * ps + window(inp, "h")
+    print(f"时点对齐（A23）: 蓝科 τ {inp['n_disc']:g} 年（δ {disc:.4f}）+ 窗口可分配利润 {inp['lk_h2_parent']:g} 亿 → "
+          f"+{window(inp, 'm'):.3f} CNY（三档同加）")
+    print(f"稳态回报三段（A23）: Y1 {inp['y1_path']:.0f} / Y2 {inp['y2_path']:.0f}，稳态 非洲 {inp['rs_afr']:.0%} / 机械 {inp['rs_mac']:.0%}"
+          f"（≤ 前瞻 ROE、≥ r）；g>0 的腿：非洲 M/H、机械 H")
+    print("H 路过（A23，只蓝科腿）: " + " | ".join(f"{leg} {v['h'][leg] * ps:.3f} → {vh_pass[leg] * ps:.3f} (M {v['m'][leg] * ps:.3f})" for leg in LEGS)
+          + f" → H {H:.2f}（锂 H 世界长期化 {h_persist:.2f}）")
+    all_pass = (sum(vh_all.values()) - pen["h"]) * ps + window(inp, "h")
+    print(f"  对照：三腿都随锂路过（非洲 / 机械借公司 ROE 一起回落，2026-10-16 至 10-18 的读法，已撤销）→ H {all_pass:.2f}")
     print(f"罚项前（事件前底牌）: {no_pen[0]:.2f} / {no_pen[1]:.2f} / {no_pen[2]:.2f}")
     for label, roics in (("单值 M 档 ROIC", (inp["roic_anode_m"],) * 3), ("2026H1 价格战读数", ANODE_ROIC_STRESS)):
         alt = {**inp, **{f"roic_anode_{t}": x for t, x in zip(TIERS, roics)}}
@@ -511,7 +616,7 @@ def main() -> int:
     print(f"地板（只披露）: BPS {inp['bps']:.2f} CNY {'<' if inp['bps'] < L else '>='} L {L:.2f}; "
           f"锚点隐含 PB {L / inp['bps']:.2f} / {M / inp['bps']:.2f} / {H / inp['bps']:.2f}")
     for label, g_li in (("g2_li +1pp", inp["g2_li"] + 0.01), (f"g2_li 同业反解 {G2_LI_PEER:.2%}", G2_LI_PEER)):
-        band = [anchor(inp, t, {**pe[t], "lk": leg_pe(inp, "lk", t, g_override=g_li)}) for t in TIERS]
+        band = [anchor({**inp, "g2_li": g_li}, t) for t in TIERS]
         print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     # Basket-table shift: every r row moves, r_disc (= r_li) included.
     for dr, label in ((-0.005, "−50bp"), (0.005, "+50bp")):
@@ -519,10 +624,19 @@ def main() -> int:
         band = [anchor(shifted, t) for t in TIERS]
         print(f"敏感区 三腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
     for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
-        pes = dict(pe["m"]); pes["afr"] = leg_pe(inp, "afr", "m", g_override=inp["g2_afr_m"] + dg)
-        print(f"敏感区 g2_afr_m {label}: M={anchor(inp, 'm', pes):.2f}")
-    no_axis = [anchor(inp, t, {**pe[t], "afr": leg_pe(inp, "afr", t, g_override=0.0)}) for t in TIERS]
+        print(f"敏感区 g2_afr_m {label}: M={anchor({**inp, 'g2_afr_m': inp['g2_afr_m'] + dg}, 'm'):.2f}")
+    no_axis_inp = {**inp, "g2_afr_l": 0.0, "g2_afr_m": 0.0, "g2_afr_h": 0.0}
+    no_axis = [anchor(no_axis_inp, t) for t in TIERS]
     print(f"非洲腿三档 g=0（不给轴 credit）: {no_axis[0]:.2f} / {no_axis[1]:.2f} / {no_axis[2]:.2f}")
+    for label, rs_a in (("非洲稳态 15%（有壁垒重资产）", 0.15),):
+        band = [anchor({**inp, "rs_afr": rs_a}, t) for t in TIERS]
+        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
+    for label, y2 in (("门槛判「低」（Y2 2028）", 2028.0),):
+        band = [anchor({**inp, "y2_path": y2}, t) for t in TIERS]
+        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
+    no_align = {**inp, "n_disc": 0.0, "lk_h2_parent": 0.0}
+    band = [anchor(no_align, t) for t in TIERS]
+    print(f"敏感区 不做时点对齐（τ 0、无窗口）: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
 
     # What the street and book value each require in r terms: a parallel shift δ
     # of all three baskets that makes the M-tier SOTP equal the target, plus the
@@ -536,7 +650,7 @@ def main() -> int:
     # Africa numerator, invert for the Africa-leg g at its basket r.
     for label, px in (("本框架 M", M), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
         # The market cap is net of the anode charge, so the Africa residual adds it back.
-        resid = px * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"] + anode_penalty(inp, "m")
+        resid = (px - window(inp, "m")) * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"] + anode_penalty(inp, "m")
         p = resid / ni["m"]["afr"]
         gi, ok = implied_g(p, roe_m, r["afr"])
         flag = "" if ok else "  ⚠ 反解只能当方向读"

@@ -6,6 +6,24 @@ L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
 no current price or zone (the digest and the app zone on live quotes).
 formula_id: saltlake_li_axis_kcl_ladder_pe_v2_gordon_v4
 
+v4 H pass-by (2026-10-18, _AXIS.lithium-carbonate「H 档是路过」, framework correction, A12):
+the lithium axis H rung (2026 platform carried into 2027) lasts one year, then the lithium leg
+is back in the M world; the potash leg keeps its own H rung (its ladder is not the lithium axis).
+H = [E_op,H × payout(g, RONIC_H) + E_op,mix × PE(g, RONIC_mix) × (1 + g)] / (1 + r) + cash +
+window_H, where「mix」= lithium at the M rung, potash at the H rung (`passby_h`).  g = 0 makes
+the potash leg's value identical to its persistent H value; only the lithium leg moves.  Every
+L/M/H triple printed below (demoted-basket coordinate, g / r / numerator what-ifs) uses the same
+pass-by H; the flat-multiple ladder stays on the persistent H as the A2e-2c diagnostic.
+
+v4 time alignment (2026-10-16, valuation-rules「经营价值与超额现金」③, framework correction, A12):
+the lithium leg's「2027 run-rate」value sits at t_n = 2027-01-01; the valuation date is the
+2026-06-30 balance sheet, so `n_disc` is now τ = 0.5 (the old「one year until sales catch up
+with nameplate」discount is replaced).  The not-yet-booked 2H26 consensus profit (FY26E EPS ×
+shares − 1H26 parent − half a year of after-tax cash income), × (1 − b) with b = g2/RONIC = 0,
+lithium leg's GP share only, discounted τ/2, is added per tier (`window_ps`).  Potash is a
+current annualised half-year: τ 0.  Growth-period funding gap 0.  The step-1c project strip
+keeps its 2026-10-04 one-year ramp δ (a band construction, not today's anchor).
+
 v4 (2026-10-15, valuation-rules「经营价值与超额现金」, framework correction):
 value per share = operating EPS × Gordon PE + excess cash per share (λ 1).
 The extended net cash at 2026-06-30 (cash + trading FA + CDs / term deposits −
@@ -63,7 +81,7 @@ import re  # noqa: E402
 
 from lib.axes import AXIS_LI2CO3, check_li2co3_mount  # noqa: E402
 from lib.gordon import (  # noqa: E402
-    basket_r, check_branch, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe, two_stage_pe,
+    basket_r, check_branch, check_g_cap, check_r, payout, perpetual_pe, recovery_two_stage_pe, two_stage_pe,
 )
 from lib.tiers import report as tier_report  # noqa: E402
 from lib.inputs import check_against_stated, parse_baskets, parse_inputs  # noqa: E402
@@ -111,6 +129,7 @@ REQUIRED = [
     "kcl_price_l", "kcl_price_m", "kcl_price_h",
     "vol_k", "cost_k",
     "conv_ratio",
+    "eps_fy26_cons", "parent_h1_26",
     "net_cash_ext_h1", "div_declared", "c_ex", "cash_yield", "tax_eff", "payout_op", "payout_paid",
     "r_perp", "axis_g2_li", "g2_li", "g2_k", "g2",
     "pe_same_min", "pe_same_max", "pe_own_min", "pe_own_max", "pb_floor",
@@ -140,8 +159,9 @@ def excess_cash(inp: dict[str, float]) -> tuple[float, float]:
 
 
 def scenario(inp: dict[str, float], tag: str, c_inc: float, op_equity: float,
-             r_disc: float | None = None) -> dict[str, float]:
-    li = inp[f"li2co3_{tag}"]
+             r_disc: float | None = None, li_tag: str | None = None) -> dict[str, float]:
+    """One tier; `li_tag` overrides the lithium rung only (the H pass-by's「mix」world)."""
+    li = inp[f"li2co3_{li_tag or tag}"]
     kcl = inp[f"kcl_price_{tag}"]
     rd = inp["r_disc"] if r_disc is None else r_disc
     disc = (1.0 + rd) ** (-inp["n_disc"])
@@ -160,6 +180,53 @@ def scenario(inp: dict[str, float], tag: str, c_inc: float, op_equity: float,
         "eps_op": e_op / inp["shares"],
         "ronic": e_op / op_equity,
     }
+
+
+def window_ps(inp: dict[str, float], s: dict[str, float], c_inc: float, r: float, g: float) -> float:
+    """Window distributable profit per share for one tier (A12, valuation-rules「经营价值与超额现金」③).
+
+    The lithium leg's Gordon value sits at t_n = 2027-01-01 (τ = `n_disc` years after the
+    2026-06-30 balance sheet); the profit earned inside that window and not yet booked --
+    FY2026E consensus parent profit − 1H26 actual − half a year of after-tax excess-cash
+    income (numerator basis) -- × (1 − b), b = g / RONIC (0 for g ≤ 0), counts only for the
+    lithium leg's share (M-tier-style GP weight at t_n; the potash leg runs from today and is
+    not time-shifted, so adding its share would count it twice), discounted τ/2 at r.
+    No window when τ = 0.
+    """
+    tau = inp["n_disc"]
+    if tau <= 0:
+        return 0.0
+    prof = max(0.0, inp["eps_fy26_cons"] * inp["shares"] - inp["parent_h1_26"] - c_inc / 2.0)
+    gp_li_tn = s["gp_li"] * (1.0 + r) ** tau  # lithium GP at t_n (undo the τ discount)
+    w_li = gp_li_tn / (gp_li_tn + s["gp_k"])
+    b = max(0.0, g / s["ronic"])
+    return prof * w_li * (1.0 - b) / inp["shares"] / (1.0 + r) ** (tau / 2.0)
+
+
+def value(inp: dict[str, float], s: dict[str, float], c_inc: float, cps: float, r: float, g: float,
+          pe: float | None = None) -> float:
+    """Per-share value today: operating EPS × PE + excess cash per share + window (A11 / A12)."""
+    pe = perpetual_pe(g, s["ronic"], r) if pe is None else pe
+    return s["eps_op"] * pe + cps + window_ps(inp, s, c_inc, r, g)
+
+
+def passby_op(s_h: dict[str, float], s_mix: dict[str, float], r: float, g: float) -> float:
+    """Operating value per share of the H tier with the lithium rung passing by (A12).
+
+    One year of H-world operating earnings (× payout at g), then the「mix」world (lithium at
+    the M rung, potash still at its H rung) valued one year on, all discounted one year at r.
+    """
+    after = s_mix["eps_op"] * perpetual_pe(g, s_mix["ronic"], r) * (1.0 + g)
+    return (s_h["eps_op"] * payout(g, s_h["ronic"]) + after) / (1.0 + r)
+
+
+def ladder(inp: dict[str, float], c_inc: float, cps: float, op_equity: float, r: float, g: float,
+           r_disc: float | None = None) -> tuple[float, float, float]:
+    """L / M / pass-by H (A12) for one (inputs, r, g) set; every printed triple goes through here."""
+    s = {t: scenario(inp, t, c_inc, op_equity, r_disc=r_disc) for t in ("l", "m", "h")}
+    mix = scenario(inp, "h", c_inc, op_equity, r_disc=r_disc, li_tag="m")
+    h = passby_op(s["h"], mix, r, g) + cps + window_ps(inp, s["h"], c_inc, r, g)
+    return value(inp, s["l"], c_inc, cps, r, g), value(inp, s["m"], c_inc, cps, r, g), h
 
 
 def project_value(inp: dict[str, float], r: float, cod_yrs: float) -> float:
@@ -268,7 +335,8 @@ def main() -> int:
         errors.append(f"g2={inp['g2']} vs blended g2 {g2_blend:.5f}")
     for t in S:
         S[t]["pe"] = perpetual_pe(inp["g2"], S[t]["ronic"], r)
-        S[t]["px"] = S[t]["eps_op"] * S[t]["pe"] + cps
+        S[t]["win"] = window_ps(inp, S[t], c_inc, r, inp["g2"])
+        S[t]["px"] = S[t]["eps_op"] * S[t]["pe"] + cps + S[t]["win"]
     pe_l, pe_m, pe_h = (S[t]["pe"] for t in ("l", "m", "h"))
     # Guardrail (裁决顺序 ③): operating PE_M against the operating same-earnings
     # band, floor = the LB low with the 4万吨 project stripped (step 1c).  Out of
@@ -306,14 +374,18 @@ def main() -> int:
     scenario_L = S["l"]["px"]
     L = scenario_L
     M = S["m"]["px"]
-    H = S["h"]["px"]
+    # A12 H pass-by: lithium H rung one year, then the M rung; potash keeps its H rung.
+    S_mix = scenario(inp, "h", c_inc, op_equity, li_tag="m")
+    op_h = passby_op(S["h"], S_mix, r, inp["g2"])
+    H_persist = S["h"]["px"]
+    H = op_h + cps + S["h"]["win"]
     A, B = (L + M) / 2, (M + H) / 2
 
     if not (L < M < H):
         print(f"FAIL: L<M<H violated ({L:.2f}/{M:.2f}/{H:.2f})", file=sys.stderr)
         return 1
 
-    flat = [S[t]["eps_op"] * pe_m + cps for t in ("l", "m", "h")]
+    flat = [value(inp, S[t], c_inc, cps, r, inp["g2"], pe=pe_m) for t in ("l", "m", "h")]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken at PE_M={pe_m:.2f}: {flat}")
 
@@ -328,8 +400,9 @@ def main() -> int:
         if got is None or abs(got - want_v) > TOL:
             errors.append(f"{label}: stated {got} vs recomputed {want_v:.4f}")
     rd = basket_r(DEMOTED_BASKET)
-    Sd = {t: scenario(inp, t, c_inc, op_equity, r_disc=rd) for t in ("l", "m", "h")}
-    band_d = [Sd[t]["eps_op"] * perpetual_pe(inp["g2"], Sd[t]["ronic"], rd) + cps for t in ("l", "m", "h")]
+    band_d = ladder(inp, c_inc, cps, op_equity, rd, inp["g2"], r_disc=rd)
+    if any(abs(a - b) > 1e-9 for a, b in zip(ladder(inp, c_inc, cps, op_equity, r, inp["g2"]), (L, M, H))):
+        errors.append("ladder() does not reproduce the base L / M / pass-by H")
     m = STATED_DEMOTED.search(out_sec)
     if not m or any(abs(float(a) - b) > TOL for a, b in zip(m.groups(), band_d)):
         errors.append(f"对照坐标（被推翻的降篮） stated {m.groups() if m else None} vs {[round(b, 2) for b in band_d]}")
@@ -360,10 +433,25 @@ def main() -> int:
         print(
             f"  {t.upper()}: 归母 {S[t]['parent'] / YI:.2f}亿 → 经营 {S[t]['e_op'] / YI:.2f}亿 · 经营 EPS {S[t]['eps_op']:.4f} "
             f"· RONIC {S[t]['ronic']:.1%}（账面 ROE {S[t]['parent'] / equity:.1%}）· 经营价值 {S[t]['eps_op'] * S[t]['pe']:.2f} + 现金 {cps:.2f}"
+            f" + 窗口 {S[t]['win']:.2f}"
         )
         w = S[t]["gp_li"] / S[t]["gp"]  # 表1: operating value split by GP weight
-        print(f"     表1 {t.upper()}: 锂 {S[t]['eps_op'] * w * S[t]['pe']:.2f} · 钾 {S[t]['eps_op'] * (1 - w) * S[t]['pe']:.2f} "
-              f"· 现金 {cps:.2f} · 合计 {S[t]['px']:.2f}")
+        k_v = S[t]["eps_op"] * (1 - w) * S[t]["pe"]
+        li_v = (op_h if t == "h" else S[t]["eps_op"] * S[t]["pe"]) - k_v  # H: lithium leg = pass-by op − potash
+        tot = H if t == "h" else S[t]["px"]
+        print(f"     表1 {t.upper()}: 锂 {li_v:.2f} · 钾 {k_v:.2f} "
+              f"· 现金 {cps:.2f} · 锂腿窗口 {S[t]['win']:.2f} · 合计 {tot:.2f}")
+    w_h = S["h"]["gp_li"] / S["h"]["gp"]
+    print(f"H 路过 (A12): persistent H {H_persist:.2f} (锂 {S['h']['eps_op'] * w_h * pe_h:.2f}) -> "
+          f"(E_op,H {S['h']['eps_op']:.4f} × payout + mix E_op {S_mix['eps_op']:.4f} × PE) / (1+r) = 经营 {op_h:.2f} "
+          f"+ 现金 {cps:.2f} + 窗口 {S['h']['win']:.2f} = H {H:.2f}（锂回 M 档、钾留 H 档）")
+    prof_2h = inp["eps_fy26_cons"] * inp["shares"] - inp["parent_h1_26"] - c_inc / 2.0
+    print(
+        f"时点对齐（A12）: 锂腿 τ {inp['n_disc']:g} 年（2026-06-30 → t_n 2027-01-01，δ {(1 + r) ** -inp['n_disc']:.4f}）；"
+        f"钾腿当期年化 τ 0；窗口可分配利润 = FY26E {inp['eps_fy26_cons']} × 股本 − 1H26 {inp['parent_h1_26'] / YI:.2f}亿 "
+        f"− 半年现金收益 {c_inc / 2 / YI:.2f}亿 = {prof_2h / YI:.2f}亿 × 锂腿毛利占比 × (1 − b 0) ÷ 1.13^{inp['n_disc'] / 2:g} "
+        f"→ 每股 {S['l']['win']:.3f}/{S['m']['win']:.3f}/{S['h']['win']:.3f}；增长期资金缺口 0"
+    )
     print(
         f"floor={floor:.2f} (PB {inp['pb_floor']:g} × BPS; disclosure only, not max()-ed; "
         f"L is the scenario value {scenario_L:.2f}; floor/M = {floor / M:.3f})"
@@ -416,24 +504,24 @@ def main() -> int:
         f"{band_d[0]:.2f}/{band_d[1]:.2f}/{band_d[2]:.2f} (not a zone)"
     )
     for dg in (-0.01, 0.01):
-        alt = [S[t]["eps_op"] * perpetual_pe(inp["g2"] + dg, S[t]["ronic"], r) + cps for t in ("l", "m", "h")]
+        alt = ladder(inp, c_inc, cps, op_equity, r, inp["g2"] + dg)
         pes = [perpetual_pe(inp["g2"] + dg, S[t]["ronic"], r) for t in ("l", "m", "h")]
-        print(f"  g2 {dg:+.0%} -> pe {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+        print(f"  g2 {dg:+.0%} -> pe {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f} (H 路过)")
     for g_alt, why in ((0.0115, "锂同业反解 2.35% × 锂腿权重"), (0.0135, "钾腿借 2.6% 试算")):
-        alt = [S[t]["eps_op"] * perpetual_pe(g_alt, S[t]["ronic"], r) + cps for t in ("l", "m", "h")]
+        alt = ladder(inp, c_inc, cps, op_equity, r, g_alt)
         print(f"  g2 {g_alt:.2%} ({why}) -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     # Numerator what-ifs (A5 / A2): each swaps one input, everything else as the base.
-    for label, over in (("vol_li_h1 替代名牌（仍折 1 年）", {"vol_li_plan": inp["vol_li_h1"]}),
-                        ("名牌不折现", {"n_disc": 0}),
+    for label, over in (("vol_li_h1 替代名牌（仍时点对齐）", {"vol_li_plan": inp["vol_li_h1"]}),
+                        ("不做时点对齐（τ 0、无窗口）", {"n_disc": 0}),
                         ("钾三档全钉 L", {"kcl_price_m": inp["kcl_price_l"], "kcl_price_h": inp["kcl_price_l"]})):
         alt_inp = {**inp, **over}
-        alt = [scenario(alt_inp, t, c_inc, op_equity)["eps_op"] / r + cps for t in ("l", "m", "h")]
+        alt = ladder(alt_inp, c_inc, cps, op_equity, r, inp["g2"])
         print(f"  {label} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
+    print(f"  H 世界长期化（锂 H 价按永续，2026-10-18 前的读法） -> H {H_persist:.2f}")
     pe_hw = two_stage_pe(0.17, 3, inp["g2"], S["m"]["ronic"], r)
-    print(f"  H 窗口对照 g1 17% n 3 -> {pe_hw:.2f}x -> {S['m']['eps_op'] * pe_hw + cps:.2f} (H {H:.2f})")
+    print(f"  H 窗口对照 g1 17% n 3 -> {pe_hw:.2f}x -> {S['m']['eps_op'] * pe_hw + cps + S['m']['win']:.2f} (H {H:.2f})")
     for rr in (r - 0.005, r + 0.005, 0.11, 0.15, 0.10):
-        Sr = {t: scenario(inp, t, c_inc, op_equity, r_disc=rr) for t in ("l", "m", "h")}
-        alt = [Sr[t]["eps_op"] * perpetual_pe(inp["g2"], Sr[t]["ronic"], rr) + cps for t in ("l", "m", "h")]
+        alt = ladder(inp, c_inc, cps, op_equity, rr, inp["g2"], r_disc=rr)
         print(f"  r {rr:.3f} -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     # A9 谷底档 coordinates: (i) measured trough→recovery CAGR on the L numerator; (ii) measured
     # n with the model's own L→M magnitude.  Printed, not anchors.
@@ -442,24 +530,26 @@ def main() -> int:
         pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2"], S["m"]["ronic"], r)
         g1_lm = (S["m"]["eps_op"] / S["l"]["eps_op"]) ** (1.0 / n) - 1.0
         pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2"], S["m"]["ronic"], r)
-        v_i, v_ii = S["l"]["eps_op"] * pe_i + cps, S["l"]["eps_op"] * pe_ii + cps
+        v_i, v_ii = (S["l"]["eps_op"] * pe_i + cps + S["l"]["win"], S["l"]["eps_op"] * pe_ii + cps + S["l"]["win"])
         print(
             f"谷底档坐标（A9，经营口径）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.2f}x -> {v_i:.2f} "
             f"(vs M {M:.2f}: {'overshoot' if v_i > M else 'below M'}); "
             f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {v_ii:.2f} (L/M {v_ii / M:.3f}, collapsed)"
         )
-    print(f"谷底 x 1/r + 现金 = {S['l']['eps_op'] / r + cps:.2f}  (= L at g=0; deep_discount pressure coordinate)")
+    print(f"谷底 x 1/r + 现金 = {S['l']['eps_op'] / r + cps + S['l']['win']:.2f}  (+ window; = L at g=0; deep_discount pressure coordinate)")
     print(f"FY27 共识 EPS {inp['eps_fy27_cons']} − 现金收益 → 经营 {inp['eps_fy27_cons'] - c_inc / inp['shares']:.3f} "
           f"× 1/r + 现金 = {(inp['eps_fy27_cons'] - c_inc / inp['shares']) / r + cps:.2f}")
-    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}x (A2e-2c, with cash): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print("operating part only (anchors − cash):")
-    ops = tuple(S[t]["eps_op"] * S[t]["pe"] for t in ("l", "m", "h"))
-    for line in tier_report(ops, (pe_l, pe_m, pe_h), (S["l"]["eps_op"], S["m"]["eps_op"], S["h"]["eps_op"])):
+    print(f"flat-multiple ladder @ PE_M {pe_m:.2f}x (A2e-2c, with cash, persistent H): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+    print("operating part only (anchors − cash − window; H = pass-by, blended multiple = value / EPS):")
+    ops = (S["l"]["eps_op"] * pe_l, S["m"]["eps_op"] * pe_m, op_h)
+    eps3 = (S["l"]["eps_op"], S["m"]["eps_op"], S["h"]["eps_op"])
+    blended = tuple(v / e for v, e in zip(ops, eps3))
+    for line in tier_report(ops, blended, eps3):
         print("  " + line)
     print(
         f"L/M={L/M:.2f} H/M={H/M:.2f} (H-L)/2M={(H-L)/(2*M):.2%} V_opt/M=0 C_ex/M={cps / M:.1%} "
         f"operating numerator L/M={S['l']['eps_op']/S['m']['eps_op']:.2f} H/M={S['h']['eps_op']/S['m']['eps_op']:.2f} "
-        f"| multiple ratio L/M={pe_l/pe_m:.2f} H/M={pe_h/pe_m:.2f}"
+        f"| blended multiple ratio L/M={blended[0]/blended[1]:.2f} H/M={blended[2]/blended[1]:.2f} — H's lithium rung lasts one year"
     )
     print("OK")
     return 0

@@ -45,6 +45,19 @@ Why GAAP EPS is not used: H1 2026 other income carries $135.9B of unrealized
 equity-securities gains (SpaceX and a private company), so trailing EPS - and
 every screen PE built on it - is meaningless for this name.
 
+Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
+correction 2026-10-16):
+  * time alignment (③): the Gordon legs sit at the FY2027 opening; discounted
+    tau = 0.5 years to the 2026-06-30 balance sheet -- Services and cloud non-lab
+    at r_perp, the Anthropic sub-leg at its journey basket r_cld_lab.
+  * growth-period funding gap (①): 2H26 capex - (2H26 OCF - SBC), per share,
+    deducted as a debt-like item; with a gap the window's distributable profit is 0.
+  * stable-return path (②): Services retention earns the tier's forward ROE
+    through y1, fades linearly to ronic_ss_svc by y2 (fallback 30%, no mature ad
+    peer above it).  The cloud legs already retain at the marginal steady-state
+    ROIC (below 30%), so their path is flat.  g2_svc is the ad-cluster median
+    re-solved on the same path and time alignment, capped at 6%.
+
 Disclosures (printed, never errors): the band with g2_svc shifted -1pp / -0.5pp
 (敏感区, valuation-rules「g₂ 的杠杆 MUST 显式」), L/M/H only.
 
@@ -183,7 +196,39 @@ REQUIRED = [
     "capex_guide_low",
     "capex_guide_high",
     "v_opt",
+    "tau", "t0", "y1", "y2", "ronic_ss_svc",
+    "capex_2h26", "ocf_2h26", "sbc_2h26",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  The retention of calendar c earns the forward return
+    while c <= y1, fades linearly to the stable return by y2, and the stable return
+    from y2 on.  Stable return capped at the forward return and floored at r; a flat
+    path equals `perpetual_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 # V_opt is a parallel dimension, never part of L/M/H.  It only splits the region
 # above H into "the market is paying for a named option" and "beyond every
@@ -351,7 +396,12 @@ def main() -> int:
         return e_fy27 / (ic0 / (1.0 - g * unbooked / e_fy27))
 
     r_lab = inp["r_cld_lab_t"]  # the steady state capitalises at the terminal basket
+    r_lab_tau = inp["r_cld_lab"]  # the tau segment runs at the journey basket (篮子对)
     k_lab = inp["k_lab"]
+    t0, y1, y2, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
+    rs_svc = inp["ronic_ss_svc"]
+    # ① growth-period funding gap: 2H26 capex beyond 2H26 OCF net of SBC (debt-like, parent 1.0)
+    gap_ps = max(inp["capex_2h26"] - (inp["ocf_2h26"] - inp["sbc_2h26"]), 0.0) / inp["shares_diluted"]
 
     def tier_multiples(g_svc: float, g_cld: float, ic_scale: float = 1.0,
                        roic_marg: float | None = None, r_lab_: float | None = None) -> dict[str, dict[str, float]]:
@@ -371,7 +421,9 @@ def main() -> int:
             out["roe_svc"][tier] = roe_open(svc_leg * k, inp["equity_services"] * ic_scale, g_svc, unbooked_svc)
             out["roe_cld"][tier] = roe_open(nopat_cloud * scale * k, inp["equity_cloud"] * ic_scale, g_cld, unbooked_cld)
             out["ret_cld"][tier] = rm * scale
-            out["pe_svc"][tier] = perpetual_pe(g_svc, out["roe_svc"][tier], r)
+            # ② Services fades from its forward ROE to rs_svc; the cloud legs retain at
+            # the marginal steady-state ROIC (< rs_svc), so their path is flat.
+            out["pe_svc"][tier] = path_pe(g_svc, out["roe_svc"][tier], r, t0, y1, y2, rs_svc)
             out["pe_cld"][tier] = perpetual_pe(g_cld, out["ret_cld"][tier], r)
             out["pe_lab"][tier] = perpetual_pe(g_cld, out["ret_cld"][tier], rl)
         return out
@@ -422,11 +474,13 @@ def main() -> int:
         """
         sh = inp["shares_diluted"]
         cld_num = nopat_cloud * cloud_scale * k_eps
+        d4, d7 = (1 + r) ** tau, (1 + r_lab_tau) ** tau  # ③ FY2027 opening -> 2026-06-30
         return {
-            "svc": svc_leg * k_eps * mult_svc / sh,
-            "cld": cld_num * (1 - share_lab) * mult_cld / sh,
-            "lab": cld_num * share_lab * mult_lab * (1.0 - k_lab) / sh,
+            "svc": svc_leg * k_eps * mult_svc / sh / d4,
+            "cld": cld_num * (1 - share_lab) * mult_cld / sh / d4,
+            "lab": cld_num * share_lab * mult_lab * (1.0 - k_lab) / sh / d7,
             "cash": net_cash / sh,
+            "gap": -gap_ps,
             "port": portfolio_gross * (1 - d_port) / sh,
             "ob": waymo_gross * (1 - d_ob) / sh,
         }
@@ -574,7 +628,11 @@ def main() -> int:
         f" {pe_svc['l'] / pe_svc['m']:.3f} / {pe_svc['h'] / pe_svc['m']:.3f} (ROE-mechanical, one g)"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print("  leg $/sh   services(PE)      cloud-non(PE)  lab(PE)   net_cash   portfolio(d)     waymo(d)     total")
+    print(f"tau {tau} (2026-06-30 -> FY2027 opening; services + cloud-non at {r:.0%}, lab at journey {r_lab_tau:.0%});"
+          f" services path t0 {t0} y1 {y1} y2 {y2} -> stable {rs_svc:.0%}; cloud flat at the marginal ROIC;"
+          f" funding gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:,.0f} - (OCF {inp['ocf_2h26']:,.0f}"
+          f" - SBC {inp['sbc_2h26']:,.0f})) / shares; window profit 0 (gap present)")
+    print("  leg $/sh (legs / (1+r)^tau)   services(PE)      cloud-non(PE)  lab(PE)   net_cash   portfolio(d)     waymo(d)   gap   total")
     for tier, k_field, scale, dp_field, do_field in (
         ("L", "k_eps_l", cloud_retreat, "d_port_l", "d_ob_l"),
         ("M", "k_eps_m", 1.0, "d_port_m", "d_ob_m"),
@@ -589,6 +647,7 @@ def main() -> int:
             f" {lg['cash']:9.2f}"
             f" {lg['port']:9.2f}(-{inp[dp_field]:.0%})"
             f" {lg['ob']:9.2f}(-{inp[do_field]:.0%})"
+            f" {lg['gap']:6.2f}"
             f" {sum(lg.values()):9.2f}"
         )
     print(
@@ -669,13 +728,13 @@ def main() -> int:
     # g, ROE and the numerator stay put.  Disclosure only: the anchors above are
     # the 中枢 column, and g_cap is keyed to the basket r, not re-checked per column.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        nonlocal r, r_lab
-        saved = r, r_lab
-        r, r_lab = r + dr, r_lab + dr
+        nonlocal r, r_lab, r_lab_tau
+        saved = r, r_lab, r_lab_tau
+        r, r_lab, r_lab_tau = r + dr, r_lab + dr, r_lab_tau + dr
         try:
             return band_at(inp["g2_svc"], inp["g2_cld"])[:3]
         finally:
-            r, r_lab = saved
+            r, r_lab, r_lab_tau = saved
 
     rf = rf_block(LISTING_CCY, {"r_perp": r, "r_cld_lab_t": r_lab}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

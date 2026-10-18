@@ -37,6 +37,14 @@ budget for the next corridor), discounted from its investment year:
   * next unsigned corridor (2030, 拍值)        p = 0 / 0    / 1.0
 The Outputs bullet carries the summed V_opt and the value-weighted p.
 
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」, A18): the
+FY2028 Gordon value sits at the start of FY2028 and is discounted tau =
+num_year - t_base = 1.5 years (replacing "FY+2 -> one year"), plus the window
+distributable profit (H2-2026 + FY2027 consensus x (1 - model b)) discounted
+tau/2; g > 0 legs price new investment on the three-segment return path
+(forward ROE to y1_ret, linear fade to ss_return = own-cycle 20.4% by y2_ret);
+V_opt items are discounted to t_base instead of the FY+1 basis.
+
 Run:  python3 frameworks/eval/603871.SH.py
 """
 
@@ -80,6 +88,7 @@ REQUIRED = [
     "trade_rev_fy25", "trade_gm_fy25", "logi_rev_fy25", "logi_gm_fy25",
     "lp_rev_fy25", "lp_gm_fy25", "t_mokambo", "t_unsigned",
     "inv_kasa_musd", "inv_mokambo_musd", "fx_usdcny", "t_inv_mokambo", "t_inv_unsigned",
+    "t_base", "ss_return", "y1_ret", "y2_ret",
 ]
 
 
@@ -110,8 +119,38 @@ def forward_roe(inp: dict[str, float], tag: str) -> float:
     return inp[f"ni_group_{tag}"] / book(inp, tag)
 
 
-def disc_years(inp: dict[str, float], tag: str) -> int:
-    return 0 if tag == "l" else int(inp["num_year"]) - BASIS_YEAR
+def disc_years(inp: dict[str, float], tag: str) -> float:
+    """时点对齐 tau (A18): base date -> start of the numerator year; L (FY2025 read as the
+    FY2026 case, numerator year begun) takes 0."""
+    return 0.0 if tag == "l" else max(0.0, inp["num_year"] - inp["t_base"])
+
+
+def path_pe(g: float, roe: float, r: float, inp: dict[str, float]) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year (t = 1 <-> calendar
+    num_year): retention of calendar year c earns the forward roe while c <= y1_ret, falls
+    linearly to the steady return by y2_ret, and the steady return max(ss_return, r) (capped
+    at roe) holds in a Gordon tail from y2_ret.  g <= 0 consumes no return -> perpetual_pe."""
+    if g <= 0:
+        return perpetual_pe(g, roe, r)
+    t0, y1, y2 = int(inp["num_year"]), int(inp["y1_ret"]), int(inp["y2_ret"])
+    rs = min(roe, max(inp["ss_return"], r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
 
 
 def leg_pes(inp: dict[str, float], tag: str, r_mgl: float | None = None,
@@ -119,8 +158,24 @@ def leg_pes(inp: dict[str, float], tag: str, r_mgl: float | None = None,
     roe = forward_roe(inp, tag)
     rm = inp["r_mgl"] if r_mgl is None else r_mgl
     ra = inp["r_afr"] if r_afr is None else r_afr
-    return (perpetual_pe(g_of(inp, "mgl", tag), roe, rm),
-            perpetual_pe(g_of(inp, "afr", tag), roe, ra))
+    return (path_pe(g_of(inp, "mgl", tag), roe, rm, inp),
+            path_pe(g_of(inp, "afr", tag), roe, ra, inp))
+
+
+def window_ps(inp: dict[str, float], tag: str) -> float:
+    """Window distributable profit, CNY/share, undiscounted (valuation-rules ③ 时点对齐;
+    A18): consensus profit not yet booked between the base date and the numerator year
+    (H2-2026 = ni_2026_cons - ni_h1_2026, then FY2027) x (1 - model b), b = the same
+    retention the book roll charges.  L has none."""
+    if tag == "l":
+        return 0.0
+    e = inp["equity"]
+    b26 = model_b(inp, tag, inp["ni_2026_cons"] / e)
+    n26 = inp["ni_2026_cons"] - inp["ni_h1_2026"]
+    e26 = e + n26 * b26
+    n27 = inp[f"ni_2027_{tag}"]
+    b27 = model_b(inp, tag, n27 / e26)
+    return (n26 * (1 - b26) + n27 * (1 - b27)) * 1e8 / inp["shares"]
 
 
 def leg_contrib(inp: dict[str, float], tag: str, pes: tuple[float, float] | None = None,
@@ -135,7 +190,11 @@ def leg_contrib(inp: dict[str, float], tag: str, pes: tuple[float, float] | None
 
 
 def anchor(inp: dict[str, float], tag: str, **kw) -> float:
-    return sum(leg_contrib(inp, tag, **kw))
+    """Two legs at the start of the numerator year, discounted tau at each leg's r, plus the
+    window distributable profit discounted tau/2 (A18; both legs share 篮 4, r_mgl used)."""
+    rm = kw.get("r_mgl") or inp["r_mgl"]
+    win = window_ps(inp, tag) / (1 + rm) ** (disc_years(inp, tag) / 2.0)
+    return sum(leg_contrib(inp, tag, **kw)) + win
 
 
 def kasa_gp(inp: dict[str, float]) -> float:
@@ -154,17 +213,18 @@ def kasa_ni(inp: dict[str, float]) -> float:
 
 def unit_value(inp: dict[str, float], t: float, pe_afr_h: float, r_afr: float | None = None,
                k: float = 1.0) -> float:
-    """k × one measured Kasa unit on the Africa-leg H multiple, discounted to the deck basis."""
+    """k × one measured Kasa unit on the Africa-leg H multiple, discounted to the base date
+    2026-06-30 (t_base; A18 时点对齐 -- formerly to the FY+1 deck basis)."""
     ra = inp["r_afr"] if r_afr is None else r_afr
-    return k * kasa_ni(inp) * pe_afr_h * 1e8 / inp["shares"] / (1 + ra) ** (t - BASIS_YEAR)
+    return k * kasa_ni(inp) * pe_afr_h * 1e8 / inp["shares"] / (1 + ra) ** (t - inp["t_base"])
 
 
 def capex_ps(inp: dict[str, float], musd: float, t_inv: float, r_afr: float | None = None) -> float:
     """Unspent capital per share (valuation-rules 2026-10-04: capacity options deduct it),
-    discounted from its investment year to the deck basis.  100% basis: the stake in each
-    corridor company is not disclosed (A14)."""
+    discounted from its investment year to the base date (t_base, A18).  100% basis: the
+    stake in each corridor company is not disclosed (A14)."""
     ra = inp["r_afr"] if r_afr is None else r_afr
-    return musd * inp["fx_usdcny"] / 100.0 * 1e8 / inp["shares"] / (1 + ra) ** (t_inv - BASIS_YEAR)
+    return musd * inp["fx_usdcny"] / 100.0 * 1e8 / inp["shares"] / (1 + ra) ** (t_inv - inp["t_base"])
 
 
 def net_options(inp: dict[str, float], pe_afr_h: float, r_afr: float | None = None) -> dict[str, float]:
@@ -322,7 +382,7 @@ def main() -> int:
         print(f"{t.upper():<3}{inp[f'ni_group_{t}']:8.2f}{book(inp, t):9.2f}{roe:8.2%}"
               f"{g_of(inp, 'mgl', t):7.1%}{pes[t][0]:8.2f}{g_of(inp, 'afr', t):7.1%}{pes[t][1]:8.2f}"
               f"{payout(g_of(inp, 'mgl', t), roe):8.1%}{payout(g_of(inp, 'afr', t), roe):8.1%}"
-              f"{disc_years(inp, t):5d}{leg[t][0]:7.2f}{leg[t][1]:7.2f}{a:7.2f}{co_pe[t]:9.2f}")
+              f"{disc_years(inp, t):5.1f}{leg[t][0]:7.2f}{leg[t][1]:7.2f}{a:7.2f}{co_pe[t]:9.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} V_opt/M={v_opt / M:.1%}")
     num = [inp[f"ni_group_{t}"] for t in TIERS]
@@ -334,8 +394,10 @@ def main() -> int:
     for key, label in (("mok", "莫坎博"), ("uns", "未签约下一条")):
         g_, c_, n_ = opts[key]
         print(f"  {label}: 毛值 {g_:.2f} − 未投资本 {c_:.2f} = {n_:.2f}")
-    print(f"V_opt：莫坎博 {v_mok:.2f}（{int(inp['t_mokambo'])}，折 {int(inp['t_mokambo']) - BASIS_YEAR} 年）"
-          f" + 未签约下一条 {v_uns:.2f}（{int(inp['t_unsigned'])}，折 {int(inp['t_unsigned']) - BASIS_YEAR} 年）"
+    print(f"窗口可分配利润（A18，折 τ/2 前）: M {window_ps(inp, 'm'):.3f} / H {window_ps(inp, 'h'):.3f} 元/股；"
+          f"τ = {disc_years(inp, 'm'):.1f} 年；稳态回报 {inp['ss_return']:.1%}（{int(inp['y1_ret'])} → {int(inp['y2_ret'])}）")
+    print(f"V_opt：莫坎博 {v_mok:.2f}（{int(inp['t_mokambo'])}，折 {inp['t_mokambo'] - inp['t_base']:.1f} 年）"
+          f" + 未签约下一条 {v_uns:.2f}（{int(inp['t_unsigned'])}，折 {inp['t_unsigned'] - inp['t_base']:.1f} 年）"
           f" = {v_opt:.2f}；价值加权 p = {p_eff[0]:g} / {p_eff[1]:g} / {p_eff[2]:g}")
     a2, b2 = cut_points(*adj)
     print(f"表3：{adj[0]:.2f} / {adj[1]:.2f} / {adj[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")

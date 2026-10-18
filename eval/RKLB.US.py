@@ -13,7 +13,8 @@ Pro-forma (Iridium closed) unlevered SOTP, USD bn → per share:
     Space + Electron  篮 4  (FY2027 consensus revenue − Neutron revenue)
                             × mature EBIT margin × (1 − tax), treated as FY2029
                             earnings (no growth credited FY27→29), ×
-                            perpetual_pe(g2, marginal ROIC, r), discounted 2 years.
+                            Gordon(g2, marginal ROIC → rs_steady path y1 → y2, r),
+                            discounted n_arr + tau = 2.5 years (A19).
                             Marginal ROIC = margin × (1 − tax) / incremental capital
                             per $ of revenue (acquisition goodwill is sunk).
     Iridium           篮 4  FY2027 EBIT × Iridium's own EV/EBIT band (construction
@@ -74,20 +75,56 @@ REQUIRED = [
     "neutron_price", "neutron_cadence", "neutron_unit", "t_unit", "t_opt", "neutron_carry",
     "neutron_gm", "neutron_opex", "fleet_n", "fleet_unit_n", "booster_cost", "t_fleet0",
     "g_fade0", "fade_step", "n_fade",
+    "tau", "y1", "y2", "rs_steady",
 ]
 TOL = 0.05
 NUM_YEAR = 2027  # numerator year; the option is discounted from t_opt back to here
 LISTING_CCY = "USD"
 
 
-def legs_value(inp: dict, t: str, r: float) -> tuple[float, float, float, float]:
-    """Space + Electron leg (USD bn), its NOPAT, marginal ROIC and multiple."""
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float) -> float:
+    """Single-stage multiple on year-t0 earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2.  With rs >= roe this equals perpetual_pe.
+    (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
+
+
+def steady_pe(inp: dict, t0: int, roic: float, r: float, g2: float | None = None,
+              y1: int | None = None) -> float:
+    """This ticker's ruler on the steady-return path (A19): forward ROIC to y1, then y2 − y1
+    years down to rs_steady."""
+    y1 = int(inp["y1"]) if y1 is None else y1
+    fall = int(inp["y2"] - inp["y1"])
+    return three_segment_pe(t0, y1, y1 + fall, inp["rs_steady"], inp["g2"] if g2 is None else g2, roic, r)
+
+
+def legs_value(inp: dict, t: str, r: float, g2: float | None = None) -> tuple[float, float, float, float]:
+    """Space + Electron leg (USD bn), its NOPAT, marginal ROIC and multiple.  Numerator = the
+    FY2029 arrival year; value at 2029-01-01 discounted n_arr + tau years to the 2026-06-30
+    book (A19)."""
     rev = inp[f"rev_{t}"] - inp["neutron_rev"]
     m = inp[f"margin_{t}"]
     nopat = rev * m * (1 - inp["tax"])
     roic = m * (1 - inp["tax"]) / inp["cap_int"]
-    pe = perpetual_pe(inp["g2"], roic, r)
-    return nopat * pe / (1 + r) ** inp["n_arr"], nopat, roic, pe
+    pe = steady_pe(inp, NUM_YEAR + int(inp["n_arr"]), roic, r, g2)
+    return nopat * pe / (1 + r) ** (inp["n_arr"] + inp["tau"]), nopat, roic, pe
 
 
 def legs_candidate(inp: dict, t: str, r: float) -> float:
@@ -96,7 +133,9 @@ def legs_candidate(inp: dict, t: str, r: float) -> float:
     FY2027 is t=1.  Revenue grows g_fade0, g_fade0 − step, … for n_fade years;
     the mature margin is earned from t = 1 + n_arr on that path (same arrival as
     the deck), every year's growth is charged cap_int of new capital, and the
-    tail after the fade is perpetual_pe on the last year's NOPAT × (1 + g2).
+    tail after the fade is the ruler on the last year's NOPAT × (1 + g2) — on the
+    steady-return path with the visible years extended to the fade end (Y1 2031,
+    same fall length) — and the whole leg carries the deck's tau (A19).
     """
     tax, ci, m = inp["tax"], inp["cap_int"], inp[f"margin_{t}"]
     n = int(inp["n_fade"])
@@ -112,8 +151,8 @@ def legs_candidate(inp: dict, t: str, r: float) -> float:
             nopat = rev * m * (1 - tax)
             pv += nopat / (1 + r) ** year
     roic = m * (1 - tax) / ci
-    pe = perpetual_pe(inp["g2"], roic, r)
-    return pv + nopat * (1 + inp["g2"]) * pe / (1 + r) ** (n + 1)
+    pe = steady_pe(inp, NUM_YEAR + n + 1, roic, r, y1=NUM_YEAR + n)
+    return (pv + nopat * (1 + inp["g2"]) * pe / (1 + r) ** (n + 1)) / (1 + r) ** inp["tau"]
 
 
 def iridium_value(inp: dict, t: str) -> float:
@@ -161,7 +200,7 @@ def main() -> int:
     # construction §2c: flat-multiple ladder — numerators must already climb.
     errors += ladder("legs NOPAT", *(rows[t]["nopat"] for t in TIERS))
     errors += ladder("Iridium EBIT", *(inp[f"ir_ebit_{t}"] for t in TIERS))
-    flat = [(rows[t]["nopat"] * rows["m"]["pe"] / (1 + r) ** inp["n_arr"]
+    flat = [(rows[t]["nopat"] * rows["m"]["pe"] / (1 + r) ** (inp["n_arr"] + inp["tau"])
              + inp[f"ir_ebit_{t}"] * inp["ir_mult_m"] - inp["ir_nd"] - inp["ir_cash_ps"] * inp["irdm_shares"]
              + closure) / sh for t in TIERS]
     errors += ladder("flat-multiple L<M<H", *flat)
@@ -174,10 +213,14 @@ def main() -> int:
         errors.append("neutron_cadence below the stated unit cadence: k must be ≥ 1 (A11)")
     k_units = inp["neutron_cadence"] / inp["neutron_unit"]
 
-    def opt_ruler(gm: float) -> tuple[float, float, float]:
+    # Option unit economics walk the same calendar path (A19): valued in the realisation year on
+    # the steady-return ruler, folded to FY2027, then the deck's tau to the 2026-06-30 book.
+    tau_df = (1 + r) ** (-inp["tau"])
+
+    def opt_ruler(gm: float, year: int = t_opt) -> tuple[float, float, float]:
         m = gm - inp["neutron_opex"]
         roic = m * (1 - inp["tax"]) / inp["cap_int"]
-        return m, roic, perpetual_pe(inp["g2"], roic, r)
+        return m, roic, steady_pe(inp, year, roic, r)
 
     m_opt, roic_opt, pe_opt = opt_ruler(inp["neutron_gm"])
 
@@ -187,14 +230,14 @@ def main() -> int:
         return sum(c / (1 + r) ** (int(inp["t_fleet0"]) + i - NUM_YEAR) for i in range(int(n_boosters)))
 
     def v_gross(year: int, n: float, price: float | None = None, gm: float | None = None) -> float:
-        m, _, pe = opt_ruler(inp["neutron_gm"] if gm is None else gm)
+        m, _, pe = opt_ruler(inp["neutron_gm"] if gm is None else gm, year)
         rev = n * (inp["neutron_price"] if price is None else price)
         return rev * m * (1 - inp["tax"]) * pe / (1 + r) ** (year - NUM_YEAR) / sh
 
     def v_at(year: int, n: float, price: float | None = None, gm: float | None = None,
              boosters: float | None = None, cost: float | None = None) -> float:
         b = inp["fleet_n"] if boosters is None else boosters
-        return v_gross(year, n, price, gm) - fleet_pv(b, cost) / sh
+        return (v_gross(year, n, price, gm) - fleet_pv(b, cost) / sh) * tau_df
 
     opt_rev = inp["neutron_price"] * inp["neutron_cadence"]
     opt_nopat = opt_rev * m_opt * (1 - inp["tax"])
@@ -244,7 +287,10 @@ def main() -> int:
           f" = NOPAT {opt_nopat:.4f} × PE {pe_opt:.2f} (g2 {inp['g2']:g}, ROIC {roic_opt:.1%}, r {r:g}) @{t_opt}"
           f" ÷ {(1 + r) ** (t_opt - NUM_YEAR):.4f} ÷ shares = {v_gross(t_opt, inp['neutron_cadence']):.2f}"
           f" − unspent fleet {inp['fleet_n']:g} × {inp['booster_cost']:g}bn from {int(inp['t_fleet0'])}"
-          f" (PV {fleet_pv(inp['fleet_n']):.4f}bn = {fleet_pv(inp['fleet_n']) / sh:.2f}/sh) → {v_opt:.2f}")
+          f" (PV {fleet_pv(inp['fleet_n']):.4f}bn = {fleet_pv(inp['fleet_n']) / sh:.2f}/sh)"
+          f" = {v_gross(t_opt, inp['neutron_cadence']) - fleet_pv(inp['fleet_n']) / sh:.2f} × tau {tau_df:.4f} → {v_opt:.2f}"
+          f"  (steady path: ROIC to {int(inp['y1'])}, {inp['rs_steady']:.1%} from {int(inp['y2'])}; "
+          f"no-fade PE {perpetual_pe(inp['g2'], roic_opt, r):.2f})")
     print(f"  booster cost 0.03 / 0.10 → {v_at(t_opt, inp['neutron_cadence'], cost=0.03):.2f}"
           f" / {v_at(t_opt, inp['neutron_cadence'], cost=0.10):.2f}")
     print(f"  unit ({inp['neutron_unit']:g}/yr @{t_unit}, {inp['fleet_unit_n']:g} boosters) → {v_unit:.2f};"
@@ -262,8 +308,7 @@ def main() -> int:
     for dg in (-0.01, 0.01):
         band = []
         for t in TIERS:
-            pe = perpetual_pe(inp["g2"] + dg, rows[t]["roic"], r)
-            band.append(rows[t]["total"] + rows[t]["nopat"] * (pe - rows[t]["pe"]) / (1 + r) ** inp["n_arr"] / sh)
+            band.append((legs_value(inp, t, r, g2=inp["g2"] + dg)[0] + rows[t]["ir"] + closure) / sh)
         print(f"g2 {inp['g2'] + dg:.0%}: L/M/H {band[0]:.2f}/{band[1]:.2f}/{band[2]:.2f}")
     for ci in (0.3, 0.5):
         alt = dict(inp, cap_int=ci)

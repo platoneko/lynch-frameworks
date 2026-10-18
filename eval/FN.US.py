@@ -93,7 +93,43 @@ MIN_R_MINUS_G = 0.02
 TIERS = ("L", "M", "H")
 WINDOW_YEARS = 2  # D-bucket window FY27-FY28 (Building 10 build + ramp, A12)
 
+def path_value(t0: int, y1: int, y2: int, r_s: float):
+    """Gordon multiple on next-period earnings with the three-segment RONIC path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段; gordon.py's three-segment
+    function is [待建], so it lives here).  Fiscal year c of the stream, t = 1 <-> c = t0:
+    transition years at forward RONIC (payout 1 - g1/RONIC, not floored); then RONIC =
+    forward through Y1, linear to R_s at Y2, Gordon tail at R_s; each tier's R_s is
+    capped at its own forward RONIC."""
+
+    def ron(cal: int, roe: float) -> float:
+        rs = min(roe, r_s)
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    def value(g1: float, n: int, g2: float, roe: float, r: float) -> float:
+        if r - g2 <= 0:
+            raise ValueError(f"perpetuity diverges: g2={g2} >= r={r}")
+        pv, e, t = 0.0, 1.0, 1
+        for _ in range(int(n)):
+            pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+            e *= 1 + g1
+            t += 1
+        while True:
+            cal = t0 + t - 1
+            if cal > y1 and cal >= y2:
+                return pv + e * payout(g2, min(roe, r_s)) / ((r - g2) * (1 + r) ** (t - 1))
+            pv += e * payout(g2, ron(cal, roe)) / (1 + r) ** t
+            e *= 1 + g2
+            t += 1
+
+    return value
+
+
 REQUIRED = [
+    "ss_return", "y1", "y2", "num_year",
     "eps_fy27_m", "rev_fy27_cons",
     "eps_fy28_l", "eps_fy28_m", "eps_fy28_h", "rev_fy28_l", "rev_fy28_m", "rev_fy28_h",
     "p2_q1_guide", "eps_ng_q1_guide", "sbc_q1_guide", "shares_guide",
@@ -178,6 +214,23 @@ def main() -> int:
     unbooked = inp["eps_fy27_m"] * (1 - p2) - i_ps
     disc = (1 + inp["r_disc"]) ** (-inp["t_disc"])
     net_cash = (inp["cash_st"] - inp["debt"]) / sh
+    # Steady return three segments + timing alignment (A24 / A25): t_disc is now tau (balance-sheet
+    # date -> FY28 opening); the window profit is the unbooked FY27 operating EPS on the numerator's
+    # basis (SBC deducted too) x (1 - b), b = g_co / ROE as in the book roll, at tau / 2.
+    path = path_value(int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["ss_return"])
+    if not (inp["num_year"] <= inp["y1"] < inp["y2"]):
+        errors.append("high-return window must satisfy numerator year <= Y1 < Y2 (A24)")
+    sbc27 = max(sbc_floor, sbc_ratio * inp["rev_fy27_cons"])
+    win_eps = unbooked - sbc27 / sh
+
+    def window(b: float, rd: float) -> float:
+        return win_eps * (1 - min(1.0, max(0.0, b))) * (1 + rd) ** (-inp["t_disc"] / 2)
+
+    def perpetual_pe(g: float, roe: float, rr: float) -> float:  # noqa: F811 — path version
+        return path(0.0, 0, g, roe, rr)
+
+    def two_stage_pe(g1: float, n: int, g: float, roe: float, rr: float) -> float:  # noqa: F811
+        return path(g1, n, g, roe, rr)
 
     def book(e: float, g_co: float, capped: bool = False) -> tuple[float, float]:
         if capped:  # CRDO-style roll, retention capped at 1 (A22 unadopted reference)
@@ -197,9 +250,10 @@ def main() -> int:
         pe_ai, pe_au = perpetual_pe(gai, roe, rr), perpetual_pe(gau, roe, rr)
         dsc = (1 + rd) ** (-inp["t_disc"])
         v_ai, v_au = eps_ai[t] * pe_ai * dsc, eps_au[t] * pe_au * dsc
+        w = window(g_co / roe, rd)
         return {"g_co": g_co, "bps": bps, "roe": roe, "pe_ai": pe_ai, "pe_au": pe_au,
-                "v_ai": v_ai, "v_au": v_au, "sum": eps_ai[t] * pe_ai + eps_au[t] * pe_au,
-                "anchor": (v_ai + v_au) * (1 - k[t]) + net_cash}
+                "v_ai": v_ai, "v_au": v_au, "sum": eps_ai[t] * pe_ai + eps_au[t] * pe_au, "w": w,
+                "anchor": (v_ai + v_au) * (1 - k[t]) + w + net_cash}
 
     s = {t: legs(t, r, inp["r_disc"]) for t in TIERS}
     L, M, H = (s[t]["anchor"] for t in TIERS)
@@ -214,7 +268,8 @@ def main() -> int:
     # ---- A2e-2c flat ladder (both legs held at their M multiples) + decomposition ----
     flat_errs, _ = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), s["M"]["sum"] / eps["M"])
     errors += flat_errs
-    flat = tuple((eps_ai[t] * s["M"]["pe_ai"] + eps_au[t] * s["M"]["pe_au"]) * disc + net_cash for t in TIERS)
+    flat = tuple((eps_ai[t] * s["M"]["pe_ai"] + eps_au[t] * s["M"]["pe_au"]) * disc + s["M"]["w"] + net_cash
+                 for t in TIERS)
     errors += ladder("flat-multiple anchors", *flat)
     blend = tuple(s[t]["sum"] / eps[t] for t in TIERS)
     dec = decompose((L, M, H), blend)
@@ -233,8 +288,9 @@ def main() -> int:
         g_co1 = (eps_ai[t] * g1[t] + eps_au[t] * g_au) / eps[t]
         for capped in (False, True):
             _, roe1 = book(eps[t], g_co1, capped)
-            v = (eps_ai[t] * two_stage_pe(g1[t], 1, g_ai, roe1, r)
-                 + eps_au[t] * perpetual_pe(g_au, roe1, r)) * disc * (1 - k[t]) + net_cash
+            v = ((eps_ai[t] * two_stage_pe(g1[t], 1, g_ai, roe1, r)
+                  + eps_au[t] * perpetual_pe(g_au, roe1, r)) * disc * (1 - k[t])
+                 + window(g1[t] / roe1, inp["r_disc"]) + net_cash)  # AI-leg b1 (M′ 1.09 → 0, A25)
             if capped:
                 cand_capped[t] = v
             else:
@@ -287,9 +343,9 @@ def main() -> int:
 
     # ③ guardrail — own current-year forward PE band, same basis (A15).
     for t in TIERS:
-        same = (s[t]["anchor"] - net_cash) / disc / ng[t]
+        same = (s[t]["anchor"] - net_cash) / ng[t]  # today's operating value / forward profit
         inside = inp["pe_own_min"] <= same <= inp["pe_own_max"]
-        print(f"③ {t}: (anchor - net cash)/disc / non-GAAP {ng[t]:g} = {same:.2f}x"
+        print(f"③ {t}: (anchor - net cash) / non-GAAP {ng[t]:g} = {same:.2f}x"
               f" -> {'inside' if inside else 'OUTSIDE'} [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]")
         if t == "M" and not inside:
             errors.append(f"③: M same-basis multiple {same:.2f}x outside own band — BLOCKED path, not a disclosure")

@@ -25,8 +25,13 @@ date, plus b1 × unbooked FY2026 EPS (b1 = g1/ROE fixed point; L has g1 = 0).
 
 Retained-cash audit: E bucket (capex ≫ D&A, no named end) → full form; the
 "modelled-as-paid, actually retained" cash = (actual retention − b1) × window
-EPS (numerator year + 3 stage-1 years), haircut k and subtracted from each
-anchor.  Anchors are computed in DKK and converted to USD at `fx_dkk_usd`
+EPS (numerator year + 3 stage-1 years) is disclosure only — the k that used to
+haircut it sat on the 多留部分 (wrong object) and is gone (valuation-rules
+「经营价值与超额现金」④, A14).  Steady-return path and timing (A14): RONIC = tier
+ROE through the visible-year end (L 2027, M/H 2030), linear to rs_steady over
+y2 − y1 years, Gordon tail after; the FY2027 value sits at t_n 2027-01-01 and is
+discounted tau years to the 2026-06-30 book, plus the 2026H2 window's distributable
+EPS (unbooked × (1 − b1)) at tau/2.  Anchors are computed in DKK and converted to USD at `fx_dkk_usd`
 (1 ADR = 1 ordinary share).
 
 Run:  python3 frameworks/eval/NVO.US.py
@@ -56,14 +61,54 @@ REQUIRED = [
     "fx_dkk_usd", "eps_fy27e_low", "eps_fy27e_consensus", "eps_fy27e_high",
     "eps_fy26e", "eps_h1_26_adj", "bps_h1_26", "dps_interim_26",
     "r_perp", "g1_window", "n_window", "g2", "payout_actual",
-    "k_l", "k_m", "k_h", "pe_own_min", "pe_own_top", "eps_ttm_core",
+    "pe_own_min", "pe_own_top", "eps_ttm_core",
     "net_debt_ebitda", "interest_ebit", "v_opt",
+    "tau", "y1", "y2", "rs_steady",
 ]
+NUM_YEAR = 2027         # numerator year; t_n = 2027-01-01
 CONSENSUS_YEARS = 4     # FY2027 band + FY2028–2030 company target / GS consensus CAGR (A5)
 ROE_CAP = 0.60          # valuation-rules「腿归篮」: ROE > 60% → back to dialogue
 FIXED_POINT_ITERS = 60
 LISTING_CCY = "USD"
 RF_TOL = 1e-9
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0) -> float:
+    """Multiple on numerator-year earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2; n stage-1 years at payout 1 - g1/roe.
+    With rs >= roe this equals perpetual_pe / two_stage_pe.  (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
+
+
+def path_pe(inp: dict[str, float], g1: float, n: int, g2: float, roe: float, r: float) -> float:
+    """Tier multiple: the visible years end at y1 (+ n stage-1 years when the tier carries the
+    window), then the same fall length y2 − y1 to rs_steady (A14)."""
+    y1, fall = int(inp["y1"]), int(inp["y2"] - inp["y1"])
+    if g1 > 0:
+        return three_segment_pe(NUM_YEAR, y1 + n, y1 + n + fall, inp["rs_steady"], g2, roe, r, g1=g1, n=n)
+    return three_segment_pe(NUM_YEAR, y1, y1 + fall, inp["rs_steady"], g2, roe, r)
 
 
 def tier_roe(inp: dict[str, float], eps: float, g1: float) -> tuple[float, float, float]:
@@ -102,18 +147,25 @@ def main() -> int:
     eps = {"l": inp["eps_fy27e_low"], "m": inp["eps_fy27e_consensus"], "h": inp["eps_fy27e_high"]}
     tier_g1 = {"l": 0.0, "m": g1, "h": g1}   # L = consensus-low world, no growth window (A5)
     fx = inp["fx_dkk_usd"]
+    tau = inp["tau"]
+    unbooked_26 = inp["eps_fy26e"] - inp["eps_h1_26_adj"]
+
+    def value(gross: float, window: float, rr: float) -> float:
+        """Timing (A14): Gordon value at t_n ÷ (1+r)^tau + window ÷ (1+r)^(tau/2), DKK."""
+        return gross * (1 + rr) ** (-tau) + window * (1 + rr) ** (-tau / 2)
+
     rows = {}
     for t in TIERS:
         bps0, roe, b1 = tier_roe(inp, eps[t], tier_g1[t])
         if roe > ROE_CAP:
             errors.append(f"{t.upper()}: ROE {roe:.1%} > {ROE_CAP:.0%} — back to dialogue")
-        pe = two_stage_pe(tier_g1[t], n, g2, roe, r) if tier_g1[t] > 0 else perpetual_pe(g2, roe, r)
+        pe = path_pe(inp, tier_g1[t], n, g2, roe, r)
         gross = eps[t] * pe
         window_eps = sum(eps[t] * (1 + tier_g1[t]) ** i for i in range(n + 1))
-        deemed = max(1 - inp["payout_actual"] - b1, 0.0) * window_eps
-        k = inp[f"k_{t}"]
-        anchor = gross - k * deemed
-        rows[t] = dict(bps0=bps0, roe=roe, b1=b1, pe=pe, gross=gross, deemed=deemed, k=k, anchor=anchor)
+        deemed = max(1 - inp["payout_actual"] - b1, 0.0) * window_eps  # 多留部分, disclosure only
+        window = max(unbooked_26 * (1 - b1), 0.0)
+        anchor = value(gross, window, r)
+        rows[t] = dict(bps0=bps0, roe=roe, b1=b1, pe=pe, gross=gross, deemed=deemed, window=window, anchor=anchor)
 
     L, M, H = (rows[t]["anchor"] / fx for t in TIERS)
     if not (L < M < H):
@@ -134,12 +186,14 @@ def main() -> int:
         errors.append("v_opt must be 0 (A9: no measured unit for the post-2030 pipeline)")
 
     print(f"formula_id={FORMULA_ID}  fx={fx}  r={r:g} (篮 {baskets.get('r_perp')})  g1={g1:g}×{n}y  g2={g2:g}")
+    print(f"steady path: rs {inp['rs_steady']:.0%}, L Y1 {int(inp['y1'])} → Y2 {int(inp['y2'])}, M/H shifted +{n}y; "
+          f"timing ÷ {(1 + r) ** tau:.4f} (tau {tau:g}y) + window at tau/2")
     for t in TIERS:
         x = rows[t]
         print(
             f"{t.upper()}: EPS27 {eps[t]:.2f} DKK  B0 {x['bps0']:.2f}  ROE {x['roe']:.1%}  b1 {x['b1']:.3f}  "
-            f"PE {x['pe']:.2f}  gross {x['gross']:.1f}  deemed-paid {x['deemed']:.1f} × k {x['k']:g} "
-            f"= −{x['k'] * x['deemed']:.1f}  anchor {x['anchor']:.1f} DKK = {x['anchor'] / fx:.2f} USD"
+            f"PE {x['pe']:.2f}  gross {x['gross']:.1f}  window {x['window']:.2f}  多留部分(disclosure) {x['deemed']:.1f}  "
+            f"anchor {x['anchor']:.1f} DKK = {x['anchor'] / fx:.2f} USD"
         )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f} (USD)")
     print(
@@ -160,20 +214,21 @@ def main() -> int:
         ("g2 −1pp", g1, n, g2 - 0.01), ("g2 +1pp", g1, n, g2 + 0.01), ("g2 = 0 (pure offset)", g1, n, 0.0), ("g2 −2pp (GS TGR)", g1, n, -0.02),
         ("g1 = 0 (no window)", 0.0, 0, g2), ("n = 5", g1, 5, g2),
     ):
-        pe = two_stage_pe(gg1, nn, gg2, roe_m, r) if gg1 > 0 else perpetual_pe(gg2, roe_m, r)
-        m_alt = (eps["m"] * pe - inp["k_m"] * rows["m"]["deemed"]) / fx
+        pe = path_pe(inp, gg1, nn, gg2, roe_m, r)
+        m_alt = value(eps["m"] * pe, rows["m"]["window"], r) / fx
         print(f"  sens {label:20s} PE {pe:.2f} → M {m_alt:.2f} USD")
-    print(f"  sens k = 0 / 0.4           → M {rows['m']['gross'] / fx:.2f} / {(rows['m']['gross'] - 0.4 * rows['m']['deemed']) / fx:.2f} USD")
+    pe_old = two_stage_pe(g1, n, g2, roe_m, r)
+    print(f"  sens steady = forward (no fade) PE {pe_old:.2f} → M {value(eps['m'] * pe_old, rows['m']['window'], r) / fx:.2f} USD")
     print(f"  篮 7 contrast (1/r, r 15%): {eps['l'] / 0.15 / fx:.2f} / {eps['m'] / 0.15 / fx:.2f} / {eps['h'] / 0.15 / fx:.2f} USD (disclosure only)")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # r_perp 1:1 — the only r in the anchors — while EPS, ROE, b1 and the k row stay
-    # put.  Disclosure only: the anchors above are the 中枢 column.
+    # r_perp 1:1 — the only r in the anchors (multiple and timing discount) — while EPS,
+    # ROE, b1, the window and the steady path stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
         out = []
         for t in TIERS:
             x = rows[t]
-            pe = two_stage_pe(tier_g1[t], n, g2, x["roe"], r + dr) if tier_g1[t] > 0 else perpetual_pe(g2, x["roe"], r + dr)
-            out.append((eps[t] * pe - x["k"] * x["deemed"]) / fx)
+            pe = path_pe(inp, tier_g1[t], n, g2, x["roe"], r + dr)
+            out.append(value(eps[t] * pe, x["window"], r + dr) / fx)
         return out[0], out[1], out[2]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)

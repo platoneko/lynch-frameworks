@@ -97,7 +97,7 @@ REQUIRED = [
     "brent_2025", "brent_l", "brent_m", "brent_h",
     "payout_policy", "dps_fy25_cny", "dps_fy25_hkd", "dps_fy19_hkd", "dps_fy25_final_hkd", "dps_h1_26_hkd",
     "r_perp", "g2", "capex_fy25", "da_fy25",
-    "net_cash_ext_h1", "div_declared", "div_exdiv", "c_ex", "cash_yield", "tax_eff",
+    "net_cash_ext_h1", "div_declared", "div_exdiv", "minority_equity", "c_ex", "cash_yield", "tax_eff",
     "ret_d", "ret_c", "ret_i", "payout_op", "op_ret_fy23", "op_ret_fy24", "op_ret_fy25",
     "g2_d", "g_evid_min", "g_evid_max", "gd_peer_cvx", "gd_peer_tte", "gd_peer_1088",
     "pe_op_min", "pe_op_max", "pe_op_med", "pe_same_med",
@@ -228,9 +228,16 @@ def main() -> int:
         return report(errors, "FAIL (axis / numerators)")
 
     # --- Step 2: excess cash and the operating basis (A19) ---------------------------
-    c_ex = inp["net_cash_ext_h1"] - inp["div_declared"] - inp["div_exdiv"]   # anchor 0
+    # Parent share (valuation-rules「经营价值与超额现金」① 归母份额): no subsidiary-level cash disclosure
+    # -> parent equity / (parent + minority); the excess cash that enters the value, the numerator's
+    # after-tax income and the RONIC base is the parent share only.
+    eq_parent = inp["equity"] - inp["div_exdiv"]
+    parent_share = eq_parent / (eq_parent + inp["minority_equity"])
+    c_ex_all = inp["net_cash_ext_h1"] - inp["div_declared"] - inp["div_exdiv"]   # anchor 0
+    c_ex = c_ex_all * parent_share
     if abs(c_ex - inp["c_ex"]) > 1.0:
-        errors.append(f"c_ex {inp['c_ex']:,.0f} != net_cash_ext_h1 − div_declared − div_exdiv {c_ex:,.0f}")
+        errors.append(f"c_ex {inp['c_ex']:,.0f} != (net_cash_ext_h1 − div_declared − div_exdiv) × 归母比例 "
+                      f"{parent_share:.4f} = {c_ex:,.0f}")
     if c_ex < EXCESS_CASH_GATE * inp["equity"]:
         errors.append(f"c_ex {c_ex / inp['equity']:.1%} of equity < {EXCESS_CASH_GATE:.0%}: the excess-cash line should not exist")
     c_inc = c_ex * inp["cash_yield"] * (1.0 - inp["tax_eff"])     # after-tax income, out of every numerator
@@ -367,7 +374,7 @@ def main() -> int:
           f"NI {ni['l']:,.0f}/{ni['m']:,.0f}/{ni['h']:,.0f} mn → EPS {eps['l']:.4f}/{eps['m']:.4f}/{eps['h']:.4f} CNY; "
           f"账面 ROE {roe['l']:.2%}/{roe['m']:.2%}/{roe['h']:.2%} (axis §3, 只披露)")
     print(f"超额现金 (A19): 扩展口径净现金 {inp['net_cash_ext_h1']:,.0f} − 已宣派未付末期 {inp['div_declared']:,.0f} − 已除息中期 {inp['div_exdiv']:,.0f} "
-          f"− 锚 0 = C_ex {c_ex:,.0f} mn ({c_ex / inp['equity']:.1%} of equity ≥ {EXCESS_CASH_GATE:.0%}); 每股 {c_ex * MN / sh:.3f} CNY = {cps_hkd:.2f} HKD; λ {LAMBDA:g}; "
+          f"− 锚 0 = {c_ex_all:,.0f} × 归母比例 {parent_share:.4f} = C_ex {c_ex:,.0f} mn ({c_ex / inp['equity']:.1%} of equity ≥ {EXCESS_CASH_GATE:.0%}); 每股 {c_ex * MN / sh:.3f} CNY = {cps_hkd:.2f} HKD; λ {LAMBDA:g}; "
           f"税后收益 {c_inc:,.0f} mn (收益率 {inp['cash_yield']:.2%} × (1 − {inp['tax_eff']:.2%}))")
     print(f"经营口径: E_op {e_op['l']:,.0f}/{e_op['m']:,.0f}/{e_op['h']:,.0f} mn → EPS_op {eps_op['l']:.4f}/{eps_op['m']:.4f}/{eps_op['h']:.4f}; "
           f"经营股权 {op_eq:,.0f} (= equity − 中期 − C_ex); RONIC (三档统一用 M) {ronic['m']:.2%} "

@@ -17,7 +17,11 @@ FY27 core EPS over the FY27 OPENING *operating* book: book equity less net cash
 at 2026-06-27, rolled over the FY26 second half not yet booked at the
 growth-required retention b1 = g2/ROE (A6).  The after-tax net interest is
 stripped from the numerator and the net cash added back per share as a closing
-item (A5, the 1810.HK A15 treatment).  FY27 = current FY + 1: no discount.
+item (A5, the 1810.HK A15 treatment).  The multiple runs the three-stage
+return path (valuation-rules「经营价值与超额现金」②: forward ROE to y1, linear
+fade to ronic_ss by y2) and the FY27-opening value is discounted tau years to
+the balance-sheet date, plus the FY26H2 window's distributable profit at tau/2
+(③ 时点对齐, A20 / A21).
 
 V_opt (v2, 2026-10-03 rules — valuation-rules「未建模期权」): the size comes
 only from a quantity FORM itself named — the management 2030 revenue target
@@ -47,7 +51,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
-from eval.lib.gordon import check_g_cap, check_r, g_cap, implied_g, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, g_cap, implied_g, payout  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
@@ -78,6 +82,42 @@ REQUIRED = [
     "pb_low",
 ]
 TIERS = ("L", "M", "H")
+REQUIRED += ["t0", "y1", "y2", "ss_own", "ss_floor_ai_capex_package", "ronic_ss", "tau"]
+# A21: the packaging / co-test / fibre-array row of _AXIS.ai-capex §4b — window and steady-return
+# floor are read from the axis cell by cell (user 2026-10-19: the axis floor replaces the 15% table floor).
+AXIS_CAPEX = REPO_ROOT / "frameworks" / "axes" / "ai-capex.md"
+AXIS_ROWS = (("y1", "y1_ai_capex_package"), ("y2", "y2_ai_capex_package"),
+             ("ss_floor_ai_capex_package", "ss_floor_ai_capex_package"))
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  The retention of calendar c earns the tier's forward
+    ROE while c <= y1, fades linearly to the stable return by y2, and the stable
+    return from y2 on (Gordon tail).  Stable return capped at the forward ROE and
+    floored at r; with ROE <= stable the path is flat and equals `perpetual_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def derived_haircut(inp: dict[str, float]) -> tuple[float, float]:
@@ -141,6 +181,19 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if not inp["t_opt"] > inp["t_num"]:
         errs.append("t_opt must fall after the numerator year t_num (A16)")
 
+    # A21: steady return = max(own cycle, mature peers (empty — Teradyne is not the same business,
+    # user 2026-10-19), axis floor); each tier is then capped at its forward ROE inside path_pe.
+    want = max(inp["ss_own"], inp["ss_floor_ai_capex_package"])
+    if abs(inp["ronic_ss"] - want) > 1e-9:
+        errs.append(f"ronic_ss {inp['ronic_ss']:g} != max(ss_own, axis floor) {want:g} (A21)")
+    if not AXIS_CAPEX.is_file():
+        errs.append("axes/ai-capex.md missing — y1 / y2 / steady floor unchecked (A21)")
+    else:
+        ax = parse_inputs(AXIS_CAPEX.read_text(encoding="utf-8"))
+        for mine, theirs in AXIS_ROWS:
+            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
+                errs.append(f"{mine} {inp[mine]:g} != _AXIS.ai-capex {theirs} {ax.get(theirs)} (A21)")
+
     # A2e-7a: probabilities stay in the zone+V table.
     p_fields = [k for k in inp if k.startswith("p_")]
     if p_fields:
@@ -191,13 +244,19 @@ def main() -> int:
             raise ValueError(f"book roll diverges: g·N/core = {share:.2f} >= 1 (BLOCKED-by-rule)")
         return bps0 / (1.0 - share)
 
+    t0, y1, y2, rs, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"], inp["tau"]
+
+    def window(n: float, roe_x: float, g: float, rr: float) -> float:
+        """FY26H2 distributable profit N x (1 - b1), discounted tau/2 (③ 时点对齐; no minority)."""
+        return n * max(1.0 - g / roe_x, 0.0) / (1 + rr) ** (tau / 2)
+
     def deck(g: float, rr: float, haircut: float) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
         c = core_at(haircut)
         n = unbooked(haircut)
         bps = {t: opening_bps(c[t], g, n) for t in TIERS}
         roe_ = {t: c[t] / bps[t] for t in TIERS}
-        pe_ = {t: perpetual_pe(g, roe_[t], rr) for t in TIERS}
-        val = {t: c[t] * pe_[t] * (1.0 - k[t]) + cash_ps for t in TIERS}
+        pe_ = {t: path_pe(g, roe_[t], rr, t0, y1, y2, rs) for t in TIERS}
+        val = {t: c[t] * pe_[t] * (1.0 - k[t]) / (1 + rr) ** tau + window(n, roe_[t], g, rr) + cash_ps for t in TIERS}
         return bps, roe_, pe_, val
 
     bps, roe, pes, scen = deck(g2, r, inp["sbc_haircut"])
@@ -214,10 +273,10 @@ def main() -> int:
     # ---- A2e-2c flat ladder + decomposition ----
     if not (core["L"] < core["M"] < core["H"]):
         errors.append(f"numerator ladder broken: core EPS {core['L']:.3f}/{core['M']:.3f}/{core['H']:.3f} (A2e-2c)")
-    flat = [core[t] * pes["M"] + cash_ps for t in TIERS]
+    flat = [core[t] * pes["M"] / (1 + r) ** tau + window(n_unbooked, roe[t], g2, r) + cash_ps for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
-    ex_cash = {t: core[t] * pes[t] for t in TIERS}
+    ex_cash = {t: scen[t] - cash_ps for t in TIERS}
 
     # ---- ③ guardrail is not applicable (numerator never realised, A12): print the reconciliation coordinates ----
     e_over_r = core["M"] / r + cash_ps
@@ -238,7 +297,9 @@ def main() -> int:
     years = inp["t_opt"] - inp["t_num"]
 
     def option_at(t: float) -> float:
-        return d_core * pes["H"] / (1.0 + r) ** t
+        # valued at the H multiple (same return path) in the target year, back to the
+        # numerator year, then tau to the balance-sheet date like the base (③ 时点对齐)
+        return d_core * pes["H"] / (1.0 + r) ** t / (1.0 + r) ** tau
 
     v_opt = option_at(years)
     v_opt_late = option_at(years + inp["mgmt_delay"])
@@ -265,7 +326,10 @@ def main() -> int:
           f"interest stripped {int_ps:.4f}/sh; cash added back {cash_ps:.4f}/sh")
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> core {core[t]:.4f}  BPS_op {bps[t]:.3f}  ROE {roe[t]:.4f}  payout {1 - b1[t]:.3f}  "
-              f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} x (1-k {k[t]:g}) + cash = {scen[t]:.4f}")
+              f"PE(path) {pes[t]:.4f}x -> core x PE / 1.1^tau + window {ex_cash[t]:.4f} (k {k[t]:g}) + cash = {scen[t]:.4f}")
+    print(f"path: forward ROE through {y1}, fade to stable {rs:.1%} by {y2} (t0 {t0}; per tier min(ROE, stable) = "
+          + " / ".join(f"{min(roe[t], max(rs, r)):.1%}" for t in TIERS) + f"); tau {tau}; window PV "
+          + " / ".join(f"{window(n_unbooked, roe[t], g2, r):.2f}" for t in TIERS))
     print(f"ROE basis (A6): op BPS 2026-06-27 {bps0:.3f} rolled over FY26H2 unbooked core {n_unbooked:.4f}/sh at b1 "
           f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}")
     print(f"deemed-distributed cash (actual retention {ret_actual:.0%} − b1) × FY26H2 unbooked → "
@@ -286,12 +350,12 @@ def main() -> int:
         print(f"contrast r {tag}: {s['L']:.2f}/{s['M']:.2f}/{s['H']:.2f}")
     print(f"V_opt={v_opt:.2f} = (target {inp['mgmt_rev_2030']:g}M - FY27 H consensus {inp['rev_fy27_h']:g}M = {d_rev:g}M) "
           f"x core margin {core_margin:.2%} (FY27 core M {core['M']:.4f} x shares / mean revenue {inp['rev_fy27_m']:g}M) "
-          f"= dEPS {d_core:.4f} x PE_H {pes['H']:.2f}x = {d_core * pes['H']:.2f} / {1 + r:g}^{years:g}")
+          f"= dEPS {d_core:.4f} x PE_H {pes['H']:.2f}x = {d_core * pes['H']:.2f} / {1 + r:g}^({years:g} + tau {tau:g})")
     print(f"V_opt timing sensitivity: target {inp['mgmt_delay']:g}y late like the 2020 model -> {v_opt_late:.2f}; "
           f"post-realisation core EPS H + dEPS = {core['H'] + d_core:.4f}")
     c30 = inp["mgmt_eps_2030"] * (1.0 - inp["sbc_haircut"]) - int_ps
     print(f"V_opt cross-check on the target EPS (company margin, not used): core {c30:.4f} - H {core['H']:.4f} "
-          f"= {c30 - core['H']:.4f} x PE_H / {1 + r:g}^{years:g} = {(c30 - core['H']) * pes['H'] / (1.0 + r) ** years:.2f}")
+          f"= {c30 - core['H']:.4f} x PE_H / {1 + r:g}^({years:g} + tau) = {(c30 - core['H']) * pes['H'] / (1.0 + r) ** (years + tau):.2f}")
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
     for tp in (64.0, 157.5, 175.0, 200.0):
         g_tp, ok = implied_g((tp - cash_ps) / core["M"], roe["M"], r)
@@ -300,8 +364,8 @@ def main() -> int:
     # r_f readings (_AXIS.rates): Δr_f moves r_perp 1:1 — the only priced r; the
     # rolled ROE, g2, the haircut core numerator and the net-cash add-back stay put.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        s = [core[t] * perpetual_pe(g2, roe[t], r + dr) * (1.0 - k[t]) + cash_ps for t in TIERS]
-        return s[0], s[1], s[2]
+        _, _, _, s = deck(g2, r + dr, inp["sbc_haircut"])
+        return s["L"], s["M"], s["H"]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

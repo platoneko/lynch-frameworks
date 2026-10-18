@@ -40,6 +40,24 @@ value (lambda = 1) on every tier.
   ③          the M multiple must sit inside the same-earnings band (it is
              generated from that band, so this is a consistency check).
 
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」):
+  * parent share of the excess cash 98.81% (parent / (parent + minority), no
+    subsidiary cash disclosure); it scales C_ex, its income and the book.
+  * time alignment: the Gordon value sits at 2028-01-01 -> x (1+r)^-tau,
+    tau 1.5 from the 2026-06-30 balance sheet (replaces the whole-year
+    discount), plus the window distributable profit (2H26 + FY2027 unbooked
+    operating EPS x (1 - g/RONIC)) at tau/2.  L (trough from today) n/a.
+  * three-stage return: forward RONIC through Y1 2028, linear to the steady
+    return by Y2 2032, perpetual after.  Steady = max(own cycle 10.9%, mature
+    same-business peers' through-cycle median 36.8% (Caterpillar 40.3% /
+    Deere 33.3%, >= 5 years), floor 15%) = 36.8%, capped by each tier's
+    forward (M 22.9% / H 25.1%) -> the path is flat: three stages bite nowhere.
+  * g2 pairing: the same-earnings months are re-solved on the same aligned
+    ruler — each month's operating multiple = path_PE(g, month ROE) x
+    1.1^-tau + u x (1 - g/ROE) x 1.1^-(tau/2), u = the tier's unbooked
+    window EPS / FY2028 operating EPS — median of the well-posed months.
+  * k = 0 on every tier (no k on this ticker).
+
 V_opt = 0: electrification, mining and overseas expansion are inside the
 consensus years.  CNY segment of _AXIS.rates is [待建] → no r_f readings.
 
@@ -100,16 +118,57 @@ REQUIRED = [
     "shares", "bps", "np_h1", "cons_np26_m", "cons_np26_h", "cons_np27_l", "cons_np27_m", "cons_np27_h",
     "cons_np28_l", "cons_np28_m", "cons_np28_h", "np_l", "np_ttm", "equity", "n_rec_l",
     "np_fy22", "np_fy25", "np_mid10", "np_peak_own", "np_2016",
-    "r_perp", "g2_m", "g2_h", "payout_obs", "payout_op", "k_l", "k_m", "k_h", "disc_years",
+    "r_perp", "g2_m", "g2_h", "payout_obs", "payout_op", "k_l", "k_m", "k_h", "tau",
+    "minority_h1", "parent_ratio", "y1", "y2", "ronic_own", "ronic_ss_cat", "ronic_ss_de", "ronic_ss_floor", "ronic_ss",
     "pe_band_min", "pe_band_max", "pb_own_min",
     "net_debt", "net_debt_ext", "ebitda", "ebit", "interest",
     "net_cash_ext_h1", "div_declared", "c_ex", "cash_yield", "tax_eff",
 ]
 
 
-def print_match(target_np: float, r: float) -> tuple[list[tuple[str, float, float, float, bool]], float | None]:
+def path_pe(g: float, roe: float, r: float, y1: int, y2: int, r_ss: float) -> float:
+    """Three-stage retention Gordon (valuation-rules ② 稳态回报三段) at the start of NUM_YEAR per unit
+    of NUM_YEAR earnings: RONIC = roe through y1, linear to min(roe, r_ss) by y2, perpetual after."""
+    if r - g <= 0:
+        raise ValueError("r <= g")
+    ss = min(roe, r_ss)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = NUM_YEAR + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, ss) / ((r - g) * (1 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (ss - roe) * (cal - y1) / (y2 - y1)
+        pv += e * payout(g, ro) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
+
+
+def aligned_solver(u: float, r: float, tau: float, y1: int, y2: int, r_ss: float):
+    """g such that today's operating value / FY2028 operating earnings on this ruler (path PE x
+    (1+r)^-tau + window share u x (1 − g/ROE) x (1+r)^-(tau/2)) equals a month's operating multiple
+    (valuation-rules ②-3 历史反解同口径 + ③ 时点对齐)."""
+    def f(g: float, roe: float) -> float:
+        return path_pe(g, roe, r, y1, y2, r_ss) * (1 + r) ** -tau + u * (1 - g / roe) * (1 + r) ** -(tau / 2)
+
+    def solve(pe: float, roe: float) -> tuple[float, bool]:
+        lo, hi = -0.5, r - 1e-6
+        if not (f(lo, roe) <= pe <= f(hi, roe)):
+            return float("nan"), False
+        for _ in range(200):
+            mid = (lo + hi) / 2
+            if f(mid, roe) < pe:
+                lo = mid
+            else:
+                hi = mid
+        g = (lo + hi) / 2
+        return g, 0.0 <= g < r
+    return solve
+
+
+def print_match(target_np: float, r: float, solve=None) -> tuple[list[tuple[str, float, float, float, bool]], float | None]:
     """Same-earnings months on the operating basis: price and EPS net of the
-    excess cash visible then, ROE on equity net of it."""
+    excess cash visible then, ROE on equity net of it.  `solve(pe, roe)` reverse-solves
+    g on the framework's ruler (default: the single-stage retention Gordon)."""
     lo, hi = target_np * (1 - PAIR_BAND), target_np * (1 + PAIR_BAND)
     rows = []
     for month, close, eps, bps, rep in MONTHS:
@@ -118,7 +177,7 @@ def print_match(target_np: float, r: float) -> tuple[list[tuple[str, float, floa
         if not lo <= eps_op * SHARES_THEN <= hi:
             continue
         pe, roe = (close - cps) / eps_op, eps_op / (bps - cps)
-        g, ok = implied_g_retaining(pe, roe, r)
+        g, ok = solve(pe, roe) if solve else implied_g_retaining(pe, roe, r)
         rows.append((month, pe, roe, g, ok))
     good = [g for *_, g, ok in rows if ok]
     return rows, (statistics.median(good) if len(good) >= MIN_GOOD else None)
@@ -142,26 +201,40 @@ def main() -> int:
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
     for k in ("g2_m", "g2_h"):
         errors += check_g_cap(inp[k], r, k)
-    if int(inp["disc_years"]) != NUM_YEAR - TODAY_FY - 1:
-        errors.append(f"disc_years {inp['disc_years']:g} != FY{NUM_YEAR} - (FY{TODAY_FY}+1)")
+    tau = inp["tau"]
+    if abs(tau - ((NUM_YEAR - TODAY_FY) * 12 - 6) / 12) > 1e-9:
+        errors.append(f"tau {tau:g} != 2026-06-30 → {NUM_YEAR}-01-01 in years")
+    y1, y2 = int(inp["y1"]), int(inp["y2"])
+    if not (y1 == NUM_YEAR and y2 == y1 + 4):
+        errors.append("Y1 must be the visible-year end FY2028 and Y2 = Y1 + 4 (medium entry barrier)")
+    ss_want = max(inp["ronic_own"], statistics.median([inp["ronic_ss_cat"], inp["ronic_ss_de"]]), inp["ronic_ss_floor"])
+    if abs(inp["ronic_ss"] - ss_want) > 5e-4:
+        errors.append(f"ronic_ss {inp['ronic_ss']} != max(own, mature-peer median, floor) {ss_want:.3f}")
+    r_ss = inp["ronic_ss"]
     errors += ladder("FY2028 consensus", inp["cons_np28_l"], inp["cons_np28_m"], inp["cons_np28_h"])
     if not (inp["k_h"] >= inp["k_m"] >= inp["k_l"]):
         errors.append("cyclical k must satisfy k_H >= k_M >= k_L")
 
     # --- excess cash (经营价值与超额现金 ①②) ------------------------------------------
-    c_ex = inp["net_cash_ext_h1"] - inp["div_declared"]  # anchor 0 (A15)
-    if abs(c_ex - inp["c_ex"]) > 1e6:
-        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_h1 − div_declared {c_ex:.4e}")
+    c_tot = inp["net_cash_ext_h1"] - inp["div_declared"]  # anchor 0 (A15)
+    if abs(c_tot - inp["c_ex"]) > 1e6:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_h1 − div_declared {c_tot:.4e}")
+    pr = inp["equity"] / (inp["equity"] + inp["minority_h1"])   # ① 归母份额: no subsidiary cash disclosure
+    if abs(pr - inp["parent_ratio"]) > 5e-5:
+        errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
+    c_ex = c_tot * pr
     if c_ex < 0.15 * inp["equity"]:
         errors.append("c_ex below 15% of equity: the excess-cash line should not exist")
     c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])  # after-tax income, taken out of every numerator
     cps = c_ex / sh
     op = {t: tuple((inp[f"cons_np{y}_{t}"] - c_inc) / sh for y in (26, 27, 28)) for t in ("m", "h")}
+    eps_h1 = (inp["np_h1"] - c_inc / 2) / sh
+    unb = {t: (op[t][0] - eps_h1) + op[t][1] for t in ("m", "h")}   # unbooked window EPS, 2H26 + FY2027
 
-    # --- g2 from same-earnings months (自身市场读数，经营口径) -------------------------
+    # --- g2 from same-earnings months (自身市场读数，经营口径，同一时点对齐的尺) ---------------
     pm = {}
     for t in ("m", "h"):
-        rows, med = print_match(op[t][2] * sh, r)
+        rows, med = print_match(op[t][2] * sh, r, aligned_solver(unb[t] / op[t][2], r, tau, y1, y2, r_ss))
         pm[t] = (rows, med)
         if med is None:
             errors.append(f"{t.upper()}: fewer than {MIN_GOOD} well-conditioned same-earnings months")
@@ -181,19 +254,20 @@ def main() -> int:
         return report(errors, "FAIL (basket / g)")
 
     # --- M / H ---------------------------------------------------------------------
-    disc = (1 + r) ** inp["disc_years"]
-    eps_h1 = (inp["np_h1"] - c_inc / 2) / sh
+    disc = (1 + r) ** tau
+    disc_w = (1 + r) ** (tau / 2)
     obps = inp["bps"] - cps  # operating book per share (equity − excess cash)
 
     def tier(t: str, g: float) -> dict:
         e26, e27, e28 = op[t]
         roe = e28 / obps
-        for _ in range(200):  # operating BPS roll, b = g/RONIC (③ 步 2)
-            bps28 = obps + g / roe * ((e26 - eps_h1) + e27)
+        for _ in range(300):  # operating BPS roll, b = g/RONIC (③ 步 2)
+            bps28 = obps + g / roe * unb[t]
             roe = e28 / bps28
-        pe = perpetual_pe(g, roe, r)
-        return dict(eps=e28, roe=roe, bps=bps28, pe=pe,
-                    anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc + cps)
+        pe = path_pe(g, roe, r, y1, y2, r_ss)
+        w = max(unb[t] * (1 - g / roe), 0.0) / disc_w   # window distributable profit (③ 时点对齐)
+        return dict(eps=e28, roe=roe, bps=bps28, pe=pe, w=w, pe_1=perpetual_pe(g, roe, r),
+                    anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc + w + cps)
 
     rows = {t: tier(t, inp[f"g2_{t}"]) for t in ("m", "h")}
     for t in ("m", "h"):
@@ -226,12 +300,17 @@ def main() -> int:
     # shape (裁决顺序 ⑤): cyclical multiples reverse or flat
     if not (pe_l >= rows["m"]["pe"] >= rows["h"]["pe"] - 1e-9):
         errors.append("multiple shape is not reverse/flat (cyclical, 裁决顺序 ⑤)")
-    flat = [inp["np_l"] / sh * rows["m"]["pe"] + cps] + [rows[t]["eps"] * rows["m"]["pe"] / disc + cps for t in ("m", "h")]
+    flat = [inp["np_l"] / sh * rows["m"]["pe"] + cps] + [rows[t]["eps"] * rows["m"]["pe"] / disc + rows[t]["w"] + cps
+                                                          for t in ("m", "h")]
     errors += ladder("flat-multiple", *flat)
-    # ③ the generated M multiple must sit inside the same-earnings band
-    if not inp["pe_band_min"] <= rows["m"]["pe"] <= inp["pe_band_max"]:
-        errors.append(f"③ M multiple {rows['m']['pe']:.2f} outside same-earnings band "
+    # ③ today's operating value / operating earnings (the guard's reading) must sit inside the band
+    mult_m = (M - cps) / rows["m"]["eps"]
+    if not inp["pe_band_min"] <= mult_m <= inp["pe_band_max"]:
+        errors.append(f"③ M operating value / E28 {mult_m:.2f} outside same-earnings band "
                       f"[{inp['pe_band_min']}, {inp['pe_band_max']}]")
+    for t in ("m", "h"):
+        if abs(rows[t]["pe"] - rows[t]["pe_1"]) > 1e-9 and rows[t]["roe"] <= r_ss:
+            errors.append(f"{t.upper()}: path PE differs from single-stage although RONIC <= steady")
     # leverage gate
     lev1, lev2 = inp["net_debt"] / inp["ebitda"], inp["interest"] / inp["ebit"]
     if lev1 > LEV_DEBT_EBITDA or lev2 > LEV_INT_EBIT:
@@ -239,10 +318,13 @@ def main() -> int:
 
     # --- report ------------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}")
-    print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus ÷{disc:.2f}; "
+    print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus ÷1.1^{tau:g} = ÷{disc:.3f} + window ÷1.1^{tau / 2:g}; "
           f"同世界门 own FY22→25 NP CAGR {cagr:+.1%}")
+    print(f"三段回报: Y1 {y1} Y2 {y2} 稳态 = max(自身周期 {inp['ronic_own']:.1%}, 成熟同业中位 "
+          f"{statistics.median([inp['ronic_ss_cat'], inp['ronic_ss_de']]):.1%}, 兜底 {inp['ronic_ss_floor']:.0%}) = {r_ss:.1%} "
+          f"≥ 前瞻 M {rows['m']['roe']:.1%} / H {rows['h']['roe']:.1%} → 路径不起作用")
     print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付股息 {inp['div_declared'] / YI:.2f}亿 "
-          f"− 锚 0 = C_ex {c_ex / YI:.2f}亿（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；"
+          f"− 锚 0 − 增长期资金缺口 0 = {c_tot / YI:.2f}亿 × 归母比例 {pr:.4f} = C_ex {c_ex / YI:.2f}亿（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；"
           f"税后收益 {c_inc / YI:.2f}亿 从各档分子扣除")
     for t in ("m", "h"):
         rws, med = pm[t]
@@ -254,7 +336,9 @@ def main() -> int:
     for t in ("m", "h"):
         x = rows[t]
         print(f"{t.upper()}: 经营EPS28 {x['eps']:.4f} 经营BPS28 {x['bps']:.3f} RONIC {x['roe']:.2%} g {inp[f'g2_{t}']:.2%} "
-              f"PE {x['pe']:.2f} payout_model {payout(inp[f'g2_{t}'], x['roe']):.1%} -> {x['anchor']:.2f}（含现金 {cps:.2f}）")
+              f"PE {x['pe']:.2f} payout_model {payout(inp[f'g2_{t}'], x['roe']):.1%} | 经营价值 {x['eps'] * x['pe'] / disc:.2f} "
+              f"+ 窗口 {unb[t]:.3f}x(1−{inp[f'g2_{t}'] / x['roe']:.3f})÷1.1^{tau / 2:g} {x['w']:.2f} + 现金 {cps:.2f} -> {x['anchor']:.2f}"
+              f"（今天经营价值/E28 {(x['anchor'] - cps) / x['eps']:.2f}）")
     print(f"L: trough 经营利润 {inp['np_l'] / YI:.2f}亿 x recovery PE {pe_l:.2f} (g1 {g1:+.2%} n {inp['n_rec_l']:g}, "
           f"段二 RONIC {roe_mid:.2%} g {inp['g2_m']:.2%}) + 现金 {cps:.2f} -> {L:.2f}")
     print(f"L 段二分支差（披露）: 模型派息 {tail_gap[0]:.1%} vs 经营口径 {inp['payout_op']:.1%}（差 {tail_gap[1]:+.1%}；"
@@ -265,7 +349,7 @@ def main() -> int:
           f"分子比 L/M {inp['np_l'] / np_m:.2f} H/M {inp['cons_np28_h'] / np_m:.3f} | "
           f"倍数 L/M/H {pe_l:.2f}/{rows['m']['pe']:.2f}/{rows['h']['pe']:.2f}")
     print(f"flat-multiple (M-tier PE): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"③ M PE {rows['m']['pe']:.2f} in same-earnings band [{inp['pe_band_min']}, {inp['pe_band_max']}]")
+    print(f"③ M 今天经营价值/E28 {mult_m:.2f} in same-earnings band [{inp['pe_band_min']}, {inp['pe_band_max']}]")
 
     # evidence interval for g2_m: [g2_h, the g where M reaches H]
     lo, hi = inp["g2_h"], 0.06
@@ -280,9 +364,9 @@ def main() -> int:
         return f"{ll:.2f}/{tier('m', inp['g2_m'] + dg)['anchor']:.2f}/{tier('h', inp['g2_h'] + dg)['anchor']:.2f}"
     print(f"敏感性 g2 −1pp {band(-0.01)} | +1pp {band(0.01)}")
     print(f"M 分子换 FY2028 下沿 {inp['cons_np28_l'] / YI:.2f}亿 -> M "
-          f"{(inp['cons_np28_l'] - c_inc) / sh * rows['m']['pe'] / disc + cps:.2f}")
+          f"{(inp['cons_np28_l'] - c_inc) / sh * rows['m']['pe'] / disc + rows['m']['w'] + cps:.2f}")
     print(f"H 坐标·自身实测利润高点 {inp['np_peak_own'] / YI:.1f}亿 x H PE -> "
-          f"{inp['np_peak_own'] / sh * rows['h']['pe'] / disc + cps:.2f}")
+          f"{inp['np_peak_own'] / sh * rows['h']['pe'] / disc + rows['h']['w'] + cps:.2f}")
     mid_ratio = np_m / inp["np_mid10"]
     print(f"周期位置: FY28 M NP / 10y mean {inp['np_mid10'] / YI:.1f}亿 = {mid_ratio:.2f}x (demand-cycle, disclosure); "
           f"中枢坐标 10y mean x 1/r = {inp['np_mid10'] / sh / r:.2f}")
@@ -290,7 +374,7 @@ def main() -> int:
           f"地板 PB {inp['pb_own_min']} x BPS = {inp['bps'] * inp['pb_own_min']:.2f}, PB 1.0 = {inp['bps']:.2f}")
     mod, gap = payout_gap(inp["g2_m"], rows["m"]["roe"], inp["payout_op"])
     excess = (1 - inp["payout_obs"]) - inp["g2_m"] / rows["m"]["roe"]
-    win = (op["m"][0] - eps_h1) + op["m"][1]
+    win = unb["m"]
     print(f"payout: model {mod:.1%} vs 经营口径 {inp['payout_op']:.1%} (gap {gap:+.1%}); 实付现金派息 {inp['payout_obs']:.1%}; "
           f"多留部分 = {excess:.1%} x 窗口经营 EPS {win:.3f} = {excess * win:.2f}/sh（落在超额现金，λ 1，PV 不进锚点）")
     print(f"杠杆门: 净债/EBITDA {lev1:.2f} (扩展口径 {inp['net_debt_ext'] / inp['ebitda']:.2f}), "

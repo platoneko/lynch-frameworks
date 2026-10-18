@@ -7,17 +7,19 @@ current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes
 or a market-implied p — the digest and the app zone on live quotes.
 
 formula_id (bottom): sicc_asset_pb_bottom_v1
-formula_id (option): sicc_fullcap_sic_axis_vopt_v5
+formula_id (option): sicc_fullcap_sic_axis_vopt_v6
 
 Bottom = PB 0.55/0.80/1.00 × BPS (no ASP repair), BPS = equity × fx / shares.
-Option (vopt_v5, peer-ruler axis `_AXIS.sic`, frameworks/axes/sic.md): count =
+Option (vopt_v6, peer-ruler axis `_AXIS.sic`, frameworks/axes/sic.md): count =
 SICC's own named full capacity (cap_kpcs) × own measured ASP (asp_h); unit
 economics MUST be full-capacity (m_full — the scale-matched sell-side point,
 cross-checked by the cost split; the ramp-year consensus m_align is printed as
 the error it used to be); ROE on operating capital only (equity − net cash +
 the named expansion capex still to be spent), the rest of net cash added back
 undiscounted; Gordon at the axis g2 (capped at G_cap) and basket r, valued in
-t_opt and discounted.  V_opt = max(0, V^G_H − H); 表3 = base_k + p_k × V_opt.
+t_opt and discounted.  v6 (2026-10-19): the full margin no longer holds forever —
+it walks the return's calendar path (held to y1_sic, linear to the normal margin
+by y2_sic), normal margin = steady return × operating capital ÷ full revenue.  V_opt = max(0, V^G_H − H); 表3 = base_k + p_k × V_opt.
 The IPO price is a borrowed price — cross coordinate only.
 
 r is the basket rate (A14): 篮 4 常规经营 10% after the 2026-10-03 narrowing of
@@ -55,10 +57,10 @@ from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "2631.HK.md"
 AXIS = REPO_ROOT / "frameworks" / "axes" / "sic.md"
-SHARED = ("g2_sic_src", "t_align")  # rows that must equal _AXIS.sic
+SHARED = ("g2_sic_src", "t_align", "ss_return_sic", "y1_sic", "y2_sic")  # rows that must equal _AXIS.sic
 FORMULA_IDS = (
     "sicc_asset_pb_bottom_v1",
-    "sicc_fullcap_sic_axis_vopt_v5",
+    "sicc_fullcap_sic_axis_vopt_v6",
 )
 # 表3 per-tier credit (A12, _AXIS.sic): 拍值, no external anchor. Never an Input, never the base.
 P_K = (0.0, 0.25, 1.0)
@@ -73,7 +75,7 @@ REQUIRED = [
     "cap_kpcs", "vol_unit_kpcs", "rev_basis_up", "rev_basis_now", "asp_h",
     "m_full", "m_full_lo", "m_full_hi", "m_align", "m_h",
     "net_cash_cny", "net_cash_free_cny", "capex_named_hkd",
-    "g2_sic_src", "t_align", "r_perp", "r_disc", "year_now", "t_opt",
+    "g2_sic_src", "t_align", "ss_return_sic", "y1_sic", "y2_sic", "r_perp", "r_disc", "year_now", "t_opt",
     "np26e_cny", "np27e_cny", "np28e_cny",
     "pb_own_min", "pb_own_max",
 ]
@@ -91,10 +93,49 @@ def stated_table3(md: str) -> tuple[float, ...] | None:
     return tuple(float(x) for x in m.groups()) if m else None
 
 
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float,
+            fade_margin: bool = True) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year t0 (t = 1) full-margin
+    earnings: the retention of calendar year c earns RONIC = forward roe while c <= y1, falls
+    linearly to the steady return between y1 and y2, and from y2 on the steady return holds
+    in a Gordon tail.  r_s is capped at the forward roe and floored at r by the caller.
+
+    fade_margin (2026-10-19, user; retention.md「同一公司内部 MUST 一致」, options.md
+    「兑现年的利润率与回报沿该环节的高回报期走」): the full-capacity margin walks the same
+    calendar path — held to y1, linear to the normal margin by y2, normal thereafter.  The
+    normal margin = steady return × operating capital ÷ full-capacity revenue, i.e. the
+    margin at which the existing capital also earns the steady return, so its ratio to the
+    full margin is rs / roe.  g <= 0 never consumes RONIC; the margin path still applies."""
+    rs = min(roe, r_s)
+    m_ss = rs / roe if fade_margin else 1.0
+
+    def lin(cal: int, a: float, b: float) -> float:
+        if cal <= y1:
+            return a
+        if cal >= y2:
+            return b
+        return a + (b - a) * (cal - y1) / (y2 - y1)
+
+    def payout(ron: float) -> float:
+        return 1.0 if g <= 0 else min(1.0, 1.0 - g / ron)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * m_ss * payout(rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * lin(cal, 1.0, m_ss) * payout(lin(cal, roe, rs)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
+
+
 def success(inp: dict[str, float], *, margin: float | None = None, kpcs: float | None = None,
             net_cash: float | None = None, capex: bool = True, basis: float | None = None,
-            t_opt: float | None = None, g2: float | None = None, r: float | None = None) -> dict[str, float]:
-    """Full-capacity world on the own ruler (A4 / A6 / A11): operating-capital ROE, axis g2, basket r."""
+            t_opt: float | None = None, g2: float | None = None, r: float | None = None,
+            fade_margin: bool = True) -> dict[str, float]:
+    """Full-capacity world on the own ruler (A4 / A6 / A11): operating-capital ROE, axis g2, basket r;
+    the full margin fades with the return to the derived normal margin (A4 / A6)."""
     r = inp["r_perp"] if r is None else r
     g2 = min(inp["g2_sic_src"], g_cap(r)) if g2 is None else g2
     rev = (inp["cap_kpcs"] if kpcs is None else kpcs) * KPCS * inp["asp_h"] * (inp["rev_basis_up"] if basis is None else basis) / YI
@@ -103,13 +144,19 @@ def success(inp: dict[str, float], *, margin: float | None = None, kpcs: float |
     k = inp["capex_named_hkd"] / inp["fx_cny_hkd"] if capex else 0.0
     cap_op = inp["equity_cny"] - nc + k
     roe = np_h / cap_op
-    pe = perpetual_pe(g2, roe, r) if roe > 0 else 0.0
-    years = (inp["t_opt"] if t_opt is None else t_opt) - inp["year_now"]
+    t_o = inp["t_opt"] if t_opt is None else t_opt
+    # 稳态回报三段: success-world RONIC holds to y1_sic, fades to max(ss_return_sic, r) by y2_sic
+    # (_AXIS.sic §2b; own-cycle floor: none -- SICC's own record is loss-making, below r).
+    rs = max(inp["ss_return_sic"], r)
+    pe = (path_pe(g2, roe, r, int(t_o), int(inp["y1_sic"]), int(inp["y2_sic"]), rs, fade_margin)
+          if roe > 0 else 0.0)
+    m_norm = min(roe, rs) * cap_op / rev if roe > 0 else 0.0  # normal net margin (derived, A4)
+    years = t_o - inp["year_now"]
     disc = (1.0 + r) ** (-years)
     op_value = pe * max(0.0, np_h) * disc
     v = (op_value + nc - k) * YI * inp["fx_cny_hkd"] / inp["shares"]
     return {"rev": rev, "np": np_h, "cap_op": cap_op, "roe": roe, "pe": pe, "g2": g2, "disc": disc,
-            "op_undisc": pe * max(0.0, np_h), "addback": nc - k, "v": v}
+            "m_norm": m_norm, "op_undisc": pe * max(0.0, np_h), "addback": nc - k, "v": v}
 
 
 def main() -> int:
@@ -178,6 +225,7 @@ def main() -> int:
         "g2 0": success(inp, g2=0.0),
         "pre-ramp volume": success(inp, kpcs=inp["vol_unit_kpcs"]),
         "old 篮 7 r 15%": success(inp, r=0.15),
+        "margin perpetual (pre-10-19)": success(inp, fade_margin=False),
     }
 
     # --- earnings-ruler reference (A2e-1 asset_play row) ----------------------
@@ -207,6 +255,9 @@ def main() -> int:
     print(f"           g2 {post['g2']:.2%} (axis src {inp['g2_sic_src']:.4f}) r {inp['r_perp']:g} -> PE {post['pe']:.2f}x "
           f"(payout {1 - post['g2'] / post['roe']:.0%}); op value {post['op_undisc']:.1f}亿 x disc {post['disc']:.3f} "
           f"(t_opt {inp['t_opt']:g}) + add-back {post['addback']:.2f}亿 -> V^G_H {v_top:.2f} HKD vs H {H:.2f} -> V_opt {v_opt:.2f}")
+    print(f"           margin path: {inp['m_full']:.1%} held to y1 {inp['y1_sic']:g}, linear to normal "
+          f"{post['m_norm']:.1%} (= steady {max(inp['ss_return_sic'], inp['r_perp']):.0%} x op capital "
+          f"{post['cap_op']:.2f} / rev {post['rev']:.2f}; derived) by y2 {inp['y2_sic']:g}, normal thereafter")
     print(f"           ROE = r at margin {inp['r_perp'] * post['cap_op'] / post['rev']:.1%}")
     print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  "
           f"A'={adj_a:.2f} B'={adj_b:.2f}")

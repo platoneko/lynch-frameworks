@@ -23,12 +23,23 @@ paid in June 2026) is added as a closing item at face.  Because that cash is add
 at face, its after-tax interest is stripped from every EPS the scale uses (FY2027E
 roll, FY2028E tiers, FY2029E candidate): same yen amount per share in all tiers
 (valuation-rules「经营价值与超额现金」①: structure kept, only the double-counted
-interest removed; A15).  Retained-cash audit: C bucket
-(capex ≈ D&A) with the retention after the cash dividend spent on buybacks →
-full form; the "modelled-as-paid, actually retained" cash is capitalised as a
-perpetuity (single-stage form) and haircut by k (source ①: FY2023–FY2026
-buyback returns vs r).  Anchors are computed in JPY and converted to USD at
-`fx_jpy_usd` (1 ADR = 1 ordinary share).
+interest removed; A15).  Parent share (valuation-rules ①, A16): no subsidiary-level
+cash disclosure → parent ratio = parent equity ÷ (parent equity + NCI); the cash added
+at face, the interest stripped and the cash taken out of invested capital all use the
+parent share.  Retained-cash audit: C bucket (capex ≈ D&A) with the retention after the
+cash dividend spent on buybacks → full form; the "modelled-as-paid, actually retained"
+row is still printed, but its k is 0 since 2026-10-16 (valuation-rules ④: a k on the
+deemed-paid row is on the wrong object, A9).  Anchors are computed in JPY and converted
+to USD at `fx_jpy_usd` (1 ADR = 1 ordinary share).
+
+Steady return three segments (valuation-rules ② 稳态回报三段, A16): no peer-ruler axis on
+the main scale; steady return = own full-cycle ROIC 40.5% (FY2017–2026 ten-year mean on
+the forward's formula, user 2026-10-16) — above the same-business mature peers and the
+15% fallback; forward ROIC through Y1 FY2028 (visible end), linear to min(forward, 40.5%)
+at Y2 FY2034 (high entry barrier, 6-year fade), Gordon tail after.  Timing alignment
+(valuation-rules ③, A16): the Gordon value sits at the FY2028 opening (2027-03-31); tau =
+balance-sheet date 2026-03-31 → 1.0 year; window profit = FY2027E operating EPS × (1 − b),
+b = the IC roll's g/ROIC, at tau / 2; cash at face, not discounted.
 
 V_opt = 0 (A12, valuation-rules「未建模期权」2026-10-05「留存已经出钱的项目不另计」): the two
 new plants (¥92bn over ~3 years ≈ ¥30.7bn/yr) sit inside the retention the base g2
@@ -81,6 +92,7 @@ REQUIRED = [
     "euv_capex", "opt_years", "unspent_t1_share",
     "hgs_opm_l", "hgs_opm_m", "hgs_opm_h", "g2_hgs_src", "euv_opm_l", "euv_opm_m", "euv_opm_h",
     "g2_euv_src", "euv_rev_per_capex", "opt_spend_years", "v_opt_unfunded", "cash_yield",
+    "nci_mar26", "ss_return", "y1", "y2", "num_year", "tau",
 ]
 # Peer-ruler axes (contracts.md「同业尺轴」): rows taken from the axis must match it value by value.
 AXES = {
@@ -98,14 +110,52 @@ RF_TOL = 1e-9
 CAND_TOL = 0.05
 
 
+def parent_ratio(inp: dict[str, float]) -> float:
+    """A16: parent equity ÷ (parent equity + NCI) — ownership, not credibility (never in λ)."""
+    return inp["equity_mar26"] / (inp["equity_mar26"] + inp["nci_mar26"])
+
+
 def per_share(inp: dict[str, float]) -> tuple[float, float, float]:
-    """(net cash / share after the June-2026 final dividend, invested capital / share at 2026-03-31,
-    after-tax interest on that cash / share — stripped from every EPS because the cash is added at face, A15)."""
+    """(parent net cash / share after the June-2026 final dividend, invested capital / share at 2026-03-31,
+    after-tax interest on that cash / share — stripped from every EPS because the cash is added at face, A15 / A16)."""
     sh = inp["shares"]
-    cash = inp["net_cash_mar26"] / sh - inp["dps_final_fy26"]
-    ic = (inp["equity_mar26"] - inp["net_cash_mar26"]) / sh
+    p = parent_ratio(inp)
+    cash = (inp["net_cash_mar26"] / sh - inp["dps_final_fy26"]) * p
+    ic = (inp["equity_mar26"] - inp["net_cash_mar26"] * p) / sh
     inc = cash * inp["cash_yield"] * (1 - inp["tax_rate"])
     return cash, ic, inc
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(inp: dict[str, float], g1: float, n: int, g: float, roe: float, r: float) -> float:
+    """Gordon multiple on next-period earnings with the three-segment ROIC path (A16; gordon.py's
+    three-segment function is [待建]); t = 1 <-> fiscal year num_year; optional n transition years at
+    g1 (payout 1 − g1/ROIC); then ROIC forward through Y1, linear to min(forward, ss_return) at Y2."""
+    t0, y1, y2 = int(inp["num_year"]), int(inp["y1"]), int(inp["y2"])
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, inp["ss_return"])
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(int(n)):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def tier(inp: dict[str, float], eps: float, g1: float, n: int, r: float) -> dict[str, float]:
@@ -120,15 +170,19 @@ def tier(inp: dict[str, float], eps: float, g1: float, n: int, r: float) -> dict
         ic0 = ic_mar26 + b * (inp["eps_fy27e"] - inc)
         roic = e_op / ic0
         b = growth / roic
+    pe = path_value(inp, g1, n, g2, roic, r)  # A16 path (n = 0: single stage)
     if n > 0:
-        pe = two_stage_pe(g1, n, g2, roic, r)
         # Two-stage form: deemed-paid = (actual retention − b1) × window EPS (numerator year + n).
         deemed = max(1 - inp["payout_actual"] - b, 0.0) * sum(e_op * (1 + g1) ** i for i in range(n + 1))
     else:
-        pe = perpetual_pe(g2, roic, r)
         # Single-stage form: excess retention capitalised as a perpetuity ÷ (r − g2).
         deemed = max(1 - inp["payout_actual"] - b, 0.0) * e_op / (r - g2)
-    return dict(e_op=e_op, inc=inc, ic0=ic0, roic=roic, b=b, pe=pe, gross=e_op * pe + cash, deemed=deemed, cash=cash)
+    # Timing alignment (A16): FY2028-opening operating value → today at tau, plus the window profit.
+    tau = inp["tau"]
+    window = (inp["eps_fy27e"] - inc) * (1 - min(1.0, max(0.0, b))) / (1 + r) ** (tau / 2)
+    op_today = e_op * pe / (1 + r) ** tau + window
+    return dict(e_op=e_op, inc=inc, ic0=ic0, roic=roic, b=b, pe=pe, window=window,
+                gross=op_today + cash, deemed=deemed, cash=cash)
 
 
 def hdd_phase1_revenue(inp: dict[str, float]) -> float:
@@ -171,6 +225,14 @@ def main() -> int:
     if inp["net_debt_ebitda"] > 3 or inp["interest_ebit"] > 1 / 3:
         errors.append("杠杆门 triggered — framework must carry the ROIC decomposition (valuation-rules「杠杆门」)")
     errors += ladder("eps_fy28e", inp["eps_fy28e_low"], inp["eps_fy28e_consensus"], inp["eps_fy28e_high"])
+    if not (inp["num_year"] <= inp["y1"] < inp["y2"]):
+        errors.append("high-return window must satisfy numerator year <= Y1 < Y2 (A16)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        errors.append("tau out of range (A16)")
+    if not (r < inp["ss_return"] < 1.0):
+        errors.append("steady return must sit above r and below 100% (A16)")
+    if any(inp[f"k_{t}"] != 0 for t in TIERS):
+        errors.append("k on the deemed-paid row must be 0 (valuation-rules ④, A9)")
 
     eps = {"l": inp["eps_fy28e_low"], "m": inp["eps_fy28e_consensus"], "h": inp["eps_fy28e_high"]}
     fx = inp["fx_jpy_usd"]
@@ -257,6 +319,11 @@ def main() -> int:
 
     print(f"formula_id={FORMULA_ID}  fx={fx}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g}  n=0")
     print(
+        f"parent ratio {parent_ratio(inp):.5f} · steady return {inp['ss_return']:.1%} (own cycle) · Y1 FY{int(inp['y1'])} / "
+        f"Y2 FY{int(inp['y2'])} · tau {inp['tau']:g} · window JPY " + "/".join(f"{rows[t]['window']:.1f}" for t in TIERS)
+        + " (USD " + "/".join(f"{rows[t]['window'] / fx:.2f}" for t in TIERS) + ")"
+    )
+    print(
         f"net cash at face {rows['m']['cash']:.1f} JPY/sh × yield {inp['cash_yield']:.2%} × (1 − {inp['tax_rate']:g}) "
         f"= after-tax interest {inc:.2f} JPY/sh stripped from every EPS (A15)"
     )
@@ -315,7 +382,9 @@ def main() -> int:
         return (x["gross"] - alt["k_m"] * x["deemed"]) / fx
 
     print(f"  sens g2 −1pp (5%)              → M {m_with(g2=g2 - 0.01):.2f} USD   (+1pp exceeds G_cap, not shown)")
-    print(f"  sens k = 0 / 0.2               → M {m_with(k_m=0.0):.2f} / {m_with(k_m=0.2):.2f} USD")
+    print(f"  sens k 0.09 (pre-correction, deemed-paid row) → M {m_with(k_m=0.09):.2f} USD")
+    print(f"  sens steady return 15% (fallback) / 39.9% (11y mean) → M {m_with(ss_return=0.15):.2f} / "
+          f"{m_with(ss_return=0.399):.2f} USD; Y2 FY2032 (medium barrier) → M {m_with(y2=2032.0):.2f} USD")
     wc = inp["net_cash_wc"] / inp["shares"] / fx if "net_cash_wc" in inp else 0.0
     print(f"  sens net cash less 2-month working capital → M {M - wc:.2f} USD (−{wc:.2f})")
     print(f"  sens fx ±5%                    → M {Mj / (fx * 1.05):.2f} / {Mj / (fx * 0.95):.2f} USD")
@@ -323,7 +392,7 @@ def main() -> int:
 
     # Growth-runway table (M tier ROIC, then g2 forever; incl. cash, before the k row).
     roic_m = rows["m"]["roic"]
-    print("runway (USD, M ROIC, op EPS, cash incl., before k): g \\ years  0 / 5 / 10 / 15")
+    print("runway (USD, M ROIC held forever, FY2028-opening, op EPS, cash incl.; reading only): g \\ years  0 / 5 / 10 / 15")
     for gg in (0.08, 0.10, 0.12, 0.15):
         vals = [eop["m"] * (two_stage_pe(gg, n, g2, roic_m, r) if n else perpetual_pe(g2, roic_m, r)) + cash for n in (0, 5, 10, 15)]
         print(f"  {gg:.0%}: " + " / ".join(f"{v / fx:.0f}" for v in vals))
@@ -332,12 +401,14 @@ def main() -> int:
     # EPS, ROIC, b, cash and k stay put.  Disclosure only — the anchors are the 中枢 column.
     def band_rf(dr: float) -> tuple[float, float, float]:
         out = []
+        tau = inp["tau"]
         for t in TIERS:
             x = rows[t]
             rr = r + dr
-            pe = perpetual_pe(g2, x["roic"], rr)
+            pe = path_value(inp, 0.0, 0, g2, x["roic"], rr)
+            win = (inp["eps_fy27e"] - x["inc"]) * (1 - min(1.0, max(0.0, x["b"]))) / (1 + rr) ** (tau / 2)
             deemed = max(1 - inp["payout_actual"] - x["b"], 0.0) * eop[t] / (rr - g2)
-            out.append((eop[t] * pe + x["cash"] - x["k"] * deemed) / fx)
+            out.append((eop[t] * pe / (1 + rr) ** tau + win + x["cash"] - x["k"] * deemed) / fx)
         return out[0], out[1], out[2]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)

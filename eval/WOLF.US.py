@@ -6,7 +6,14 @@ bottom L/M/H / A/B / V_opt / 表3 and exits 1 on mismatch.  The doc carries no
 current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
 derived live by the daily digest and the app, so nothing here reads a price.
 
-formula_id: wolf_asset_pb_fd_sic_axis_vopt_v5
+formula_id: wolf_asset_pb_fd_sic_axis_vopt_v6
+
+v6 (2026-10-19): the option multiple walks the 稳态回报三段 path (y1_sic / y2_sic /
+ss_return_sic from _AXIS.sic) and the full-capacity EBIT margin fades on the same
+calendar to the normal margin = steady return × operating capital ÷ (revenue × (1 − tax)),
+same method as 2631.HK.  At the base the forward ROE (14.5%) is already below the axis
+steady return, so the steady return is capped at 14.5%, normal margin = full margin and
+nothing fades; only the higher-margin sensitivities move.
 
 Bottom = PB 0.55/0.80/1.00 × FULLY DILUTED book.  Post-Chapter-11 the three
 converts are deep in the money, so the book that stands behind the diluted
@@ -60,8 +67,8 @@ from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "WOLF.US.md"
 AXIS = REPO_ROOT / "frameworks" / "axes" / "sic.md"
-SHARED = ("g2_sic_src", "t_align")  # rows that must equal _AXIS.sic
-FORMULA_ID = "wolf_asset_pb_fd_sic_axis_vopt_v5"
+SHARED = ("g2_sic_src", "t_align", "ss_return_sic", "y1_sic", "y2_sic")  # rows that must equal _AXIS.sic
+FORMULA_ID = "wolf_asset_pb_fd_sic_axis_vopt_v6"
 TOL = 0.05  # outputs rounded to 2 decimals
 MM = 1e6  # inputs are in $M
 TIERS = ("l", "m", "h")
@@ -76,6 +83,7 @@ REQUIRED = [
     "close_own_min", "shares_basic",
     "rev_named", "rev_installed", "m_full", "m_full_lo", "m_full_hi", "m_plan29", "tax_opt",
     "eps_fy28e", "rev_fy28e", "lease_liab", "g2_sic_src", "t_align", "t_opt", "year_now",
+    "ss_return_sic", "y1_sic", "y2_sic",
 ]
 
 
@@ -88,6 +96,37 @@ def stated_table3(md: str) -> tuple[float, ...] | None:
     m = re.search(r"表3[^\n]*?L′ = \*\*([0-9.]+)\*\*[^\n]*?M′ = \*\*([0-9.]+)\*\*[^\n]*?H′ = \*\*([0-9.]+)\*\*",
                   outputs_section(md))
     return tuple(float(x) for x in m.groups()) if m else None
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-segment RONIC path with the margin on the same calendar (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段; 2026-10-19 user: margin and return fade together,
+    same method as 2631.HK).  Multiple on the t0 full-capacity NOPAT (t = 1): RONIC = roe and
+    the full margin hold while c <= y1, both fall linearly to the steady return / normal margin
+    by y2, steady thereafter.  rs = min(roe, r_s) (r_s floored at r by the caller); normal
+    margin = rs × operating capital ÷ full revenue, i.e. a ratio rs / roe of the full margin —
+    so when the forward roe is already below the axis steady return nothing fades."""
+    rs = min(roe, r_s)
+    m_ss = rs / roe
+
+    def lin(cal: int, a: float, b: float) -> float:
+        if cal <= y1:
+            return a
+        if cal >= y2:
+            return b
+        return a + (b - a) * (cal - y1) / (y2 - y1)
+
+    def payout(ron: float) -> float:
+        return 1.0 if g <= 0 else min(1.0, 1.0 - g / ron)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * m_ss * payout(rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * lin(cal, 1.0, m_ss) * payout(lin(cal, roe, rs)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
 
 
 def main() -> int:
@@ -155,10 +194,14 @@ def main() -> int:
         nd = net_debt if nd is None else nd
         nopat = rev * margin * (1.0 - i["tax_opt"])
         roe = nopat / cap
-        pe = perpetual_pe(g, roe, rr) if roe > 0 else 0.0
+        rs = max(i["ss_return_sic"], rr)
+        pe = (path_pe(g, roe, rr, int(i["t_opt"]), int(i["y1_sic"]), int(i["y2_sic"]), rs)
+              if roe > 0 else 0.0)
+        m_norm = min(roe, rs) * cap / (rev * (1.0 - i["tax_opt"])) if roe > 0 else margin
         disc = (1.0 + rr) ** (-(i["t_opt"] - i["year_now"]))
         v = (pe * max(0.0, nopat) * disc - nd) * MM / i["shares_fd"]
-        return {"nopat": nopat, "roe": roe, "pe": pe, "disc": disc, "op": pe * max(0.0, nopat), "v": v}
+        return {"nopat": nopat, "roe": roe, "pe": pe, "disc": disc, "op": pe * max(0.0, nopat), "v": v,
+                "m_norm": m_norm, "pe_flat": perpetual_pe(g, roe, rr) if roe > 0 else 0.0}
 
     post = success(i["m_full"])
     v_top = post["v"]
@@ -198,12 +241,17 @@ def main() -> int:
     print(f"           g2 {g2:.2%} (axis src {i['g2_sic_src']:.4f}) r {r:g} -> PE {post['pe']:.2f}x (payout {1 - g2 / post['roe']:.0%}); "
           f"op value {post['op']:.1f} x disc {post['disc']:.3f} (t_opt {i['t_opt']:g}) + FD net cash {-net_debt:.1f} "
           f"-> V^G_H {v_top:.2f} vs H {H:.2f} -> V_opt {v_opt:.2f}")
+    print(f"           path: return {post['roe']:.2%} / EBIT margin {i['m_full']:.1%} held to y1 {i['y1_sic']:g}, "
+          f"linear to steady min(roe, {max(i['ss_return_sic'], r):.0%}) / normal margin {post['m_norm']:.1%} "
+          f"(= steady x op capital / (rev x (1 - tax)); derived) by y2 {i['y2_sic']:g}; "
+          f"flat-perpetuity PE {post['pe_flat']:.2f}x")
     print(f"           ROE = r at EBIT margin {r * cap_op / (i['rev_named'] * (1 - i['tax_opt'])):.1%}; "
           f"FY28E cons margin {m_align:+.1%} (EPS {i['eps_fy28e']} x basic {basic / MM:.1f}M / rev {i['rev_fy28e']:.1f})")
     print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  "
           f"A'={adj_a:.2f} B'={adj_b:.2f}")
     for name, s in sens.items():
-        print(f"  sens {name:36s}: NOPAT {s['nopat']:7.1f} ROE {s['roe']:6.1%} PE {s['pe']:5.2f} V^G_H {s['v']:.2f} (V_opt {max(0.0, s['v'] - H):.2f})")
+        print(f"  sens {name:36s}: NOPAT {s['nopat']:7.1f} ROE {s['roe']:6.1%} normal margin {s['m_norm']:6.1%} "
+              f"PE {s['pe']:5.2f} V^G_H {s['v']:.2f} (V_opt {max(0.0, s['v'] - H):.2f})")
     print(f"  cross court EV {i['ev_court_l']:.0f}/{i['ev_court_m']:.0f}/{i['ev_court_h']:.0f} -> per FD share "
           f"{court['l']:.2f}/{court['m']:.2f}/{court['h']:.2f} (borrowed price, not a ceiling); "
           f"court bridge equity {i['eq_court_bridge']:.1f} -> FD {bridge_fd:.2f}")

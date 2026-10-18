@@ -26,7 +26,9 @@ Main ruler (2026-10-03 migration off the flat 15.34x own-median multiple):
              band only.  g = axis
              _AXIS.phosphate-chain perpetual g2 1.5% on all tiers; ROE = FY2028
              EPS / start-of-FY2028 BPS, BPS rolled from the 2026-06-30 book with
-             retention b = g/ROE (iterated) — valuation-rules ③ step 2.
+             retention b = g_win/ROE (iterated, cut to [0, 1]) — valuation-rules ③
+             step 2; g_win = the tier path's FY2026 -> FY2028 growth (L flat: 0), the
+             same b sets the window distributable profit (2026-10-18 窗口留存口径改正).
   ②-b       the old bottom-up MAP ladder (M 2.1669 / H 3.1551) is tested
              mechanically against the FY2028 consensus mean and fails both
              legs, which is why the consensus three points replace it.
@@ -84,7 +86,7 @@ REQUIRED = [
     "cons_fy26_m", "cons_fy26_h", "cons_fy27_m", "cons_fy27_h",
     "cons_fy28_l", "cons_fy28_m", "cons_fy28_h",
     "ladder_eps_m", "ladder_eps_h",
-    "r_perp", "r_ctl", "g2_l", "g2_m", "g2_h", "disc_years", "payout_obs",
+    "r_perp", "r_ctl", "g2_l", "g2_m", "g2_h", "tau", "ronic_y1", "ronic_y2", "ronic_ss", "payout_obs",
     "ttm_eps", "pe_own_min", "pe_own_med", "pe_own_p75", "same_eps_weeks_m",
     "pe_same_min_l", "pe_same_max_l", "band_l_start", "band_own_low", "pb_own_min",
     "map_l", "map_m", "map_h",
@@ -93,6 +95,32 @@ REQUIRED = [
     "lzz_cap", "lzz_eq", "lzz_k", "lzz_t", "lzz_pub",
     "jgl_cap", "jgl_eq", "jgl_k", "jgl_t", "jgl_pub",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_ss: float) -> float:
+    """Gordon multiple with the steady-return three-segment path (valuation-rules「经营价值与超额现金」
+    ② 稳态回报三段; `gordon.py` three-segment helper not built yet, so it lives here).
+
+    Value per unit of numerator-year (t0) earnings, retention of calendar year c earning from c+1:
+      c <= y1            RONIC = tier forward ROE
+      y1 < c < y2        RONIC linear forward -> steady
+      c >= y2 (and > y1) RONIC = steady, Gordon tail
+    steady = min(tier forward, r_ss): the steady return never exceeds the tier's forward return.
+    """
+    rs = min(roe, r_ss)
+
+    def payout(ron: float) -> float:
+        return min(1.0, 1.0 - g / ron) if g > 0 else 1.0
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(rs) / ((r - g) * (1 + r) ** (t - 1))
+        ron = roe if cal <= y1 else roe + (rs - roe) * (cal - y1) / (y2 - y1)
+        pv += e * payout(ron) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def stated_v_opt(sec: str) -> float | None:
@@ -143,8 +171,12 @@ def main() -> int:
         errors += check_g_cap(inp[k], r, k)
     if not (inp["g2_l"] == inp["g2_m"] == inp["g2_h"]):
         errors.append("g2 must be flat across tiers (axis row, A14)")
-    if int(inp["disc_years"]) != NUM_YEAR - TODAY_FY - 1:
-        errors.append(f"disc_years {inp['disc_years']:g} != FY{NUM_YEAR} - (FY{TODAY_FY}+1)")
+    if abs(inp["tau"] - 1.5) > 1e-9:
+        errors.append(f"tau {inp['tau']:g} != 1.5 (balance-sheet date 2026-06-30 -> FY{NUM_YEAR} opening)")
+    if not (int(inp["ronic_y1"]) == NUM_YEAR and int(inp["ronic_y2"]) > int(inp["ronic_y1"])):
+        errors.append("ronic_y1 must be the visible-year end FY2028 and ronic_y2 later (A20)")
+    if inp["ronic_ss"] < inp["r_perp"]:
+        errors.append(f"ronic_ss {inp['ronic_ss']:g} below r — steady return is floored at r")
     errors += ladder("FY2028 consensus", inp["cons_fy28_l"], inp["cons_fy28_m"], inp["cons_fy28_h"])
     if errors:
         return report(errors)
@@ -176,18 +208,32 @@ def main() -> int:
             if t == "L" and l_eps is not None:
                 e28 = e26 = e27 = l_eps
             gg = g0 if g is None else g
-            roe = e28 / bps0
-            for _ in range(100):  # BPS roll with b = g/ROE (valuation-rules ③ step 2)
-                bps = bps0 + (gg / roe) * ((e26 - inp["eps_h1"]) + e27)
-                roe = e28 / bps
-            pe = perpetual_pe(gg, roe, rr)
-            out[t] = dict(eps=e28, bps=bps, roe=roe, pe=pe, anchor=e28 * pe / (1 + rr) ** inp["disc_years"])
+            # Window segment growth (A20, 2026-10-18 窗口留存口径改正): this tier's own path from the
+            # current year FY2026 to the numerator year, annualised -- the same path the roll and the
+            # window read (L: FY2025 held flat -> 0).  Was the perpetual g2, which belongs after 2028.
+            gw = (e28 / e26) ** (1.0 / (NUM_YEAR - TODAY_FY)) - 1.0
+            unb = (e26 - inp["eps_h1"]) + e27
+            bps = bps0
+            for _ in range(500):  # BPS roll with b = g_win/ROE cut to [0, 1] (valuation-rules ③ 时点对齐)
+                nxt = bps0 + min(1.0, max(0.0, gw * bps / e28)) * unb
+                if abs(nxt - bps) < 1e-13:
+                    break
+                bps = nxt
+            roe = e28 / bps
+            bw = min(1.0, max(0.0, gw / roe))
+            pe = path_pe(gg, roe, rr, NUM_YEAR, int(inp["ronic_y1"]), int(inp["ronic_y2"]), inp["ronic_ss"])
+            # Timing (A20): the Gordon value sits at 2028-01-01 -> back tau years to 2026-06-30, plus the
+            # window's distributable profit = the roll's unbooked consensus profit x (1 - b), at tau/2.
+            tau = inp["tau"]
+            win = unb * (1 - bw)
+            out[t] = dict(eps=e28, bps=bps, roe=roe, pe=pe, win=win, gw=gw, bw=bw, unb=unb,
+                          anchor=e28 * pe / (1 + rr) ** tau + win / (1 + rr) ** (tau / 2))
         return out
 
     def fmt(rs: dict[str, dict[str, float]]) -> str:
         return "/".join(f"{rs[t]['anchor']:.2f}" for t in "LMH")
 
-    disc = (1 + r) ** inp["disc_years"]
+    disc = (1 + r) ** inp["tau"]
     rows = ruler(r)
     L, M, H = (rows[t]["anchor"] for t in "LMH")
     if not (L < M < H):
@@ -202,20 +248,35 @@ def main() -> int:
         if inp[f"{key}_t"] <= NUM_YEAR:
             errors.append(f"{name}: realisation year {inp[f'{key}_t']:g} must be after FY{NUM_YEAR} (consensus holds no output)")
 
-    def vopt(nit_x: float, rr: float, keys=None) -> tuple[float, list]:
-        """Equity tons x NI/t x this ticker's M-tier multiple at rr, less unspent capital,
-        discounted at rr from the realisation year to FY2028 and one more year to today."""
-        pe_x = ruler(rr)["M"]["pe"]
+    fall = int(inp["ronic_y2"]) - int(inp["ronic_y1"])
+
+    def mine_pe(rr: float, t: int, fresh: bool = False) -> float:
+        """M-tier multiple valued in the mine's realisation year t (A9, 2026-10-19 product-stage
+        check).  The mines sell the product the company already ships at scale (phosphate rock,
+        ~3 Mt/yr own mines), so they sit in the same 环节 and inherit its calendar high-return
+        period Y1 2028 / Y2 2032: by 2029 / 2030 the return is already one / two years into the
+        fall.  Until 2026-10-19 the M multiple (built from 2028) was reused at t, which silently
+        restarted the high-return period at each mine's start -- `fresh=True` keeps that read
+        for disclosure only."""
+        m = ruler(rr)["M"]
+        y1, y2 = (t, t + fall) if fresh else (int(inp["ronic_y1"]), int(inp["ronic_y2"]))
+        return path_pe(tiers["M"][3], m["roe"], rr, t, y1, y2, inp["ronic_ss"])
+
+    def vopt(nit_x: float, rr: float, keys=None, fresh: bool = False) -> tuple[float, list]:
+        """Equity tons x NI/t x this ticker's M-tier multiple on the calendar return path, valued
+        in the realisation year at rr, less unspent capital, discounted at rr from the
+        realisation year to FY2028 and on to today."""
         tot, detail = 0.0, []
         for key, name in mine_keys:
             if keys is not None and key not in keys:
                 continue
             t = inp[f"{key}_t"]
+            pe_x = mine_pe(rr, int(t), fresh)
             tons = inp[f"{key}_cap"] * inp[f"{key}_eq"]          # 万吨/年, equity
             dni = tons * nit_x / 1e4                              # 亿
             k_eq = inp[f"{key}_k"] * inp[f"{key}_eq"]            # 亿
             val_t = dni * pe_x - k_eq
-            pv = val_t / (1 + rr) ** (t - NUM_YEAR) / (1 + rr) ** inp["disc_years"]
+            pv = val_t / (1 + rr) ** (t - NUM_YEAR) / (1 + rr) ** inp["tau"]
             tot += pv
             detail.append((name, tons, dni, k_eq, val_t, t, pv))
         return tot / shares_yi, detail
@@ -249,7 +310,11 @@ def main() -> int:
     for t in "LMH":
         x = rows[t]
         print(f"{t}: eps28={x['eps']:.4f} bps_start28={x['bps']:.4f} ROE={x['roe']:.2%} pe={x['pe']:.3f} "
-              f"(÷{disc:.2f} -> {x['pe'] / disc:.2f}x) anchor={x['anchor']:.4f}")
+              f"(÷{disc:.4f} -> {x['pe'] / disc:.2f}x) + window {x['unb']:.4f} x (1 - b {x['bw']:.3f}; "
+              f"g_win {x['gw']:.2%}) = {x['win']:.3f} @tau/2 anchor={x['anchor']:.4f}")
+    print(f"steady return path (A20): Y1 {int(inp['ronic_y1'])} / Y2 {int(inp['ronic_y2'])}, steady {inp['ronic_ss']:.1%} "
+          f"(own cycle FY2020-25); old perpetual PE "
+          + "/".join(f"{perpetual_pe(tiers[t][3], rows[t]['roe'], r):.3f}" for t in 'LMH'))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} | 分子比 "
           f"L={rows['L']['eps'] / rows['M']['eps']:.4f} H={rows['H']['eps'] / rows['M']['eps']:.4f} | 倍数比 "
@@ -304,8 +369,9 @@ def main() -> int:
     e_m = rows["M"]["eps"]
     coords = {
         "① prev M (篮4 10% draft)": ctl["M"]["anchor"],
-        "② E_M/r": e_m / r / disc,
-        "③ D_M/(r-g)": inp["payout_obs"] * e_m / (r - g_ax) / disc,
+        # same time basis as the anchor (A20): value at 2028-01-01 back tau years + the window's profit
+        "② E_M/r": e_m / r / disc + rows["M"]["win"] / (1 + r) ** (inp["tau"] / 2),
+        "③ D_M/(r-g)": inp["payout_obs"] * e_m / (r - g_ax) / disc + rows["M"]["win"] / (1 + r) ** (inp["tau"] / 2),
         "⑥ BPS x PB min": inp["bps_h1"] * inp["pb_own_min"],
     }
     inside = [k for k, v in coords.items() if k[0] != "①" and abs(M / v - 1) <= GATE_BAND]
@@ -323,12 +389,22 @@ def main() -> int:
     print(f"payout: model {mod:.1%} vs observed {inp['payout_obs']:.1%} (gap {gap:+.1%}); excess retention "
           f"{excess:.1%} x EPS_M x 3.5y window (D bucket, mines, k=0) = {excess * rows['M']['eps'] * 3.5:.2f}/sh "
           f"(k前 = k后)")
+    print("window 2H26-FY2027 (A20): model b " + " / ".join(f"{t} {rows[t]['bw']:.3f}" for t in "LMH")
+          + f" vs actual retention {1 - inp['payout_obs']:.1%}; (actual retention - b) x unbooked = "
+          + " / ".join(f"{t} {(1 - inp['payout_obs'] - rows[t]['bw']) * rows[t]['unb']:+.2f}" for t in "LMH") + "/sh")
     print(f"V_opt unit: ({inp['opt_price']:g} x (1-{inp['opt_restax']:g}) - {inp['opt_cost']:g}) x (1-{inp['opt_tax']:g}) "
           f"= {nit:.1f} 元/吨 NI; multiple = M-tier {pe_opt:.3f}x")
     for name, tons, dni, k_eq, val_t, t, pv in mines:
-        print(f"  {name}: {tons:.1f}万吨 x {nit:.1f} = ΔNI {dni:.3f}亿 x {pe_opt:.3f} - K {k_eq:.3f} = {val_t:.2f}亿 @{t:g} "
-              f"÷{1 + r:.2f}^{t - NUM_YEAR + inp['disc_years']:g} -> {pv:.2f}亿 = {pv / shares_yi:.3f}/sh")
-    print(f"V_opt={v_opt:.4f}")
+        pe_t = mine_pe(r, int(t))
+        print(f"  {name}: {tons:.1f}万吨 x {nit:.1f} = ΔNI {dni:.3f}亿 x {pe_t:.3f} (valued @{t:g} on Y1 {int(inp['ronic_y1'])} / "
+              f"Y2 {int(inp['ronic_y2'])}) - K {k_eq:.3f} "
+              f"= {val_t:.2f}亿 @{t:g} ÷{1 + r:.2f}^{t - NUM_YEAR + inp['tau']:g} -> {pv:.2f}亿 = {pv / shares_yi:.3f}/sh")
+    v_fresh, _ = vopt(nit, r, fresh=True)
+    print(f"V_opt={v_opt:.4f}  (calendar path Y1 {int(inp['ronic_y1'])} / Y2 {int(inp['ronic_y2'])}; "
+          f"fresh high-return period from each mine's start (pre-2026-10-19 read, M-tier {pe_opt:.3f}x) would read {v_fresh:.4f})")
+    for key, name in mine_keys:
+        if mine_pe(r, int(inp[f"{key}_t"])) > pe_opt + 1e-12:
+            errors.append(f"{name}: calendar-path multiple above the M-tier multiple -- the fall cannot restart")
     roe_mine = perpetual_pe(inp["g2_m"], 1.0, r)
     print(f"V_opt multiple check: new-mine own ROE ~100% would give {roe_mine:.2f}x ({roe_mine / pe_opt - 1:+.1%} vs M-tier)")
     sens = (

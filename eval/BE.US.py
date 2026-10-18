@@ -49,6 +49,11 @@ rather than a cross-basket footnote.  M's 27.48x lands inside [26.37, 37.82]
 (A8) — the −14.58-turn gap the single-basket ruler showed was the 5pp rate
 difference, not a fundamental one.
 
+Steady-return path (A22): forward tier ROE through Y1 2028, linear to rs_steady by
+Y2 2032, tail at rs_steady.  rs_steady = 24.1% is the HIGHEST of the three mature
+peers' through-cycle readings (Generac; Cummins 23.0%, Eaton 16.1%), not the
+median the rule names — a user ruling of 2026-10-18, recorded in A22.
+
 Option (A16): the beyond-consensus GW runway is priced as V_opt with per-tier
 p_k; the script recomputes the corrected band and checks the stated V_opt /
 p_k / A′ / B′.
@@ -131,8 +136,50 @@ REQUIRED = [
     "opt_gw_named",
     "opt_gw_cons",
     "t_opt",
+    "tau",
+    "parent_share",
+    "y1",
+    "y2",
+    "rs_steady",
+    "y1_opt",
+    "y2_opt",
 ]
 TIERS = ("L", "M", "H")
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0, r_terminal: float | None = None) -> float:
+    """Multiple on numerator-year earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2.  Basket pair: the n stage-1 years are discounted at
+    the journey rate r, everything after at r_terminal (the structure of two_stage_pe).  With
+    rs >= roe this equals two_stage_pe(g1, n, g2, roe, r, r_terminal) exactly.
+    (gordon.py three-segment helper is [待建].)"""
+    r_tv = r if r_terminal is None else r_terminal
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    def df(t: int) -> float:
+        return (1 + r) ** (-min(t, n)) * (1 + r_tv) ** (-max(t - n, 0))
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) * df(t)
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / (r_tv - g2) * df(t - 1)
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) * df(t)
+        e *= 1 + g2
+        t += 1
 
 
 def stated_v_opt(md: str) -> float | None:
@@ -248,18 +295,31 @@ def main() -> int:
     excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}
 
     # ---- Step 2: multiples (g shared across tiers; only ROE varies) and anchors ----
+    # Steady-return path (A22): forward ROE through Y1, linear to rs_steady by Y2, tail at rs_steady.
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+
     def tier_pes(g2_: float, transition: bool = True) -> dict[str, float]:
         return {
-            t: (two_stage_pe(g1, n, g2_, roe[t], r, r_terminal=r_t) if transition
-                else perpetual_pe(g2_, roe[t], r_t))
+            t: (three_segment_pe(NUM_YEAR, y1, y2, rs, g2_, roe[t], r, g1=g1, n=n, r_terminal=r_t)
+                if transition else three_segment_pe(NUM_YEAR, y1, y2, rs, g2_, roe[t], r_t))
             for t in TIERS
         }
+
+    # Timing (A22): the Gordon value sits at t_n = 2027-01-01; discount tau years at the journey
+    # basket to the 2026-06-30 balance sheet, plus the 2H26 window's distributable earnings
+    # (unbooked x (1 - b1), clipped at 0 — b1 > 1 in every tier, so the window is 0).
+    tau = inp["tau"]
+    window = {t: max(unbooked * (1.0 - b1[t]), 0.0) * inp["parent_share"] for t in TIERS}
+
+    def value(pes_: dict[str, float], r_: float) -> dict[str, float]:
+        return {t: eps[t] * pes_[t] * (1.0 - k[t]) / (1 + r_) ** tau + window[t] / (1 + r_) ** (tau / 2)
+                for t in TIERS}
 
     # k leaves the anchors only — never the multiple, never b (A21; same
     # discipline as the「视同派出」k).  It is flat across tiers here, so the four
     # cross-ticker ratios are identical with and without it.
     pes = tier_pes(g2)
-    anchors = {t: eps[t] * pes[t] * (1.0 - k[t]) for t in TIERS}
+    anchors = value(pes, r)
     L, M, H = (anchors[t] for t in TIERS)
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
@@ -289,8 +349,16 @@ def main() -> int:
     # cut-points reproduce.
     opt_gw = inp["opt_gw_named"] - inp["opt_gw_cons"]
     opt_eps = opt_gw * inp["eps_fy28_cons"] / inp["opt_gw_cons"]
-    opt_pe = perpetual_pe(g2, roe["H"], r_t)
-    v_opt = opt_eps * opt_pe * (1.0 - k["H"]) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
+    # Option high-return window on its own product stage (A16 / A22, user 2026-10-19): the 1.8 GW
+    # ships nothing in 2028, so Y1 = its own full-output year t_opt, then the base's entry-barrier
+    # fade length (medium, 4 years); steady return, g2 and tau are the base's.
+    y1_opt, y2_opt = int(inp["y1_opt"]), int(inp["y2_opt"])
+    if y1_opt != int(inp["t_opt"]):
+        errors.append(f"y1_opt {y1_opt} != t_opt {int(inp['t_opt'])} (option Y1 = its full-output year, A16)")
+    if y2_opt - y1_opt != y2 - y1:
+        errors.append(f"option fade {y2_opt - y1_opt}y != base fade {y2 - y1}y (same entry barrier, A22)")
+    opt_pe = three_segment_pe(int(inp["t_opt"]), y1_opt, y2_opt, rs, g2, roe["H"], r_t)
+    v_opt = opt_eps * opt_pe * (1.0 - k["H"]) / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR) / (1.0 + r) ** tau
     said_v = stated_v_opt(md)
     p_tiers = stated_p_tiers(md)
     if said_v is None or p_tiers is None:
@@ -311,7 +379,8 @@ def main() -> int:
     # g2 leverage: every peer reverse-solves above the cap, so the evidence range
     # collapses onto it; the band one step below is disclosed (A13).
     pes_dn = tier_pes(g2 - G2_LEVERAGE_STEP)
-    band_dn = tuple(eps[t] * pes_dn[t] * (1.0 - k[t]) for t in TIERS)
+    v_dn = value(pes_dn, r)
+    band_dn = tuple(v_dn[t] for t in TIERS)
 
     cover = (inp["rpo_product_install"] + inp["customer_deposits"]) / inp["revenue_next_12m"]
     if abs(cover - inp["cover"]) > 0.01:
@@ -343,6 +412,9 @@ def main() -> int:
             f"{t}: eps {eps[t]:.3f} x {pes[t]:.2f}x = {anchors[t]:.2f}  "
             f"stage-1 payout {p1:+.2f} ({tag}) stage-2 payout {p2:.2f}"
         )
+    print(f"timing (A22): tau {tau:g}y at r_journey -> x {(1 + r) ** -tau:.4f}; window 2H26 "
+          + "/".join(f"{window[t]:.2f}" for t in TIERS)
+          + f" (unbooked {unbooked:.3f} x (1 - b1) clipped at 0); steady path Y1 {y1} -> Y2 {y2}, steady {rs:.1%}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
         "FY28-basis (post-transition numerator x multiple): "
@@ -364,17 +436,16 @@ def main() -> int:
         f"option (A16): V_opt={v_opt:.2f} p={p_tiers[0]:g}/{p_tiers[1]:g}/{p_tiers[2]:g} -> "
         f"{band_v[0]:.2f}/{band_v[1]:.2f}/{band_v[2]:.2f} A'={A_v:.2f} B'={B_v:.2f}"
     )
-    no_tr = tier_pes(g2, transition=False)
+    no_tr = value(tier_pes(g2, transition=False), r)
     print(
-        f"cross-check, no transition year: "
-        f"{eps['L'] * no_tr['L'] * (1 - k['L']):.2f}/{eps['M'] * no_tr['M'] * (1 - k['M']):.2f}/"
-        f"{eps['H'] * no_tr['H'] * (1 - k['H']):.2f}  (L no-transition "
-        f"{eps['L'] * no_tr['L'] * (1 - k['L']):.2f} = deep_discount pressure coordinate)"
+        f"cross-check, no transition year (same timing): "
+        f"{no_tr['L']:.2f}/{no_tr['M']:.2f}/{no_tr['H']:.2f}  (L no-transition "
+        f"{no_tr['L']:.2f} = deep_discount pressure coordinate)"
     )
     roe26 = inp["eps_fy26_m"] / opening_bps(inp["eps_fy26_m"])
-    pe26 = two_stage_pe(g1, n, g2, roe26, r, r_terminal=r_t)
+    pe26 = three_segment_pe(NUM_YEAR, y1, y2, rs, g2, roe26, r, g1=g1, n=n, r_terminal=r_t)
     print(f"coordinate, L on FY26 mean {inp['eps_fy26_m']:.3f} (digest year): "
-          f"{inp['eps_fy26_m'] * pe26 * (1 - k['L']):.2f} ({pe26:.2f}x, k-adjusted)")
+          f"{inp['eps_fy26_m'] * pe26 * (1 - k['L']) / (1 + r) ** tau:.2f} ({pe26:.2f}x, k-adjusted, timed)")
     print(
         f"g2 leverage: g2 {g2 - G2_LEVERAGE_STEP:.0%} -> {band_dn[0]:.2f}/{band_dn[1]:.2f}/{band_dn[2]:.2f} | "
         f"g2 {g2:.0%} (cap) -> {L:.2f}/{M:.2f}/{H:.2f}  (+1pp above cap, not listed)"
@@ -389,9 +460,8 @@ def main() -> int:
         saved = r, r_t
         r, r_t = r + dr, r_t + dr
         try:
-            pes_r = tier_pes(g2)
-            lmh = [eps[t] * pes_r[t] * (1.0 - k[t]) for t in TIERS]
-            return lmh[0], lmh[1], lmh[2]
+            v_r = value(tier_pes(g2), r)
+            return v_r["L"], v_r["M"], v_r["H"]
         finally:
             r, r_t = saved
 

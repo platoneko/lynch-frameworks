@@ -33,6 +33,15 @@ deducted (non-refundable, offset against deliveries → operating liability).
 Every tier's numerator drops the excess cash's after-tax income, RONIC drops
 the cash from the book, and the cash is added back per ADR at face (λ = 1).
 
+Framework correction 2026-10-16 (A31): the excess cash counts at the parent share
+(parent_ratio); every Gordon leg runs on the steady-state-return path (forward
+RONIC through Y1 2030, linear to the own-cycle 35.2% by Y2 2035) and is valued at
+the start of 2027, then folded back tau years to the valuation date (B1 at the
+CoWoS capacity value is a today's reading and is not folded), plus the 2H26
+window profit x (1 - b1) at tau/2; COUPE runs the same path from its
+realisation year and is folded by tau; g2 is re-solved on today's operating
+multiple.
+
 Guardrail: the own realised forward band is measured on COMPANY earnings, so
 it bounds each tier's blended multiple, now on the operating basis (operating
 value ÷ operating EPS) against the band re-read as (price − excess cash then)
@@ -85,9 +94,8 @@ from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
     check_transition_years,
+    payout,
     payout_gap,
-    perpetual_pe,
-    two_stage_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -189,9 +197,49 @@ REQUIRED = [
     "cex_edge_hi_twd",
     "fx_edge_hi",
     "aty_edge_hi",
+    "parent_ratio",
+    "tau",
+    "y1",
+    "y2",
+    "rs_steady",
 ]
 TWO_MONTHS = 2.0 / 12.0  # operating cash anchor cap (valuation-rules ①, 2026-10-15)
 TIERS = ("l", "m", "h")
+
+
+def path_value(g1: float, n: int, g2: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple (on numerator-year earnings, valued at the start of the numerator year)
+    on the steady-state-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段;
+    gordon.py's three-segment function is not built yet, so it lives here).
+
+    Calendar years, t = 1 is the numerator year t0.  The first n years grow at g1 with payout
+    1 - g1/RONIC (two_stage_pe's stage 1); afterwards growth is g2 and RONIC = the tier's
+    forward value through Y1, falls linearly to the steady value R_s by Y2 (R_s capped at the
+    forward value), then the Gordon tail.  With R_s >= forward it equals two_stage_pe /
+    perpetual_pe exactly (A31)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g2 <= 0:
+        raise ValueError(f"perpetuity diverges: g={g2} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g2, rs_eff) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * payout(g2, ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 _CROSS_BAND = re.compile(r"对照带（PB-ROIC 机器尺）：L′ ([0-9.]+) / M′ ([0-9.]+) / H′ ([0-9.]+)")
 
 
@@ -270,12 +318,30 @@ def main() -> int:
     fx, sh = inp["fx_twd"], inp["shares_adr"]
     anchor_ratio = max(min(inp["cash_ratio_low"], TWO_MONTHS), 0.0)
     cash_anchor = anchor_ratio * inp["rev_2025_twd"]
-    c_ex = inp["net_cash_ext_2q26"] - inp["div_declared"] - cash_anchor
-    if abs(c_ex - inp["c_ex"]) > 1e9:
-        errors.append(f"c_ex {inp['c_ex']:.4e} != net cash − declared dividends − anchor {c_ex:.4e}")
+    c_ex_gross = inp["net_cash_ext_2q26"] - inp["div_declared"] - cash_anchor
+    if abs(c_ex_gross - inp["c_ex"]) > 1e9:
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net cash − declared dividends − anchor {c_ex_gross:.4e}")
+    # Parent share (valuation-rules ① 归母份额, A31): only the parent's share of the excess cash
+    # enters the value, the numerator's income deduction and the RONIC book.
+    pr = inp["parent_ratio"]
+    if not 0.9 < pr <= 1.0:
+        errors.append(f"parent_ratio {pr} out of range (A31)")
+    c_ex = c_ex_gross * pr
     equity_twd = inp["equity"] * fx
     if c_ex < 0.15 * equity_twd:
         errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
+    # Steady-state-return path and time alignment (valuation-rules「经营价值与超额现金」② / ③, A31).
+    tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+    if not NUM_YEAR <= y1 < y2:
+        errors.append("need numerator year <= y1 < y2 (A31)")
+    if not r <= rs:
+        errors.append("rs_steady below r (A31)")
+
+    def pp(g: float, roe_x: float, r_x: float, t0: int = NUM_YEAR) -> float:
+        return path_value(0.0, 0, g, roe_x, r_x, t0, y1, y2, rs)
+
+    def ts(g1_x: float, n_x: int, g2_x: float, roe_x: float, r_x: float) -> float:
+        return path_value(g1_x, n_x, g2_x, roe_x, r_x, NUM_YEAR, y1, y2, rs)
     c_adr = c_ex / fx / sh
     c_inc = c_adr * inp["cash_yield"] * (1.0 - inp["tax_eff"])  # after-tax, USD/ADR, out of every numerator
     eps = {t: eps_cons[t] - c_inc for t in TIERS}  # operating EPS
@@ -335,18 +401,29 @@ def main() -> int:
     if g2 > (1.0 - inp["payout_3y"]) * roe["m"]:
         errors.append("g2 above (1 − d) × RONIC_M (③ 约束 2)")
 
-    def platform_pe(t: str, g2_x: float, transition: bool) -> float:
+    def platform_pe(t: str, g2_x: float, transition: bool, r_x: float | None = None) -> float:
+        r_x = r if r_x is None else r_x
         if transition:
-            return two_stage_pe(g1_adv, n, g2_x, roe[t], r)
-        return perpetual_pe(g2_x, roe[t], r)
+            return ts(g1_adv, n, g2_x, roe[t], r_x)
+        return pp(g2_x, roe[t], r_x)
 
-    pe_mat = {t: perpetual_pe(g_mat, roe[t], r) for t in TIERS}
-    pe_b2 = {t: perpetual_pe(g_b2, roe[t], r) for t in TIERS}
+    pe_mat = {t: pp(g_mat, roe[t], r) for t in TIERS}
+    pe_b2 = {t: pp(g_b2, roe[t], r) for t in TIERS}
 
     def capacity(wpm: float) -> float:
         return (wpm / 10000.0) * inp["uv_per_10k_wpm"] / inp["shares_adr"]
 
-    def legs_at(t: str, p_plat: float, p_mature: float, p_other: float, mat_share: float = mat) -> dict[str, float]:
+    def window(t: str, r_x: float) -> float:
+        """2H26 unbooked operating profit x (1 - b), b = the book roll's g/RONIC, at tau/2 (A31)."""
+        return max(unbooked[t] * (1.0 - g_roll[t] / roe[t]), 0.0) * (1.0 + r_x) ** -(tau / 2)
+
+    def legs_at(t: str, p_plat: float, p_mature: float, p_other: float, mat_share: float = mat,
+                r_x: float | None = None) -> dict[str, float]:
+        """Leg values at the start of 2027 (Gordon), folded to the valuation date (A31): the
+        Gordon legs x (1+r)^-tau; B1 at its Gordon floor folds too, B1 at the CoWoS capacity
+        value (a today's-capacity reading) does not; + the window profit + the excess cash."""
+        r_x = r if r_x is None else r_x
+        d = (1.0 + r_x) ** -tau
         e = eps[t]
         s_aw = inp["share_wafer"] * (1.0 - mat_share)
         s_mw = inp["share_wafer"] * mat_share
@@ -354,21 +431,25 @@ def main() -> int:
         pmw = e * s_mw * p_mature
         floor = e * inp["share_adv"] * p_plat
         cap = capacity(inp[f"cowos_wpm_{t}"])
-        pb1 = max(cap, floor)
+        pb1 = floor * d if floor >= cap else cap
         pb2 = e * inp["share_other"] * p_other
+        win = window(t, r_x)
+        today = (paw + pmw + pb2) * d + pb1 + win
         return {
-            "Paw": paw,
-            "Pmw": pmw,
+            "Paw": paw * d,
+            "Pmw": pmw * d,
             "Pb1": pb1,
-            "Pb2": pb2,
+            "Pb2": pb2 * d,
             "cap": cap,
             "floor": floor,
-            "vop": paw + pmw + pb1 + pb2,
-            "sum": paw + pmw + pb1 + pb2 + c_adr,  # operating value + excess cash (λ = 1)
+            "win": win,
+            "vop_tn": paw + pmw + max(cap, floor) + pb2,
+            "vop": today,  # today's operating value (incl. window)
+            "sum": today + c_adr,  # + excess cash (λ = 1, parent share)
         }
 
     def blended_pe(t: str, g2_x: float) -> float:
-        """Operating multiple: operating value ÷ operating EPS."""
+        """Today's operating multiple: today's operating value ÷ operating EPS (A31)."""
         return legs_at(t, platform_pe(t, g2_x, t != "l"), pe_mat[t], pe_b2[t])["vop"] / eps[t]
 
     # The own band is measured on company earnings, so the band edge is where
@@ -423,8 +504,9 @@ def main() -> int:
     ni_per_adr = lambda oe, share: oe * inp["asp_oe"] * share * inp["npm_coupe"] / inp["shares_adr"]  # noqa: E731
     disc_coupe = (1.0 + r) ** (inp["t_coupe"] - NUM_YEAR)
     ni_coupe = {t: ni_per_adr(inp[f"oe_{t}"], inp[f"coupe_share_{t}"]) for t in TIERS}
-    pe_coupe = {t: perpetual_pe(g2, roe[t], r) for t in TIERS}
-    v_k = {t: ni_coupe[t] * pe_coupe[t] / disc_coupe for t in TIERS}
+    # A31: the same return path, counted from the realisation year; folded by tau to today.
+    pe_coupe = {t: pp(g2, roe[t], r, t0=int(inp["t_coupe"])) for t in TIERS}
+    v_k = {t: ni_coupe[t] * pe_coupe[t] / disc_coupe * (1.0 + r) ** -tau for t in TIERS}
     v_k_v9 = {
         "l": ni_coupe["l"] * pe["l"],
         "m": ni_coupe["m"] * pe_coupe["m"] / (1.0 + r),
@@ -490,7 +572,8 @@ def main() -> int:
         print(
             f"{t.upper()}: plat {pe[t]:.2f}x mat {pe_mat[t]:.2f}x b2 {pe_b2[t]:.2f}x operating {pe_blend[t]:.2f}x "
             f"(whole-equity PE {pe_merged[t]:.2f}x)  aw {lg['Paw']:.1f} mw {lg['Pmw']:.1f} B1 {lg['Pb1']:.1f} "
-            f"(cap {lg['cap']:.1f}/fl {lg['floor']:.1f}) B2 {lg['Pb2']:.1f} V_op {lg['vop']:.1f} + C_ex {c_adr:.2f} = {lg['sum']:.1f}"
+            f"(cap {lg['cap']:.1f}/fl {lg['floor']:.1f}) B2 {lg['Pb2']:.1f} window {lg['win']:.2f} V_op today {lg['vop']:.1f} "
+            f"(at 2027 start {lg['vop_tn']:.1f}) + C_ex {c_adr:.2f} = {lg['sum']:.1f}"
         )
     print(f"L={L:.1f} M={M:.1f} H={H:.1f} A={A:.1f} B={B:.1f}")
     print(
@@ -555,16 +638,11 @@ def main() -> int:
     # re-priced; EPS, ROE, g1_adv/g2 and the CoWoS capacity value stay put.
     # Disclosure only: the anchors above are the 中枢 column.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        nonlocal r
-        saved = r
-        r = r + dr
-        try:
-            return tuple(
-                legs_at(t, platform_pe(t, g2, t != "l"), perpetual_pe(g_mat, roe[t], r), perpetual_pe(g_b2, roe[t], r))["sum"]
-                for t in TIERS
-            )
-        finally:
-            r = saved
+        r_x = r + dr
+        return tuple(
+            legs_at(t, platform_pe(t, g2, t != "l", r_x), pp(g_mat, roe[t], r_x), pp(g_b2, roe[t], r_x), r_x=r_x)["sum"]
+            for t in TIERS
+        )
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):

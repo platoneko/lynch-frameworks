@@ -60,8 +60,6 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     g_cap,
     payout,
-    perpetual_pe,
-    two_stage_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -88,7 +86,44 @@ MIN_R_MINUS_G = 0.02
 TIERS = ("L", "M", "H")
 
 # (this ticker's Inputs key, axis Inputs key): rows taken from the peer-ruler axis.
-AXIS_ROWS = (("g2", "g2_oe_chip"), ("g_borrow", "g1_borrow_mrvl_conn"))
+AXIS_ROWS = (("g2", "g2_oe_chip"), ("g_borrow", "g1_borrow_mrvl_conn"),
+             ("ss_return", "ss_return_oe"), ("y1", "y1_oe"), ("y2", "y2_oe"))
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float):
+    """Gordon multiple on next-period earnings with the three-segment RONIC path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段; gordon.py's three-segment
+    function is [待建], so it lives here).  Calendar (fiscal) year c of the stream,
+    t = 1 <-> c = t0: transition years at forward RONIC (payout 1 - g1/RONIC, not
+    floored); then RONIC = forward through Y1, linear to R_s at Y2, Gordon tail at
+    R_s; each tier's R_s is capped at its own forward RONIC.  With Y1 = Y2 = far
+    future it is exactly perpetual_pe / two_stage_pe."""
+
+    def ron(cal: int, roe: float) -> float:
+        rs = min(roe, r_s)
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    def value(g1: float, n: int, g2: float, roe: float, r: float) -> float:
+        if r - g2 <= 0:
+            raise ValueError(f"perpetuity diverges: g2={g2} >= r={r}")
+        pv, e, t = 0.0, 1.0, 1
+        for _ in range(int(n)):
+            pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+            e *= 1 + g1
+            t += 1
+        while True:
+            cal = t0 + t - 1
+            if cal > y1 and cal >= y2:
+                return pv + e * payout(g2, min(roe, r_s)) / ((r - g2) * (1 + r) ** (t - 1))
+            pv += e * payout(g2, ron(cal, roe)) / (1 + r) ** t
+            e *= 1 + g2
+            t += 1
+
+    return value
 
 REQUIRED = [
     "eps_fy26_cons", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
@@ -99,6 +134,7 @@ REQUIRED = [
     "cash_st_q3", "lease_q3", "net_cash_ext_q3", "c_ex", "cash_yield",
     "pe_own_min", "pe_own_max", "lb_fwd_eps",
     "w_dc", "w_dc_hi", "w_dc_eq", "g_borrow",
+    "ss_return", "y1", "y2", "num_year", "tau",
 ]
 
 _CANDIDATE = re.compile(
@@ -203,7 +239,7 @@ def main() -> int:
     nop = {t: ni[t] - c_inc for t in TIERS}
 
     # ---- Step 2: FY27 opening operating equity, fixed point on b = g/RONIC (A6) ----
-    def book(n: float, g: float, tax: float = t_n, deduct: bool = True) -> tuple[float, float]:
+    def book(n: float, g: float, tax: float = t_n, deduct: bool = True) -> tuple[float, float, float]:
         q4 = (inp["eps_q4_guide"] * sh / (1 - t_ng) - (q4_sbc if deduct else 0.0)) * (1 - tax) - cash_inc(tax) / 4
         base = inp["equity_q3"] - c_ex
         eq = base + q4
@@ -212,25 +248,39 @@ def main() -> int:
             if abs(nxt - eq) < 1e-9:
                 break
             eq = nxt
-        return eq, n / eq
+        return eq, n / eq, q4
 
     def per_share(v_op: float) -> float:
         v = v_op + c_ex + inp["conv_principal"]  # λ 1; principal is in C_ex's netting
         return min((v - inp["conv_principal"]) / sh_ex, v / sh_full)
 
+    # ---- Steady return three segments + timing alignment (A23 / A24) ----
+    tau = inp["tau"]
+    path = path_value(int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["ss_return"])
+
+    def today(n: float, roe_: float, g: float, rr: float, q4: float, kk: float, g1: float | None = None) -> tuple[float, float, float]:
+        """(operating value today, generated multiple, window profit PV): V_op at the FY27
+        opening is discounted tau years; the unbooked Q4 operating profit not retained
+        for growth (1 - b, b = g / RONIC as in the book roll) comes back at tau / 2."""
+        pe_ = path(0.0, 0, g, roe_, rr) if g1 is None else path(g1, 1, g, roe_, rr)
+        b = min(1.0, max(0.0, (g if g1 is None else g1) / roe_))
+        w = q4 * (1 - b) / (1 + rr) ** (tau / 2)
+        return n * pe_ * (1 - kk) / (1 + rr) ** tau + w, pe_, w
+
     def anchors_at(rr: float, g: float = g2, tax: float = t_n, deduct: bool = True) -> tuple[float, ...]:
         out = []
         for t in TIERS:
             n = econ_ni(eps_ng[t], sbc[t], tax, deduct) - cash_inc(tax)
-            _, roe_ = book(n, g, tax, deduct)
-            out.append(per_share(n * perpetual_pe(g, roe_, rr) * (1 - k[t])))
+            _, roe_, q4_ = book(n, g, tax, deduct)
+            out.append(per_share(today(n, roe_, g, rr, q4_, k[t])[0]))
         return tuple(out)
 
-    eq, roe, pe, val = {}, {}, {}, {}
+    eq, roe, pe, val, win = {}, {}, {}, {}, {}
     for t in TIERS:
-        eq[t], roe[t] = book(nop[t], g2)
-        pe[t] = perpetual_pe(g2, roe[t], r)
-        val[t] = nop[t] * pe[t] * (1 - k[t])
+        eq[t], roe[t], q4 = book(nop[t], g2)
+        val[t], pe[t], win[t] = today(nop[t], roe[t], g2, r, q4, k[t])
+    if not (inp["num_year"] <= inp["y1"] < inp["y2"]):
+        errors.append("high-return window must satisfy numerator year <= Y1 < Y2 (A23)")
     L, M, H = (per_share(val[t]) for t in TIERS)
     A, B = cut_points(L, M, H)
     errors += ladder("anchors", L, M, H)
@@ -269,8 +319,8 @@ def main() -> int:
         g1 = w * inp["g_borrow"] + (1 - w) * g2
         out = {"L": L}
         for t in ("M", "H"):
-            _, roe1 = book(nop[t], g1)
-            out[t] = per_share(nop[t] * two_stage_pe(g1, 1, g2, roe1, r) * (1 - k[t]))
+            _, roe1, q4_ = book(nop[t], g1)
+            out[t] = per_share(today(nop[t], roe1, g2, r, q4_, k[t], g1=g1)[0])
         return out | {"g1": g1}
 
     cand = cand_at(inp["w_dc"])
@@ -310,6 +360,9 @@ def main() -> int:
               f" | op equity_open {eq[t]:.1f} RONIC {roe[t]:.3f} PE {pe[t]:.3f} (payout {payout(g2, roe[t]):.3f})"
               f" -> V_op {val[t]:.0f} | debt basis {(val[t] + c_ex) / sh_ex:.2f}"
               f" vs conv basis {(val[t] + c_ex + inp['conv_principal']) / sh_full:.2f}")
+    print(f"steady return {inp['ss_return']:.1%} (axis ss_return_oe; per tier min(RONIC, it)) · high-return window "
+          f"Y1 {int(inp['y1'])} / Y2 {int(inp['y2'])} · tau {tau:g} (V_op / 1.1^tau) · window profit PV "
+          + " / ".join(f"{t} {win[t] / sh_ex:.3f}" for t in TIERS) + " $/sh")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat ladder @ M op {mult['M']:.2f}x + cash {cps:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | H/M {dec['hm']:.3f}"

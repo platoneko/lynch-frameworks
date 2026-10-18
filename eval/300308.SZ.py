@@ -33,17 +33,35 @@ per share.  Anchor = operating value x (1 - k) + C_ex per share (lambda 1); the
 user-set retention haircut k (2026-09-29, A20) stays and now touches the
 operating part only.
 
-The NPO option leg is left as it was (main-thread ruling 2026-10-15): its
-multiple still uses the H-tier book ROE of the old roll (cash not stripped).
+2026-10-16 framework correction (valuation-rules「经营价值与超额现金」):
+  * data fix: the 2026-09 A-share buyback (4,997.25 百万, held for the ESOP, not
+    cancelled) leaves the cash and the book (A25);
+  * parent share 95.30% = parent equity / (parent + minority 4,208) on C_ex, its
+    income and the operating book;
+  * time alignment: Gordon value at 2027-01-01 x (1+r)^-tau (tau 0.5) plus the
+    2H26 window distributable profit (unbooked consensus less half a year of
+    cash income) x (1 - b), b = g/RONIC of the book roll, at tau/2;
+  * three-stage return: forward RONIC through Y1 2028, linear to the steady
+    return by Y2 2032 (_AXIS.pluggable-module: module assembly, medium barrier),
+    steady = min(forward, max(axis 18%, own cycle 14.4%)) = 18%;
+  * the user-set k on the whole operating value (A20) is removed (wrong object).
 
-Option (A13, valuation-rules「未建模期权」2026-10-03): NPO FY28 net profit =
-UBS FY28 revenue x NPO share (count still a single-house forecast: no company-
-named NPO quantity — declared deviation) x the aligned-year (FY28, furthest
-year with >=2 houses) company-level consensus net margin (mean of UBS derived
-on A shares and Citi stated; a shared plug — no leg-level data), valued in the
-realisation year t_opt (company-named: 2028 larger-scale shipments) on this
-ticker's ruler — basket r, H-tier ROE, g_npo from the optical cross-section
-(LITE.US A16 6.64% capped at 6%) — and discounted back (1+r)^-(t_opt - 2027).
+2026-10-19 framework correction (user-approved parameters; rules/retention.md
+稳态回报三段「同一公司内部一致」「高回报期对产品阶段」):
+  * main margin path (A27): each tier's starting net margin (L FY25 realised,
+    M / H FY2028 company-level consensus) is held through Y1 2028 and fades
+    linearly to the normal 20% (nm_norm_main) by Y2 2032 — the profit stream in
+    path_value is scaled by that ratio; reason: CPO replaces pluggables in
+    scale-out, plus competition;
+  * NPO option (A13): count = UBS single-house path — 2028 10% of FY28 revenue,
+    2030 30% of total revenue with NPO on top of the pluggable business
+    (incremental: scale-up takes copper's share), 2029 geometric interpolation,
+    g_npo 2% after 2030; unit economics: FY2028 consensus margin and the old
+    H-tier book ROE 94.3% held to 2030, faded to 20% / 18% by 2035 (packaging
+    link of _AXIS.ai-capex, cross-file checked: near-package ships from 2027H2,
+    so it is not in the module-assembly 2028 bottleneck); payout 1 - g_t/ROE_t
+    (negative in ramp years = capital the ramp needs); valued at the start of
+    2028, back to FY2027, then tau.
 p_L / p_M / p_H are constants here, never Inputs.
 
 Run:  python3 frameworks/eval/300308.SZ.py
@@ -73,14 +91,15 @@ from eval.lib.gordon import (  # noqa: E402
     g_cap,
     implied_g,
     payout,
-    perpetual_pe,
-    two_stage_pe,
 )
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "300308.SZ.md"
 AXIS_PLUG = REPO_ROOT / "frameworks" / "axes" / "pluggable-module.md"
+AXIS_CAPEX = REPO_ROOT / "frameworks" / "axes" / "ai-capex.md"
+NPO_INTERP_YEAR = 2029  # geometric interpolation between UBS 2028 and 2030 (插值年, A13)
+NPO_LAST_NAMED = 2030   # last year with a named NPO quantity (UBS 30% of revenue)
 FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v4"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
@@ -130,7 +149,38 @@ REQUIRED = [
     "npo_units_27", "npo_units_28", "oe_l", "oe_m", "oe_h",
     "capex_l", "capex_m", "capex_h",
     "net_cash_ext_h1", "c_ex", "cash_yield", "tax_eff", "payout_op",
+    "buyback", "minority_h1", "parent_ratio", "tau", "y1", "y2", "ss_return", "own_cycle", "npo_roe", "npo_nm_norm",
+    "nm_norm_main", "y1_npo", "y2_npo", "npo_share_30",
 ]
+
+
+def lin_path(cal: int, a: float, b: float, y1: int, y2: int) -> float:
+    """a through y1, linear to b by y2, b after (稳态回报三段 / 未建模期权 单位经济回落)."""
+    return a if cal <= y1 else (b if cal >= y2 else a + (b - a) * (cal - y1) / (y2 - y1))
+
+
+def path_value(g1: float, n: int, g2: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float,
+               m_ratio: float = 1.0) -> float:
+    """Three-stage retention Gordon (valuation-rules ② 稳态回报三段) per unit of t0 earnings at the start of
+    t0: n transition years at g1 (retention g1/roe), then g2 with RONIC = roe through y1, linear to
+    min(roe, r_s) by y2, perpetual after.  The profit stream is scaled by the margin path: 1 through y1,
+    linear to min(1, m_ratio) = normal / starting net margin by y2, that ratio after (A26, 2026-10-19)."""
+    ss = min(roe, r_s)
+    mr = min(1.0, m_ratio)
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        cal = t0 + t - 1
+        pv += e * lin_path(cal, 1.0, mr, y1, y2) * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * mr * payout(g2, ss) / ((r - g2) * (1 + r) ** (t - 1))
+        ro = lin_path(cal, roe, ss, y1, y2)
+        pv += e * lin_path(cal, 1.0, mr, y1, y2) * payout(g2, ro) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -149,14 +199,22 @@ def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         e.append("FY27 consensus range must be ordered low < mean < high (one record, two ends)")
     if not (0 < inp["rev_cut_l"] < 1 and 0 < inp["nm_fy25"] < 1 and 0 < inp["npo_share_28"] < 1):
         e.append("rev_cut_l / nm_fy25 / npo_share_28 must be fractions")
-    if not (0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] < 1):
-        e.append("k must satisfy 0 <= k_L <= k_M <= k_H < 1 (cyclical, 留存去向审计)")
+    if any(inp[f"k_{x}"] != 0.0 for x in ("l", "m", "h")):
+        e.append("k must be 0: the k on the whole operating value was removed 2026-10-16 (A20)")
     if inp["shares_a"] >= inp["shares_total"]:
         e.append("shares_a must be below shares_total (H-share dilution)")
     if inp["t_opt"] <= NUM_YEAR:
         e.append("option realisation year must lie after the numerator year (A13)")
     if not 0 < inp["citi_nm28"] < 1:
         e.append("citi_nm28 must be a fraction")
+    if not inp["npo_share_28"] < inp["npo_share_30"] < 1:
+        e.append("npo_share_30 must be a fraction above npo_share_28 (UBS 2030 path, A13)")
+    if abs(inp["npo_nm_norm"] - inp["nm_norm_main"]) > 1e-9:
+        e.append("npo_nm_norm must equal nm_norm_main: one normal margin inside one company (A13 / A26)")
+    if not (inp["t_opt"] <= inp["y1_npo"] < inp["y2_npo"]):
+        e.append("NPO high-return window must satisfy t_opt <= y1_npo < y2_npo")
+    if not 0 < inp["nm_norm_main"] < 1:
+        e.append("nm_norm_main must be a fraction")
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         e.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
@@ -180,8 +238,19 @@ def main() -> int:
         ax = parse_inputs(AXIS_PLUG.read_text(encoding="utf-8"))
         if "g2_pluggable" not in ax or abs(ax["g2_pluggable"] - inp["g2"]) > 1e-9:
             errors.append(f"g2 {inp['g2']:g} != _AXIS.pluggable-module g2_pluggable {ax.get('g2_pluggable')} — the leg ruler drifted")
+        for mine, theirs in (("ss_return", "ss_return_plug"), ("y1", "y1_plug"), ("y2", "y2_plug")):
+            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
+                errors.append(f"{mine} {inp[mine]:g} != _AXIS.pluggable-module {theirs} {ax.get(theirs)}")
     else:
         errors.append("frameworks/axes/pluggable-module.md missing — g2 unchecked")
+    # NPO high-return window = the packaging link of _AXIS.ai-capex §4b (near-package product, A13).
+    if AXIS_CAPEX.is_file():
+        axc = parse_inputs(AXIS_CAPEX.read_text(encoding="utf-8"))
+        for mine, theirs in (("y1_npo", "y1_ai_capex_package"), ("y2_npo", "y2_ai_capex_package")):
+            if theirs not in axc or abs(axc[theirs] - inp[mine]) > 1e-9:
+                errors.append(f"{mine} {inp[mine]:g} != _AXIS.ai-capex {theirs} {axc.get(theirs)}")
+    else:
+        errors.append("frameworks/axes/ai-capex.md missing — NPO Y1/Y2 unchecked")
     errors += check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))
     errors += check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"]))
     if errors:
@@ -206,37 +275,63 @@ def main() -> int:
     # ---- Step 3: FY27 opening book, excess cash, fixed point on b = g/RONIC (A5 / A25) ----
     h_net = inp["h_shares"] * inp["h_price_hkd"] * inp["hkdcny"] * (1 - inp["h_fee"])
     div = inp["dps_interim"] * inp["shares_div"]  # declared, ex 2026-10-12: debt-like
-    eq0 = inp["equity_h1"] + h_net - div
-    c_ex = inp["net_cash_ext_h1"] + h_net - div  # operating-cash anchor 0 (A25)
-    if abs(c_ex - inp["c_ex"]) > 1.0:
-        errors.append(f"c_ex {inp['c_ex']:.2f} != net_cash_ext_h1 + H-share net - declared div {c_ex:.2f}")
+    bb = inp["buyback"]                            # 2026-09 A-share buyback (ESOP), cash out, book down
+    eq0 = inp["equity_h1"] + h_net - div - bb
+    c_tot = inp["net_cash_ext_h1"] + h_net - div - bb  # operating-cash anchor 0 (A25)
+    if abs(c_tot - inp["c_ex"]) > 1.0:
+        errors.append(f"c_ex {inp['c_ex']:.2f} != net_cash_ext_h1 + H-share net - declared div - buyback {c_tot:.2f}")
+    pr = eq0 / (eq0 + inp["minority_h1"])          # ① 归母份额: no subsidiary cash disclosure
+    if abs(pr - inp["parent_ratio"]) > 5e-5:
+        errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
+    c_ex = c_tot * pr
     if c_ex < 0.15 * eq0:
         errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
     c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])  # after-tax, out of every numerator
     cps = c_ex / sh
     eop = {t: eps[t] - c_inc / sh for t in TIERS}
+    tau = inp["tau"]
+    y1, y2 = int(inp["y1"]), int(inp["y2"])
+    r_s = inp["ss_return"]
+    if r_s < inp["own_cycle"]:
+        errors.append("steady return below the own-cycle floor")
 
-    def tier(e: float, with_g1: bool, g: float = g2, cash: float = cps) -> tuple[float, float, float]:
-        """(operating BPS_open, RONIC, multiple) for one FY27 numerator; cash=0 gives the old book roll."""
+    # Margin path (A26, 2026-10-19): each tier's starting net margin (L: FY25 realised; M / H: FY2028
+    # company-level consensus = the shortage-period margin) held through y1, linear to nm_norm_main by y2.
+    nm_ubs28 = inp["ubs_eps28"] * inp["shares_a"] / inp["ubs_rev28"]
+    nm_opt = (nm_ubs28 + inp["citi_nm28"]) / 2
+    nm0 = {"L": inp["nm_fy25"], "M": nm_opt, "H": nm_opt}
+
+    def mratio(t: str, norm: float | None = None) -> float:
+        return (inp["nm_norm_main"] if norm is None else norm) / nm0[t]
+
+    def tier(e: float, with_g1: bool, g: float = g2, cash: float = cps, rs: float | None = None,
+             yy: tuple[int, int] | None = None, mr: float = 1.0) -> tuple[float, float, float, float]:
+        """(operating BPS_open, RONIC, three-stage multiple, b) for one FY27 numerator."""
         grow = g1 if with_g1 else g
         bps = (eq0 + inp["ni_h2_cons"]) / sh - cash
         for _ in range(300):
             roe = e / bps
             nxt = (eq0 + inp["ni_h2_cons"] * min(1.0, grow / roe)) / sh - cash
-            if abs(nxt - bps) < 1e-10:
+            if abs(nxt - bps) < 1e-12:
                 break
             bps = nxt
         roe = e / bps
-        pe = two_stage_pe(g1, N_STAGE, g, roe, r) if with_g1 else perpetual_pe(g, roe, r)
-        return bps, roe, pe
+        a1, a2 = yy or (y1, y2)
+        pe = path_value(g1 if with_g1 else 0.0, N_STAGE if with_g1 else 0, g, roe, r, NUM_YEAR, a1, a2,
+                        r_s if rs is None else rs, m_ratio=mr)
+        return bps, roe, pe, min(1.0, grow / roe)
 
-    bps, roe, pe = {}, {}, {}
+    def window(b: float) -> float:
+        """2H26 window distributable profit per share (③ 时点对齐), discounted tau/2."""
+        return max(inp["ni_h2_cons"] - 0.5 * c_inc, 0.0) * (1 - b) / sh * (1 + r) ** -(tau / 2)
+
+    bps, roe, pe, bb_ = {}, {}, {}, {}
     for t in TIERS:
-        bps[t], roe[t], pe[t] = tier(eop[t], stage[t])
-    roe_book_h = tier(eps["H"], True, cash=0.0)[1]  # option leg unchanged (pre-correction H book ROE)
+        bps[t], roe[t], pe[t], bb_[t] = tier(eop[t], stage[t], mr=mratio(t))
     k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
-    pre = {t: eop[t] * pe[t] for t in TIERS}  # operating value before k
-    L, M, H = (pre[t] * (1 - k[t]) + cps for t in TIERS)
+    pre = {t: eop[t] * pe[t] * (1 + r) ** -tau for t in TIERS}  # operating value, aligned to today
+    win = {t: window(bb_[t]) for t in TIERS}
+    L, M, H = (pre[t] * (1 - k[t]) + win[t] + cps for t in TIERS)
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
@@ -256,19 +351,54 @@ def main() -> int:
         errors.append(f"M multiple {pe['M']:.2f}x outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — ③ 出带")
 
     # ---- Step 5: NPO option (A13): aligned-year margin, own ruler, timed discount ----
-    nm_ubs28 = inp["ubs_eps28"] * inp["shares_a"] / inp["ubs_rev28"]
-    nm_opt = (nm_ubs28 + inp["citi_nm28"]) / 2
-    npo_ni = inp["ubs_rev28"] * inp["npo_share_28"] * nm_opt
+    # Count (A13, 2026-10-19): UBS single-house path — 2028 NPO = 10% of FY28 revenue; 2030 NPO = 30% of
+    # total revenue with NPO on top of the pluggable main business (FY28 pluggable x (1+g2)^2: incremental,
+    # scale-up takes copper's share); 2029 geometric interpolation (插值年); after 2030 g_npo.
+    t_opt = int(inp["t_opt"])
+    y1n, y2n = int(inp["y1_npo"]), int(inp["y2_npo"])
+    rev28_npo = inp["ubs_rev28"] * inp["npo_share_28"]
+    plug28 = inp["ubs_rev28"] * (1 - inp["npo_share_28"])
+    plug30 = plug28 * (1 + g2) ** (NPO_LAST_NAMED - t_opt)
+
+    def npo_path(share30: float = inp["npo_share_30"], after: float = inp["g_npo"], end: int = 2100) -> dict[int, float]:
+        rev30 = plug30 * share30 / (1 - share30)
+        path = {t_opt: rev28_npo, NPO_INTERP_YEAR: (rev28_npo * rev30) ** 0.5, NPO_LAST_NAMED: rev30}
+        for yr in range(NPO_LAST_NAMED + 1, end + 1):
+            path[yr] = path[yr - 1] * (1 + after)
+        return path
+
+    npo_ni = rev28_npo * nm_opt
     eps_npo = npo_ni / sh
-    pe_npo = perpetual_pe(inp["g_npo"], roe_book_h, r)
-    disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR)
-    v_opt = eps_npo * pe_npo / disc
+    roe_book_h = inp["npo_roe"]  # option leg's forward return: the old H-tier book ROE (ruling 2026-10-15)
+
+    def npo_value(nm_norm: float, path: dict[int, float] | None = None, g_term: float | None = None,
+                  a1: int = y1n, a2: int = y2n) -> float:
+        """NPO stream per share at the start of t_opt: margin (nm_opt) and return (npo_roe) held to a1,
+        linear to nm_norm / the steady return by a2, normal after; payout 1 - g_t/ROE_t (negative = the
+        capital the ramp needs); Gordon at g_term once past a2 and the last named jump."""
+        p = path or npo_path()
+        gt = inp["g_npo"] if g_term is None else g_term
+        ss = min(roe_book_h, r_s)
+        pv, yr = 0.0, t_opt
+        while True:
+            t = yr - t_opt + 1
+            e = p[yr] * lin_path(yr, nm_opt, nm_norm, a1, a2) / sh
+            if yr >= a2 and yr > NPO_LAST_NAMED:
+                return pv + e * payout(gt, ss) / ((r - gt) * (1 + r) ** (t - 1))
+            g_t = p[yr + 1] / p[yr] - 1
+            pv += e * payout(g_t, lin_path(yr, roe_book_h, ss, a1, a2)) / (1 + r) ** t
+            yr += 1
+
+    disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR + tau)
+    v_opt_t = npo_value(inp["npo_nm_norm"])
+    pe_npo = v_opt_t / eps_npo
+    v_opt = v_opt_t / disc
     plus_v = tuple(x + p * v_opt for x, p in zip((L, M, H), P_TIERS))
 
     # ---- A2e-2c flat ladder + decomposition ----
     flat_errs, flat_op = flat_multiple_ladder((eop["L"], eop["M"], eop["H"]), pe["M"] * (1 - k["M"]))
     errors += flat_errs
-    flat = tuple(x + cps for x in flat_op)
+    flat = tuple(x * (1 + r) ** -tau + win[t] + cps for x, t in zip(flat_op, TIERS))
     # Decomposition on the operating part (anchor - C_ex per share); full L/M, H/M printed beside it.
     dec = decompose((L - cps, M - cps, H - cps),
                     (pe["L"] * (1 - k["L"]), pe["M"] * (1 - k["M"]), pe["H"] * (1 - k["H"])))
@@ -313,20 +443,30 @@ def main() -> int:
     print(f"FY27 opening equity: H1 {inp['equity_h1']:.0f} + H-share net {h_net:.0f} - interim div "
           f"{div:.0f} + retained share of H2 NI {inp['ni_h2_cons']:.0f} (百万 CNY)")
     print(f"超额现金: 扩展口径净现金 2026H1 {inp['net_cash_ext_h1']:.0f} + H 股净募资 {h_net:.0f} − 已宣派中期股息 {div:.0f}"
-          f" − 锚 0 = C_ex {c_ex:.0f} 百万（每股 {cps:.2f}，占发行后归母权益 {eq0:.0f} 的 {c_ex / eq0:.1%}，λ 1）；"
+          f" − 9 月回购 {bb:.0f} − 锚 0 − 增长期资金缺口 0 = {c_tot:.0f} × 归母比例 {pr:.4f} = C_ex {c_ex:.0f} 百万"
+          f"（每股 {cps:.2f}，占归母权益 {eq0:.0f} 的 {c_ex / eq0:.1%}，λ 1）；"
           f"税后收益 {c_inc:.0f} 百万 = 每股 {c_inc / sh:.4f}，三档分子同扣")
+    print(f"三段回报: Y1 {y1} → Y2 {y2}（_AXIS.pluggable-module），稳态 {r_s:.0%}（= max(轴 18%, 自身周期 {inp['own_cycle']:.1%})，"
+          f"≤ 前瞻）；τ {tau:g}；k 全为 0")
     for t in TIERS:
-        print(f"{t}: EPS {eps[t]:.4f} -> 经营 EPS {eop[t]:.4f} 经营 BPS_open {bps[t]:.2f} RONIC {roe[t]:.3f} PE {pe[t]:.2f}"
-              f" -> V_op {pre[t]:.2f} x (1-k {k[t]:.2f}) + C_ex {cps:.2f} = {pre[t] * (1 - k[t]) + cps:.2f}"
-              f"  [perpetual payout {payout(g2, roe[t]):.3f}{f', stage-1 b1 {g1 / roe[t]:.3f}' if stage[t] else ''}]")
+        print(f"{t}: EPS {eps[t]:.4f} -> 经营 EPS {eop[t]:.4f} 经营 BPS_open {bps[t]:.2f} RONIC {roe[t]:.3f} PE(三段) {pe[t]:.2f}"
+              f" -> V_op x 1.1^-τ {pre[t]:.2f} + 窗口 {win[t]:.2f}（b {bb_[t]:.3f}）+ C_ex {cps:.2f} = {pre[t] + win[t] + cps:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"branch: payout_op {inp['payout_op']:.1%} (分红 + 现金积累, FY2018–25); 实付派息 {inp['payout_obs']:.0%}; "
           f"约束 2 上限 (1-d) x RONIC: " + " ".join(f"{t} {ret_obs * roe[t]:.1%}" for t in TIERS) + f" vs g2 {g2:.0%}")
     print(f"NPO option: FY28 net margin UBS {nm_ubs28:.4f} / Citi {inp['citi_nm28']:.4f} -> {nm_opt:.4f}"
           f" (FY25 realised {inp['nm_fy25']:.4f}, lower-bound disclosure only)")
-    print(f"NPO option: NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f} x PE {pe_npo:.2f} (g {inp['g_npo']:.0%}, H book ROE {roe_book_h:.3f}"
-          f" — option leg unchanged, payout {payout(inp['g_npo'], roe_book_h):.3f}) = {eps_npo * pe_npo:.2f} in {int(inp['t_opt'])}"
-          f" / {disc:.4f} = V_opt {v_opt:.2f}; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
+    pth = npo_path()
+    print("NPO path (亿 CNY; 2029 = geometric interpolation): "
+          + " ".join(f"{yr} {pth[yr] / 100:.1f}" for yr in range(t_opt, NPO_LAST_NAMED + 3))
+          + f" | 2030 NPO / total {pth[NPO_LAST_NAMED] / (pth[NPO_LAST_NAMED] + plug30):.1%}"
+          f" = ${pth[NPO_LAST_NAMED] * 1e6 / inp['usdcny'] / 1e9:.2f}B")
+    print(f"main margin path: start L {nm0['L']:.2%} / M,H {nm0['M']:.2%} held to {y1} -> {inp['nm_norm_main']:.0%} by {y2}"
+          f" (ratio L {mratio('L'):.3f} / M,H {mratio('M'):.3f})")
+    print(f"NPO option: FY28 NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f}; margin {nm_opt:.2%} held to {y1n} -> {inp['npo_nm_norm']:.0%} by {y2n},"
+          f" return {roe_book_h:.1%} -> {min(roe_book_h, r_s):.0%} (after {NPO_LAST_NAMED} g {inp['g_npo']:.0%}) -> value in {t_opt} {v_opt_t:.2f}"
+          f" (implied x{pe_npo:.2f} FY28 NPO EPS) / 1.1^{inp['t_opt'] - NUM_YEAR + tau:g} = V_opt {v_opt:.2f}"
+          f"; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
           f" A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}")
     print(f"guardrail: M operating {pe['M']:.2f}x (after k {pe['M'] * (1 - k['M']):.2f}x) vs own operating band "
           f"[{inp['pe_own_min']}, {inp['pe_own_max']}]; L {pe['L']:.2f}x H {pe['H']:.2f}x")
@@ -343,15 +483,22 @@ def main() -> int:
                      f"{(ret_obs - (g1 if stage[t] else g2) / roe[t]) * eop[t]:.2f}" for t in TIERS)
           + f"  [actual retention {ret_obs:.0%}]")
 
-    def anchor(t: str, g: float = g2, g1_: float | None = None) -> float:
+    def anchor(t: str, g: float = g2, g1_: float | None = None, rs: float | None = None,
+               norm: float | None = None) -> float:
         e_ = eop[t]
-        if stage[t]:
-            r_ = tier(e_, True, g)[1]
-            pe_ = two_stage_pe(g1 if g1_ is None else g1_, N_STAGE, g, r_, r)
-        else:
-            pe_ = tier(e_, False, g)[2]
-        return e_ * pe_ * (1 - k[t]) + cps
+        mr_ = mratio(t, norm)
+        _, r_, pe_, b_ = tier(e_, stage[t], g, rs=rs, mr=mr_)
+        if stage[t] and g1_ is not None:
+            pe_ = path_value(g1_, N_STAGE, g, r_, r, NUM_YEAR, y1, y2, r_s if rs is None else rs, m_ratio=mr_)
+        return e_ * pe_ * (1 - k[t]) * (1 + r) ** -tau + window(b_) + cps
 
+    for nrm in (0.12, 0.15, 0.28):
+        print(f"  sens normal net margin {nrm:.0%} (main and NPO together): "
+              + "/".join(f"{anchor(t, norm=nrm):.2f}" for t in TIERS)
+              + f" | V_opt {npo_value(nrm) / disc:.2f}")
+    print("  sens no margin fade (main at its starting margin; NPO held at FY28 consensus): "
+          + "/".join(f"{anchor(t, norm=nm0[t]):.2f}" for t in TIERS)
+          + f" | V_opt {npo_value(nm_opt) / disc:.2f}")
     for g in (g2 - 0.01, g2 + 0.01, MACRO_G):
         print(f"  sens g2={g:.2%}: " + "/".join(f"{anchor(t, g):.2f}" for t in TIERS))
     for lab, gt in (("derived 4-house mean", (84.96 / 60.69 + 1670 / 970 + 79 / 59.89 + 82.4 / 59.67) / 4),):
@@ -359,8 +506,24 @@ def main() -> int:
         print(f"  sens g1 from {lab} ({g1_alt:+.1%}): " + "/".join(f"{anchor(t, g1_=g1_alt):.2f}" for t in TIERS))
     for cut in (0.20, 0.40):
         e_ = inp["rev_fy26_cons"] * (1 - cut) * inp["nm_fy25"] / sh - c_inc / sh
-        print(f"  sens rev_cut_l={cut:.0%}: L {e_ * tier(e_, False)[2] * (1 - k['L']) + cps:.2f}")
-    print(f"  k = 0 reference: " + "/".join(f"{pre[t] + cps:.2f}" for t in TIERS))
+        _, _, pe_c, b_c = tier(e_, False, mr=mratio("L"))
+        print(f"  sens rev_cut_l={cut:.0%}: L {e_ * pe_c * (1 + r) ** -tau + window(b_c) + cps:.2f}")
+    print("  sens steady return = forward (no return fade; margin still fades): "
+          + "/".join(f"{anchor(t, rs=1.0):.2f}" for t in TIERS))
+    print("  sens Y1/Y2 = ai-capex default 2030/2035 (return and margin move together): " + "/".join(
+        f"{eop[t] * tier(eop[t], stage[t], yy=(2030, 2035), mr=mratio(t))[2] * (1 + r) ** -tau + win[t] + cps:.2f}"
+        for t in TIERS))
+    # NPO option sensitivities (A13)
+    v_g6 = npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06) / disc
+    v_g0 = npo_value(inp["npo_nm_norm"], path=npo_path(after=0.0), g_term=0.0) / disc
+    v_fix = npo_value(inp["npo_nm_norm"],
+                      path={yr: rev28_npo * (1 + inp["g_npo"]) ** (yr - t_opt) for yr in range(t_opt, 2101)}) / disc
+    v_can = v_opt - npo_value(inp["npo_nm_norm"], a1=y1, a2=y2) / disc
+    v_can6 = (npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06)
+              - npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06, a1=y1, a2=y2)) / disc
+    print(f"  NPO sens: after-2030 growth 6% {v_g6:.2f} · 0% {v_g0:.2f} · 2028 count held (no 2030 step) {v_fix:.2f}"
+          f" · if NPO cannibalises own pluggable (valued on the main {y1}/{y2} path), net add {v_can:.2f}"
+          f" (after-2030 6%: {v_can6:.2f})")
     print("optical narrow (NPO, USD): " + " ".join(
         f"{t} ${narrow[t] / 1e9:.3f}B attach {optical_attachment(narrow[t], t):.1%} (OE share {n_ / oe[t]:.1%})"
         for t, n_ in (("L", inp["npo_units_27"]), ("M", inp["npo_units_28"]), ("H", inp["npo_units_28"]))))

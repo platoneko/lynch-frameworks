@@ -28,8 +28,22 @@ The 2031 convertible is priced the way the holder would choose (valuation-
 rules「杠杆门」归类): per tier the lower of the debt basis (principal off the
 closing item, no conversion shares) and the if-converted basis (principal
 stays, +conversion shares, coupon added back).  Cash retained beyond the
-growth-required b1 = g/ROE is the B bucket; with a large M&A record the k
-discount (default layer ②, k_L <= k_M <= k_H) comes off the anchor (A12).
+growth-required b1 = g/ROE is the B bucket; since 2026-10-16 its k is 0
+(valuation-rules「经营价值与超额现金」④: a k on the modelled-as-paid row is on the
+wrong object; A12) and the row itself is the window distributable profit below.
+
+Steady return three segments (valuation-rules ② 稳态回报三段, A25): the new-investment
+return is not the FY28 ROE forever: ROE through Y1 FY2028 (the module-assembly link,
+medium barrier: `_AXIS.pluggable-module` y1_plug / y2_plug, cross-file checked), linear
+to min(ROE, 16.7%) at Y2 FY2032, Gordon tail after; 16.7% = own full-cycle return
+(FY17-FY26, the forward's formula), above the 15% fallback (no mature peer with >= 5
+years).  gordon.py's three-segment function is [待建], so `path_value` lives here.
+
+Timing alignment (valuation-rules ③, A26): the operating value (core x PE) sits at the
+FY28 opening (FY27 end ~2027-07-03); base date = 10-K balance sheet 2026-06-27 ->
+tau = 371/365; window distributable profit = FY27 unbooked core profit x (1 - g/ROE)
+(the B-bucket row) at tau / 2; the closing item stays at today.  The holder-optimal
+convertible basis is chosen on the timed value.
 
 The doc carries no current price (AGENTS.md「现价 — 禁写契约」).
 
@@ -48,7 +62,7 @@ if str(REPO_ROOT) not in sys.path:
 from eval.lib.axes import check_capex_mount  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.frameworks import load_framework  # noqa: E402
-from eval.lib.gordon import check_g_cap, check_r, g_cap, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_g_cap, check_r, g_cap  # noqa: E402
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
     check_missing,
@@ -61,6 +75,8 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "VIAV.US.md"
+AXIS_PLUG = REPO_ROOT / "frameworks" / "axes" / "pluggable-module.md"
+AXIS_ROWS = (("y1", "y1_plug"), ("y2", "y2_plug"))  # module-assembly link years (A25)
 FORMULA_ID = "viav_fy28_cons_gordon_blend_v1"
 LISTING_CCY = "USD"
 TOL = 0.05
@@ -77,7 +93,34 @@ REQUIRED = [
     "nse_rev_fy22", "nse_oi_fy22", "nse_rev_fy24", "nse_oi_fy24", "dc_share_nse",
     "r_perp", "g_nse", "g_peer_median", "g_osp", "k_l", "k_m", "k_h",
     "capex_l", "capex_m", "capex_h",
+    "ss_return", "y1", "y2", "num_year", "tau",
 ]
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float) -> float:
+    """Gordon multiple on next-period earnings with the three-segment RONIC path (A25); t = 1 <->
+    fiscal year t0; ROE through Y1, linear to min(ROE, r_s) at Y2, Gordon tail after."""
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def main() -> int:
@@ -113,6 +156,23 @@ def main() -> int:
         errors.append(f"k must ascend L<=M<=H for a cyclical (A12), got {ks}")
     if any(k.startswith("p_") for k in inp):
         errors.append("Inputs carry probability fields — p_k belongs in a zone+V table only")
+    if any(k != 0 for k in ks):
+        errors.append("k on the modelled-as-paid row must be 0 (valuation-rules ④, A12)")
+    if not (inp["num_year"] <= inp["y1"] < inp["y2"]):
+        errors.append("high-return window must satisfy numerator year <= Y1 < Y2 (A25)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        errors.append("tau out of range (A26)")
+    if not AXIS_PLUG.is_file():
+        errors.append("axes/pluggable-module.md missing — y1 / y2 unchecked")
+    else:
+        ax = parse_inputs(AXIS_PLUG.read_text(encoding="utf-8"))
+        for mine, theirs in AXIS_ROWS:
+            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
+                errors.append(f"{mine} {inp[mine]:g} != _AXIS.pluggable-module {theirs} {ax.get(theirs)} (A25)")
+    y0, y1, y2, rs, tau = int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["ss_return"], inp["tau"]
+
+    def pp(gg: float, roe_: float, rr: float) -> float:
+        return path_value(y0, y1, y2, rs, gg, roe_, rr)
 
     # ---- Step 1: share bases (A11) ----
     s_cons = inp["shares_basic"] + inp["dil_q4"]  # street EPS base: post-offering basic + Q4 dilution
@@ -176,10 +236,12 @@ def main() -> int:
                     raise ValueError(f"book roll diverges at {tier}/{name}: g·N/core = {share:.2f}")
                 book = op0 / (1 - share)
                 roe = core / book
-                pe = perpetual_pe(gg, roe, rr)
-                pre_k = (core * pe + b["closing"]) / b["s"] * 1e6
-                excess = (1 - gg / roe) * unbooked / b["s"] * 1e6
-                val = pre_k - ks[i] * excess
+                pe = pp(gg, roe, rr)
+                pre_k = (core * pe + b["closing"]) / b["s"] * 1e6  # FY28-opening operating value + closing
+                excess = (1 - gg / roe) * unbooked / b["s"] * 1e6  # = FY27 window distributable profit
+                # A26: operating value tau back to today, window at tau / 2, closing item not discounted.
+                timed = (core * pe / (1 + rr) ** tau + b["closing"]) / b["s"] * 1e6 + excess / (1 + rr) ** (tau / 2)
+                val = timed - ks[i] * excess
                 row = dict(basis=name, core_ps=core / b["s"] * 1e6, roe=roe, pe=pe, pre_k=pre_k,
                            excess=excess, val=val, core=core, book=book)
                 if best is None or val < best["val"]:
@@ -197,8 +259,8 @@ def main() -> int:
 
     # ---- flat ladder (A2e-2c): all tiers at PE_M on the M basis ----
     pe_m = d["M"]["pe"]
-    flat = [(d[x]["core"] * pe_m + bases[d["M"]["basis"]]["closing"]) / bases[d["M"]["basis"]]["s"] * 1e6
-            for x in TIERS]
+    flat = [(d[x]["core"] * pe_m / (1 + r) ** tau + bases[d["M"]["basis"]]["closing"]) / bases[d["M"]["basis"]]["s"] * 1e6
+            + d["M"]["excess"] / (1 + r) ** (tau / 2) for x in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
@@ -243,9 +305,9 @@ def main() -> int:
         b = bases[row["basis"]]
         oi = street[x] * s_cons / 1e6 / (1 - t) - net_int_pre
         osp_share = (osp_l if x == "L" else osp28) / oi
-        v = (row["core"] * (1 - osp_share) * perpetual_pe(inp["g_nse"], row["roe"], r)
-             + row["core"] * osp_share * perpetual_pe(inp["g_osp"], row["roe"], r) + b["closing"]) / b["s"] * 1e6
-        osp_ps = row["core"] * osp_share * perpetual_pe(inp["g_osp"], row["roe"], r) / b["s"] * 1e6
+        v = (row["core"] * (1 - osp_share) * pp(inp["g_nse"], row["roe"], r)
+             + row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r) + b["closing"]) / b["s"] * 1e6
+        osp_ps = row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r) / b["s"] * 1e6
         print(f"SOTP cross {x}: {v:.2f} vs company pre-k {row['pre_k']:.2f} ({v / row['pre_k'] - 1:+.1%}); OSP share {osp_share:.2f}, OSP {osp_ps:.2f}/sh")
     dc_rev = inp["dc_share_nse"] * (inp["rev_fy28_m"] - osp27_rev * (1 + inp["g_osp"]))
     print(f"capex axis implied share (NSE data-center ~{inp['dc_share_nse']:.0%} of FY28 NSE revenue {dc_rev:.0f}M): {dc_rev * 1e6 / inp['capex_m']:.3%}")

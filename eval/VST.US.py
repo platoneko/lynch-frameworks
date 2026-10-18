@@ -102,8 +102,33 @@ REQUIRED = [
     "cp_fcfbg_base", "cp_accretion", "cp_mw", "cp_term", "meta_mw", "meta_2027_ebitda",
     "meta_term", "p_l", "p_m", "p_h", "t_opt",
     "band_ebitda", "band_floor_close", "incr_2027_ebitda", "band_t",
+    "tau", "eps_fy26e", "eps_h1_26", "int_rate_h2", "parent_share", "y1", "y2", "rs_retail",
 ]
 CP_RAMP = (0.0, 0.25, 0.50, 0.70, 0.85)  # 2027..2031 share of 1.2 GW, then 1.0 (A13)
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float) -> float:
+    """Single-stage multiple on year-t0 earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2.  With rs >= roe this equals perpetual_pe.
+    (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 def main() -> int:
@@ -140,9 +165,27 @@ def main() -> int:
         roic = (ebitda - inp["da_total"]) * (1 - t) / inp["invested_capital"]
         return f_ret, f_gen, roic
 
-    def ev_at(ebitda: float, retail: float, r_ret: float, r_gen: float, g: float = g2) -> float:
+    def ev_at(ebitda: float, retail: float, r_ret: float, r_gen: float, g: float = g2,
+              timed: bool = False) -> float:
+        """Two-leg EV at t_n 2027-01-01.  Retail leg on the steady-return path (A17: forward ROIC to
+        y1, linear to rs_retail by y2); the generation leg is a commodity leg (exempt, forward ROIC
+        forever).  timed=True discounts each leg tau years to the 2026-06-30 book (A17)."""
         f_ret, f_gen, roic = legs(ebitda, retail)
-        return f_ret * perpetual_pe(g, roic, r_ret) + f_gen * perpetual_pe(g, roic, r_gen)
+        pe_ret = three_segment_pe(NUM_YEAR, int(inp["y1"]), int(inp["y2"]), inp["rs_retail"], g, roic, r_ret)
+        d_ret = (1 + r_ret) ** (-inp["tau"]) if timed else 1.0
+        d_gen = (1 + r_gen) ** (-inp["tau"]) if timed else 1.0
+        return f_ret * pe_ret * d_ret + f_gen * perpetual_pe(g, roic, r_gen) * d_gen
+
+    # Window (A17): 2026H2 unbooked consensus profit on the numerator's unlevered maintenance-FCF
+    # basis = adjusted NI (FY26 consensus EPS − H1 actual) × shares + after-tax H2 interest on net
+    # debt + half a year of (D&A − maintenance capex); × (1 − g2/ROIC_tier) × parent share, at tau/2.
+    win_base = ((inp["eps_fy26e"] - inp["eps_h1_26"]) * inp["shares"]
+                + inp["net_debt"] * inp["int_rate_h2"] / 2 * (1 - t)
+                + (inp["da_total"] - inp["maint_retail"] - inp["maint_gen"]) / 2)
+
+    def window(ebitda: float, retail: float, r_: float) -> float:
+        roic = legs(ebitda, retail)[2]
+        return max(win_base * (1 - g2 / roic), 0.0) * inp["parent_share"] * (1 + r_) ** (-inp["tau"] / 2)
 
     # A11: deemed-paid-out window retention, priced only through k.
     f_ret_m, f_gen_m, roic_m = legs(inp["ebitda_m"], inp["retail_m"])
@@ -154,8 +197,9 @@ def main() -> int:
     def band(r_ret: float, r_gen: float, g: float = g2, dr: float = 0.0) -> tuple[float, float, float]:
         out = []
         for x, k in zip(TIERS, ks):
-            ev = ev_at(inp[f"ebitda_{x}"], inp[f"retail_{x}"], r_ret + dr, r_gen + dr, g)
-            out.append((ev + closure) / sh - k * excess_ps)
+            ev = ev_at(inp[f"ebitda_{x}"], inp[f"retail_{x}"], r_ret + dr, r_gen + dr, g, timed=True)
+            w = window(inp[f"ebitda_{x}"], inp[f"retail_{x}"], r_ret + dr)
+            out.append((ev + w + closure) / sh - k * excess_ps)
         return tuple(out)
 
     L, M, H = band(inp["r_retail"], inp["r_gen"])
@@ -194,7 +238,9 @@ def main() -> int:
         meta = sum(meta_full / (1 + r1) ** k for k in range(1, 1 + int(inp["meta_term"]))) / back
         return cp, meta
 
-    cp_pv, meta_pv = opt_pv(inp["r_gen"])
+    # folded to the numerator year at the base basket r, then the deck's tau to the 2026-06-30 book (A17)
+    tau_opt = (1 + inp["r_gen"]) ** (-inp["tau"])
+    cp_pv, meta_pv = (x * tau_opt for x in opt_pv(inp["r_gen"]))
     v_opt = (cp_pv + meta_pv) / sh
 
     # ③ with step 1c.  ① model side: base M EV + V_opt (p = 1) over the M EBITDA.
@@ -247,8 +293,10 @@ def main() -> int:
     g1_cand = inp["ebitda_2028_gs"] / inp["ebitda_2027_gs"] - 1
 
     def cand_tier(e27: float, retail: float, k_: float) -> float:
-        ev28 = ev_at(e27 * (1 + g1_cand), retail, inp["r_retail"], inp["r_gen"])
-        return (ev28 + closure) / sh / (1 + inp["r_disc"]) - k_ * excess_ps
+        # same tau on the FY2028 EV and the deck's window (A17); the closure keeps its one-year fold
+        ev28 = ev_at(e27 * (1 + g1_cand), retail, inp["r_retail"], inp["r_gen"], timed=True)
+        w = window(e27 * (1 + g1_cand), retail, inp["r_retail"])
+        return (ev28 / (1 + inp["r_disc"]) + w + closure / (1 + inp["r_disc"])) / sh - k_ * excess_ps
 
     m_prime = cand_tier(inp["ebitda_m"], inp["retail_m"], ks[1])
     h_prime = cand_tier(inp["ebitda_h"], inp["retail_h"], ks[2])
@@ -260,7 +308,8 @@ def main() -> int:
     g1 = (f_gen_m / f_gen_l) ** 0.5 - 1
     pe_pt = recovery_two_stage_pe(g1, 2, g2, roic_m, inp["r_gen"])
     roic_l = legs(inp["ebitda_l"], inp["retail_l"])[2]
-    l_point = (f_ret_l * perpetual_pe(g2, roic_l, inp["r_retail"]) + f_gen_l * pe_pt + closure) / sh - ks[0] * excess_ps
+    l_point = ((f_ret_l * perpetual_pe(g2, roic_l, inp["r_retail"]) + f_gen_l * pe_pt) * (1 + inp["r_gen"]) ** (-inp["tau"])
+               + window(inp["ebitda_l"], inp["retail_l"], inp["r_retail"]) + closure) / sh - ks[0] * excess_ps
 
     print(f"VST.US {FORMULA_ID}")
     print(f"  shares {sh:.1f}M  closure {closure:,.0f}M  excess retention/share {excess_ps:.2f}  k {ks}")

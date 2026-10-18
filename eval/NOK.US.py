@@ -115,7 +115,36 @@ REQUIRED = [
     "n_g1", "g2_ni", "r_perp", "n_disc_ni", "ic_group_eur", "ni_rev_share", "payout_3y",
     "ev_ebit_ts_l", "ev_ebit_ts_m", "ev_ebit_ts_h", "ev_ebit_mi", "ev_ebit_corp",
     *CLOSING_COMPONENTS, "price_trough_usd", "oe_l", "oe_m", "oe_h",
+    "parent_share", "y1", "y2", "rs_steady",
 ]
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0) -> float:
+    """Two-stage multiple on the steady-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段):
+    RONIC = forward through calendar y1, linear to min(roe, rs) by y2, Gordon tail from y2.  With
+    rs >= roe this equals two_stage_pe(g1, n, g2, roe, r) exactly.  (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 # ---------------------------------------------------------------- stated Outputs
@@ -190,7 +219,8 @@ def bridge(v: dict) -> dict:
         # JPM's high case is a level (construction §7h): cap the H tier's FY2028 at it.
         "g1_cand": max(0.0, v["eps28_jpm_high_eur"] / eps27_eur["h"] - 1.0),
         "ev_corp": v["ebit_corp_fy26"] * v["ev_ebit_corp"],
-        "adj": sum(v[k] for k in CLOSING_COMPONENTS),
+        # net cash enters at the parent share (valuation-rules「经营价值与超额现金」① 归母份额, A20)
+        "adj": sum(v[k] for k in CLOSING_COMPONENTS) - v["net_cash_eur"] * (1.0 - v["parent_share"]),
         "unit": v["fx_eur_usd"] * v["adr_ratio"] / v["shares"],  # EUR total -> USD/ADR
     }
 
@@ -221,8 +251,14 @@ def compute(v: dict, b: dict, *, g2: float | None = None, disc_years: float | No
         ni = b["ni27"][k]
         g1 = (g1_by_tier or {}).get(k, b["g1"])
         roe = roe_open(ni * net, b, g1)  # every tier has the g1 window -> rolls at g1
-        pe = pin_pe if pin_pe is not None else two_stage_pe(g1, int(v["n_g1"]), g2, roe, v["r_perp"])
+        pe = pin_pe if pin_pe is not None else three_segment_pe(
+            2027, int(v["y1"]), int(v["y2"]), v["rs_steady"], g2, roe, v["r_perp"], g1=g1, n=int(v["n_g1"]))
         ev_ni = ni * ni_evebit_flat * disc if ni_evebit_flat is not None else ni * net * pe * disc
+        # Timing (A20): the NI-leg Gordon value sits at t_n 2027-01-01 and is discounted n_disc_ni = tau
+        # years to the 2026-06-30 balance sheet; add the 2H26 window's distributable NI-leg NOPAT =
+        # unbooked x (1 - b1), b1 = g1 / ROE (the book-roll retention), clipped at 0, x parent share.
+        win = max(b["unbooked_ni"] * (1.0 - g1 / roe), 0.0) * v["parent_share"]
+        ev_ni += win * (1.0 + v["r_perp"]) ** (-(v["n_disc_ni"] if disc_years is None else disc_years) / 2)
         ev_ts = b["ebit_ts"] * ts_mult[k]
         ev_mi = v[f"ebit_mi_core_{k}"] * ran_mult
         ev = ev_ni + ev_ts + ev_mi + b["ev_corp"]
@@ -233,6 +269,7 @@ def compute(v: dict, b: dict, *, g2: float | None = None, disc_years: float | No
             "ev": ev, "group_ev_ebit": ev / v["ebit_group_fy26"],
         }
         anchors[k.upper()] = (ev + b["adj"]) * b["unit"]
+        tiers[k]["window"] = win
     L, M, H = anchors["L"], anchors["M"], anchors["H"]
     A, B = cut_points(L, M, H)
     return {"tiers": tiers, "L": L, "M": M, "H": H, "A": A, "B": B, "disc": disc}

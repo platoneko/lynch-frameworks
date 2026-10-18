@@ -65,7 +65,7 @@ REQUIRED = [
     "u_l", "u_m", "u_h", "fx", "shares", "net_cash",
     "deliv", "prod_l", "prod_m", "prod_h", "c_prod", "buy_ratio", "k_conv",
     "fs_gp", "inkai_base", "inkai_spot0", "inkai_slope", "ane_a", "ane_b", "xs_capex", "eq_fuel",
-    "r_fuel", "g2_fuel",
+    "r_fuel", "g2_fuel", "tau_fuel", "ane26_ps", "fuel_share",
     "wec_ebitda_l", "wec_ebitda_m", "wec_ebitda_h", "wec_maint", "wec_tax", "wec_shield", "wec_nd",
     "roic_wec", "r_wec", "g2_wec_l", "g2_wec_m", "g2_wec_h", "wec_int",
     "ap_rev", "ap_margin", "ap_years", "ap_om_rev", "ap_om_margin", "ap_om_life", "ap_own",
@@ -114,8 +114,15 @@ def fuel_leg(inp: dict, t: str, r_shift: float = 0.0) -> dict:
     pe = perpetual_pe(g, roe, r)
     payout = 1 - g / roe
     pv_cad = sum(payout * E[y] / (1 + r) ** (i + 1) for i, y in enumerate(YEARS)) + pe * E[2031] / (1 + r) ** len(YEARS)
-    return {"E": E, "roe": roe, "pe": pe, "payout": payout, "eq31": eq,
-            "ps": pv_cad / inp["fx"] / inp["shares"]}
+    # Time alignment (valuation-rules「经营价值与超额现金」③): pv_cad is the value at t_n = 2027-01-01
+    # (E2027 at t = 1); discount tau to the cash balance-sheet date and add the window's distributable
+    # fuel-cycle profit (FY2026 consensus ANE x fuel share x (1 - b), b = g2/ROE2031) at tau/2.
+    tau = inp["tau_fuel"]
+    window_cad = inp["ane26_ps"] * inp["shares"] * inp["fuel_share"] * max(payout, 0.0) / (1 + r) ** (tau / 2)
+    pv_today = pv_cad / (1 + r) ** tau + window_cad
+    return {"E": E, "roe": roe, "pe": pe, "payout": payout, "eq31": eq, "window_cad": window_cad,
+            "pv_tn": pv_cad / inp["fx"] / inp["shares"],
+            "ps": pv_today / inp["fx"] / inp["shares"]}
 
 
 def wec_leg(inp: dict, t: str, r_shift: float = 0.0) -> dict:
@@ -225,7 +232,8 @@ def main() -> int:
         f, w = F[t], W[t]
         print(f"{t.upper()}: U {inp[f'u_{t}']:g} prod {inp[f'prod_{t}']:g} | fuel ANE 27–31 "
               + "/".join(f"{f['E'][y]:.0f}" for y in (*YEARS, 2031))
-              + f" ROE31 {f['roe']:.1%} PE {f['pe']:.2f} payout {f['payout']:.0%} → {f['ps']:.2f}"
+              + f" ROE31 {f['roe']:.1%} PE {f['pe']:.2f} payout {f['payout']:.0%} → t_n {f['pv_tn']:.2f}"
+              f" ÷ 1.13^{inp['tau_fuel']:g} + window {f['window_cad'] / inp['fx'] / inp['shares']:.2f} → {f['ps']:.2f}"
               f" | WEC NOPAT {w['nopat']:.0f} PE {w['pe']:.2f} EV {w['ev']:.0f} − ND {inp['wec_nd']:.0f} → {w['ps']:.2f}"
               f" (扣息口径 {w['levered'] / inp['shares']:.2f}, 差 {w['gap']:.0f}) | cash {cash:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")

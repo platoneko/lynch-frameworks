@@ -212,6 +212,45 @@ def tier(inp: dict[str, float], tag: str, r_over: dict[str, float] | None = None
     }
 
 
+def li_passby_h(inp: dict[str, float], th: dict) -> dict[str, float]:
+    """A19 H pass-by (_AXIS.lithium-carbonate「H 档是路过」, 2026-10-19 framework correction).
+
+    The lithium axis H rung lasts one year, then the M rung; only the lithium
+    leg moves (metal / rest keep their H world, H ROE28, H gate).  The price
+    gap is a pure margin item: ΔE = volume × (p_li,H − p_li,M) × (1 − levy) ×
+    (1 − t)(1 − NCI) ÷ shares, exact under the bridge (opex index is priced at
+    M).  Mix world = H volumes at the M price: leg EPS lc − ΔE_cur → FY28
+    l28 − ΔE28, own g1, two_stage_pe at the H ROE28 and r_li.  The one H-price
+    year (E1 = current run-rate) adds ΔE_cur ÷ (1 + r_li), fully paid out —
+    the windfall needs no reinvestment (growth capital is volume-driven)."""
+    _, _, _, p_h = prices(inp, "h")
+    _, _, _, p_m = prices(inp, "m")
+    f = (1 - inp["levy_rate"]) * (1 - inp["tax_rate"]) * (1 - inp["nci_share"]) / inp["shares"]
+    d_cur = inp["vol_li_t"] * (p_h - p_m) * f
+    d_28 = th["fwd"]["v"]["li"] * (p_h - p_m) * f
+    lc = th["legs_cur"]["li"] - d_cur
+    l28 = leg_eps(th["fwd"])["li"] - d_28
+    n = int(inp["n_transition"])
+    g1 = (l28 / lc) ** (1.0 / n) - 1.0 if th["gate"] else 0.0
+    pe = two_stage_pe(g1, n, inp["g2_li"], th["roe28"], inp["r_li"])
+    value = lc * pe + d_cur / (1 + inp["r_li"])
+    return {"d_cur": d_cur, "d_28": d_28, "lc": lc, "l28": l28, "g1": g1, "pe": pe,
+            "value": value, "persist": th["contrib"]["li"]}
+
+
+def apply_passby(inp: dict[str, float], th: dict) -> dict:
+    """Rewrite the H tier's lithium contribution and anchor with the pass-by value."""
+    pb = li_passby_h(inp, th)
+    th = dict(th)
+    th["contrib"] = dict(th["contrib"], li=pb["value"])
+    th["anchor_persist"] = th["anchor"]
+    th["anchor_pre_k"] = sum(th["contrib"].values())
+    th["anchor"] = th["anchor_pre_k"] - th["haircut"]
+    th["eq_pe"] = th["anchor_pre_k"] / th["cur"]["eps"]
+    th["passby"] = pb
+    return th
+
+
 # 表3 only — never Inputs, never the base band (A2e-7a).  p_M: no anchor (phase 3 unapproved).
 P_K = (0.0, 0.25, 1.0)
 
@@ -307,6 +346,7 @@ def main() -> int:
         return 1
 
     T = {t: tier(inp, t) for t in TIERS}
+    T["h"] = apply_passby(inp, T["h"])
     cur_m = T["m"]["cur"]
     if cur_m["p_au"] <= inp["cost_au"] or T["l"]["cur"]["p_cu"] <= inp["cost_cu"] or T["l"]["cur"]["p_li"] <= inp["cost_li"]:
         errors.append("unit cost exceeds L-scenario price")
@@ -348,7 +388,9 @@ def main() -> int:
 
     floor = inp["pb_floor"] * inp["bps"]
     A, B = (L + M) / 2, (M + H) / 2
-    alt = [tier(inp, t, r_over={"r_perp": ALT_METAL_BASKET_R})["anchor"] for t in TIERS]
+    alt_t = {t: tier(inp, t, r_over={"r_perp": ALT_METAL_BASKET_R}) for t in TIERS}
+    alt_t["h"] = apply_passby(inp, alt_t["h"])
+    alt = [alt_t[t]["anchor"] for t in TIERS]
     net_cash_ps = -inp["net_debt"] / inp["shares"]
 
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
@@ -382,6 +424,13 @@ def main() -> int:
         got = first_float(rx, out_sec)
         if got is None or abs(got - want) > TOL:
             errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
+    pb = T["h"]["passby"]
+    for label, want, rx in (("li pass-by", pb["value"], r"锂腿 H 路过 \*\*([0-9.]+)\*\*"),
+                            ("alt M", alt[1], r"备选篮 5（金铜银腿 r 11%）→ [0-9.]+ / ([0-9.]+) /"),
+                            ("alt H", alt[2], r"备选篮 5（金铜银腿 r 11%）→ [0-9.]+ / [0-9.]+ / ([0-9.]+)")):
+        got = first_float(rx, out_sec)
+        if got is None or abs(got - want) > TOL:
+            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
 
     print(f"formula_id={FORMULA_ID}")
     print("shared Au/Cu OK vs _AXIS.fed-path-gold-copper (+ peer 603993.SH); Li2CO3 OK vs _AXIS.lithium-carbonate")
@@ -402,6 +451,9 @@ def main() -> int:
     print("视同派出现金/股 k 前 → k 后: " + " | ".join(
         f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
         for t in TIERS))
+    print(f"H 路过 (A19): 锂腿 persistent {pb['persist']:.2f} -> mix (H 量 × M 价) e_cur {pb['lc']:.4f} → e28 {pb['l28']:.4f}, "
+          f"g1 {pb['g1']:+.1%}, PE {pb['pe']:.2f} + 一年 H 价增量 {pb['d_cur']:.4f}/(1+{inp['r_li']:g}) = {pb['value']:.2f}; "
+          f"H persistent {T['h']['anchor_persist']:.2f} -> {H:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"V_opt 巨龙三期（A34）：{inp['jl3_cu_t']:,.0f} − {inp['jl2_cu_t']:,.0f} = {opt['d_cu']:,.0f} t 铜 @M、单位成本 {inp['cost_cu']:,.0f}、"
           f"税金及附加、(1−t)(1−NCI 巨龙 {inp['nci_julong']:.2%}) = {opt['d_parent'] / YI:.2f} 亿（ΔEPS {opt['d_eps']:.4f}）"

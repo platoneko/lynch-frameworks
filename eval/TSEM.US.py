@@ -39,7 +39,19 @@ the full-capacity year, discounted to FY2027, less Track 2's unspent capital
 (the $3B dual-track budget, net of grants, split by capacity added).  No
 sell-side quantity exists for Track 2, so only H carries it at full weight.
 
-Cross-file: shared rows must equal frameworks/axes/sipho-wafer.md.
+Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金」, A19):
+- SiPho leg = 叙事换代的腿 (_AXIS.sipho-wafer): steady return = min(tier forward,
+  ss_return_cap_sipho 30%), forward kept through Y1 2030, linear to it by Y2 2035;
+- rest-foundry leg on its own path (Y1 2028, Y2 2032, R_s rs_rest) -- its forward
+  return sits below R_s, so the path does not bind;
+- rest-foundry g2 = `g2_rest` (the cluster re-solved once on the same path, shared
+  with GFS.US); `g2_rest_src` stays the raw cluster reading;
+- the Gordon legs sit at the start of FY2027 and are folded back tau years; the
+  window distributable profit (2H26 unbooked x (1 - b1), floored at 0) at tau/2;
+- V_opt on the SiPho path (from FY2027), net of unspent capital, folded by tau.
+
+Cross-file: shared rows must equal frameworks/axes/sipho-wafer.md; g2_rest /
+g2_rest_src must equal GFS.US.md.
 
 Run:  python3 frameworks/eval/TSEM.US.py
 """
@@ -59,6 +71,7 @@ from eval.lib.gordon import (  # noqa: E402
     check_r,
     check_transition_years,
     g_cap,
+    payout,
     perpetual_pe,
     two_stage_pe,
 )
@@ -82,7 +95,10 @@ TOL = 0.05
 MIN_R_MINUS_G = 0.02
 NUM_YEAR = 2027
 P_TIERS = (0.0, 0.25, 1.0)  # A9 — table 3 only, never an input
-SHARED = ("g2_sipho_src", "gm_sipho", "t_align", "asp_sipho_300", "gf_cogs_2025", "gf_wafers_2025")
+SHARED = ("g2_sipho_src", "gm_sipho", "t_align", "asp_sipho_300", "gf_cogs_2025", "gf_wafers_2025",
+          "ss_return_cap_sipho", "ss_return_sipho_ref", "y1_sipho", "y2_sipho")
+TWIN = REPO_ROOT / "frameworks" / "GFS.US.md"  # reads the same rest-foundry g2 (A19)
+TWIN_SHARED = ("g2_rest", "g2_rest_src")
 MONTHS = 12
 
 REQUIRED = [
@@ -92,8 +108,42 @@ REQUIRED = [
     "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_floor",
     "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
     *SHARED, "jp_wpm_2029", "jp_mult_t2", "jp_mult_2025", "opex_ratio_full", "k_dual", "k_t2_spent", "t_opt",
+    "g2_rest", "tau", "parent_ratio", "y1_rest", "y2_rest", "rs_rest",
 ]
 TIERS = ("L", "M", "H")
+
+
+def path_value(g1: float, n: int, g2: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the numerator-year earnings, valued at the start of the numerator year,
+    on the steady-state-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段;
+    gordon.py's three-segment function is not built yet, so it lives here).
+
+    t = 1 is the numerator year t0; the first n years grow at g1 (two_stage_pe's stage 1),
+    then g2 with RONIC = forward through Y1, linear to min(R_s, forward) by Y2, then the
+    Gordon tail.  With R_s >= forward it is exactly two_stage_pe / perpetual_pe (A19)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g2 <= 0:
+        raise ValueError(f"perpetuity diverges: g={g2} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g2, rs_eff) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * payout(g2, ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 def stated_v_opt(md: str) -> float | None:
@@ -116,8 +166,8 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         errs.append("r_perp: Inputs source cell names no 篮 N (A15)")
     r = inp["r_perp"]
     errs += check_r(r, "r_perp", baskets.get("r_perp"))
-    for leg in ("sipho", "rest"):
-        g = min(inp[f"g2_{leg}_src"], g_cap(r))
+    for leg, key in (("sipho", "g2_sipho_src"), ("rest", "g2_rest")):
+        g = min(inp[key], g_cap(r))
         errs += check_g_cap(g, r, f"g2_{leg}")
         if r - g < MIN_R_MINUS_G:
             errs.append(f"r - g2_{leg} = {r - g:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
@@ -157,9 +207,22 @@ def main() -> int:
                 errors.append(f"{k} {inp[k]:g} != _AXIS.sipho-wafer {peer.get(k)} — the leg ruler drifted")
     else:
         errors.append("frameworks/axes/sipho-wafer.md missing — leg ruler unchecked")
+    # The two SiPho-foundry tickers read one rest-foundry g2 (re-solved once, A19).
+    if TWIN.is_file():
+        twin = parse_inputs(TWIN.read_text(encoding="utf-8"))
+        for k in TWIN_SHARED:
+            if k not in twin or abs(twin[k] - inp[k]) > 1e-12:
+                errors.append(f"{k} {inp[k]:g} != GFS.US {twin.get(k)} — the shared rest-foundry g2 drifted (A19)")
+    else:
+        errors.append("frameworks/GFS.US.md missing — shared rest-foundry g2 unchecked")
 
     r, n = inp["r_perp"], int(inp["n_stage"])
-    g2s, g2r = min(inp["g2_sipho_src"], g_cap(r)), min(inp["g2_rest_src"], g_cap(r))
+    g2s, g2r = min(inp["g2_sipho_src"], g_cap(r)), min(inp["g2_rest"], g_cap(r))
+    tau, pr = inp["tau"], inp["parent_ratio"]
+    path_s = (NUM_YEAR, int(inp["y1_sipho"]), int(inp["y2_sipho"]), inp["ss_return_cap_sipho"])
+    path_r = (NUM_YEAR, int(inp["y1_rest"]), int(inp["y2_rest"]), inp["rs_rest"])
+    if not (0.9 < pr <= 1.0 and 0.0 <= tau < 2.0):
+        errors.append(f"parent_ratio {pr} / tau {tau} out of range (A19)")
     g1 = inp["eps_2028_gaap_m"] / inp["eps_2027_gaap_m"] - 1.0
     street = {"L": inp["eps_2026_m"], "M": inp["eps_2027_m"], "H": inp["eps_2027_h"]}
 
@@ -183,8 +246,10 @@ def main() -> int:
         g1s = inp["sipho_rev_2028"] / inp["sipho_rev_2027"] - 1.0
         return sh, cap, g1s
 
-    def deck(gm: float = inp["gm_sipho"], g2s_: float = g2s, g2r_: float = g2r, cap_mult: float = 1.0, g1_: float = g1, rr: float | None = None):
+    def deck(gm: float = inp["gm_sipho"], g2s_: float = g2s, g2r_: float = g2r, cap_mult: float = 1.0, g1_: float = g1,
+             rr: float | None = None, ps: tuple = path_s, prr: tuple = path_r):
         rr = r if rr is None else rr
+        d = (1.0 + rr) ** -tau
         sh, cap, g1s = split(gm, cap_mult)
         g1r = (g1_ - sh["M"] * g1s) / (1.0 - sh["M"])
         out = {}
@@ -196,12 +261,14 @@ def main() -> int:
             bps = bps_op_2q26 / (1.0 - frac)
             es, er = ops[t] * sh[t], ops[t] * (1.0 - sh[t])
             roe_s, roe_r = es / (bps * cap[t]), er / (bps * (1.0 - cap[t]))
-            if t == "L":
-                pe_s, pe_r = perpetual_pe(g2s_, roe_s, rr), perpetual_pe(g2r_, roe_r, rr)
-            else:
-                pe_s, pe_r = two_stage_pe(g1s, n, g2s_, roe_s, rr), two_stage_pe(g1r, n, g2r_, roe_r, rr)
-            out[t] = dict(bps=bps, sh=sh[t], cap=cap[t], es=es, er=er, roe_s=roe_s, roe_r=roe_r,
-                          pe_s=pe_s, pe_r=pe_r, v_s=es * pe_s, v_r=er * pe_r, val=es * pe_s + er * pe_r + cash_ps)
+            n_t = 0 if t == "L" else n
+            pe_s = path_value(g1s, n_t, g2s_, roe_s, rr, *ps)
+            pe_r = path_value(g1r, n_t, g2r_, roe_r, rr, *prr)
+            b1 = g_roll * bps / ops[t]
+            win = max(unbooked * (1.0 - b1), 0.0) * (1.0 + rr) ** -(tau / 2)  # window profit, < 0 -> 0 (A19)
+            out[t] = dict(bps=bps, b1=b1, sh=sh[t], cap=cap[t], es=es, er=er, roe_s=roe_s, roe_r=roe_r,
+                          pe_s=pe_s, pe_r=pe_r, v_s=es * pe_s * d, v_r=er * pe_r * d, win=win,
+                          val=(es * pe_s + er * pe_r) * d + win + cash_ps * pr)
         return out, g1s, g1r
 
     base, g1s, g1r = deck()
@@ -209,13 +276,13 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
         return report(errors)
-    pe_co = {t: (base[t]["val"] - cash_ps) / ops[t] for t in TIERS}
+    pe_co = {t: (base[t]["val"] - cash_ps * pr) / ops[t] for t in TIERS}  # today's operating multiple
     for t in TIERS:
         if not inp["pe_own_min"] - TOL <= pe_co[t] <= inp["pe_own_max"] + TOL:
             errors.append(f"{t} company multiple {pe_co[t]:.2f}x outside own band [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (③)")
     if not (ops["L"] < ops["M"] < ops["H"]):
         errors.append("numerator ladder broken (A2e-2c)")
-    flat = [ops[t] * pe_co["M"] + cash_ps for t in TIERS]
+    flat = [ops[t] * pe_co["M"] + cash_ps * pr for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
 
@@ -234,10 +301,13 @@ def main() -> int:
         rev = wpm * MONTHS * price
         ni = rev * (inp["gm_sipho"] - opex) * (1.0 - inp["tax"])
         roe = ni / k
-        pe = perpetual_pe(g2s, roe, r)
+        # SiPho path, calendar from the realisation year t_opt (2026-10-19: was NUM_YEAR 2027,
+        # which pushed the option's high-return window 3 years later than the Y1/Y2 calendar; A9 / A19)
+        pe = path_value(0.0, 0, g2s, roe, r, int(t_opt), *path_s[1:])
         gross = ni / inp["shares"] * pe / (1.0 + r) ** (t_opt - NUM_YEAR)
         k_ps = unspent / inp["shares"] * (1.0 + 1.0 / (1.0 + r)) / 2.0  # 2027-28 even spend
-        return dict(k=k, rev=rev, ni=ni, roe=roe, pe=pe, gross=gross, k_ps=k_ps, v=gross - k_ps)
+        fold = (1.0 + r) ** -tau  # valued at FY2027 -> folded to the valuation date (A19)
+        return dict(k=k, rev=rev, ni=ni, roe=roe, pe=pe, gross=gross, k_ps=k_ps, v=(gross - k_ps) * fold)
 
     o = option()
     v_opt = o["v"]
@@ -304,8 +374,18 @@ def main() -> int:
     a2, b2 = cut_points(*opt)
     print(f"V_opt={v_opt:.2f}: Track 2 {wpm_t2:,.0f} wpm (= {inp['jp_wpm_2029']:,.0f} x (1 - 1/{inp['jp_mult_t2']:g}); Track 1 adds {wpm_t1:,.0f}) "
           f"x {MONTHS} x ${inp['asp_sipho_300']:,.0f} = {o['rev'] / 1e9:.3f}B rev x (GM {inp['gm_sipho']:g} - opex {inp['opex_ratio_full']:g}) x (1-t) = NI {o['ni'] / 1e9:.3f}B")
-    print(f"  capital {o['k'] / 1e9:.3f}B (= {inp['k_dual'] / 1e9:g}B x capacity share {t2_share:.4f}) -> ROE {o['roe']:.4f}, SiPho perp PE {o['pe']:.2f}x; "
-          f"value {o['gross']:.2f} at {int(inp['t_opt'])} / 1.1^{int(inp['t_opt']) - NUM_YEAR} - unspent {o['k_ps']:.2f}/sh = {v_opt:.2f}")
+    print(f"  capital {o['k'] / 1e9:.3f}B (= {inp['k_dual'] / 1e9:g}B x capacity share {t2_share:.4f}) -> ROE {o['roe']:.4f}, SiPho path PE {o['pe']:.2f}x; "
+          f"value {o['gross']:.2f} at {int(inp['t_opt'])} / 1.1^{int(inp['t_opt']) - NUM_YEAR} - unspent {o['k_ps']:.2f}/sh, x 1.1^-{tau:g} = {v_opt:.2f}")
+    print(f"path (A19): SiPho forward ROE through {path_s[1]}, to min(fwd, {path_s[3]:.0%}) by {path_s[2]} (叙事换代); "
+          f"rest to min(fwd, {path_r[3]:.0%}) {path_r[1]}/{path_r[2]}; tau {tau:g}; parent ratio {pr:g}; "
+          f"window L/M/H " + "/".join(f"{base[t]['win']:.3f}" for t in TIERS)
+          + f"; g2 rest {g2r:.4%} (raw cluster src {inp['g2_rest_src']:.4%})")
+    for lab, ps_ in (("axis 16.9% (UMC only), 2030/2035", (NUM_YEAR, path_s[1], path_s[2], inp["ss_return_sipho_ref"])),
+                     ("叙事换代 30%, default path 2028/2033", (NUM_YEAR, 2028, 2033, path_s[3]))):
+        dd = deck(ps=ps_)[0]
+        oo = (o["ni"] / inp["shares"] * path_value(0.0, 0, g2s, o["roe"], r, int(inp["t_opt"]), *ps_[1:])
+              / (1.0 + r) ** (inp["t_opt"] - NUM_YEAR))
+        print(f"contrast SiPho {lab}: {trio(dd)} V_opt {(oo - o['k_ps']) * (1.0 + r) ** -tau:.2f}")
     print(f"  zone+V {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f} A'={a2:.2f} B'={b2:.2f}")
     print(f"  sens: price x1.5 {o_px15['v']:.2f} / x2 {o_px2['v']:.2f} | full capacity in {int(inp['t_opt']) - 1} {o_t29['v']:.2f} | "
           f"opex at today's {inp['opex_ratio']:g} {o_opex['v']:.2f} | whole $3B charged to Track 2 {o_kall['v']:.2f}")

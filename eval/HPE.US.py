@@ -22,7 +22,15 @@ ROIC_x = (owner NI_x + after-tax interest on all debt) / (equity + net debt).
 M / H = FY27 consensus mean / high at Gordon g2 4% (named macro).
 L = measured trough: Cloud & AI back to its FY25 margin and Networking to its
 measured low, revenue held at FY26; treated as a point that recovers to the
-FY24 like-for-like Cloud & AI margin over two years (recovery_two_stage_pe).
+FY24 like-for-like Cloud & AI margin over two years (recovery form, tail on
+the return path below).
+
+Stable-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段): new
+investment earns the tier's forward ROIC through y1, fades linearly to ronic_ss
+by y2 (default path: Y1 = visible year end, mid entry barrier -> 4 years).
+Time alignment (③): the value sits at the FY27 opening and is discounted tau
+years to the 2026-07-31 balance sheet, plus the FY26 Q4 window's distributable
+owner profit (A16 / A17).
 The regime reading (trough forever) is printed as the deep_discount pressure
 coordinate.
 
@@ -44,14 +52,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
+    annuity_factor,
     check_branch,
     check_g_cap,
     check_r,
     g_cap,
     payout,
     perpetual_pe,
-    recovery_two_stage_pe,
-    two_stage_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
     check_against_stated,
@@ -83,7 +90,52 @@ REQUIRED = [
     "r_perp", "g2", "k_l", "k_m", "k_h", "payout_obs",
     "nw_g27", "nw_cagr_26_29", "nw_margin",
     "pe_own_lo", "pe_own_hi",
+    "t0", "y1", "y2", "ronic_ss", "tau", "eps_q4_26",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float,
+            g1: float = 0.0, n: int = 0) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  n transition years at g1 keep the forward return and
+    the unfloored b1 = g1/ROIC (as `two_stage_pe`).  Then at g the retention of
+    calendar c earns the forward return while c <= y1, fades linearly to the stable
+    return by y2, and the stable return from y2 on.  Stable return capped at the
+    forward return and floored at r; flat path == `perpetual_pe` / `two_stage_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
+
+
+def recovery_path_pe(g1: float, n: int, g2: float, roe_mid: float, r: float,
+                     t0: int, y1: int, y2: int, rs: float) -> float:
+    """`recovery_two_stage_pe` with its mid-cycle tail on the same return path:
+    n years of 100% payout at g1, then the tail valued at t = n on E_{n+1}."""
+    stage1 = n / (1.0 + r) if abs(r - g1) < 1e-12 else annuity_factor(g1, r, n)
+    return stage1 + (1 + g1) ** n * path_pe(g2, roe_mid, r, t0 + n, y1, y2, rs) / (1 + r) ** n
 
 _CANDIDATE = re.compile(
     r"候选带（[^）]+）[^\n]*?L′ = \*\*([0-9.]+)\*\*[^\n]*?M′ = \*\*([0-9.]+)\*\*[^\n]*?H′ = \*\*([0-9.]+)\*\*"
@@ -159,14 +211,23 @@ def main() -> int:
     g1_rec = (eps_mid / eps["L"]) ** (1 / n) - 1
     k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
 
+    t0, y1, y2, rs, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"], inp["tau"]
+    # ③ 时点对齐: the Gordon value sits at the FY27 opening (2026-11-01); discount tau
+    # back to the 2026-07-31 balance sheet and add the FY26 Q4 window's distributable
+    # owner profit (consensus Q4 non-GAAP EPS less a quarter of after-tax SBC) x (1 - g/ROIC).
+    eps_win = inp["eps_q4_26"] - sbc_ps / 4
+
+    def window(t: str, rr: float, g: float = g2) -> float:
+        return eps_win * max(1.0 - g / roic(eps[t]), 0.0) / (1 + rr) ** (tau / 2)
+
     def multiples(rr: float, g: float = g2) -> dict[str, float]:
-        return {"L": recovery_two_stage_pe(g1_rec, n, g, roic(eps_mid), rr),
-                "M": perpetual_pe(g, roic(eps["M"]), rr),
-                "H": perpetual_pe(g, roic(eps["H"]), rr)}
+        return {"L": recovery_path_pe(g1_rec, n, g, roic(eps_mid), rr, t0, y1, y2, rs),
+                "M": path_pe(g, roic(eps["M"]), rr, t0, y1, y2, rs),
+                "H": path_pe(g, roic(eps["H"]), rr, t0, y1, y2, rs)}
 
     def anchors_at(rr: float, g: float = g2) -> tuple[float, float, float]:
         pe_ = multiples(rr, g)
-        return tuple(eps[t] * pe_[t] * (1 - k[t]) for t in TIERS)
+        return tuple(eps[t] * pe_[t] * (1 - k[t]) / (1 + rr) ** tau + window(t, rr, g) for t in TIERS)
 
     pe = multiples(r)
     L, M, H = anchors_at(r)
@@ -189,7 +250,8 @@ def main() -> int:
     g1c = ((eps["M"] + d_eps) / eps["M"]) ** 0.5 - 1
     cand = {"L": L}
     for t in ("M", "H"):
-        cand[t] = eps[t] * two_stage_pe(g1c, 2, g2, roic(eps[t]), r) * (1 - k[t])
+        cand[t] = (eps[t] * path_pe(g2, roic(eps[t]), r, t0, y1, y2, rs, g1=g1c, n=2) * (1 - k[t]) / (1 + r) ** tau
+                   + window(t, r))
     errors += ladder("candidate band", cand["L"], cand["M"], cand["H"])
 
     # ---- Reconcile stated Outputs ----
@@ -212,7 +274,9 @@ def main() -> int:
     print(f"IC {ic:,.0f} = equity {inp['equity']:,.0f} + net debt {inp['net_debt']:,.0f}; after-tax interest {int_at:.0f}")
     for t in TIERS:
         print(f"{t}: owner EPS {eps[t]:.4f} | ROIC {roic(eps[t]):.3f} ROE(book) {eps[t] * sh / inp['equity']:.3f}"
-              f" | PE {pe[t]:.3f} -> {eps[t] * pe[t]:.2f} x (1-k {k[t]:.2f})")
+              f" | PE(path) {pe[t]:.3f} -> {eps[t] * pe[t]:.2f} x (1-k {k[t]:.2f}) / 1.1^tau + window {window(t, r):.2f}")
+    print(f"path: forward ROIC through {y1}, fade to stable {rs:.0%} by {y2} (t0 {t0}); tau {tau}; "
+          f"window owner EPS {eps_win:.4f}")
     print(f"L recovery: trough {eps['L']:.4f} -> mid {eps_mid:.4f} over n={n} (g1 {g1_rec:+.2%}),"
           f" mid ROIC {roic(eps_mid):.3f} (payout {payout(g2, roic(eps_mid)):.3f})")
     print(f"L/M/H = {L:.2f}/{M:.2f}/{H:.2f}  A={A:.2f} B={B:.2f}")

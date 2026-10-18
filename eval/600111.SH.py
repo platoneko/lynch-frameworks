@@ -4,8 +4,14 @@
 frameworks/600111.SH.md is the source of truth.
 formula_id: nre_consensus_fy28_disc_two_stage_gordon_v2
 
-Numerator = the FY2028 sell-side range (two houses, low/mean/high), discounted
-one year (FY+2 → t=1, construction §3).  This is the ②-b fallback of
+Numerator = the FY2028 sell-side range (two houses, low/mean/high).  Time
+alignment (valuation-rules「经营价值与超额现金」③, 2026-10-15): the Gordon value
+sits at the numerator-year start 2028-01-01; it is discounted to the valuation
+date (the 2026-06-30 balance sheet) over tau = 1.5 years at the basket r, and
+the window's distributable profit (unbooked consensus 2026H2 + FY2027 parent
+EPS x (1 - g1/ROE_x), b = g1 / tier forward return since bps_fwd is rolled at
+the observed retention, not g/RONIC) is added back discounted tau/2.  The old
+one-year discount at a separate r_disc 10% is gone.  This is the ②-b fallback of
 valuation-rules: the 5-year NdPr-price mid-cycle numerator (A8) sits 57% below
 the consensus mean, only half of which the one measured structural variable
 (phase-2 smelting capacity) explains, so the framework swaps to the consensus
@@ -84,7 +90,7 @@ NDPR_REGIME_MID = 70.0
 REQUIRED = [
     "shares", "bps", "bps_fwd",
     "eps28_l", "eps28_m", "eps28_h",
-    "r_disc", "n_disc", "r_perp",
+    "tau", "eps26_rem", "eps27_win", "r_perp",
     "g1_window", "n_window", "g2",
     "pe_band_lo", "pe_band_hi",
     "payout_obs", "pb_floor",
@@ -162,9 +168,20 @@ def main() -> int:
             f"[{inp['pe_band_lo']}, {inp['pe_band_hi']}] — drop the verdict"
         )
 
-    disc = (1.0 + inp["r_disc"]) ** (-inp["n_disc"])
+    # Time alignment (valuation-rules「经营价值与超额现金」③): numerator-year start → valuation date.
+    tau = inp["tau"]
+    if tau < 0:
+        errors.append(f"tau={tau} < 0 — the rule floors it at 0")
+    disc = (1.0 + r) ** (-tau)
     eps_d = tuple(e * disc for e in eps28)
-    L, M, H = (e * pe for e, pe in zip(eps_d, pes))
+    win_eps = inp["eps26_rem"] + inp["eps27_win"]
+
+    def window(roe_x: float, g1_: float = g1, r_: float = r, tau_: float = tau) -> float:
+        """Distributable window profit, discounted tau/2 (b = g1 / tier forward return, floored at 0)."""
+        return max(win_eps * (1.0 - g1_ / roe_x), 0.0) / (1.0 + r_) ** (tau_ / 2)
+
+    win = tuple(window(x) for x in roe)
+    L, M, H = (e * pe + w for e, pe, w in zip(eps_d, pes, win))
     scenario_L = L
     floor = inp["pb_floor"] * inp["bps"]   # disclosure only, never max()-ed into L (A5)
     A, B = (L + M) / 2, (M + H) / 2
@@ -201,8 +218,9 @@ def main() -> int:
         return 1
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"basket: r_perp 篮 {baskets['r_perp']} = {r:g}; r_disc {inp['r_disc']:g} (numerator drift, no basket)")
-    print(f"eps28 L/M/H = {eps28[0]:g}/{eps28[1]:g}/{eps28[2]:g}  × disc {disc:.4f} → {eps_d[0]:.3f}/{eps_d[1]:.3f}/{eps_d[2]:.3f}")
+    print(f"basket: r_perp 篮 {baskets['r_perp']} = {r:g}; time alignment tau {tau:g} y at r_perp")
+    print(f"eps28 L/M/H = {eps28[0]:g}/{eps28[1]:g}/{eps28[2]:g}  × disc {disc:.4f} → {eps_d[0]:.3f}/{eps_d[1]:.3f}/{eps_d[2]:.3f}; "
+          f"window profit {win_eps:.4f} × (1 − g1/ROE) / (1+r)^(tau/2) → +{win[0]:.3f}/+{win[1]:.3f}/+{win[2]:.3f}")
     print(f"L/M/H = {L:.2f}/{M:.2f}/{H:.2f}  A/B = {A:.2f}/{B:.2f}")
     print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bps, disclosure only, not max()-ed) scenario_L={scenario_L:.2f} = L; "
           f"tier PB on today's bps = {L / inp['bps']:.2f}/{M / inp['bps']:.2f}/{H / inp['bps']:.2f}")
@@ -218,14 +236,15 @@ def main() -> int:
           f"(band distorted per 1b — basket kept, no band-edge reverse-solve)")
     print(f"对账门 ②: E_M/r = {em_over_r:.2f}, M {M / em_over_r - 1:+.1%}")
 
-    def band(g1_=g1, n_=n_win, g2_=g2, r_=r, disc_=disc):
-        return [e * disc_ * window_pe(g1_, n_, g2_, x, r_) for e, x in zip(eps28, roe)]
+    def band(g1_=g1, n_=n_win, g2_=g2, r_=r, tau_=tau):
+        return [e * (1 + r_) ** (-tau_) * window_pe(g1_, n_, g2_, x, r_) + window(x, g1_, r_, tau_)
+                for e, x in zip(eps28, roe)]
 
     for tag, alt in (
         ("g2 0%", band(g2_=0.0)), ("g2 3%", band(g2_=0.03)),
         ("n 10", band(n_=10)), ("g1 6% (cap)", band(g1_=0.06)),
         ("r_perp 篮 5 11%", band(r_=basket_r(5))), ("r_perp 篮 4 10%", band(r_=basket_r(4))),
-        ("r_disc 13%", band(disc_=(1 + r) ** (-inp["n_disc"]))), ("undiscounted", band(disc_=1.0)),
+        ("tau 0 (no time alignment)", band(tau_=0.0)),
     ):
         print(f"  {tag:>18}: {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
     for year, (p, e) in BRIDGE_GATE.items():
@@ -239,9 +258,10 @@ def main() -> int:
         eps_mid = a + b * p
         pe_mid = window_pe(g1, n_win, g2, eps_mid / inp["bps_fwd"], r)
         print(f"对照坐标（A8）: {tag} {p:g} 万 -> EPS {eps_mid:.3f}, ROE {eps_mid / inp['bps_fwd']:.1%} "
-              f"-> {pe_mid:.2f}x -> {eps_mid * disc * pe_mid:.2f}")
+              f"-> {pe_mid:.2f}x -> {eps_mid * disc * pe_mid + window(eps_mid / inp['bps_fwd']):.2f}")
     print(f"对照坐标（A8）: trough × 1/r = {inp['eps_trough'] / r:.2f}; spot {inp['ndpr_now']:g} 万")
-    ths = inp["eps28_ths"] * disc * window_pe(g1, n_win, g2, inp["eps28_ths"] / inp["bps_fwd"], r)
+    ths = (inp["eps28_ths"] * disc * window_pe(g1, n_win, g2, inp["eps28_ths"] / inp["bps_fwd"], r)
+           + window(inp["eps28_ths"] / inp["bps_fwd"]))
     print(f"numerator upgrade (同花顺 2028E {inp['eps28_ths']:g}): {ths:.2f} -> zone {zone_of(ths, L, M, H)}")
     eps_mid = a + b * inp["ndpr_mid"]
     print(f"pre-control centre {PRE_CONTROL_PRICE:g} (2023-11 → 2025H1) on mid-cycle EPS {eps_mid:.3f}: "

@@ -23,7 +23,27 @@ g1 window, so every tier rolls at g2 (valuation-rules 2026-09-21, A18).  The
 after-tax interest the consensus EPS earns on that cash is stripped from the
 numerator and the net cash added back per share as a closing item (A15, the
 1810.HK A15 treatment).  FY29 has no >=2-house consensus anywhere, so there is
-no g1 and no discount (FY28 = current FY + 1).
+no g1.
+
+Steady return three segments (valuation-rules「经营价值与超额现金」② 稳态回报三段,
+A20): the leg is a 叙事换代 leg (user 2026-10-19 — TER and FORM are not the
+same business as AEHR, so the axis peer layer is empty, and AEHR's own cycle
+is unusable), so the steady return is min(tier forward, 30%) with no fallback
+to a peer or floor value — `_AXIS.burn-in-test`'s ss_return_cap_bit, with
+y1_bit / y2_bit (package / opto-electrical test link, high barrier): forward
+ROE through Y1 2030, linear to min(forward, 30%) at Y2 2035, Gordon tail
+after (gordon.py's three-segment function is [待建], so `path_value` lives
+here; the option and the candidate band ride the same path from FY30).  L / M
+forwards sit below 30% and do not move; H (33.0%), every option tier and both
+candidate tiers fall to 30%.  The axis's pre-ruling peer median
+(ss_return_bit_ref) is printed as a contrast only.
+
+Timing alignment (valuation-rules ③, A21): the Gordon value sits at the FY28
+opening (~2027-06-25); the base date is the FY26 10-K balance sheet
+2026-05-29 (the net cash's date) -> tau = 392/365 = 1.074 year; window
+distributable profit = the unbooked FY27 core EPS x (1 - g2/ROE) at tau / 2.
+The closing net cash is not discounted; the option (valued at FY28) is
+discounted tau like the deck.
 
 L is the scenario value; the tangible-book PB floor is only disclosed, never
 max()'d in (A10).  The A2e-1 ratio scenario_L / M is printed and guarded
@@ -103,6 +123,10 @@ FLOOR_RATIO_MIN = 0.3  # A2e-1: scenario below the floor AND scenario_L / M belo
 HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the derived value
 BIT_AXIS = axis_path("_AXIS.burn-in-test")
 BIT_SHARED = ("g2_bit_src", "bit_opm_weak", "bit_opm_strong")  # rows that must equal the axis file
+BIT_PATH = (("ss_return", "ss_return_cap_bit"), ("y1", "y1_bit"), ("y2", "y2_bit"))  # A20, same rule
+NARRATIVE_CAP = 0.30  # valuation-rules 叙事换代的腿: min(forward, 30%), the top rung of the fallback table
+SS_REF = "ss_return_bit_ref"  # axis contrast row (pre-ruling TER / FORM median), printed only
+SS_FLOORS = ((0.20, "_AXIS.ai-capex package floor 20%"), (0.15, "rule-table equipment floor 15%"))  # contrasts only
 P_TOL = 5e-4  # stated p_k (4 dp) vs V_k / V_H
 CAND_DISC_YEARS = 2  # A19: FY30 sits two years past the undiscounted FY28 numerator
 NUM_YEAR = 2028  # FY28 numerator (t = 1, undiscounted); the option is discounted from t_opt back to here (A14)
@@ -157,8 +181,38 @@ REQUIRED = [
     "capex_l",
     "capex_m",
     "capex_h",
+    "ss_return",
+    "y1",
+    "y2",
+    "tau",
 ]
 TIERS = ("L", "M", "H")
+
+
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float) -> float:
+    """Gordon multiple on next-period earnings with the three-segment RONIC path; t = 1 <->
+    fiscal year t0; RONIC = forward through Y1, linear to min(forward, r_s) at Y2, tail after."""
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, r_s)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * pay / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * pay / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def stated_v_opt(md: str) -> float | None:
@@ -208,8 +262,17 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         for k in BIT_SHARED:
             if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
                 errs.append(f"{k} {inp[k]:g} != _AXIS.burn-in-test {peer.get(k)} — the leg ruler drifted")
+        for mine, theirs in BIT_PATH:
+            if theirs not in peer or abs(peer[theirs] - inp[mine]) > 1e-9:
+                errs.append(f"{mine} {inp[mine]:g} != _AXIS.burn-in-test {theirs} {peer.get(theirs)} (A20)")
     else:
         errs.append("frameworks/axes/burn-in-test.md missing — leg ruler unchecked")
+    if inp["ss_return"] > NARRATIVE_CAP + 1e-9:
+        errs.append(f"ss_return {inp['ss_return']:g} above the 叙事换代 cap {NARRATIVE_CAP:g} (A20)")
+    if not (NUM_YEAR <= inp["y1"] < inp["y2"]):
+        errs.append("high-return window must satisfy numerator year <= Y1 < Y2 (A20)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        errs.append("tau out of range (A21)")
     gap = inp["r_perp"] - inp["g2"]
     if gap <= 0:
         errs.append("perpetuity diverges: g2 >= r")
@@ -268,6 +331,10 @@ def main() -> int:
 
     r, g2 = inp["r_perp"], inp["g2"]
     cap = g_cap(r)
+    y1, y2, rs, tau = int(inp["y1"]), int(inp["y2"]), inp["ss_return"], inp["tau"]
+
+    def pp(g: float, roe_: float, rr: float, t0: int = NUM_YEAR, rs_: float | None = None) -> float:  # A20 path multiple
+        return path_value(t0, y1, y2, rs if rs_ is None else rs_, g, roe_, rr)
     street = {"L": inp["eps_fy28_l"], "M": inp["eps_fy28_m"], "H": inp["eps_fy28_h"]}
 
     # ---- Step 1-2: economic EPS, then core EPS with the cash interest stripped (A9, A15) ----
@@ -300,9 +367,16 @@ def main() -> int:
     roe_fy26 = {t: core[t] * inp["shares"] / (equity_op * MILLION) for t in TIERS}  # old basis, printed only
     ret_actual = 1.0 - inp["payout_3y"]
     excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
-    pes = {t: perpetual_pe(g2, roe[t], r) for t in TIERS}
-    ex_cash = {t: core[t] * pes[t] for t in TIERS}
-    scen = {t: ex_cash[t] + cash_ps for t in TIERS}
+    pes = {t: pp(g2, roe[t], r) for t in TIERS}
+    ex_cash = {t: core[t] * pes[t] for t in TIERS}  # at the FY28 opening
+
+    # Timing alignment (A21): FY28-opening value / (1+r)^tau + window profit; cash not discounted.
+    def window(roe_: float, g: float, rr: float) -> float:
+        return unbooked * max(0.0, 1.0 - g / roe_) * (1.0 + rr) ** (-tau / 2)
+
+    df = (1.0 + r) ** (-tau)
+    win = {t: window(roe[t], g2, r) for t in TIERS}
+    scen = {t: ex_cash[t] * df + win[t] + cash_ps for t in TIERS}
 
     # ---- Step 5: anchors, cut points; the floor is disclosed only (A10) ----
     tbvps = inp["tangible_book"] * MILLION / inp["shares_basic"]
@@ -327,7 +401,7 @@ def main() -> int:
 
     def band_edge_g(target_pe: float) -> tuple[float, bool]:
         """g at M-tier ROE that puts M / FY27 consensus on `target_pe` (evidence, never an input)."""
-        pe_needed = (target_pe * inp["eps_fy27_m"] - cash_ps) / core["M"]
+        pe_needed = (target_pe * inp["eps_fy27_m"] - cash_ps - win["M"]) / df / core["M"]
         return implied_g(pe_needed, roe["M"], r)
 
     edges = {k: band_edge_g(inp[f"pe_own_{k}"]) for k in ("min", "p5", "p50")}
@@ -336,7 +410,7 @@ def main() -> int:
     # ---- A2e-2c flat ladder + A2e-5 decomposition (both on the ex-cash earnings term) ----
     if not (core["L"] < core["M"] < core["H"]):
         errors.append(f"numerator ladder broken: core EPS {core['L']:.3f}/{core['M']:.3f}/{core['H']:.3f} (A2e-2c)")
-    flat = [core[t] * pes["M"] + cash_ps for t in TIERS]
+    flat = [core[t] * pes["M"] * df + win["M"] + cash_ps for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
         errors.append(f"flat-multiple ladder broken: {flat}")
     num_lm, num_hm = core["L"] / core["M"], core["H"] / core["M"]
@@ -345,7 +419,7 @@ def main() -> int:
     # ---- g2 leverage (valuation-rules「g₂ 的杠杆 MUST 显式」): -1pp disclosed (L/M/H only); +1pp breaks ① ----
     def deck_at(g: float) -> tuple[float, float, float, bool]:
         roe_g = rolled_roe(g)  # the book rolls at the g being tested
-        s = {t: core[t] * perpetual_pe(g, roe_g[t], r) + cash_ps for t in TIERS}
+        s = {t: core[t] * pp(g, roe_g[t], r) * df + window(roe_g[t], g, r) + cash_ps for t in TIERS}
         return s["L"], s["M"], s["H"], s["L"] < s["M"] < s["H"]
 
     lo_l, lo_m, lo_h, lo_ok = deck_at(g2 - 0.01)
@@ -389,16 +463,17 @@ def main() -> int:
     if not (0 < qty["L"] < qty["M"] < qty["H"]):
         errors.append(f"option quantity ladder broken: {qty}")
 
-    def v_tier(dr: float, m: float, rr: float = r, kap: float = kappa) -> dict[str, float]:
+    def v_tier(dr: float, m: float, rr: float = r, kap: float = kappa, rs_: float | None = None) -> dict[str, float]:
         d_ni = dr * m
         k_s = k_h * grow + kap * dr
         roe_s = (ni_h * grow + d_ni) / k_s
-        pe_s = perpetual_pe(g2, roe_s, rr)
+        pe_s = pp(g2, roe_s, rr, int(inp["t_opt"]), rs_)  # success world rides the same path from FY30 (A14)
         gross = d_ni * pe_s / (1.0 + rr) ** disc_n
         capital = (kap * dr + inp["capex_committed"]) / (1.0 + rr) ** disc_n
         to_ps = MILLION / inp["shares"]
+        # gross / capital are at FY28 (the deck's numerator year); v is today (tau, A21).
         return dict(d_ni=d_ni, roe=roe_s, pe=pe_s, gross=gross * to_ps, capital=capital * to_ps,
-                    v=max(0.0, (gross - capital) * to_ps))
+                    v=max(0.0, (gross - capital) * to_ps) * (1.0 + rr) ** (-tau))
 
     vt = {t: v_tier(qty[t], unit[t]) for t in TIERS}
     v_opt = vt["H"]["v"]
@@ -434,7 +509,8 @@ def main() -> int:
         if share >= 1.0:
             raise ValueError(f"candidate book roll diverges at {t}: g·ΣN/c = {share:.2f}")
         roe30 = c30 * (1.0 - share) / bps_op_fy26
-        return c30, roe30, c30 * perpetual_pe(g2, roe30, r) / (1.0 + r) ** CAND_DISC_YEARS + cash_ps
+        val28 = c30 * pp(g2, roe30, r, NUM_YEAR + CAND_DISC_YEARS) / (1.0 + r) ** CAND_DISC_YEARS
+        return c30, roe30, val28 * df + win[t] + cash_ps
 
     cand_m, cand_h = fy30_tier("M"), fy30_tier("H")
     cand = (L, cand_m[2], cand_h[2])
@@ -456,18 +532,21 @@ def main() -> int:
           f"interest stripped {int_ps:.4f}/sh (cash {inp['cash']:g}M x {inp['cash_yield']:.1%} after tax); cash added back {cash_ps:.4f}/sh")
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> econ {eps[t]:.4f} -> core {core[t]:.4f}  ROE {roe[t]:.4f}  payout {1 - g2 / roe[t]:.3f}  "
-              f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} + cash = scenario {scen[t]:.4f}")
+              f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} (FY28 opening) x df + window {win[t]:.4f} + cash = scenario {scen[t]:.4f}")
     print(f"ROE basis (A18): BPS_op opening-FY28 = {opening_bps(core['L'], g2):.3f}/{opening_bps(core['M'], g2):.3f}/{opening_bps(core['H'], g2):.3f} "
           f"(FY26-end op book {bps_op_fy26:.3f} rolled over FY27 unbooked core {unbooked:.3f}/sh at b1 = g2/ROE = {b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}); "
           f"FY26-book basis would read ROE {roe_fy26['L']:.4f}/{roe_fy26['M']:.4f}/{roe_fy26['H']:.4f}")
     print(f"B bucket (actual retention {ret_actual:.0%} − b1) × FY27 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
           f"(cash the model deems distributed but the company keeps; disclosure only, not a leg, not in BPS)")
     for rr, tag in ((0.13, "篮 6 13% (former basket)"), (0.15, "篮 7 15%")):
-        alt = {t: core[t] * perpetual_pe(g2, roe[t], rr) + cash_ps for t in TIERS}
+        alt = {t: core[t] * pp(g2, roe[t], rr) * (1 + rr) ** (-tau) + window(roe[t], g2, rr) + cash_ps for t in TIERS}
         print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_H {v_tier(qty['H'], inc_core, rr=rr)['v']:.2f})")
     print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
           f"{'BELOW' if below_floor else 'above'} floor by {abs(scen['L'] - floor):.2f}  "
           f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if below floor)")
+    print(f"steady return {rs:.2%} (叙事换代 cap, _AXIS.burn-in-test ss_return_cap_bit; per tier min(ROE, it)) · high-return window Y1 {y1} / Y2 {y2} · "
+          f"tau {tau:g} (x {df:.4f}) · window profit {unbooked:.3f} x (1 - g2/ROE) -> PV "
+          + "/".join(f"{win[t]:.2f}" for t in TIERS))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+cash): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
     print(f"guardrail on band basis (anchor / FY27 cons {inp['eps_fy27_m']:g}): "
@@ -490,7 +569,8 @@ def main() -> int:
     for t in TIERS:
         x = vt[t]
         print(f"V_{t}: qty {qty[t]:.2f}M x core margin {unit[t]:.4f} = dNI {x['d_ni']:.2f}M; success ROE {x['roe']:.4f} PE {x['pe']:.2f}x "
-              f"-> {x['gross']:.2f}/sh - capital {x['capital']:.2f}/sh (FY{int(inp['t_opt']) % 100} -> FY28, /{1 + r:g}^{disc_n}) = {x['v']:.2f}  p={x['v'] / v_opt:.4f}")
+              f"-> {x['gross']:.2f}/sh - capital {x['capital']:.2f}/sh (FY{int(inp['t_opt']) % 100} -> FY28, /{1 + r:g}^{disc_n})"
+              f" = {x['gross'] - x['capital']:.2f} at FY28 -> today {x['v']:.2f}  p={x['v'] / v_opt:.4f}")
     print(f"V_opt = V_H = {v_opt:.2f} | SiC item {sic_item:.2f}M (FY24 {sic_peak:.2f} - FY26 {sic_in:.2f}) | FY24 realised after-tax EBIT {hist_margin:.4f} (floor only)")
     cap_q = cap_rev - base_rev
     sens = {
@@ -503,6 +583,18 @@ def main() -> int:
         "r 15%": v_tier(qty["H"], inc_core, rr=0.15)["v"],
     }
     print("V_H sensitivity: " + " | ".join(f"{k} {v:.2f}" for k, v in sens.items()))
+
+    # A20 contrasts (disclosure only): what the deck and V_H read at other steady returns.
+    def deck_rs(rs_: float) -> str:
+        s = [core[t] * pp(g2, roe[t], r, rs_=rs_) * df + win[t] + cash_ps for t in TIERS]
+        return f"{s[0]:.2f}/{s[1]:.2f}/{s[2]:.2f} (V_H {v_tier(qty['H'], inc_core, rs_=rs_)['v']:.2f})"
+
+    contrasts = list(SS_FLOORS)
+    ref = parse_inputs(BIT_AXIS.read_text(encoding="utf-8")).get(SS_REF) if BIT_AXIS.is_file() else None
+    if ref is not None:
+        contrasts.insert(0, (ref, "axis pre-ruling TER/FORM median (ss_return_bit_ref)"))
+    print("steady-return contrasts (A20, not the deck): " + " | ".join(
+        f"{tag} {x:.2%} -> {deck_rs(x)}" for x, tag in contrasts))
     print(f"theoretical-capacity reading (disclosure only, MUST NOT be H): {cap_rev:.0f}M - {base_rev:.2f} = {cap_q:.1f}M, "
           f"op margin there {opm_at(cap_rev):.4f} -> V {v_tier(cap_q, inc_core)['v']:.2f}")
     opt = tuple(anchor + vt[t]["v"] for anchor, t in zip((L, M, H), TIERS))
@@ -518,7 +610,8 @@ def main() -> int:
     # r_perp 1:1 — the only priced r; the rolled ROE, g2, the SBC-haircut core
     # numerator and the net-cash add-back stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        s = [core[t] * perpetual_pe(g2, roe[t], r + dr) + cash_ps for t in TIERS]
+        s = [core[t] * pp(g2, roe[t], r + dr) * (1 + r + dr) ** (-tau) + window(roe[t], g2, r + dr) + cash_ps
+             for t in TIERS]
         return s[0], s[1], s[2]
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)

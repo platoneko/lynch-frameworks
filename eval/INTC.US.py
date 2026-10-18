@@ -17,9 +17,14 @@ CPU leg (A5 / A5c / A15, unchanged in v6 except the share count):
               exception); M / H = FY2027 company revenue consensus mean / high
               x product share x product margin, both inferred from two disclosed
               quarters (Q1'26 / Q2'26) that print the same values (A5c).
-  multiples   perpetual_pe(g2_cpu, ROE_x, r_perp), ROE_x = NI_x / company
-              equity (no leg equity disclosed).  r_perp = 篮 4 (A19).
-  guardrail   generated multiples inside the own realised trailing-PE band.
+  multiples   path_pe(g2_cpu, ROE_x, r_perp; Y1 / Y2 / rs_cpu), ROE_x = NI_x / company
+              equity (no leg equity disclosed).  r_perp = 篮 4 (A19).  A24 (framework
+              correction 2026-10-16, narrative-change leg 2026-10-18): steady return
+              rs_cpu = 30% cap, so each tier stays at its forward ROE (no fade);
+              g2_cpu re-solved by the peers on the same path; M / H CPU value and the
+              capitalised closure folded tau years + FY26H2 window profit; L (realised
+              FY2025 digestion year) not folded; foundry losses and the option folded.
+  guardrail   today's operating multiples inside the own realised trailing-PE band.
   closure     $/share items + corporate unallocated capitalised at the M multiple (A10b).
 
 Foundry in the base (A21): FY2027 loss = product EPS + bridge - FY2027 company
@@ -96,7 +101,6 @@ from eval.lib.frameworks import load_framework  # noqa: E402
 from eval.lib.gordon import (  # noqa: E402
     check_g_cap,
     check_r,
-    implied_g,
     perpetual_pe,
 )
 from eval.lib.inputs import (  # noqa: E402
@@ -120,6 +124,7 @@ FORMULA_IDS = (
 TOL = 0.05
 P_TOL = 0.0005
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
+NARRATIVE_CAP = 0.30  # A24: narrative-change leg — steady return = min(tier forward, 30%)
 # _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
 LISTING_CCY = "USD"
 
@@ -155,10 +160,40 @@ REQUIRED = [
     "ie_budget", "ie_done",
     "ss_year_h", "g2_foundry_h", "tsm_rev_2025", "tsm_ppe_net_2025", "tsm_ppe_net_2024",
     "corp_other_eps", *ADJ_PS,
+    "tau", "y1", "y2", "rs_cpu", "eps_fy26_cons", "eps_h1_26",
 ]
 TIERS = ("L", "M", "H")
 MM = 1e6  # $M fields
 B = 1e9
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+
+    Calendar years, t = 1 is the numerator year t0; the retention of year c earns from c+1.
+    RONIC = the tier's forward value through Y1, falls linearly to the steady value R_s by Y2,
+    and stays there (R_s capped at the tier's forward value).  With R_s >= forward this is
+    exactly perpetual_pe(g, roe, r)."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / rs_eff) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g / ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def main() -> int:
@@ -208,30 +243,51 @@ def main() -> int:
     def prod_eps(rev: float, m_: float = margin, s_: float = share) -> float:
         return rev * s_ * m_ * keep / sh
 
+    tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_cpu"]
+    # FY26H2 unbooked company adjusted EPS less the half-year SBC / acquisition add-back (the
+    # closure capitalises them): the window distributable profit base (A24).
+    unbooked = inp["eps_fy26_cons"] - inp["eps_h1_26"] - inp["sbc_acq_eps"] / 2
+
     def compute(m_: float = margin, s_: float = share, g_: float = g2, r_: float = r,
                 l28: float | None = None, be_: dict | None = None, fy28_num: bool = False,
-                eq_: float = eq, l27: float | None = None) -> dict:
+                eq_: float = eq, l27: float | None = None, rs_: float = rs) -> dict:
         """Base band on the escrow-adjusted share count; consensus EPS fixed, so a
-        different product EPS implies a different foundry loss (A21)."""
+        different product EPS implies a different foundry loss (A21).
+        A24 (2026-10-16): CPU multiples on the steady-state-return path; the M / H CPU value and
+        the capitalised corporate closure are folded back tau years from the start of FY2027 and
+        get the FY26H2 window profit x (1 - b1) at tau/2; L's numerator is the realised FY2025
+        digestion year (a world-state numerator, not calendar-bound) -> no tau, no window; the
+        foundry transition losses (valued at the start of FY2027) are folded by tau in every tier."""
         be_ = be if be_ is None else be_
         rev = ({"M": inp["cons_rev_fy28_m"], "H": inp["cons_rev_fy28_h"]} if fy28_num
                else {"M": inp["rev_fy27_m"], "H": inp["rev_fy27_h"]})
         e = {"L": inp["oi_products_l"] * MM * keep / sh, "M": prod_eps(rev["M"], m_, s_), "H": prod_eps(rev["H"], m_, s_)}
         roe_ = {t: e[t] * sh / eq_ for t in TIERS}
-        pe_ = {t: perpetual_pe(g_, roe_[t], r_) for t in TIERS}
+        pe_ = {t: path_pe(g_, roe_[t], r_, int(t0), y1, y2, rs_) for t in TIERS}
+        d_ = {t: (1.0 if t == "L" else (1 + r_) ** -tau) for t in TIERS}
         df_num = {t: ((1 + r_) ** -1 if fy28_num and t != "L" else 1.0) for t in TIERS}  # construction §3: FY+2 discounted
-        cpu_ = {t: e[t] * pe_[t] * df_num[t] for t in TIERS}
-        adj_ = sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * pe_["M"]
+        cpu_ = {t: e[t] * pe_[t] * df_num[t] * d_[t] for t in TIERS}
+        adj_ = {t: sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * pe_["M"] * d_[t] for t in TIERS}
         l27_ = (prod_eps(inp["rev_fy27_m"], m_, s_) + bridge - inp["cons_eps_fy27_m"]) if l27 is None else l27
         l28_ = (prod_eps(inp["cons_rev_fy28_m"], m_, s_) + bridge - inp["cons_eps_fy28_m"]) if l28 is None else l28
         loss = {2027: l27_, 2028: l28_}
-        f_ = {t: -sum(loss.get(y, l28_) * (1 + r_) ** -(y - t0) for y in range(int(t0), int(be_[t]) + 1)) for t in TIERS}
-        pre = {t: cpu_[t] + adj_ + f_[t] for t in TIERS}
-        return dict(eps=e, roe=roe_, pe=pe_, cpu=cpu_, adj=adj_, l27=l27_, l28=l28_, F=f_, pre=pre,
+        f_ = {t: -sum(loss.get(y, l28_) * (1 + r_) ** -(y - t0) for y in range(int(t0), int(be_[t]) + 1))
+              * (1 + r_) ** -tau for t in TIERS}
+        win_ = {t: (0.0 if t == "L" else max(unbooked * (1 - g_ / roe_[t]), 0.0) * (1 + r_) ** -(tau / 2)) for t in TIERS}
+        pre = {t: cpu_[t] + adj_[t] + f_[t] + win_[t] for t in TIERS}
+        return dict(eps=e, roe=roe_, pe=pe_, d=d_, cpu=cpu_, adj=adj_, l27=l27_, l28=l28_, F=f_, win=win_, pre=pre,
                     base={t: esc(pre[t]) for t in TIERS})
 
+    if not int(inp["t_num"]) <= y1 < y2:
+        errors.append("need t_num <= y1 < y2 (A24)")
+    if not r <= rs:
+        errors.append("rs_cpu must not fall below r (A24)")
+    if rs > NARRATIVE_CAP + 1e-12:
+        errors.append(f"rs_cpu {rs:g} above the narrative-change cap {NARRATIVE_CAP:g} (A24)")
     c = compute()
     eps, roe, pe, cpu, adj, fdy = c["eps"], c["roe"], c["pe"], c["cpu"], c["adj"], c["F"]
+    dfac, win = c["d"], c["win"]
+    pe_today = {t: pe[t] * dfac[t] for t in TIERS}  # today's operating multiple of the CPU leg (A24)
     loss27, loss28 = c["l27"], c["l28"]
     base = c["base"]
     L, M, H = (base[t] for t in TIERS)
@@ -239,8 +295,8 @@ def main() -> int:
     oi = {t: eps[t] * sh / keep / MM for t in TIERS}
     errors += ladder("oi_products", oi["L"], oi["M"], oi["H"])
     for t in TIERS:
-        if not (inp["pe_own_min"] <= pe[t] <= inp["pe_own_max"]):
-            errors.append(f"{t} generated PE {pe[t]:.2f}x outside own realised band "
+        if not (inp["pe_own_min"] <= pe_today[t] <= inp["pe_own_max"]):
+            errors.append(f"{t} today's operating PE {pe_today[t]:.2f}x outside own realised band "
                           f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] — 回对话，不拧 g")
     if loss27 <= 0:
         errors.append(f"consensus implies no FY2027 foundry loss ({loss27:.3f}) — recheck A21 bridge")
@@ -252,8 +308,8 @@ def main() -> int:
     # ---- A2e-2c flat ladder + A2e-5 decomposition ----
     flat_errs, flat_eps = flat_multiple_ladder((eps["L"], eps["M"], eps["H"]), pe["M"])
     errors += flat_errs
-    flat = tuple(esc(v + adj + fdy[t]) for v, t in zip(flat_eps, TIERS))
-    dec = decompose((L, M, H), (pe["L"], pe["M"], pe["H"]))
+    flat = tuple(esc(v * dfac[t] + adj[t] + fdy[t] + win[t]) for v, t in zip(flat_eps, TIERS))
+    dec = decompose((L, M, H), (pe_today["L"], pe_today["M"], pe_today["H"]))
 
     # ---- single-house cross-check (A5b / A18) ----
     eps_c = inp["eps_fy27_hsbc"]
@@ -450,11 +506,13 @@ def main() -> int:
     path_flat = {y: int_flat + ext["H"][y] for y in sorted(ext["H"])}
     h_method = "path" if path_flat[ss] > rev_full else "capacity"
 
+    fold = (1 + r) ** -tau  # the option is valued at the start of FY2027; fold to the valuation date (A24)
+
     def v_net(t: str, method: str | None = None, **kw) -> float:
         if t == "H":
             o = (option_path_h if (method or h_method) == "path" else option_full)(**kw)
-            return (o["pv"] - o["unspent"]) / sh_post - unspent_ps - overlap[t]
-        return option(t, **kw)["pv"] / sh_post - unspent_ps - overlap[t]
+            return ((o["pv"] - o["unspent"]) / sh_post - unspent_ps - overlap[t]) * fold
+        return (option(t, **kw)["pv"] / sh_post - unspent_ps - overlap[t]) * fold
 
     opt = {t: option(t) for t in ("L", "M")}
     opt["H"] = option_path_h() if h_method == "path" else option_full()
@@ -487,12 +545,15 @@ def main() -> int:
           + f" -> H1 {margin:.4f} (FY25 {margin_fy25:.4f}); share " + " / ".join(f"{q} {q_share[q]:.4f}" for q in QTRS)
           + f" -> H1 {share:.4f}")
     for t in TIERS:
-        print(f"{t}: OI {oi[t]:,.0f}M -> eps {eps[t]:.4f} ROE {roe[t]:.3f} -> PE {pe[t]:.2f}x -> CPU {cpu[t]:.2f}/sh")
+        print(f"{t}: OI {oi[t]:,.0f}M -> eps {eps[t]:.4f} ROE {roe[t]:.3f} -> path PE {pe[t]:.2f}x x fold {dfac[t]:.4f} "
+              f"= today {pe_today[t]:.2f}x -> CPU {cpu[t]:.2f}/sh + window {win[t]:.3f}")
+    print(f"path (A24): CPU RONIC = tier forward through Y1 {y1}, linear to R_s {rs:.0%} (capped at forward) by Y2 {y2}; "
+          f"tau {tau:.4f} (M/H CPU + closure + foundry loss; L CPU not folded); window base {unbooked:.4f}/sh x (1 - g2/ROE)")
     print(f"foundry leg (A21): FY2027 loss {loss27:.3f}/sh after tax (${loss27 * sh / keep / B:.2f}B pre-tax); "
           f"FY2028 loss from FY2028 consensus (rev {inp['cons_rev_fy28_m'] / B:.1f}B, EPS {inp['cons_eps_fy28_m']:g}) "
           f"{loss28:.3f}/sh (${loss28 * sh / keep / B:.2f}B pre-tax); breakeven L {be['L']:.0f} / M {be['M']:.0f} / H {be['H']:.0f} -> "
           + " ".join(f"{t} {fdy[t]:+.2f}" for t in TIERS))
-    print(f"closure {adj:+.2f} (corp_other x M-PE {inp['corp_other_eps'] * pe['M']:+.2f})")
+    print("closure " + "/".join(f"{adj[t]:+.2f}" for t in TIERS) + f" (corp_other x M path PE {inp['corp_other_eps'] * pe['M']:+.2f}, folded by tau for M/H)")
     print("pre-escrow L/M/H " + "/".join(f"{c['pre'][t]:.2f}" for t in TIERS) + " -> escrow "
           + "/".join(f"{base[t] - c['pre'][t]:+.2f}" for t in TIERS))
     print(f"base L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B_:.2f}")
@@ -500,10 +561,21 @@ def main() -> int:
     print(f"L/M {dec['lm']:.3f} = eps {num_lm:.3f} x pe {dec['pe_lm']:.3f} x closure {dec['lm'] / (num_lm * dec['pe_lm']):.3f} | "
           f"H/M {dec['hm']:.3f} = eps {num_hm:.3f} x pe {dec['pe_hm']:.3f} x closure {dec['hm'] / (num_hm * dec['pe_hm']):.3f} | "
           f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.1%}")
-    print(f"flat-multiple ladder @ M {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    g_lo, _ = implied_g(inp["pe_own_min"], roe["M"], r)
-    g_hi, _ = implied_g(inp["pe_own_max"], roe["M"], r)
-    print(f"guardrail: {pe['L']:.2f}/{pe['M']:.2f}/{pe['H']:.2f}x in [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; "
+    print(f"flat-multiple ladder @ M path {pe['M']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
+
+    def g_at(target: float) -> float:
+        """g at the M-tier ROE that puts today's operating multiple on target (same path, A24)."""
+        lo_, hi_ = -0.30, r - 1e-4
+        for _ in range(200):
+            mid = (lo_ + hi_) / 2
+            if path_pe(mid, roe["M"], r, int(t0), y1, y2, rs) * dfac["M"] < target:
+                lo_ = mid
+            else:
+                hi_ = mid
+        return (lo_ + hi_) / 2
+
+    g_lo, g_hi = g_at(inp["pe_own_min"]), g_at(inp["pe_own_max"])
+    print(f"guardrail (today's operating multiple): {pe_today['L']:.2f}/{pe_today['M']:.2f}/{pe_today['H']:.2f}x in [{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; "
           f"g at M-tier ROE [{g_lo:+.2%}, {g_hi:+.2%}]")
     print(f"cross-check HSBC 2027E core {eps_c:g} in [M {eps['M']:.2f}, H {eps['H']:.2f}]")
     w = inp["warrant_shares"]
@@ -604,15 +676,15 @@ def main() -> int:
     print("口径二 (company consensus EPS x tier PE + net cash, cross only): L/M/H "
           + fmt(tuple(esc(e_ * pe[t] + inp["net_cash_ps"]) for e_, t in zip(cons3, TIERS))))
     trough = inp["oi_products_trough"] * MM * keep / sh
-    print(f"pressure: FY2023 trough eps {trough:.3f} x 1/r + closure + L foundry = {esc(trough / r + adj + fdy['L']):.2f}")
+    print(f"pressure: FY2023 trough eps {trough:.3f} x 1/r + closure + L foundry = {esc(trough / r + adj['L'] + fdy['L']):.2f}")
 
     def perpetual_loss_band() -> tuple[float, ...]:
         out = []
-        pm = perpetual_pe(g2, (eps["M"] - loss27) * sh / eq, r)
+        pm = path_pe(g2, (eps["M"] - loss27) * sh / eq, r, int(t0), y1, y2, rs)
         a_ = sum(inp[k] for k in ADJ_PS) + inp["corp_other_eps"] * pm
         for t in TIERS:
             e_ = eps[t] - loss27
-            p_ = perpetual_pe(g2, e_ * sh / eq, r) if e_ * sh / eq > r else 1 / r
+            p_ = path_pe(g2, e_ * sh / eq, r, int(t0), y1, y2, rs) if e_ * sh / eq > r else 1 / r
             out.append(esc(e_ * p_ + a_))
         return tuple(out)
     print("loss-perpetual SOTP (FY2027 foundry loss forever, not adopted): L/M/H " + fmt(perpetual_loss_band()))

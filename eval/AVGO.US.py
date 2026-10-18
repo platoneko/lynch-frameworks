@@ -88,6 +88,14 @@ BRIDGE_TOL = 0.15  # A8: guidance bridge vs consensus
 OM_INFER_TOL = 0.005  # A9: leg OM inputs vs the public-data inference
 
 REQUIRED = [
+    "tau",
+    "t0_cal",
+    "y1",
+    "y2",
+    "rs_semi",
+    "y1_sw",
+    "y2_sw",
+    "rs_sw",
     "shares",
     "equity",
     "tax_rate",
@@ -154,6 +162,43 @@ LEG_RT = {**LEG_R, "lab": "r_lab_t"}
 TRANSITION_LEGS = ("uw", "lab", "net")  # FY28 consensus growth is an AI story (A4/A5 flat)
 # Hardware g2 keys under the mega-hardware cap (A25); software is a platform leg.
 MEGA_HW_KEYS = ("g2_xpu", "g2_net", "g2_nonai")
+
+
+def path_value(g1: float, n: int, g2: float, roe: float, r: float, r_terminal: float,
+               t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+
+    Calendar years; t = 1 is the numerator year t0, the retention of year c earns from c+1.
+    n stage-1 years at g1, payout 1 - g1/roe (not floored, as two_stage_pe), discounted at r
+    (the journey basket); the post-transition stream is valued at r_terminal from year n on:
+    g2 with RONIC = roe through Y1, linear to min(rs, roe) by Y2, steady after.  With
+    rs >= roe this equals two_stage_pe(g1, n, g2, roe, r, r_terminal=...) / perpetual_pe."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r_terminal - g2 <= 0:
+        raise ValueError(f"perpetuity diverges: g2={g2} >= r_terminal={r_terminal}")
+    pv, e = 0.0, 1.0
+    for t in range(1, n + 1):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+    post, k = 0.0, 1
+    while True:
+        cal = t0 + n + k - 1
+        if cal > y1 and cal >= y2:
+            post += e * min(1.0, 1.0 - g2 / rs_eff) / ((r_terminal - g2) * (1 + r_terminal) ** (k - 1))
+            break
+        post += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r_terminal) ** k
+        e *= 1 + g2
+        k += 1
+    return pv + post / (1 + r) ** n
 
 
 def is_mega_hw(inp: dict[str, float]) -> bool:
@@ -326,11 +371,28 @@ def main() -> int:
     # (L, and the no-transition cross-checks) the terminal rate is the only rate.
     # Every re-pricing below goes through this one function so the pair cannot
     # drift between the anchors and their sensitivities.
+    # Operating value and time alignment (A27; valuation-rules「经营价值与超额现金」② 稳态回报
+    # 三段 / ③ 时点对齐, framework correction 2026-10-16): every leg's Gordon runs on the
+    # steady-state-return path -- chip legs Y1 2030 / Y2 2035 at the light-design steady
+    # return, the VMware leg on the default path (Y1 FY2028 / Y2 FY2034) at the near-zero-
+    # marginal-cost steady return -- and is discounted from the FY27 opening (t_n) to the
+    # balance-sheet date by tau at the leg's journey basket.  The window (Q4 FY26 unbooked x
+    # (1 - b1), floored at 0) is added to each tier at tau/2 on r_perp.
+    tau, t0 = inp["tau"], int(inp["t0_cal"])
+
     def pe_at(leg: str, tier: str, g2: float, transition: bool, dr: float = 0.0) -> float:
         r_j, r_t = inp[LEG_R[leg]] + dr, inp[LEG_RT[leg]] + dr
+        if leg == "sw":
+            y1_, y2_, rs_ = int(inp["y1_sw"]), int(inp["y2_sw"]), inp["rs_sw"]
+        else:
+            y1_, y2_, rs_ = int(inp["y1"]), int(inp["y2"]), inp["rs_semi"]
         if transition and leg in TRANSITION_LEGS:
-            return two_stage_pe(g1_ai, n, g2, roe[tier], r_j, r_terminal=r_t)
-        return perpetual_pe(g2, roe[tier], r_t)
+            v = path_value(g1_ai, n, g2, roe[tier], r_j, r_t, t0, y1_, y2_, rs_)
+        else:
+            v = path_value(0.0, 0, g2, roe[tier], r_t, r_t, t0, y1_, y2_, rs_)
+        return v * (1 + r_j) ** -tau
+
+    win = {tier: max(unbooked * (1.0 - b1[tier]), 0.0) * (1 + r) ** -(tau / 2) for tier in TIERS}
 
     def leg_pe(leg: str, tier: str, transition: bool) -> float:
         return pe_at(leg, tier, inp[LEG_G2[leg]], transition)
@@ -341,7 +403,7 @@ def main() -> int:
 
     pes = {tier: {leg: leg_pe(leg, tier, transition=(tier != "L")) for leg in LEGS} for tier in TIERS}
     legs_ps = {tier: {leg: eps[tier][leg] * pes[tier][leg] * keep[leg] for leg in LEGS} for tier in TIERS}
-    anchors = {tier: sum(legs_ps[tier].values()) for tier in TIERS}
+    anchors = {tier: sum(legs_ps[tier].values()) + win[tier] for tier in TIERS}
     blended = {tier: anchors[tier] / eps_total[tier] for tier in TIERS}
     L, M, H = (anchors[tier] for tier in TIERS)
     if not (L < M < H):
@@ -362,7 +424,7 @@ def main() -> int:
             eps[tier][leg] * keep[leg]
             * pe_at(leg, tier, inp[LEG_G2[leg]] + (delta if leg in shifted else 0.0), tier != "L")
             for leg in LEGS
-        )
+        ) + win[tier]
 
     # Band-edge Δg (③ 带即证据): shift every leg's g2 by the same Δ until the M-tier
     # blended multiple reaches each edge of the own band.  Reported, never used.
@@ -518,7 +580,7 @@ def main() -> int:
         return pe_at(leg, tier, g2, tier != "L")
 
     cand = tuple(
-        sum(eps[tier][leg] * keep[leg] * cand_leg_pe(leg, tier) for leg in LEGS) for tier in TIERS
+        sum(eps[tier][leg] * keep[leg] * cand_leg_pe(leg, tier) for leg in LEGS) + win[tier] for tier in TIERS
     )
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not a ladder: {cand}")
@@ -541,6 +603,7 @@ def main() -> int:
     def band_rf(dr: float) -> tuple[float, float, float]:
         lmh = [
             sum(eps[tier][leg] * keep[leg] * pe_at(leg, tier, inp[LEG_G2[leg]], tier != "L", dr=dr) for leg in LEGS)
+            + win[tier]
             for tier in TIERS
         ]
         return lmh[0], lmh[1], lmh[2]

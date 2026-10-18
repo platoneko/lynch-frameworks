@@ -57,8 +57,35 @@ REQUIRED = [
     "pe_own_min", "pe_own_max", "pe_same_min", "pe_same_max",
     "cny_rf_gap", "dry_shock",
     "debt_fy25", "net_debt_fy25", "ebit_fy25", "ebitda_fy25", "interest_fy25", "tax_rate",
-    "v_opt",
+    "v_opt", "ss_return", "t0_ret", "y1_ret", "y2_ret",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, r_s: float) -> float:
+    """Three-segment RONIC path (valuation-rules「经营价值与超额现金」② 稳态回报三段; the
+    gordon.py helper is not built yet).  Multiple on the numerator year t0 (t = 1): retention
+    of calendar year c earns the forward roe while c <= y1, falls linearly to the steady
+    return by y2, and from y2 on the steady return holds in a Gordon tail (r_s capped at the
+    forward roe).  g <= 0 never consumes RONIC -> plain perpetuity."""
+    if g <= 0:
+        return perpetual_pe(g, roe, r)
+    rs = min(roe, r_s)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g / rs) / ((r - g) * (1.0 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g / ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g
+        t += 1
 
 
 def roll(eps: float, g: float, bps0: float, unbooked: float) -> tuple[float, float, float]:
@@ -137,7 +164,12 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (branch)")
 
-    pe = {t: perpetual_pe(g2[t], roe[t], r) for t in TIERS}
+    # 稳态回报三段 (A16): forward ROE to y1_ret, linear fade, steady ss_return from y2_ret
+    def leg_pe(g: float, ro: float, rr: float) -> float:
+        return path_pe(g, ro, rr, int(inp["t0_ret"]), int(inp["y1_ret"]), int(inp["y2_ret"]),
+                       max(inp["ss_return"], rr))
+
+    pe = {t: leg_pe(g2[t], roe[t], r) for t in TIERS}
     for t in TIERS:
         if not (inp["pe_own_min"] - 1e-9 <= pe[t] <= inp["pe_own_max"] + 1e-9):
             errors.append(f"PE_{t} {pe[t]:.2f} outside 10y own band [{inp['pe_own_min']}, {inp['pe_own_max']}]")
@@ -147,7 +179,12 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (guardrail)")
 
-    anchor = {t: eps[t] * pe[t] * disc * (1.0 - k[t]) for t in TIERS}
+    # 时点对齐 (A16): the Gordon value sits at the opening of FY2028; disc = (1+r)^-tau with
+    # tau = n_disc = 1.5 years from the 2026-06-30 base date; plus the window distributable
+    # profit = unbooked 2H26 + FY27 consensus EPS x (1 - b1), discounted (1+r)^-(tau/2).
+    f_win = (1.0 + inp["r_disc"]) ** (-inp["n_disc"] / 2.0)
+    window = {t: (1.0 - b1[t]) * unbooked * f_win for t in TIERS}
+    anchor = {t: eps[t] * pe[t] * disc * (1.0 - k[t]) + window[t] for t in TIERS}
     L, M, H = anchor["l"], anchor["m"], anchor["h"]
     errors += ladder("anchor", L, M, H)
     A, B = cut_points(L, M, H)
@@ -164,8 +201,9 @@ def main() -> int:
         out = []
         for t in TIERS:
             g = min(gmap[t], g_cap(rr))
-            _, ro, _ = roll(eps[t], g, bps0, unbooked)
-            out.append(eps[t] * perpetual_pe(g, ro, rr) / (1.0 + rr) ** inp["n_disc"])
+            _, ro, bb = roll(eps[t], g, bps0, unbooked)
+            out.append(eps[t] * leg_pe(g, ro, rr) / (1.0 + rr) ** inp["n_disc"]
+                       + (1.0 - bb) * unbooked / (1.0 + rr) ** (inp["n_disc"] / 2.0))
         return out
 
     excess = {t: (1.0 - payout - b1[t]) * eps[t] for t in TIERS}
@@ -173,7 +211,7 @@ def main() -> int:
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.02)
 
     print(f"formula_id={FORMULA_ID}")
-    print(f"baskets={baskets} r_perp={r} cap={cap:.4f} disc={disc:.4f} (FY28E, n={inp['n_disc']:.0f})")
+    print(f"baskets={baskets} r_perp={r} cap={cap:.4f} disc={disc:.4f} (FY28E, tau={inp['n_disc']:.1f}y)")
     print(f"policy g (uncapped)={g_pol:.4%} -> g2_m/h={g2['m']:.4f}; g2_l={g2['l']:.4f}")
     print(f"BPS_open2028={[round(bps[t], 3) for t in TIERS]} ROE={[round(roe[t], 4) for t in TIERS]} "
           f"b1={[round(b1[t], 3) for t in TIERS]}")

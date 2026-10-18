@@ -31,15 +31,43 @@ close_core - GI - AU - Solar/LS losses).  Leg g1 (shared across tiers) = OC
 FY28 residual (point mean) over OC FY27 residual (M) - 1; GI / AU g1 = the
 bridge's second-year step.
 
-Multiples: OC / GI / AU = two_stage_pe(g1_leg, 1, g2_leg, ROE_k, r), r = basket 4
-10%.  ROE_k = FY27 EPS / FY27 OPENING BPS: the Q2'26 book rolled over the
-unbooked 2H26 (FY26 consensus - 1H26 actual) at b1 = g1_co / ROE, g1_co the
-NI-weighted g1 of the three Gordon legs (valuation-rules ③ 步 2, b1 = the same b
-as stage 1).  g1 above ROE makes stage-1 payout negative and b1 > 1: the
-model charges the growth as equity issuance (valuation-rules「两段式过渡」:
-not floored, MUST be reported) — printed below.  Solar / LS stay on P/S of the
-FY27 revenue.  FY27 = current FY + 1: no discounting; anchors are start-of-FY27
-values.
+Multiples: OC / GI / AU = one transition year (g1_leg) + g2_leg Gordon tail, r =
+basket 4 10%.  ROE_k = FY27 EPS / FY27 OPENING BPS, the Q2'26 book rolled over the
+unbooked 2H26 (FY26 consensus - 1H26 actual) at the ACTUAL retention (unbooked
+- half-year dividend; user ruling 2026-10-18, A31).  g1 above ROE: stage-1 payout
+is FLOORED at 0 (user ruling 2026-10-18: the $2B ATM is unsold, the build-out is
+funded by customer prepayments and operating cash flow — no issuance charge);
+the unfloored reading is printed.  Solar / LS stay on P/S of the FY27 revenue.
+The Gordon legs are start-of-FY27 values, discounted by tau (below).
+
+Steady return (valuation-rules「经营价值与超额现金」②, A36):
+  * OC leg = 叙事换代的腿 (user ruling 2026-10-18; both criteria in A36): the
+    new-investment return is min(ROE_k, 30%) for ever — no fade.  The trough tier
+    tails on the M ROE, same cap.  The photonics option rides the same ruler.
+  * GI / AU legs = 稳态回报三段: ROE holds through Y1 2028, fades linearly to
+    min(ROE, 15%) at Y2 2032, Gordon tail after.  Y1 / Y2 = the default (Y1 =
+    visible-year end FY28, 4-year fade = medium barrier; user 2026-10-18 — these
+    legs are not on the optical chain, so they no longer borrow the
+    `_AXIS.ai-capex` window; GI's g2 is 0 so only AU moves); 15% = the fallback
+    (own nine-year cycle 12.9% and mature peers sit below it).
+  * `y1` / `y2` (the `_AXIS.ai-capex` packaging / fiber-array / connector row,
+    2030 / 2035, cross-file checked) stay for the OC leg's three-segment
+    sensitivity only.
+gordon.py's three-segment function is [待建], so `path_value` lives here (it also
+carries the trough tier's recovery form: stage-1 payout 100%, tail on the M ROE).
+
+Timing alignment (valuation-rules ③, A37): the Gordon legs are FY27-opening values
+(2027-01-01); the base date is the 10-Q balance sheet 2026-06-30 -> tau 0.5.  Only
+the three Gordon legs are discounted; the P/S legs, the prepaid lock-in, the
+capitalised corporate / NCI items, net debt and pension stay (the discount-all
+reading differs < 0.3).  Window distributable profit = unbooked 2H26 core EPS x
+(1 - b1), b1 = g1_co / ROE > 1 in every tier, so the window is clipped to 0 (a
+negative window is a funding gap, and the growth-period funding gap is 0).  The
+options (carrier LTAs, photonics) are FY27-opening values too and take the same tau.
+
+Closing items (A7): only the unallocated RD&E is capitalised; the amortisation of
+purchased intangibles is excluded from core EPS (10-Q reconciliation note (4)) and
+is not a future cash cost, so it is not capitalised (2026-10-18 correction).
 
 Guardrail: only the M tier blocks against the own realised band (valuation-rules
 「永续增长口径」: L / H positions are disclosure only, 2026-09-21).
@@ -53,7 +81,7 @@ Options (never touch the base hand, p hard-coded here, A2e-7a):
     folded in): count = 10,000 - consensus-included 0; unit economic = the
     aligned-year OC net margin (A32 inference, held to 2030 on the company's
     "OM at or above 20%, EPS faster than sales"); valued on this ticker's OC
-    ruler perpetual_pe(g2_oc, ROE_M, r) at 2030 and discounted to FY27;
+    ruler (g2_oc, min(ROE_M, 30%) for ever) at 2030 and discounted to FY27;
     no named photonics capacity budget -> unspent capital deducted = 0
     (capital-intensity sensitivity printed).
 Warrants: NVIDIA's 3M pre-funded warrant is already counted as outstanding in
@@ -92,6 +120,9 @@ from eval.lib.bands_io import write_rf_readings  # noqa: E402
 from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GLW.US.md"
+AXIS_CAPEX = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "ai-capex.md"
+AXIS_ROWS = (("y1", "y1_ai_capex_package"), ("y2", "y2_ai_capex_package"),
+             ("ss_floor_ai_capex_package", "ss_floor_ai_capex_package"))  # A36
 FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v8"
 ANCHOR_YEAR = 2027  # numerator year FY2027 = t1; anchors are start-of-FY27 values
 TOL = 0.05
@@ -104,7 +135,7 @@ CONSENSUS_YEARS = 1  # FY28 point estimates (>= 2 houses) beyond the numerator y
 G2_OC_PEER_RAW = 0.0635  # A25 untruncated peer median, reference only
 CONTRACT_ANNUITY_BASKET = 1
 LISTING_CCY = "USD"
-PREV_M = 98.21  # v7 M, for the correction reconciliation (纠正对账门)
+PREV_M = 85.42  # committed M before the 2026-10-16 / 10-18 corrections, for the 纠正对账门 read
 
 # Option tier realisation (A23a/A23b/A33/A34). Never in Inputs (A2e-7a).
 P_SIGNED = {"l": 0.0, "m": 0.50, "h": 1.0}   # carrier LTAs: incremental vs substitution
@@ -149,6 +180,43 @@ def first_float(pattern: str, md: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
+    """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
+    if cal <= y1:
+        return a
+    if cal >= y2:
+        return b
+    return a + (b - a) * (cal - y1) / (y2 - y1)
+
+
+def path_value(t0: int, y1: int, y2: int, r_s: float, g1: float, n: int, g2: float, roe: float, r: float,
+               recovery: bool = False, floor: bool = True, narrative: float | None = None) -> float:
+    """Multiple on next-period earnings: n transition years at g1 (payout 1 - g1/ROE floored at 0
+    unless floor=False, or 1 in the recovery form), then g2 with the RONIC path; t = 1 <-> year t0.
+    narrative = cap -> RONIC = min(ROE, cap) for ever (叙事换代的腿, A36); else three segments: ROE
+    through Y1, linear to min(ROE, r_s) at Y2, Gordon tail after."""
+    if r - g2 <= 0:
+        raise ValueError(f"perpetuity diverges: g2={g2} >= r={r}")
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(int(n)):
+        p1 = 1.0 if recovery else 1.0 - g1 / roe
+        pv += e * (max(0.0, p1) if floor else p1) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    if narrative is not None:
+        rn = min(roe, narrative)
+        return pv + e * min(1.0, 1.0 - g2 / rn) / ((r - g2) * (1 + r) ** (t - 1))
+    rs = min(roe, r_s)
+    while True:
+        cal = t0 + t - 1
+        pay = min(1.0, 1.0 - g2 / _lin(cal, y1, y2, roe, rs))
+        if cal > y1 and cal >= y2:
+            return pv + e * pay / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * pay / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
+
+
 def main() -> int:
     md = FRAMEWORK.read_text(encoding="utf-8")
     if FORMULA_ID not in md:
@@ -175,6 +243,8 @@ def main() -> int:
         "att_years", "t_att", "meta_anchor", "meta_years",
         "phot_rev_target", "phot_cons_included", "t_phot", "phot_capex_named", "seg_assets_oc",
         "r_disc", "capex_l", "capex_m", "capex_h",
+        "ss_return", "ss_cap_oc", "ss_mgmt_lo", "ss_mgmt_hi", "y1", "y2", "y1_ga", "y2_ga", "tau", "amort_q",
+        "ss_floor_ai_capex_package",
     ]
     missing = [k for k in required if k not in inp]
     if missing:
@@ -213,6 +283,21 @@ def main() -> int:
         guards.append("pe_own_min/max guardrail inverted")
     if inp["phot_cons_included"] != 0:
         guards.append("phot_cons_included must stay 0 unless a consensus year covers photonics (A34)")
+    if not (ANCHOR_YEAR + N_STAGE <= inp["y1"] < inp["y2"]):
+        guards.append("high-return window must satisfy transition end <= Y1 < Y2 (A36)")
+    # GI / AU: default window — Y1 = visible-year end (FY28), Y2 - Y1 = 4 (medium barrier), A36.
+    if inp["y1_ga"] != ANCHOR_YEAR + N_STAGE or inp["y2_ga"] - inp["y1_ga"] != 4:
+        guards.append(f"GI/AU window {inp['y1_ga']:g}/{inp['y2_ga']:g} != default "
+                      f"{ANCHOR_YEAR + N_STAGE}/{ANCHOR_YEAR + N_STAGE + 4} (A36)")
+    if not (0.0 <= inp["tau"] < 3.0):
+        guards.append("tau out of range (A37)")
+    if not AXIS_CAPEX.is_file():
+        guards.append("axes/ai-capex.md missing — y1 / y2 unchecked")
+    else:
+        ax = parse_inputs(AXIS_CAPEX.read_text(encoding="utf-8"))
+        for mine, theirs in AXIS_ROWS:
+            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
+                guards.append(f"{mine} {inp[mine]:g} != _AXIS.ai-capex {theirs} {ax.get(theirs)} (A36)")
     if guards:
         print("FAIL: " + "; ".join(guards), file=sys.stderr)
         return 1
@@ -221,6 +306,8 @@ def main() -> int:
     tax = inp["tax_core"]
     r = inp["r_perp"]
     fr = inp["bridge_frac_fy27"]
+    y1, y2, rs, tau = int(inp["y1"]), int(inp["y2"]), inp["ss_return"], inp["tau"]  # A36 / A37
+    y1g, y2g = int(inp["y1_ga"]), int(inp["y2_ga"])  # GI / AU default window (A36)
 
     # ---- Step 1: leg split (existing rule) at FY27 and FY28 ----
     ni_gi = {27: inp["ni_gi_q"] * 4 * inp["g_gi"] ** fr, 28: inp["ni_gi_q"] * 4 * inp["g_gi"]}
@@ -267,36 +354,49 @@ def main() -> int:
         "au": ni_au[28] / ni_au[27] - 1,
     }
 
-    # ---- Step 2: ROE on the FY27 opening book, rolled at b1 = g1_co / ROE ----
+    # ---- Step 2: ROE on the FY27 opening book, rolled at the actual retention (A31) ----
     bps0 = inp["equity"] / sh
     unbooked = inp["eps_fy26_cons"] - inp["eps_1h26"]
+    bps_open = bps0 + unbooked - inp["dps_annual"] / 2  # user ruling 2026-10-18: actual retention over 2H26
     ni_leg27 = {"oc": ni_oc, "gi": {k: ni_gi[27] for k in TIERS}, "au": {k: ni_au[27] for k in TIERS}}
 
     def g1_co(k: str, g1s: dict[str, float]) -> float:
         return sum(ni_leg27[leg][k] * g1s[leg] for leg in LEGS) / (eps[k] * sh)
 
-    def roe_at(k: str, g1s: dict[str, float]) -> float:
-        x = g1_co(k, g1s) * unbooked / eps[k]
+    def roe_at(k: str, g1s: dict[str, float] | None = None, rolled: bool = False) -> float:
+        """FY27 EPS / FY27 opening BPS.  rolled=True = the retired b1 = g/ROE issuance roll (disclosure)."""
+        if not rolled:
+            return eps[k] / bps_open
+        x = g1_co(k, g1 if g1s is None else g1s) * unbooked / eps[k]
         if x >= 1.0:
             raise ValueError(f"opening-book roll diverges on {k}: g·N/EPS = {x:.3f}")
         return eps[k] / (bps0 / (1.0 - x))
 
-    roe = {k: roe_at(k, g1) for k in TIERS}
+    roe = {k: roe_at(k) for k in TIERS}
     gco = {k: g1_co(k, g1) for k in TIERS}
     b1 = {k: gco[k] / roe[k] for k in TIERS}
+    cap_oc = inp["ss_cap_oc"]
 
     def leg_pe(leg: str, k: str, *, g2: float | None = None, g1s: dict[str, float] | None = None,
-               rr: float | None = None, roe_k: float | None = None, trough: bool | None = None) -> float:
+               rr: float | None = None, roe_k: float | None = None, trough: bool | None = None,
+               floor: bool = True, oc_cap: float | None | bool = True) -> float:
         # L is the measured digestion year (谷底档, valuation-rules「周期票 regime / point」):
         # the step back up is utilisation, not retention, so stage 1 pays out 100% and
         # the tail carries the mid-cycle (M-tier) ROE — recovery_two_stage_pe.  The g1
-        # value itself is the shared one (user ruling 2026-10-04).
+        # value itself is the shared one (user ruling 2026-10-04).  OC = 叙事换代 (min(ROE, cap)
+        # for ever); GI / AU = three segments (A36).  oc_cap=None -> OC back on three segments.
         g1s = g1 if g1s is None else g1s
         g2v = inp[f"g2_{leg}"] if g2 is None else g2
         rv = r if rr is None else rr
-        if (k == "l") if trough is None else trough:
-            return recovery_two_stage_pe(g1s[leg], N_STAGE, g2v, roe["m"] if roe_k is None else roe_k, rv)
-        return two_stage_pe(g1s[leg], N_STAGE, g2v, roe[k] if roe_k is None else roe_k, rv)
+        rec = (k == "l") if trough is None else trough
+        rk = (roe["m"] if rec else roe[k]) if roe_k is None else roe_k
+        narr = (cap_oc if oc_cap is True else oc_cap) if leg == "oc" else None
+        ya, yb = (y1, y2) if leg == "oc" else (y1g, y2g)
+        # OC back on three segments (sensitivity only) lands on the _AXIS.ai-capex packaging-row
+        # floor: max(own 12.9%, no same-business peer, axis floor) = the axis floor (A36).
+        rsv = inp["ss_floor_ai_capex_package"] if leg == "oc" else rs
+        return path_value(ANCHOR_YEAR, ya, yb, rsv, g1s[leg], N_STAGE, g2v, rk, rv, recovery=rec,
+                          floor=floor, narrative=narr)  # A36
 
     pe = {leg: {k: leg_pe(leg, k) for k in TIERS} for leg in LEGS}
     for k in TIERS:
@@ -315,18 +415,24 @@ def main() -> int:
     adj = -corp_cap - nci_cap - inp["net_debt"] - inp["pension"]
     pp_locked_ni = inp["contract_liab"] * inp["pp_margin"]
 
+    def window(k: str, rd: float) -> float:
+        """A37: unbooked 2H26 core EPS x (1 - b1), clipped at 0 (b1 > 1 = issuance-funded growth)."""
+        return unbooked * max(0.0, 1.0 - b1[k]) * (1.0 + rd) ** (-tau / 2)
+
     def anchor(k: str, *, pe_k: dict[str, float] | None = None, sales_so_k: float | None = None,
-               ni_oc_k: float | None = None) -> tuple[dict[str, float], float]:
+               ni_oc_k: float | None = None, rd: float | None = None) -> tuple[dict[str, float], float]:
         pk = {leg: pe[leg][k] for leg in LEGS} if pe_k is None else pe_k
+        rd = r if rd is None else rd
+        df = (1.0 + rd) ** (-tau)  # A37: only the Gordon legs are FY27-opening values
         lg = {
-            "oc": (ni_oc[k] if ni_oc_k is None else ni_oc_k) * pk["oc"],
-            "gi": ni_gi[27] * pk["gi"],
-            "au": ni_au[27] * pk["au"],
+            "oc": (ni_oc[k] if ni_oc_k is None else ni_oc_k) * pk["oc"] * df,
+            "gi": ni_gi[27] * pk["gi"] * df,
+            "au": ni_au[27] * pk["au"] * df,
             "so": (sales_so[k] if sales_so_k is None else sales_so_k) * inp["ps_so"],
             "ls": sales_ls * inp["ps_ls"],
             "pp": pp_locked_ni,
         }
-        return lg, (sum(lg.values()) + adj) / sh
+        return lg, (sum(lg.values()) + adj) / sh + window(k, rd)
 
     legs_l, L = anchor("l")
     legs_m, M = anchor("m")
@@ -417,12 +523,17 @@ def main() -> int:
     # Photonics (A34): count x aligned margin -> 2030 NI x OC ruler at ROE_M, back to FY27.
     phot_units = inp["phot_rev_target"] - inp["phot_cons_included"]
     phot_ni = phot_units * opt_margin
-    phot_pe = perpetual_pe(inp["g2_oc"], roe["m"], r)
+    # Success world on the same OC ruler (A36): valued at 2030, RONIC = min(ROE_M, cap) for ever.
+    phot_pe = path_value(int(inp["t_phot"]), y1, y2, rs, 0.0, 0, inp["g2_oc"], roe["m"], r, narrative=cap_oc)
     disc_phot = (1.0 + r) ** -(inp["t_phot"] - ANCHOR_YEAR)
     capex_unspent = inp["phot_capex_named"]
     v_phot = (phot_ni * phot_pe - capex_unspent) * disc_phot / sh
 
+    # All option parts are FY27-opening values: one more tau to today (A37).
+    df_opt = (1.0 + r_disc) ** (-tau)
     v_parts = {"vz_s": vz_s, "vz_r": vz_r, "att_s": att_s, "att_r": att_r, "phot": v_phot}
+    v_parts = {k: v * df_opt for k, v in v_parts.items()}
+    vz_s, vz_r, att_s, att_r, v_phot = (v_parts[k] for k in ("vz_s", "vz_r", "att_s", "att_r", "phot"))
     v_opt = sum(v_parts.values())
 
     def opt_k(k: str) -> float:
@@ -468,13 +579,16 @@ def main() -> int:
           + f"; BPS0 {bps0:.3f}, unbooked 2H26 {unbooked:.3f}; g1_co "
           + "/".join(f"{gco[k]:.2%}" for k in TIERS) + "; b1 " + "/".join(f"{b1[k]:.2f}" for k in TIERS) + ")")
     p1 = {leg: {k: (1.0 if k == "l" else 1 - g1[leg] / roe[k]) for k in TIERS} for leg in LEGS}
-    print("stage-1 payout 1-g1/ROE  " + "  ".join(
+    print("stage-1 payout 1-g1/ROE (unfloored)  " + "  ".join(
         f"{leg.upper()} " + "/".join(f"{p1[leg][k]:+.2f}" for k in TIERS) for leg in LEGS)
-          + "  (L = trough tier, 100% payout; negative = growth funded by issuance, 发股融资的增长)")
-    print("modelled issuance in 2H26 roll (b1-1)xN, USD/sh M/H: " + "/".join(f"{max(0.0, b1[k] - 1) * unbooked:.2f}" for k in ("m", "h"))
-          + "; stage-1 issuance OC+GI+AU, USD/sh: " + "/".join(
-              f"{sum(max(0.0, -p1[leg][k]) * ni_leg27[leg][k] for leg in LEGS) / sh:.2f}" for k in TIERS))
-    print("B bucket (actual retention − b1)×N, M/H: " + "/".join(f"{(1 - payout_co - b1[k]) * unbooked:+.2f}" for k in ("m", "h")))
+          + "  (L = trough tier, 100% payout; negative floored at 0 — no issuance charge, user ruling 2026-10-18)")
+    print("unfloored stage-1 issuance OC+GI+AU, USD/sh (not charged): " + "/".join(
+              f"{sum(max(0.0, -p1[leg][k]) * ni_leg27[leg][k] for leg in LEGS) / sh:.2f}" for k in TIERS)
+          + f"; FY27 opening BPS actual retention {bps_open:.3f} (= {bps0:.3f} + {unbooked:.3f} − {inp['dps_annual'] / 2:.2f})"
+          + f" vs retired b1 roll M/H " + "/".join(f"{eps[k] / roe_at(k, rolled=True):.2f}" for k in ("m", "h")))
+    print("window b1 = g1_co/ROE M/H " + "/".join(f"{b1[k]:.2f}" for k in ("m", "h")) + " > 1 -> window 0; OC steady "
+          f"min(ROE, {cap_oc:.0%}) M/H " + "/".join(f"{min(roe[k], cap_oc):.2%}" for k in ("m", "h"))
+          + f" (L tail on M); GI/AU steady min(ROE, {rs:.0%}) via Y1 {y1g} / Y2 {y2g} (default; OC-link axis {y1}/{y2} for the OC three-segment sens)")
     # cyclical multiple policy (construction §5): reverse or flat, pe_L >= pe_M.
     for leg in LEGS:
         if pe[leg]["l"] < pe[leg]["m"] - 1e-9:
@@ -488,7 +602,8 @@ def main() -> int:
               + "  | $/sh " + " ".join(f"{k}={v / sh:.2f}" for k, v in lg.items()))
     print(f"adj={adj:,.1f}M = {adj / sh:.2f}/sh; prepaid={pp_locked_ni:,.1f}M → {pp_locked_ni / sh:.2f}/sh")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"candidate (Solar guide path FY27 {so_guide27:,.1f}): L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}")
+    print(f"candidate (Solar guide path FY27 {so_guide27:,.1f}): L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}"
+          f"  A'={(cand[0] + cand[1]) / 2:.2f} B'={(cand[1] + cand[2]) / 2:.2f}")
     print(f"decomposition: L/M {L / M:.3f} = OC numerator {ni_oc['l'] / ni_oc['m']:.3f} x OC PE {pe['oc']['l'] / pe['oc']['m']:.3f} | "
           f"H/M {H / M:.3f} = OC numerator {ni_oc['h'] / ni_oc['m']:.3f} x OC PE {pe['oc']['h'] / pe['oc']['m']:.3f} | "
           f"(H-L)/2M {(H - L) / 2 / M:.3f} | V_opt/M {v_opt / M:.3f}")
@@ -539,9 +654,32 @@ def main() -> int:
 
     def with_g1(g1_oc: float) -> dict[str, float]:
         g1s = dict(g1, oc=g1_oc)
-        rk = {k: roe_at(k, g1s) for k in TIERS}
-        rk["l"] = rk["m"]  # trough tail runs on the mid-cycle ROE
-        return {k: anchor(k, pe_k={leg: leg_pe(leg, k, g1s=g1s, roe_k=rk[k]) for leg in LEGS})[1] for k in TIERS}
+        return {k: anchor(k, pe_k={leg: leg_pe(leg, k, g1s=g1s) for leg in LEGS})[1] for k in TIERS}
+
+    def with_pe(**kw) -> dict[str, float]:
+        return {k: anchor(k, pe_k={leg: leg_pe(leg, k, **kw) for leg in LEGS})[1] for k in TIERS}
+
+    # A36 steady-return readings for the OC leg.
+    for lab, cap in ((f"OC back on three segments (axis floor {inp['ss_floor_ai_capex_package']:.0%}, Y1/Y2)", None),
+                     (f"OC steady at management ROIC target, low {inp['ss_mgmt_lo']:.0%}", inp["ss_mgmt_lo"]),
+                     (f"OC steady at management ROIC target, high {inp['ss_mgmt_hi']:.0%}", inp["ss_mgmt_hi"])):
+        s = with_pe(oc_cap=cap)
+        print(f"sens {lab}: L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
+    s = with_pe(floor=False)
+    print(f"sens stage-1 payout not floored (issuance charged): L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
+    rr_ = {k: roe_at(k, rolled=True) for k in ("m", "h")}
+    rr_["l"] = rr_["m"]
+    s = {k: anchor(k, pe_k={leg: leg_pe(leg, k, roe_k=rr_[k]) for leg in LEGS})[1] for k in TIERS}
+    print(f"sens opening book on the retired b1 roll (ROE M/H {rr_['m']:.4f}/{rr_['h']:.4f}): "
+          f"L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
+    amort_ps = inp["amort_q"] * 4 * (1 - tax) * inp["pe_corp"] / sh
+    print(f"sens amortisation capitalised again (retired): each tier −{amort_ps:.2f}")
+    y1gs, y2gs = y1g, y2g
+    y1g, y2g = y1, y2
+    s = with_pe()
+    print(f"sens GI/AU on the OC-link axis window Y1 {y1g} / Y2 {y2g} (retired 2026-10-18): "
+          f"L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
+    y1g, y2g = y1gs, y2gs
 
     for lab, val in (("Barclays+Citi only (Wisburg-checked)", (inp["eps_fy28_pt_barclays"] + inp["eps_fy28_pt_citi"]) / 2),
                      ("+UBS 6.70 (superseded)", (sum(pts.values()) + 6.70) / (len(pts) + 1)),
@@ -549,36 +687,27 @@ def main() -> int:
         g = 0.0 if val is None else oc_residual(val, 28) / ni_oc["m"] - 1
         s = with_g1(g)
         print(f"sens g1 {lab}: g1_oc {g:.4f} -> L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
-    # L on the consensus low instead of the digestion year.
-    ni_oc_low = oc_residual(inp["eps_fy27_low"], 27)
-    eps_save = eps["l"]
-    eps["l"] = inp["eps_fy27_low"]
-    roe_low = roe_at("l", g1)
-    eps["l"] = eps_save
-    pe_low = {leg: leg_pe(leg, "l", roe_k=roe_low, trough=False) for leg in LEGS}
-    _, L_low = anchor("l", pe_k=pe_low, ni_oc_k=ni_oc_low)
-    print(f"sens L on consensus low {inp['eps_fy27_low']:.3f}: OC {ni_oc_low:,.0f}, ROE {roe_low:.4f}, L = {L_low:.2f}")
 
     for lab, mg in (("company OM 20% x (1-21%)", 0.20 * 0.79), ("Q2'26 OC print", inp["pp_margin"])):
-        vp = (phot_units * mg * phot_pe - capex_unspent) * disc_phot / sh
+        vp = (phot_units * mg * phot_pe - capex_unspent) * disc_phot / sh * df_opt
         print(f"sens photonics margin {lab} {mg:.4f}: photonics {vp:.2f}, V_opt {v_opt - v_phot + vp:.2f}")
     cap_int = inp["seg_assets_oc"] / (inp["sales_oc_q"] * 4)
     cap_need = phot_units * cap_int
-    vp_cap = (phot_ni * phot_pe - cap_need) * disc_phot / sh
+    vp_cap = (phot_ni * phot_pe - cap_need) * disc_phot / sh * df_opt
     print(f"sens photonics capital at OC asset intensity {cap_int:.3f} -> ${cap_need:,.0f}M deducted at 2030: photonics {vp_cap:.2f}")
     vp_late = v_phot / (1 + r) ** 2
     print(f"sens photonics two years late (2032): {vp_late:.2f}")
     meta_rate = inp["meta_anchor"] / inp["meta_years"]
     vm_s, vm_r = lta(meta_rate, inp["contract_years"], inp["t_opt"], opt_margin, r_disc)
-    print(f"sens Verizon on old Meta anchor {meta_rate:,.0f}M/y: {vm_s + vm_r:.2f} (vs {vz_s + vz_r:.2f})")
+    print(f"sens Verizon on old Meta anchor {meta_rate:,.0f}M/y: {(vm_s + vm_r) * df_opt:.2f} (vs {vz_s + vz_r:.2f})")
     r_c = basket_r(CONTRACT_ANNUITY_BASKET)
     c_s, c_r = lta(carrier_rate, inp["contract_years"], inp["t_opt"], opt_margin, r_c)
-    print(f"sens Verizon r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: {c_s + c_r:.2f}")
+    print(f"sens Verizon r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: {(c_s + c_r) * (1 + r_c) ** (-tau):.2f}")
     for lab, (_, mg) in margins.items():
         a_, b_ = lta(carrier_rate, inp["contract_years"], inp["t_opt"], mg, r_disc)
         c_, d_ = lta(carrier_rate, inp["att_years"], inp["t_att"], mg, r_disc)
         vp = phot_units * mg * phot_pe * disc_phot / sh
-        print(f"sens opt margin {lab} {mg:.4f}: V_opt {a_ + b_ + c_ + d_ + vp:.2f}")
+        print(f"sens opt margin {lab} {mg:.4f}: V_opt {(a_ + b_ + c_ + d_ + vp) * df_opt:.2f}")
 
     atm_shares = ATM_GROSS_MM / ATM_REF_PRICE
     atm_net = ATM_GROSS_MM * (1 - ATM_FEE)
@@ -588,7 +717,7 @@ def main() -> int:
     print(f"sens A8 NCI at OC M multiple {pe['oc']['m']:.2f}x: each tier −{nci_oc:.2f}")
 
     def band_at(dr: float) -> tuple[float, float, float]:
-        return tuple(anchor(k, pe_k={leg: leg_pe(leg, k, rr=r + dr) for leg in LEGS})[1] for k in TIERS)
+        return tuple(anchor(k, pe_k={leg: leg_pe(leg, k, rr=r + dr) for leg in LEGS}, rd=r + dr)[1] for k in TIERS)
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_at)
     if any(abs(x - y) > TOL for x, y in zip(band_at(0.0), (L, M, H))):

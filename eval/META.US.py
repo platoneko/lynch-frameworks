@@ -16,7 +16,18 @@ Main ruler: two legs summed per tier k in {L, M, H} (one estimation date, FY2027
             PE_k    = perpetual_pe(g2, ROIC_k, r_foa)  (Gordon, generated not borrowed)
   RL leg    -rl_loss_k(1-tax) / (shares * r_rl)        (loss capitalised, g = 0)
   closing   -(net_debt + settlement_npv) / shares
-  V_k       = NOPAT_k * PE_k + RL_k + closing
+  gap       growth-period funding gap (valuation-rules「经营价值与超额现金」①):
+            2H26 capex + SBC - 2H26 OCF (window EPS x shares x OCF/NI), per share,
+            deducted as a debt-like item (no excess-cash row; parent share 1.0)
+  V_k       = (NOPAT_k * PE_k + RL_k) / (1 + r)^tau + closing - gap
+
+Time alignment (③): the Gordon value sits at the FY27 opening (2027-01-01);
+discounted tau = 0.5 years to the 2026-06-30 balance sheet.  With a funding gap
+the window's distributable profit is booked as 0 (OCF already carries it).
+Stable-return path (②): the FoA leg's forward ROIC (21.6 / 24.8 / 28.7%) sits
+below the stable return ronic_ss (30%: mature ad peers below the fallback, the
+fallback for near-zero-marginal-cost platforms), so the path is flat and the
+multiple is the plain perpetual_pe; the eval asserts ROIC <= ronic_ss.
 
 The numerator is the FY2027E GAAP consensus at its low / mean / high (A3); the
 tiers differ ONLY in that layer plus the RL loss path (A7).  The multiple is
@@ -127,7 +138,20 @@ REQUIRED = [
     "amd_warrant_shares",
     "amd_warrant_strike",
     "amd_price",
+    "tau",
+    "ronic_ss",
+    "eps_fy26",
+    "eps_h1_26",
+    "ocf_ni",
+    "capex_2h26",
+    "sbc_2h26",
 ]
+
+
+def funding_gap(inp: dict[str, float]) -> float:
+    """① growth-period funding gap per share: 2H26 capex + SBC beyond 2H26 OCF."""
+    ocf = (inp["eps_fy26"] - inp["eps_h1_26"]) * inp["shares"] * inp["ocf_ni"]
+    return max(inp["capex_2h26"] + inp["sbc_2h26"] - ocf, 0.0) / inp["shares"]
 
 TIERS = ("l", "m", "h")
 
@@ -165,7 +189,8 @@ def band(
     settlement_npv = inp["settlement_npv"] if settlement_npv is None else settlement_npv
     r_foa, r_rl = inp["r_foa"] + r_shift, inp["r_rl"] + r_shift
     shares = inp["shares"]
-    closing = -(inp["net_debt"] + settlement_npv) / shares
+    closing = -(inp["net_debt"] + settlement_npv) / shares - funding_gap(inp)
+    disc = (1.0 + r_foa) ** inp["tau"]
     out: dict[str, dict[str, float]] = {}
     for k in TIERS:
         rl_ps = inp[f"rl_loss_{k}"] * rl_scale * (1.0 - tax) / shares
@@ -173,7 +198,8 @@ def band(
         roic = nopat * shares / ic
         pe = perpetual_pe(g2, roic, r_foa)
         rl_leg = -rl_ps / r_rl
-        out[k] = {"v": nopat * pe + rl_leg + closing, "nopat": nopat, "roic": roic, "pe": pe, "rl": rl_leg}
+        out[k] = {"v": (nopat * pe + rl_leg) / disc + closing, "nopat": nopat, "roic": roic, "pe": pe,
+                  "rl": rl_leg, "disc": disc}
     return out
 
 
@@ -220,9 +246,16 @@ def main() -> int:
         errors.append("RL loss path must be L >= M >= H (L is the wider-loss world, A7)")
     # Flat ladder: the numerator alone must separate the tiers.
     pe_m = base["m"]["pe"]
-    closing = -(inp["net_debt"] + inp["settlement_npv"]) / shares
-    flat = [base[k]["nopat"] * pe_m + base[k]["rl"] + closing for k in TIERS]
+    gap_ps = funding_gap(inp)
+    closing = -(inp["net_debt"] + inp["settlement_npv"]) / shares - gap_ps
+    disc = base["m"]["disc"]
+    flat = [(base[k]["nopat"] * pe_m + base[k]["rl"]) / disc + closing for k in TIERS]
     errors += ladder("flat-multiple", *flat)
+    # ② stable-return path: flat only while every tier's forward ROIC <= ronic_ss.
+    for k in TIERS:
+        if base[k]["roic"] > inp["ronic_ss"] + 1e-12:
+            errors.append(f"{k.upper()} ROIC {base[k]['roic']:.1%} > ronic_ss {inp['ronic_ss']:.0%}: "
+                          "the return path bites -- implement the three-stage multiple")
     # Gordon branch on the M-tier ROIC; the payout gap is a disclosure.
     errors += check_branch(g2, base["m"]["roic"], r, PAYOUT_OBSERVED, "M")
     payout_modelled, gap = payout_gap(g2, base["m"]["roic"], PAYOUT_OBSERVED)
@@ -269,8 +302,12 @@ def main() -> int:
         t = base[k]
         print(
             f"  {k.upper()}: NOPAT {t['nopat']:.2f} x PE {t['pe']:.2f} (ROIC {t['roic']:.1%}) "
-            f"= {t['nopat'] * t['pe']:.1f}  RL {t['rl']:.1f}  closing {closing:.1f}  -> {t['v']:.1f}"
+            f"= {t['nopat'] * t['pe']:.1f}  RL {t['rl']:.1f}  / 1.1^tau {disc:.4f}  closing {closing:.1f}  -> {t['v']:.1f}"
         )
+    print(f"tau {inp['tau']} (2026-06-30 -> FY27 opening); window profit 0 (funding gap present); "
+          f"gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:g}B + SBC {inp['sbc_2h26']:g}B - OCF "
+          f"{(inp['eps_fy26'] - inp['eps_h1_26']) * shares * inp['ocf_ni']:.2f}B) / {shares}B; "
+          f"stable return {inp['ronic_ss']:.0%} >= every tier ROIC -> path flat")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
     print(f"flat (all {pe_m:.2f}x): " + " / ".join(f"{x:.1f}" for x in flat))
     print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}  V_opt/M {v_opt / M:.1%}")

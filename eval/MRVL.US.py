@@ -100,6 +100,12 @@ REQUIRED = [
     "g2_cu",
     "g2_conn",
     "g2_comm",
+    "g2_comm_today",
+    "tau",
+    "t0_cal",
+    "y1",
+    "y2",
+    "rs_steady",
     "w_custom",
     "w_conn",
     "w_comm",
@@ -133,6 +139,37 @@ def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
         md,
     )
     return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
+
+
+def path_value(g1: float, n: int, g2: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on the steady-state-return path (valuation-rules「经营价值与超额现金」②
+    稳态回报三段; gordon.py's three-segment function is not built yet, so it lives here).
+    Calendar years, t = 1 is the numerator year t0; n stage-1 years at g1 with payout
+    1 - g1/roe (not floored, as two_stage_pe); then g2 with RONIC = roe through Y1, linear to
+    min(rs, roe) by Y2, steady after.  With rs >= roe this equals two_stage_pe / perpetual_pe."""
+    rs_eff = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs_eff
+        return roe + (rs_eff - roe) * (cal - y1) / (y2 - y1)
+
+    if r - g2 <= 0:
+        raise ValueError(f"perpetuity diverges: g2={g2} >= r={r}")
+    pv, e = 0.0, 1.0
+    for t in range(1, n + 1):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+    t = n + 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rs_eff) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 
 
 def check_coaxial_with_avgo(inp: dict[str, float]) -> list[str]:
@@ -226,6 +263,25 @@ def main() -> int:
     ret_actual = 1.0 - inp["payout_3y"]
     excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}  # disclosure only
 
+    # ---- Step 1b: operating value and time alignment (A18; valuation-rules「经营价值与超额现金」
+    # ② 稳态回报三段 / ③ 时点对齐, framework correction 2026-10-16) ----
+    # Every Gordon call below runs on the steady-state-return path and is discounted from
+    # the FY28 opening (t_n) to the balance-sheet date by tau.  Window distributable profit =
+    # 2H FY27 unbooked x (1 - b1), floored at 0 (b1 > 1 here: growth is issuance-funded) and
+    # added at tau/2.  The Comm leg prices on the path-re-solved peer g2 (g2_comm_today);
+    # g2_comm itself stays the AVGO-sourced reading (cross-file check above).
+    tau, t0 = inp["tau"], int(inp["t0_cal"])
+    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+    inp["g2_comm"] = inp["g2_comm_today"]
+
+    def two_stage_pe(g1_: float, n_: int, g2_: float, roe_: float, r_: float) -> float:  # noqa: F811
+        return path_value(g1_, int(n_), g2_, roe_, r_, t0, y1, y2, rs) * (1 + r_) ** -tau
+
+    def perpetual_pe(g2_: float, roe_: float, r_: float) -> float:  # noqa: F811
+        return path_value(0.0, 0, g2_, roe_, r_, t0, y1, y2, rs) * (1 + r_) ** -tau
+
+    win = {t: max(unbooked * (1.0 - b1[t]), 0.0) * (1 + r) ** -(tau / 2) for t in TIERS}
+
     # ---- Step 2: multiples per leg per tier (g shared across tiers) ----
     def leg_pes(tier: str, transition: bool = True) -> dict[str, float]:
         out = {}
@@ -239,7 +295,7 @@ def main() -> int:
         return out
 
     pes = {t: leg_pes(t) for t in TIERS}
-    blended = {t: sum(weights[k] * pes[t][k] for k in LEGS) for t in TIERS}
+    blended = {t: sum(weights[k] * pes[t][k] for k in LEGS) + win[t] / eps[t] for t in TIERS}
     legs_ps = {t: {k: eps[t] * weights[k] * pes[t][k] for k in LEGS} for t in TIERS}
     anchors = {t: eps[t] * blended[t] for t in TIERS}
     L, M, H = (anchors[t] for t in TIERS)
@@ -266,7 +322,7 @@ def main() -> int:
                 else perpetual_pe(g2, roe[tier], r)
             )
             out += weights[leg] * pe
-        return out
+        return out + win[tier] / eps[tier]
 
     def delta_to(target: float, tier: str) -> float:
         lo, hi = -0.15, r - max(inp[f"g2_{leg}"] for leg in LEGS) - 1e-4  # stay below the pole
@@ -292,7 +348,8 @@ def main() -> int:
     # ruler at the realisation year -- perpetual_pe(Custom g2, H-tier ROE, r), no
     # second two-stage at realisation -- then discount back to the FY28 numerator
     # year at the basket r.  No named year -> aligned year (FY29) + 2 = FY31.
-    pe_opt = perpetual_pe(inp["g2_cu"], roe["H"], r)
+    # Unit economics on the same return path from the realisation year, then tau (A18).
+    pe_opt = path_value(0.0, 0, inp["g2_cu"], roe["H"], r, int(inp["t_opt"]), y1, y2, rs) * (1 + r) ** -tau
     disc_opt = (1.0 + r) ** -(inp["t_opt"] - 2028)
     v_opt = inp["v_opt_units"] * inp["d_eps_per_bn"] * pe_opt * disc_opt
     A, B = cut_points(L, M, H)

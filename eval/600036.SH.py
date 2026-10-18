@@ -60,7 +60,7 @@ REQUIRED = [
     "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2026_m", "eps_1h26_a", "div_2h26",
     "roe_snap", "g2", "r_op", "pb_hist_hi",
     "npl", "cov_now", "cov_l", "tax_rate",
-    "payout_obs", "k_l", "k_m", "k_h",
+    "payout_obs", "k_l", "k_m", "k_h", "tau_yr",
 ]
 TIERS = ("L", "M", "H")
 
@@ -124,9 +124,20 @@ def tiers(inp: dict[str, float]) -> dict[str, tuple[float, float]]:
     return out
 
 
+def timed(inp: dict[str, float], value_tn: float, roe: float) -> float:
+    """时点对齐 (valuation-rules「经营价值与超额现金」③; A16): the PB-ROE value is struck on
+    the BPS at the opening of 2027 (t_n) -> today = x (1+r)^-tau, plus the window
+    distributable profit = the 2H26 unbooked profit x (1 - b), b = g/ROE (the roll's b1,
+    the same 视同派出 basis), discounted (1+r)^-(tau/2).  The 2025 final dividend paid
+    after the balance-sheet date is not added back."""
+    r = inp["r_op"]
+    window = unbooked_2h26(inp) * (1.0 - inp["g2"] / roe)
+    return value_tn * (1.0 + r) ** -inp["tau_yr"] + window * (1.0 + r) ** (-inp["tau_yr"] / 2.0)
+
+
 def anchors(inp: dict[str, float]) -> tuple[float, float, float]:
     t = tiers(inp)
-    return tuple(anchor(inp, *t[lab], inp[f"k_{lab.lower()}"], clip=lab == "H")
+    return tuple(timed(inp, anchor(inp, *t[lab], inp[f"k_{lab.lower()}"], clip=lab == "H"), t[lab][1])
                  for lab in TIERS)
 
 
@@ -204,7 +215,7 @@ def main() -> int:
     full = {lab: full_value(inp, bps[lab], roe[lab]) for lab in TIERS}
     excess = {lab: excess_retention(inp, bps[lab], roe[lab]) for lab in TIERS}
     L, M, H = anchors(inp)
-    H_raw = anchor(inp, bps["H"], roe["H"], k["H"], clip=False)
+    H_raw = timed(inp, anchor(inp, bps["H"], roe["H"], k["H"], clip=False), roe["H"])
     clipped = H_raw > H + 1e-9
     pb = {"L": L / bps["L"], "M": M / bps["M"], "H": H / bps["H"]}
 
@@ -228,7 +239,7 @@ def main() -> int:
 
     # Provision-rebuild stress coordinate (the v3 L): ROE_M less the hit, at k_L.
     hit = provision_hit_pp(inp)
-    stress = anchor(inp, bps["M"], roe["M"] - hit, k["L"], clip=False)
+    stress = timed(inp, anchor(inp, bps["M"], roe["M"] - hit, k["L"], clip=False), roe["M"] - hit)
     # v3 construction (2026H1 official ROAE snapshot on the 2Q26 BPS) for the record.
     snap = anchor(inp, inp["bps"], inp["roe_snap"], k["M"], clip=False)
 

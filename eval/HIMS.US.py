@@ -58,10 +58,40 @@ REQUIRED = [
     "eps_adj_fy27_house", "ebitda_fy27_jpm", "ebitda_fy27_barc", "m_ev_jpm", "m_ev_barc",
     "ebitda_margin_house", "net_debt", "net_debt_ebitda", "interest_ebit",
     "m_prev", "pb_min_5y", "close_eq_lo", "close_eq_hi",
+    "tau", "y1", "y2", "rs_steady",
 ]
 TOL = 0.05
-NUM_YEAR = 2028        # numerator year; FY2027 = t=1, so FY2028 is discounted one year
+NUM_YEAR = 2028        # numerator year; t_n = 2028-01-01, timing via `tau` from the 2026-06-30 book (A17)
 T1_YEAR = 2027
+
+
+def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float, r: float, *,
+                     g1: float = 0.0, n: int = 0) -> float:
+    """Multiple on numerator-year earnings with the steady-return path (valuation-rules
+    「经营价值与超额现金」② 稳态回报三段): RONIC = forward through calendar y1, linear to
+    min(roe, rs) by y2, Gordon tail from y2; n stage-1 years at payout 1 - g1/roe.
+    With rs >= roe this equals perpetual_pe / two_stage_pe.  (gordon.py helper is [待建].)"""
+    rss = min(roe, rs)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rss
+        return roe + (rss - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(n):
+        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
+        e *= 1 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * min(1.0, 1.0 - g2 / rss) / ((r - g2) * (1 + r) ** (t - 1))
+        pv += e * min(1.0, 1.0 - g2 / ron(cal)) / (1 + r) ** t
+        e *= 1 + g2
+        t += 1
 INITIAL_BASKET = 7     # A4 — the overturned basket, comparison band only
 P_TIERS = (0.0, 0.25, 1.0)  # A7 — table 3 only, never an input
 LISTING_CCY = "USD"
@@ -116,17 +146,24 @@ def main() -> int:
     bps0 = inp["equity"] / shares
     unbooked = (inp["eps_fy26e_consensus"] - inp["eps_h1_26_gaap"]) + inp["eps_fy27e_consensus"]
 
+    tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+
+    def window_ps(bps: float, gg: float) -> float:
+        """2026H2 + FY2027 unbooked consensus EPS x (1 - b), b = the book-roll retention g2/ROE_M (A17)."""
+        return max(unbooked * (1 - gg / min(eps28[1] / bps, cap)), 0.0)
+
     def model(rr: float, gg: float) -> tuple[float, list[tuple[float, float, float, float]], tuple[float, float, float]]:
-        """BPS at the start of FY2028 and per-tier (ROE raw, ROE, PE, anchor) at basket r = rr, g2 = gg."""
+        """BPS at the start of FY2028 and per-tier (ROE raw, ROE, PE, anchor) at basket r = rr, g2 = gg.
+        Anchor = EPS28 x PE (steady-return path) / (1+r)^tau + window / (1+r)^(tau/2)  (A17)."""
         bps = bps0
         for _ in range(50):  # retention b = g2 / ROE_M, ROE_M depends on the rolled BPS
             bps = bps0 + gg / min(eps28[1] / bps, cap) * unbooked
-        disc = (1 + rr) ** (NUM_YEAR - T1_YEAR)
+        win = window_ps(bps, gg) / (1 + rr) ** (tau / 2)
         rows = []
         for e in eps28:
             roe = min(e / bps, cap)
-            pe = perpetual_pe(gg, roe, rr)
-            rows.append((e / bps, roe, pe, e * pe / disc))
+            pe = three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roe, rr)
+            rows.append((e / bps, roe, pe, e * pe / (1 + rr) ** tau + win))
         return bps, rows, tuple(x[3] for x in rows)
 
     bps, rows, (L, M, H) = model(r, g2)
@@ -139,7 +176,8 @@ def main() -> int:
     errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
     errors += check_branch(g2, rows[1][1], r, 0.0, "g2")
     pe_m = rows[1][2]
-    flat = tuple(e * pe_m / (1 + r) for e in eps28)
+    win_m = window_ps(bps, g2) / (1 + r) ** (tau / 2)
+    flat = tuple(e * pe_m / (1 + r) ** tau + win_m for e in eps28)
     if not (flat[0] < flat[1] < flat[2]):
         errors.append("flat-multiple ladder collapsed (construction §2c)")
 
@@ -153,7 +191,10 @@ def main() -> int:
     def v_at(nm: float, rr: float = r, gg: float = g2, t: int = t_opt) -> tuple[float, float, float]:
         base30 = rev28 * (1 + gg) ** (t - NUM_YEAR)
         k_rev = inp["rev_2030_target"] - base30
-        val = k_rev * nm / shares * perpetual_pe(gg, cap, rr) / (1 + rr) ** (t - T1_YEAR)
+        # own ruler on the same calendar steady-return path (A17), then the same timing as the deck:
+        # t_opt -> FY2027 (t - 2027 years) and the extra tau - 1 years to the 2026-06-30 book
+        val = (k_rev * nm / shares * three_segment_pe(t, y1, y2, rs, gg, cap, rr)
+               / (1 + rr) ** (t - T1_YEAR) / (1 + rr) ** (tau - 1))
         return base30, k_rev, val
 
     base30, k_rev, v_opt = v_at(nm28)
@@ -170,8 +211,11 @@ def main() -> int:
 
     # Candidate band: FY2029 single house as g1, n = 1, on M/H; L carries no transition.
     g1 = inp["eps_fy29e_single"] / eps28[1] - 1
+    # same path shifted one visible year (FY2029 single house -> Y1 2029, same fall length) + same timing
+    y1c, y2c = y1 + 1, y2 + 1
     cand = (L,) + tuple(
-        e * two_stage_pe(g1, 1, g2, roe, r) / (1 + r) for e, (_, roe, _, _) in zip(eps28[1:], rows[1:])
+        e * three_segment_pe(NUM_YEAR, y1c, y2c, rs, g2, roe, r, g1=g1, n=1) / (1 + r) ** tau + win_m
+        for e, (_, roe, _, _) in zip(eps28[1:], rows[1:])
     )
     said_c = stated_candidate(md)
     if said_c is None or any(abs(a - b) > TOL for a, b in zip(said_c, cand)):
@@ -179,8 +223,8 @@ def main() -> int:
     if not (cand[0] < cand[1] < cand[2]):
         errors.append("candidate band needs L′ < M′ < H′")
     # Candidate coordinate: Barclays FY2027 adjusted EPS on the same ruler (FY2027 = t1, not discounted).
-    pe_b = perpetual_pe(g2, min(inp["eps_adj_fy27_house"] / bps0, cap), r)
-    m_barc = inp["eps_adj_fy27_house"] * pe_b
+    pe_b = three_segment_pe(T1_YEAR, T1_YEAR, T1_YEAR + (y2 - y1), rs, g2, min(inp["eps_adj_fy27_house"] / bps0, cap), r)
+    m_barc = inp["eps_adj_fy27_house"] * pe_b / (1 + r) ** (tau - 1)  # FY2027 numerator: t_n 2027-01-01, 0.5y
 
     # Basket-7 comparison band (initial basket, overturned; disclosure only).
     r7 = basket_r(INITIAL_BASKET)
@@ -195,7 +239,7 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (无同业锚)  ROE cap {cap:.0%}")
     print(f"BPS 2026-06-30 {bps0:.4f} → start FY2028 {bps:.4f} (unbooked consensus {unbooked:+.3f} × b = g2/ROE_M)")
     for t, e, (rr_, roe, pe, a) in zip("LMH", eps28, rows):
-        print(f"{t}: EPS28 {e:.2f}  ROE {rr_:.1%}→{roe:.1%}  PE {pe:.2f} (payout {1 - g2 / roe:.1%})  ÷ {(1 + r):.2f} → {a:.2f}")
+        print(f"{t}: EPS28 {e:.2f}  ROE {rr_:.1%}→{roe:.1%}  PE {pe:.2f} (steady path, tail payout {1 - g2 / min(roe, rs):.1%})  ÷ {(1 + r) ** tau:.4f} + window {win_m:.3f} → {a:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  (floor BPS {floor:.2f} loses)")
     print(f"L/M={L / M:.3f} (分子比 {eps28[0] / eps28[1]:.3f} × 倍数比 {rows[0][2] / pe_m:.3f})  "
           f"H/M={H / M:.3f} (分子比 {eps28[2] / eps28[1]:.3f} × 倍数比 {rows[2][2] / pe_m:.3f})  width={(H - L) / (2 * M):.3f}  V_opt/M={v_opt / M:.2f}")

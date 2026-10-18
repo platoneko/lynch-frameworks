@@ -105,7 +105,14 @@ def main() -> int:
     errors += check_gordon(inp, baskets.get("r_perp"))
     if abs(inp["shares"] - SHARES_STATIC) > 0.05:
         errors.append(f"shares {inp['shares']} != LB static total_shares {SHARES_STATIC}亿")
-    (L, M, H), eps = anchors(inp)
+    (L, M, H_regime), eps = anchors(inp)
+    # H passes through (_AXIS.fed-path-aluminium「H 档是路过」; valuation-rules「经营价值与超额现金」②
+    # 商品腿豁免「每档 MUST 与该档的世界状态一致」): the H spread for `h_pass_years`, then the M world.
+    # g = 0 and the multiple is flat 1/r, so the H excess is an n-year annuity on top of M (A18).
+    n_pass = inp["h_pass_years"]
+    if not n_pass > 0:
+        errors.append(f"h_pass_years {n_pass} must be > 0 (axis: H passes, MUST NOT be capitalised as a regime)")
+    H = M + (H_regime - M) * (1 - (1 + inp["r_perp"]) ** -n_pass)
     pes, roes = multiples(inp)
     errors += flat_ladder(eps)
 
@@ -128,6 +135,7 @@ def main() -> int:
     r = inp["r_perp"]
     flat = [e * pes[1] for e in eps]
     print(f"002532.SZ  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
+    print(f"  H 路过：H 价差 regime 值 {H_regime:.2f} 维持 {n_pass:g} 年后回到 M → H {H:.2f}（轴 H 档行，A18）")
     print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
           f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
           f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "

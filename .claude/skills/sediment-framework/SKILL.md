@@ -31,6 +31,7 @@ description: >
 | 生成的 M 倍数低于自身实测带下沿（③ 出带） | `references/rules/out-of-band.md`「③ 出带处理流程」（先补 ②、带同基、增长率诚实、逐档降篮、篮 4 仍出带 → BLOCKED + 带边 r 并列） |
 | zone ∈ {`stretched`,`deep_discount`}（研究当日现价归 zone，只在对话里） | `references/zone-reflection.md` |
 | 向用户说明期权 \(V_{opt}\) / 候选带在卡片、日报上怎么显示、跨档告不告警 | `references/contracts.md`「未建模期权」「共识升级候选带」行契约（期权与候选带各有自己的 zone 行；**MUST NOT** 凭推断描述展示行为） |
+| 任何锚点 / 敏感性 / 子代理结果交给用户之前；落盘前 | `references/self-review.md`（四问 + 稳态回报与 \(g_2\) 认可门） |
 | 拟落盘摘要之后、授权之前 | `references/checklist.md` |
 | 写或改标的文档、轴文件之前（含题头修补） | `references/contracts.md` |
 

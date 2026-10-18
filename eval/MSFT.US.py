@@ -22,9 +22,24 @@ priced at ONE growth rate per leg.  Four Gordon legs + asset legs:
     OpenAI stake + other equity investments (discount band, net of DTL)
     net cash
 
+Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
+correction 2026-10-16):
+  * time alignment (③): the Gordon legs sit at the FY2028 opening (2027-07-01);
+    discounted tau = 1.0 year to the 2026-06-30 balance sheet -- Azure non-OpenAI,
+    A&I rest and D&C at r_perp, the OpenAI sub-leg at its journey basket r_az_lab.
+    Plus the window's distributable profit: unbooked FY27 leg NOPAT x (1 - b1),
+    discounted tau/2 at r_perp (no funding gap: FY27 capex is covered by OCF).
+  * stable-return path (②): A&I rest (M365 etc.) retains at its forward ROE through
+    y1, fading linearly to ronic_ss_rest by y2 (fallback 30%); Azure already retains
+    at the marginal steady-state ROIC and D&C's forward ROE sits below 30%, so both
+    paths are flat.
+  * k on the deemed-distributed row removed (k_l/k_m/k_h = 0): it multiplied the
+    whole retained surplus, not a named transaction.
+
 Cross-check (b): the FY26 three OLD segments (PBP / IC / MPC), each with its
 own g and allocated capital, the IC leg retaining at the same marginal ROIC.
-Printed and compared to (a) as an anchor-to-anchor reading; it sets nothing.
+Printed and compared to (a) as an anchor-to-anchor reading; it sets nothing
+(old ruler: no return path, no time alignment).
 
 Run:  python3 frameworks/eval/MSFT.US.py
 """
@@ -40,7 +55,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eval.lib.axes import check_lab_mount  # noqa: E402
-from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, perpetual_pe  # noqa: E402
+from eval.lib.gordon import check_basket_pair, check_g_cap, check_k_declared, check_r, payout, perpetual_pe  # noqa: E402
 from eval.lib.inputs import parse_baskets  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 from eval.lib.bands_io import write_rf_readings  # noqa: E402
@@ -102,7 +117,38 @@ REQUIRED = [
     "capex_fy26", "net_debt_ebitda", "interest_ebit",
     "oi_pbp_fy26", "oi_mpc_fy26", "ic_pbp", "g_b_pbp", "g_b_mpc",
     "v_opt",
+    "tau", "t0", "y1", "y2", "ronic_ss_rest",
 ]
+
+
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).
+
+    Year t = 1 is calendar t0.  The retention of calendar c earns the forward return
+    while c <= y1, fades linearly to the stable return by y2, and the stable return
+    from y2 on.  Stable return capped at the forward return and floored at r; a flat
+    path equals `perpetual_pe`.
+    """
+    if r - g <= 0:
+        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def main() -> int:
@@ -176,35 +222,47 @@ def main() -> int:
             raise ValueError("opening-capital roll diverges")
         return e / (ic0 / (1.0 - g * unbooked / e))
 
+    t0, y1, y2, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
+    r7tau = r7  # the OpenAI sub-leg's tau segment runs at its journey basket (篮子对)
+
     def tier(t: str, k: float, ic_scale: float = 1.0, roic_marg: float | None = None,
              share_lab: float | None = None, r_lab: float | None = None, k_lab: float | None = None,
-             g_ai: float | None = None, g_dc: float | None = None, flat: dict | None = None) -> dict:
+             g_ai: float | None = None, g_dc: float | None = None, flat: dict | None = None,
+             rs_rest: float | None = None) -> dict:
         roic_marg = inp["roic_marg_az"] if roic_marg is None else roic_marg
         share_lab = share_lab_az if share_lab is None else share_lab
         r_lab = r7t if r_lab is None else r_lab
         k_lab = inp["k_lab"] if k_lab is None else k_lab
         g_ai = inp["g2_ai"] if g_ai is None else g_ai
         g_dc = inp["g2_dc"] if g_dc is None else g_dc
+        rs_rest = inp["ronic_ss_rest"] if rs_rest is None else rs_rest
         n_az, n_rest = nopat_ai * share_az, nopat_ai * (1 - share_az)
         out: dict = {}
         legs = (
-            ("az", n_az * (1 - share_lab), inp["ic_azure"] * ic_scale * (1 - share_lab), g_ai, r4, roic_marg),
-            ("lab", n_az * share_lab, inp["ic_azure"] * ic_scale * share_lab, g_ai, r_lab, roic_marg),
-            ("rest", n_rest, ic_rest * ic_scale, g_ai, r4, None),
-            ("dc", nopat_dc, inp["ic_dc"] * ic_scale, g_dc, r4, None),
+            ("az", n_az * (1 - share_lab), inp["ic_azure"] * ic_scale * (1 - share_lab), g_ai, r4, roic_marg, r4),
+            ("lab", n_az * share_lab, inp["ic_azure"] * ic_scale * share_lab, g_ai, r_lab, roic_marg, r7tau),
+            ("rest", n_rest, ic_rest * ic_scale, g_ai, r4, None, r4),
+            ("dc", nopat_dc, inp["ic_dc"] * ic_scale, g_dc, r4, None, r4),
         )
-        for name, n, ic, g, r, rm in legs:
+        for name, n, ic, g, r, rm, r_tau in legs:
             e, unb = n * k, n * k27                          # unbooked FY27
             roe_avg = roe_open(e, ic, g, unb)
             roe_ret = roe_avg if rm is None else rm          # A4: Azure retains at the marginal ROIC
-            pe = perpetual_pe(g, roe_ret, r) if flat is None else flat[name]
+            # ② only the A&I rest leg fades (to the 30% fallback); Azure retains at the
+            # marginal steady-state ROIC and D&C's forward ROE sits below 30% -> flat.
+            rs = rs_rest if name == "rest" else roe_ret
+            pe = path_pe(g, roe_ret, r, t0, y1, y2, rs) if flat is None else flat[name]
             # k_lab leaves the OpenAI sub-leg's value only, never its multiple (axis §3b).
             haircut = (1.0 - k_lab) if name == "lab" else 1.0
             out[name] = dict(e=e, roe=roe_avg, roe_ret=roe_ret, pe=pe, b1=g / roe_ret, unb=unb,
-                             val=e * pe * haircut / sh)
+                             rs=min(roe_ret, max(rs, r)),
+                             val=e * pe * haircut / sh / (1 + r_tau) ** tau)
         d = inp[f"d_oai_{t}"]
         out["oai"] = dict(val=(openai_net + inp["other_eq_inv"]) * (1 - d) / sh, d=d)
         out["cash"] = dict(val=net_cash / sh)
+        # ③ window: unbooked FY27 leg NOPAT x (1 - b1), discounted tau/2 (no funding gap).
+        window = sum((1 - out[n]["b1"]) * out[n]["unb"] for n in ("az", "lab", "rest", "dc")) / sh
+        out["win"] = dict(val=window / (1 + r4) ** (tau / 2))
         deemed = sum(max(1 - inp["payout_3y"] - out[n]["b1"], 0.0) * out[n]["unb"] for n in ("az", "lab", "rest", "dc")) / sh
         pre = sum(v["val"] for v in out.values())
         out["deemed"], out["pre"] = deemed, pre
@@ -293,13 +351,15 @@ def main() -> int:
           f" | avg ROIC on IC0: Azure {nopat_ai * share_az / inp['ic_azure']:.1%} rest {nopat_ai * (1 - share_az) / ic_rest:.1%} D&C {nopat_dc / inp['ic_dc']:.1%}"
           f" | Azure retention at marginal ROIC {inp['roic_marg_az']:.1%} (A4)")
     print(f"asset legs $/sh: OpenAI 25% x {inp['openai_post'] / BN:.0f}B = {openai_gross / BN:.0f}B gross, net of DTL {openai_net / sh:.2f}; other eq inv {inp['other_eq_inv'] / sh:.2f}; net cash {net_cash / sh:.2f}")
-    print("  tier  k_eps   Azure-non PE(ROEavg/ret)  lab PE   rest PE(ROE)     D&C PE(ROE)     oai(d)   cash  deemed(k)   total")
+    print(f"tau {tau} (2026-06-30 -> FY2028 opening; Azure-non / rest / D&C at {r4:.0%}, OpenAI sub-leg at journey {r7:.0%});"
+          f" path t0 {t0} y1 {y1} y2 {y2}: A&I rest -> stable {inp['ronic_ss_rest']:.0%}, Azure / D&C flat; no funding gap")
+    print("  tier  k_eps   Azure-non PE(ROEavg/ret)  lab PE   rest PE(ROE->stable)  D&C PE(ROE)     oai(d)   cash  window  deemed(k)   total  (legs / (1+r)^tau)")
     for t in "lmh":
         x = base[t]
         print(f"    {t.upper()}  {inp[f'k_eps_{t}']:.4f}  {x['az']['val']:6.2f} {x['az']['pe']:5.2f}x({x['az']['roe']:.1%}/{x['az']['roe_ret']:.1%})"
-              f"  {x['lab']['val']:5.2f} {x['lab']['pe']:4.2f}x  {x['rest']['val']:6.2f} {x['rest']['pe']:5.2f}x({x['rest']['roe']:.1%})"
+              f"  {x['lab']['val']:5.2f} {x['lab']['pe']:4.2f}x  {x['rest']['val']:6.2f} {x['rest']['pe']:5.2f}x({x['rest']['roe']:.1%}->{x['rest']['rs']:.1%})"
               f"  {x['dc']['val']:5.2f} {x['dc']['pe']:5.2f}x({x['dc']['roe']:.1%})  {x['oai']['val']:5.2f}(-{x['oai']['d']:.0%}) {x['cash']['val']:5.2f}"
-              f"  {x['deemed']:5.2f}(k{inp[f'k_{t}']:.2f})  {x['total']:7.2f}")
+              f"  {x['win']['val']:5.2f}  {x['deemed']:5.2f}(k{inp[f'k_{t}']:.2f})  {x['total']:7.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder (A2e-2c): {flat_l:.2f}/{M:.2f}/{flat_h:.2f}")
     print(f"ratios: L/M {L / M:.3f} H/M {H / M:.3f} (H-L)/2M {(H - L) / 2 / M:.3f} | numerator ratio L/M {inp['k_eps_l'] / inp['k_eps_m']:.3f} H/M {inp['k_eps_h'] / inp['k_eps_m']:.3f}")
@@ -318,6 +378,7 @@ def main() -> int:
         ("g2_ai −0.5pp", dict(g_ai=inp["g2_ai"] - 0.005)),
         ("g2_ai −1pp", dict(g_ai=inp["g2_ai"] - 0.01)),
         ("g2_dc ±1pp", dict(g_dc=inp["g2_dc"] + 0.01)),
+        ("stable-return path off (A&I rest permanent at the forward ROE)", dict(rs_rest=1.0)),
     ] + [(f"opening IC x{s:.1f} (A4 待补 capital path)", dict(ic_scale=s)) for s in IC_SENSITIVITY]
     for label, kw in sens:
         b = band(**kw)
@@ -326,18 +387,18 @@ def main() -> int:
     print(f"杠杆门: net debt/EBITDA {inp['net_debt_ebitda']:.2f}, interest/EBIT {inp['interest_ebit']:.1%} — not triggered"
           f" | capex axis constituent: FY26 capex ${inp['capex_fy26'] / 1e9:.0f}B (FY27 guide 待补)")
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves every
-    # priced r 1:1 — r_perp (Azure-non / rest / D&C) and the OpenAI sub-leg's terminal
-    # basket r_az_lab_t (r_az_lab only gates g, it prices nothing).  g, ROE, k_lab, the
+    # priced r 1:1 — r_perp (Azure-non / rest / D&C, and the window), the OpenAI sub-leg's
+    # terminal basket r_az_lab_t and its journey basket on the tau segment.  g, ROE, k_lab, the
     # asset legs and the numerator stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        nonlocal r4, r7t
-        saved = r4, r7t
-        r4, r7t = r4 + dr, r7t + dr
+        nonlocal r4, r7t, r7tau
+        saved = r4, r7t, r7tau
+        r4, r7t, r7tau = r4 + dr, r7t + dr, r7tau + dr
         try:
             b = band()
             return b["l"]["total"], b["m"]["total"], b["h"]["total"]
         finally:
-            r4, r7t = saved
+            r4, r7t, r7tau = saved
 
     rf = rf_block(LISTING_CCY, {"r_perp": r4, "r_az_lab_t": r7t}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
