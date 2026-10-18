@@ -57,7 +57,7 @@
 
 ### 估值构造口径（真源已移至 skill）
 
-锚点语义（L/M/H 各定价什么）、价带偏离反思的语义门槛、永续增长口径（r 由 7 个篮子按生意性质给出——值的真源 `eval/lib/gordon.py` `BASKET_R`；g 上限 `min(6%, r−4%)`；Gordon、增长的表达顺序、g2 来源优先序、构造规则冲突的裁决顺序、两段式过渡、谷底档 / regime-point 双口径）、L 是情景不是地板、可比性的构造要求、\(V_{opt}\) 与候选带的判据、共享轴的构造要求——**真源在 `.claude/skills/sediment-framework/references/valuation-rules.md`**，本文与标的文档里出现的「AGENTS.md「永续增长口径」」等旧指针均指向该文件。这些只在写 / 纠正框架时需要；日报与 eval 库只依赖本文件与 `references/contracts.md` 的行契约。
+锚点语义（L/M/H 各定价什么）、价带偏离反思的语义门槛、永续增长口径（r 由 7 个篮子按生意性质给出——值的真源 `eval/lib/gordon.py` `BASKET_R`；g 上限 `min(6%, r−4%)`；Gordon、增长的表达顺序、g2 来源优先序、构造规则冲突的裁决顺序、两段式过渡、谷底档 / regime-point 双口径）、L 是情景不是地板、可比性的构造要求、\(V_{opt}\) 与候选带的判据、共享轴的构造要求——**真源在 `.claude/skills/sediment-framework/references/valuation-rules.md`**（节名 → `rules/` 下分文件的索引，按索引只读命中的那份），本文与标的文档里出现的「AGENTS.md「永续增长口径」」等旧指针均指向该文件。这些只在写 / 纠正框架时需要；日报与 eval 库只依赖本文件与 `references/contracts.md` 的行契约。
 
 价带与 zone 由脚本演算；弱 LLM 至多做归因。**MUST NOT** 让弱流水线擅自改 `frameworks/*.md` 或自行改概率锚点。  
 标的文档 **MUST** 输出锚点 \(L/M/H\)、切点 \(A/B\)、以及**填入本票数字的五档价格区间表**；**MUST NOT** 写现行 `zone`——现价落在哪档只由日报与 app 用实时报价现场算（2026-09-27 定）。  
