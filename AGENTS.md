@@ -69,6 +69,15 @@
 
 只在写或改标的文档、轴文件时用，全文在 skill `references/contracts.md`（同名小节）：Ticker 文件名、框架文档题头与 Changelog、跨票可比性、篮子声明 — 行契约、BLOCKED 只在落盘前、未建模期权（\(V_{opt}\)）— 行契约、共识升级候选带（candidate）— 行契约、共享情景轴与共识行、同业尺轴 — 行契约、现价禁写的允许清单与机器守卫、日报与 \(r_f\) 读数行。
 
+## 改 skill 的约定
+
+改 `.claude/skills/sediment-framework/` 时（用户 2026-10-19）：
+
+- **渐进式披露**：规则正文写进 `references/` 下对应细则文件；`SKILL.md` 只放索引行（何时读哪份），**MUST NOT** 把规则正文直接写进 `SKILL.md`。
+- **不点名样本标的**：规则与例子 **MUST NOT** 写具体 ticker（`XXX.US` / `.HK` / `.SH` / `.SZ`）或 `_local/tmp/...` 证据路径——样本会诱导 agent 去读那些票的框架，放大 token。例子用不点名的描述（「光模块组装厂」「净现金很多的芯片设计公司」）；哪只票触发了规则，记在该票框架的 Assumptions。唯一例外：`SKILL.md`「Ticker 规范化」表演示代码格式。
+- 规则运行要用的轴文件指向（如「走某轴一次定义」）可以写；只当例子的轴名不写。
+- 机器守卫：`just check` 扫描 skill 文件，命中 ticker 或 `_local/tmp/` 具体路径即失败。
+
 ## 不要做的事
 
 - 不要在本仓做候选池挖掘或仓位执行建议冒充框架

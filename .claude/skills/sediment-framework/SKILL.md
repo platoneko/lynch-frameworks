@@ -10,7 +10,7 @@ description: >
 
 # 沉淀估值框架（sediment-framework · 篮子折现率）
 
-折现率 \(r\) 按生意性质归入 7 个篮子（`references/rules/basket.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`，样板 `frameworks/eval/GOOG.US.py`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**。
+折现率 \(r\) 按生意性质归入 7 个篮子（`references/rules/basket.md`「§r 篮子」；值的真源 `eval/lib/gordon.py` `BASKET_R`），\(G_{cap}=\min(6\%, r-4\%)\)（`gordon.g_cap`）；随之而来的是域判定、DDM 触发、周期票 regime / point 双口径与利率敏感性。利率轴 `_AXIS.rates`：USD 段已建（HKD 跟 USD；`axes.load_rates` / `rf_report.rf_block`），日报共识 / 反向压力两行已建（读 eval 写的 `output/rates/`）；CNY / TWD 段与其余票的 eval 接入 **[待建]**。
 
 **主形态是持续对话，不是一次性写文档。**  
 用户明确说「可以落盘 / 写成文件 / 确认写入」之后，才写 `frameworks/<TICKER>.md`。  
@@ -109,7 +109,7 @@ description: >
 ### A2. 对话对齐（一次一块）
 
 1. **林奇主类**（及是否次类）— 2–3 选项 + 倾向理由
-2. **业务地图 → 是否分部** — **MUST** `Read references/heuristics.md`；贴有来源业务表；按分部/银行启发式给主尺骨架 2–3 选项（**不要擅自定案**）。DDM 例外见 `rules/basket.md`「永续增长口径」（只剩触发 (b)；`0883.HK` 是旧样板，篮子 r 下它本身不再触发，只借其纪律）
+2. **业务地图 → 是否分部** — **MUST** `Read references/heuristics.md`；贴有来源业务表；按分部/银行启发式给主尺骨架 2–3 选项（**不要擅自定案**）。DDM 例外见 `rules/basket.md`「永续增长口径」（只剩触发 (b)）
 3. **归篮** — **MUST** `Read references/rules/basket.md`「§r 篮子」：每腿（ETF 按成分行业；**被动 ETF 主尺走「§ETF 例外」趋势通道，红利类加去利率化对照版**）给篮子 + 一句判据理由 + CAPM 粗筛读数；|CAPM − 篮子| > 3pp 须写「为什么行业风险 ≠ β 风险」。周期票同时声明挂载商品轴各档 regime / point 语义、利率轴货币段
 4. **一句话 thesis** + 主尺公式（映射到 \(L/M/H\)）
 5. **专属属性**（≥1）
@@ -125,7 +125,7 @@ description: >
 
 七块对齐且 A2f（若触发）完成后：贴拟落盘摘要 → `Read references/checklist.md` → 问是否授权落盘。
 
-**拟落盘摘要 MUST 含两块（2026-10-12 定，样本 `HPE.US`：两处近门槛判断都要用户追问才翻出）**：
+**拟落盘摘要 MUST 含两块（2026-10-12 定：曾有两处近门槛判断要用户追问才翻出）**：
 
 - **回报率拆解**：M 档 ROE = 净利率 × 资产周转 × 权益乘数，并列 ROIC（口径同「杠杆门」①）、RONIC（层级与取值，「经营价值与超额现金」②）与 RONIC 所在的域，超额现金单列时并列经营口径 ROE；商誉 + 无形资产 > 归母权益（有形净资产为负）**MUST** 点名。只报 ROE 不算拆解
 - **边界判断清单**：凡换一种读法会翻转某道门的触发结果、或使任一锚点变动 >5% 的判断，逐条列「宽松读法 / 严格读法 / 采用 / 理由」，**默认采用更严的读法**；偏离默认 **MUST** 写具名理由（规则明文、仓库同口径可比性），不得以「更贴卖方 / 更贴现价」为理由
@@ -145,7 +145,7 @@ description: >
 
 ### A3. 落盘（仅明确授权后）
 
-1. 写满框架：题头两行 + §0–§3（§0 含「这张表怎么读」——拆 M 和 H 成几层，不拆现价）；全文（§4 除外）不写本票现价及其派生读数（`AGENTS.md`「现价 — 禁写契约」）；§4 初建日留空。规则拦下但用户看过原因拍板落盘的票，按正常票写（底牌照常出 zone），未满足的规则写进 Outputs 披露行 + 复核条件（样板 `ORCL.US`「③ 出带」行、A21），**MUST NOT** 加 BLOCKED 状态行（`AGENTS.md`「BLOCKED 只在落盘前」）
+1. 写满框架：题头两行 + §0–§3（§0 含「这张表怎么读」——拆 M 和 H 成几层，不拆现价）；全文（§4 除外）不写本票现价及其派生读数（`AGENTS.md`「现价 — 禁写契约」）；§4 初建日留空。规则拦下但用户看过原因拍板落盘的票，按正常票写（底牌照常出 zone），未满足的规则写进 Outputs 披露行 + 复核条件，**MUST NOT** 加 BLOCKED 状态行（`AGENTS.md`「BLOCKED 只在落盘前」）
 2. 可选 `frameworks/eval/<TICKER>.py` 薄壳
 3. 新建/改题头/改轴挂载 → `python3 scripts/gen_index.py`
 4. 汇报路径、分类、主尺、假设条数、尚缺数据

@@ -50,7 +50,7 @@
 - **卖方 TP** 只进 Outputs 交叉，**MUST NOT** 反解进 fair PB
 - **MUST NOT** 用工业 ROIC / WACC / FCF 与银行 ROE 交叉成「应几乎同估值」
 
-**样板**：`frameworks/600036.SH.md`；`eval/lib/gordon.py` 的 `justified_pb` / `perpetual_pe`。
+**函数**：`eval/lib/gordon.py` 的 `justified_pb` / `perpetual_pe`。
 
 ---
 
