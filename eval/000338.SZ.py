@@ -72,10 +72,16 @@ loses the cash in both numerator and denominator (RONIC).  No peak guard.
     KION (today's run-rate x today's PE) and L (trough from today) are n/a.
   * three-stage return on the power leg: forward RONIC through Y1 2028,
     linear to the steady return by Y2 2032 (medium entry barrier), then
-    perpetual.  Steady = mature same-business peers' through-cycle median
-    (Cummins 23.0% / Generac 24.1% / Caterpillar 40.3%, >= 5 years each) =
-    24.1%; own cycle not on the same formula -> unused; floor 15%.
-    Power g2 4.41% is not re-solved (A17).  No k on this ticker.
+    perpetual.  Power g2 4.41% is not re-solved (A17).  No k on this ticker.
+
+2026-10-19 framework correction (retention.md「稳态回报三段」taken in order,
+user-approved 2026-10-19): own cycle unusable (not on the same formula);
+peer layer empty — the competitive arena is domestic (engines), and every
+domestic same-business peer is in a ramp (中国动力, 科泰电源, 杰瑞) or
+decline (泰豪科技, 动力新科) phase, not mature (潍柴重机 is a sister company
+under 潍柴控股 with no data from FY2021, not a sample); US peers (Cummins / Generac /
+Caterpillar) are dropped by the arena rule -> floor 15% (barriered heavy
+asset, equipment).  Wartsila 21.8% (3 readings only) is a sensitivity.
 
 V_opt: AIDC capacity increment and SOFC are zero (their vesting year 2027 is
 inside the consensus horizon; >=2 houses state that SOFC is in their
@@ -128,7 +134,7 @@ REQUIRED = [
     "equity", "r_perp", "g2_core", "g2_core_us", "pe_sinotruk_a", "pe_sinotruk_h",
     "g2_pw_cmi", "g2_pw_gnrc", "g2_pw_jereh", "g2_power", "payout_obs", "tau",
     "parent_eq_h1", "minority_h1", "kion_nfd_eur", "lease_liab_h1", "kion_eq_eur", "parent_ratio",
-    "y1_power", "y2_power", "ronic_ss_cmi", "ronic_ss_gnrc", "ronic_ss_cat", "ronic_ss_power", "ronic_ss_floor",
+    "y1_power", "y2_power", "ronic_ss_wrt", "ronic_ss_power", "ronic_ss_floor",
     "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "pb_own_min",
     "aft_share_peer", "t_align", "t_aft",
     "net_cash_ext_h1", "div_declared", "ncx_min", "rev_min", "rev_fy25", "c_ex", "cash_yield", "tax_eff",
@@ -136,7 +142,7 @@ REQUIRED = [
 ]
 NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_us", "lb_rev_fy28",
                "cons_fy28_l", "np_q2x4", "pb_own_min", "cash_inc_mid5")
-PREV_M = 32.86                   # M before the 2026-10-16 correction, gate coordinate ①
+PREV_M = 32.97                   # M before the 2026-10-19 correction, gate coordinate ①
 EX_TRIGGER = 0.15                # C_ex >= 15% of parent equity -> own line
 CASH_CAP = 2 / 12                # anchor ratio capped at two months of revenue
 GATE_TRIGGER = 0.25              # gate is mandatory when |ΔM| > 25%
@@ -214,10 +220,9 @@ def main() -> int:
         errors.append(f"tau {tau:g} != months from {VAL_DATE[0]}-{VAL_DATE[1]:02d} to {NUM_YEAR}-01 / 12 = {tau_calc:g}")
     if not (inp["y1_power"] == NUM_YEAR and inp["y2_power"] == inp["y1_power"] + 4):
         errors.append("power leg Y1 must be the visible year 2028 and Y2 = Y1 + 4 (medium entry barrier)")
-    peer_ss = [inp["ronic_ss_cmi"], inp["ronic_ss_gnrc"], inp["ronic_ss_cat"]]
-    ss_want = max(statistics.median(peer_ss), inp["ronic_ss_floor"])
-    if abs(inp["ronic_ss_power"] - ss_want) > 5e-4:
-        errors.append(f"ronic_ss_power {inp['ronic_ss_power']} != max(mature-peer median, floor) {ss_want:.3f}")
+    # steady return in order (retention.md 2026-10-19): own cycle unusable, peer layer empty -> floor
+    if abs(inp["ronic_ss_power"] - inp["ronic_ss_floor"]) > 5e-4:
+        errors.append(f"ronic_ss_power {inp['ronic_ss_power']} != floor {inp['ronic_ss_floor']} (own cycle unusable, peer layer empty)")
     if inp["t_aft"] != inp["t_align"] + 2 or inp["t_align"] != NUM_YEAR:
         errors.append("t_align must be the numerator year and t_aft = t_align + 2 (无时点锚)")
     errors += ladder("FY2028 consensus", inp["cons_fy28_l"], inp["cons_fy28_m"], inp["cons_fy28_h"])
@@ -463,7 +468,7 @@ def main() -> int:
     print(f"敏感性: g2_power {inp['g2_pw_cmi']:.2%} {band_at(g_pw=inp['g2_pw_cmi'])} | {inp['g2_pw_gnrc']:.2%} {band_at(g_pw=inp['g2_pw_gnrc'])} "
           f"| power ±1pp {band_at(g_pw=inp['g2_power'] - 0.01)} / {band_at(g_pw=inp['g2_power'] + 0.01)} "
           f"| core +1pp {band_at(g_core=0.01)} | core = US 4.74% {band_at(g_core=inp['g2_core_us'])} | pe_kion 9.97 {band_at(kion_pe=9.97)} "
-          f"| 稳态 兜底 {inp['ronic_ss_floor']:.0%} {band_at(rs=inp['ronic_ss_floor'])} / 不回落 {band_at(rs=1.0)}")
+          f"| 稳态 瓦锡兰 {inp['ronic_ss_wrt']:.1%} {band_at(rs=inp['ronic_ss_wrt'])} / 不回落 {band_at(rs=1.0)}")
     own = [(core_l * inp["pe_ownyear_l"] + kion_l * inp["pe_kion"] + pw_ni_l * pe_p_l) / sh + cps] + [
         (rows[t]["core"] * inp[f"pe_ownyear_{t}"] / disc + kion * inp["pe_kion"] + pw_ni[t] * rows[t]["pe_p"] / disc) / sh
         + cps + rows[t]["w"] for t in ("m", "h")]

@@ -25,7 +25,9 @@ sell-side quantity exists for Ganfeng's solid-state, so only the H tier is
 sized (p_L = p_M = 0, 分档 rule) -- the named Chongqing 20 GWh base at full capacity x the steady-state
 price on _AXIS.solid-state-battery (东吴 path far end, 0.8 元/Wh), at the
 axis H margin (adjacent liquid-cell layer: CATL measured less an entrant
-discount), on the project's own ROE (budget as capital) with the axis g2,
+discount), on the project's own ROE (budget as capital) with the axis g2 and
+new investment at the steady return rs_ssb = this ticker's r (mature cell peer
+Samsung SDI 6.9% < r, ordered pick 2026-10-19),
 realised 2029 (aligned year 2027 + 2, no named date) and discounted back to
 the numerator year 2026 at the basket r; L / M carry p = 0.  The second
 component is volume growth beyond the base, sized ONLY from the company's own
@@ -117,7 +119,7 @@ REQUIRED = [
     "cal_p0", "cal_li_pretax_0", "cal_p1", "cal_li_pretax_1",
     "vol_2026e", "vol_2027e", "cap_now", "cap_2030", "r_disc", "n_disc", "eps26e_hkd", "eps_h1_hkd",
     "t_num", "t_opt_ss", "t_opt_vol",
-    "ss_k", "ss_eq", "ss_cap_gwh", "ss_budget", "g2_ssb", *SSB_SHARED, "ppg_k", "ppg_eq", "cau_k_usd", "cau_eq", "fx_cny_per_usd",
+    "ss_k", "ss_eq", "ss_cap_gwh", "ss_budget", "g2_ssb", "rs_ssb", *SSB_SHARED, "ppg_k", "ppg_eq", "cau_k_usd", "cau_eq", "fx_cny_per_usd",
     "cap_ppg1", "cap_cau2", "conv_k_per_wt", "ppg23_k_usd",
     "batt_pretax", "net_finance",
     "tax_rate", "nci_share",
@@ -208,7 +210,10 @@ def ss_tier(inp: dict[str, float], opm: float, px: float | None = None, g2: floa
     pretax = rev * opm
     ni = pretax * (1.0 - inp["tax_rate"])
     roe = ni / inp["ss_budget"]
-    pe = perpetual_pe(g, roe, inp["r_perp"]) if roe > inp["r_perp"] else 1.0 / inp["r_perp"]
+    # Steady return (2026-10-19 ordered pick, _AXIS.solid-state-battery): own cycle none -> mature
+    # cell peer Samsung SDI 6.9% < r -> this ticker's r; new investment earns it from realisation.
+    rs = max(min(roe, inp["rs_ssb"]), inp["r_perp"])
+    pe = perpetual_pe(g, rs, inp["r_perp"]) if roe > inp["r_perp"] else 1.0 / inp["r_perp"]
     eps = per_share_hkd(ni * inp["ss_eq"], inp)
     gross = eps * pe * disc_to_num(inp, inp["t_opt_ss"])
     net = gross - k_ps(inp, inp["ss_k"] * inp["ss_eq"], inp["t_opt_ss"])
@@ -299,6 +304,10 @@ def main() -> int:
         for k in SSB_SHARED:
             if k not in peer or abs(inp[k] - peer[k]) > 1e-9:
                 errors.append(f"{k} {inp[k]:g} != _AXIS.solid-state-battery {peer.get(k)} — the leg ruler drifted")
+        # Axis steady row: the mature cell peer reading; below r -> each ticker takes its own r.
+        ps = peer.get("ss_return_peer_ssb")
+        if ps is None or abs(inp["rs_ssb"] - max(ps, inp["r_perp"])) > 1e-9:
+            errors.append(f"rs_ssb {inp['rs_ssb']} != max(_AXIS ss_return_peer_ssb {ps}, r {inp['r_perp']})")
     else:
         errors.append("frameworks/axes/solid-state-battery.md missing — leg ruler unchecked")
     errors += check_g_cap(inp["g2_ssb"], inp["r_perp"], "g2_ssb")

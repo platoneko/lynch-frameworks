@@ -313,7 +313,7 @@ def main() -> int:
               f"(÷{disc:.4f} -> {x['pe'] / disc:.2f}x) + window {x['unb']:.4f} x (1 - b {x['bw']:.3f}; "
               f"g_win {x['gw']:.2%}) = {x['win']:.3f} @tau/2 anchor={x['anchor']:.4f}")
     print(f"steady return path (A20): Y1 {int(inp['ronic_y1'])} / Y2 {int(inp['ronic_y2'])}, steady {inp['ronic_ss']:.1%} "
-          f"(own cycle FY2020-25); old perpetual PE "
+          f"(own trough-to-trough cycle FY2020-23, invested-capital basis); old perpetual PE "
           + "/".join(f"{perpetual_pe(tiers[t][3], rows[t]['roe'], r):.3f}" for t in 'LMH'))
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} | 分子比 "

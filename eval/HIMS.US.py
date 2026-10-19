@@ -58,7 +58,7 @@ REQUIRED = [
     "eps_adj_fy27_house", "ebitda_fy27_jpm", "ebitda_fy27_barc", "m_ev_jpm", "m_ev_barc",
     "ebitda_margin_house", "net_debt", "net_debt_ebitda", "interest_ebit",
     "m_prev", "pb_min_5y", "close_eq_lo", "close_eq_hi",
-    "tau", "y1", "y2", "rs_steady",
+    "tau", "y1", "y2", "rs_steady", "rs_steady_h",
 ]
 TOL = 0.05
 NUM_YEAR = 2028        # numerator year; t_n = 2028-01-01, timing via `tau` from the 2026-06-30 book (A17)
@@ -146,7 +146,12 @@ def main() -> int:
     bps0 = inp["equity"] / shares
     unbooked = (inp["eps_fy26e_consensus"] - inp["eps_h1_26_gaap"]) + inp["eps_fy27e_consensus"]
 
-    tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+    # Steady return per tier (retention「三档各取各的稳态」): L / M = fallback, H (and the V_opt
+    # success world, the company's 2030 target met) = min(H forward, 30%).
+    tau, y1, y2, rs, rs_h = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_steady"], inp["rs_steady_h"]
+    if rs_h < rs:
+        errors.append(f"rs_steady_h {rs_h} below the L / M steady {rs}")
+    rs_t = (rs, rs, rs_h)
 
     def window_ps(bps: float, gg: float) -> float:
         """2026H2 + FY2027 unbooked consensus EPS x (1 - b), b = the book-roll retention g2/ROE_M (A17)."""
@@ -160,9 +165,9 @@ def main() -> int:
             bps = bps0 + gg / min(eps28[1] / bps, cap) * unbooked
         win = window_ps(bps, gg) / (1 + rr) ** (tau / 2)
         rows = []
-        for e in eps28:
+        for e, rs_x in zip(eps28, rs_t):
             roe = min(e / bps, cap)
-            pe = three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roe, rr)
+            pe = three_segment_pe(NUM_YEAR, y1, y2, rs_x, gg, roe, rr)
             rows.append((e / bps, roe, pe, e * pe / (1 + rr) ** tau + win))
         return bps, rows, tuple(x[3] for x in rows)
 
@@ -193,7 +198,7 @@ def main() -> int:
         k_rev = inp["rev_2030_target"] - base30
         # own ruler on the same calendar steady-return path (A17), then the same timing as the deck:
         # t_opt -> FY2027 (t - 2027 years) and the extra tau - 1 years to the 2026-06-30 book
-        val = (k_rev * nm / shares * three_segment_pe(t, y1, y2, rs, gg, cap, rr)
+        val = (k_rev * nm / shares * three_segment_pe(t, y1, y2, rs_h, gg, cap, rr)
                / (1 + rr) ** (t - T1_YEAR) / (1 + rr) ** (tau - 1))
         return base30, k_rev, val
 
@@ -214,8 +219,8 @@ def main() -> int:
     # same path shifted one visible year (FY2029 single house -> Y1 2029, same fall length) + same timing
     y1c, y2c = y1 + 1, y2 + 1
     cand = (L,) + tuple(
-        e * three_segment_pe(NUM_YEAR, y1c, y2c, rs, g2, roe, r, g1=g1, n=1) / (1 + r) ** tau + win_m
-        for e, (_, roe, _, _) in zip(eps28[1:], rows[1:])
+        e * three_segment_pe(NUM_YEAR, y1c, y2c, rs_x, g2, roe, r, g1=g1, n=1) / (1 + r) ** tau + win_m
+        for e, (_, roe, _, _), rs_x in zip(eps28[1:], rows[1:], rs_t[1:])
     )
     said_c = stated_candidate(md)
     if said_c is None or any(abs(a - b) > TOL for a, b in zip(said_c, cand)):
@@ -238,8 +243,8 @@ def main() -> int:
 
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (无同业锚)  ROE cap {cap:.0%}")
     print(f"BPS 2026-06-30 {bps0:.4f} → start FY2028 {bps:.4f} (unbooked consensus {unbooked:+.3f} × b = g2/ROE_M)")
-    for t, e, (rr_, roe, pe, a) in zip("LMH", eps28, rows):
-        print(f"{t}: EPS28 {e:.2f}  ROE {rr_:.1%}→{roe:.1%}  PE {pe:.2f} (steady path, tail payout {1 - g2 / min(roe, rs):.1%})  ÷ {(1 + r) ** tau:.4f} + window {win_m:.3f} → {a:.2f}")
+    for t, e, (rr_, roe, pe, a), rs_x in zip("LMH", eps28, rows, rs_t):
+        print(f"{t}: EPS28 {e:.2f}  ROE {rr_:.1%}→{roe:.1%}  PE {pe:.2f} (steady {rs_x:.0%}, tail payout {1 - g2 / min(roe, rs_x):.1%})  ÷ {(1 + r) ** tau:.4f} + window {win_m:.3f} → {a:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}  (floor BPS {floor:.2f} loses)")
     print(f"L/M={L / M:.3f} (分子比 {eps28[0] / eps28[1]:.3f} × 倍数比 {rows[0][2] / pe_m:.3f})  "
           f"H/M={H / M:.3f} (分子比 {eps28[2] / eps28[1]:.3f} × 倍数比 {rows[2][2] / pe_m:.3f})  width={(H - L) / (2 * M):.3f}  V_opt/M={v_opt / M:.2f}")

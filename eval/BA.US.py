@@ -53,6 +53,7 @@ REQUIRED = [
     "r_perp", "g2", "peer_g_median", "peer_g_defense", "payout_observed",
     "net_debt_ebitda_fy25", "interest_ebit_fy25", "ebitda28_ms", "fcf28_ms", "k_l", "k_m", "k_h",
     "tau", "eps26_cons", "eps_h1_26", "parent_share", "y1", "y2", "rs_own_cycle",
+    "rs_fallback", "rs_own_cycle_ex_pension",
 ]
 NUM_YEAR = 2027  # numerator FY2027 = calendar year; t_n = 2027-01-01
 
@@ -131,15 +132,27 @@ def main() -> int:
     g1 = inp["ebit28_ms"] / inp["ebit27_ms"] - 1
 
     # Step 2 — invested capital and ROIC (leverage gate: retention runs on ROIC, not ROE).
+    # The forward denominator carries the after-tax pension / OPEB deficit too, the same
+    # invested-capital basis as the own-cycle steady reading (retention「回报口径」, user
+    # 2026-10-19), so forward and steady returns compare like for like.
     net_debt = inp["debt"] - inp["cash"]
-    ic = inp["equity"] + net_debt
+    pension_at = (inp["pension_def"] + inp["opeb_def"]) * (1 - t)
+    ic = inp["equity"] + net_debt + pension_at
     roic27 = {k: v / ic for k, v in nopat.items()}
     roic28 = {k: v * (1 + g1) / ic for k, v in nopat.items()}
 
     # Step 3 — multiples on FY2027 NOPAT, on the steady-return path (A15): forward ROIC
-    # through Y1, linear to the steady return by Y2.  The steady return is the own full-cycle
-    # floor (rs_own_cycle), above every tier's forward ROIC, so each tier stays at its forward.
-    y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_own_cycle"]
+    # through Y1, linear to the steady return by Y2.  Steady = max(own full cycle, mature peers
+    # (empty: Textron is not the same business), business-model fallback), read on invested
+    # capital incl. the after-tax pension / OPEB deficit (retention「回报口径」2026-10-19);
+    # each tier then takes min(forward, steady) — L (11.6%) stays at forward, M / H fade.
+    y1, y2 = int(inp["y1"]), int(inp["y2"])
+    rs = max(inp["rs_own_cycle"], inp["rs_fallback"])
+    if rs < r:
+        errors.append(f"steady return {rs:.3f} < r {r}")
+    if inp["rs_own_cycle"] >= inp["rs_own_cycle_ex_pension"]:
+        errors.append("own-cycle reading with the pension deficit in capital must sit below the ex-pension one")
+    rs_src = "own cycle" if inp["rs_own_cycle"] >= inp["rs_fallback"] else "fallback"
 
     def tier_pes(r_: float) -> dict[str, float]:
         return {
@@ -163,7 +176,7 @@ def main() -> int:
     tau = inp["tau"]
     win_nopat = (inp["eps26_cons"] - inp["eps_h1_26"]) * inp["shares_basic"] + addback / 2
     win_b = {"L": g2 / roic27["low"], "M": 0.0, "H": 0.0}
-    claims = net_debt + (inp["pension_def"] + inp["opeb_def"]) * (1 - t)
+    claims = net_debt + pension_at
     ks = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
 
     def tier_ev(pes_: dict[str, float], r_: float) -> dict[str, float]:
@@ -193,7 +206,10 @@ def main() -> int:
     print(f"addback {addback:.0f}  net debt {net_debt:.0f}  IC {ic:.0f}  claims {claims:.0f}")
     print(f"timing (A15): tau {tau:g}y → Gordon EV × {(1 + r) ** -tau:.4f}; window 2026H2 NOPAT {win_nopat:.0f} "
           f"× (1 − b) b L {win_b['L']:.3f} / M,H 0 × parent {inp['parent_share']:g} at tau/2; "
-          f"steady path Y1 {y1} → Y2 {y2}, steady {rs:.1%} (own cycle) ≥ forward → tiers stay at forward")
+          f"steady path Y1 {y1} → Y2 {y2}, steady {rs:.1%} ({rs_src}; ex-pension reading "
+          f"{inp['rs_own_cycle_ex_pension']:.1%} not used) → per tier: "
+          + ", ".join(f"{k} {fw:.1%}→{min(fw, rs):.1%}" for k, fw in
+                      (("L", roic27["low"]), ("M", roic28["mean"]), ("H", roic28["high"]))))
     for k, j in (("L", "low"), ("M", "mean"), ("H", "high")):
         pe = {"L": pe_l, "M": pe_m, "H": pe_h}[k]
         print(f"{k}: NOPAT27 {nopat[j]:.0f}  ROIC27 {roic27[j]:.1%}  ROIC28 {roic28[j]:.1%}  PE(t=1) {pe:.2f}  "
@@ -206,6 +222,9 @@ def main() -> int:
     print(f"flat ladder (M multiple {pe_m:.2f} on each tier): {flat['L']:.2f} / {flat['M']:.2f} / {flat['H']:.2f}")
 
     # Disclosures (do not price).
+    ys = {k: per_share(nopat[j] * pes[k] - claims, inp)[0] for k, j in (("L", "low"), ("M", "mean"), ("H", "high"))}
+    print(f"at numerator-year start 2027-01-01 (no tau, no window): EV M {nopat['mean'] * pe_m:.0f} H {nopat['high'] * pe_h:.0f}"
+          f"  per share L {ys['L']:.2f} M {ys['M']:.2f} H {ys['H']:.2f}")
     pe_m_retain = two_stage_pe(g1, n, g2, roic27["mean"], r)
     m_retain = per_share(tier_ev({**pes, "M": pe_m_retain}, r)["M"] - claims, inp)[0]
     print(f"cross two_stage_pe (stage-1 retention charged at ROIC27 {roic27['mean']:.1%}, payout {1 - g1 / roic27['mean']:.2f}): PE {pe_m_retain:.2f} → M {m_retain:.2f}")
@@ -226,6 +245,15 @@ def main() -> int:
         }
         ev_s = tier_ev(pes_s, r)
         print(f"sensitivity {lab}: " + " / ".join(f"{per_share(ev_s[k] - claims, inp)[0]:.2f}" for k in ("L", "M", "H")))
+    ic_x = ic - pension_at  # old basis: forward denominator without the pension deficit (A9)
+    pes_x = {
+        "L": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, nopat["low"] / ic_x, r),
+        "M": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, nopat["mean"] * (1 + g1) / ic_x, r, g1=g1, n=n, recovery=True),
+        "H": three_segment_pe(NUM_YEAR, y1, y2, rs, g2, nopat["high"] * (1 + g1) / ic_x, r, g1=g1, n=n, recovery=True),
+    }
+    ev_x = tier_ev(pes_x, r)
+    print("disclosure forward ROIC denominator ex-pension (old basis): "
+          + " / ".join(f"{per_share(ev_x[k] - claims, inp)[0]:.2f}" for k in ("L", "M", "H")))
     for k, j in (("L", "low"), ("M", "mean"), ("H", "high")):
         # Stage 1 (or L's first year) pays out 100% in the model; the company pays 0.
         deemed = nopat[j] / shares[k]

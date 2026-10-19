@@ -34,6 +34,15 @@ floor (BPS in HKD) is disclosed only, never max()-ed into L.
 Cloud / AIDC has revenue but no segment EBIT → V_opt = 0 (A6).
 Southbound axis is NOT mounted for multiples (A9); A/H is dual-reported.
 
+Steady return (retention.md 稳态回报三段, 按序取 2026-10-19; A18 ③): own cycle is
+usable (licensed telecom, FY2016-25 ten readings, invested-capital basis on the
+consolidated book because C_ex < 15% equity) = ronic_own.  A tier whose forward
+ROE < r with the last three own readings < r is 持续失败 -> steady = forward
+(L, M).  Otherwise steady = min(forward, max(own, r)) (H: own < r -> r).
+Path: forward through Y1 2027, linear to steady by Y2 2033 (high entry barrier,
+6y), perpetual after.  Steady values are fixed at basket r; r_f readings and
+the A-share cross bands move only the discount rate.
+
 Run:  python3 frameworks/eval/0728.HK.py
 """
 
@@ -44,7 +53,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 from lib.gordon import (  # noqa: E402
-    check_branch, check_g_cap, check_r, perpetual_pe,
+    check_branch, check_g_cap, check_r,
 )
 from lib.inputs import (  # noqa: E402
     check_against_stated, check_missing, ladder, parse_baskets, parse_inputs,
@@ -74,7 +83,31 @@ REQUIRED = [
     "g_evid_min", "g_evid_max",
     "pe_own_min", "pe_own_max",
     "net_cash", "v_opt", "tau",
+    "ronic_own", "ronic_own_last3_max", "y1", "y2",
 ]
+NUM_YEAR = 2027
+
+
+def payout(g: float, roe: float) -> float:
+    return 1.0 - g / roe
+
+
+def path_pe(g: float, roe: float, r: float, y1: int, y2: int, r_ss: float) -> float:
+    """Three-stage retention Gordon (retention.md 稳态回报三段) at the start of NUM_YEAR per unit of
+    NUM_YEAR earnings: RONIC = roe through y1, linear to min(roe, r_ss) by y2, perpetual after.
+    With r_ss >= roe it is exactly perpetual_pe(g, roe, r)."""
+    if r - g <= 0:
+        raise ValueError("r <= g")
+    ss = min(roe, r_ss)
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = NUM_YEAR + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, ss) / ((r - g) * (1 + r) ** (t - 1))
+        ro = roe if cal <= y1 else roe + (ss - roe) * (cal - y1) / (y2 - y1)
+        pv += e * payout(g, ro) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
 
 
 def main() -> int:
@@ -149,8 +182,19 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (branch)")
 
+    # Steady return 按序取 (A18 ③): own cycle usable; forward < r with the last three own
+    # readings < r -> 持续失败, keep forward; else min(forward, max(own, r)).
+    own, y1, y2 = inp["ronic_own"], int(inp["y1"]), int(inp["y2"])
+    if y1 != NUM_YEAR or y2 != y1 + 6:
+        errors.append("Y1 must be the visible-year end 2027 and Y2 = Y1 + 6 (high entry barrier, A18)")
+    fail = {t: roe[t] < r and inp["ronic_own_last3_max"] < r for t in TIERS}
+    ss = {t: roe[t] if fail[t] else min(roe[t], max(own, r)) for t in TIERS}
+
+    def mult(g: float, t: str, rr: float) -> float:
+        return path_pe(g, roe[t], rr, y1, y2, ss[t])
+
     # Pre-tax fair value: no holder-tax haircut on the multiple (A14).
-    pe = {t: perpetual_pe(g2[t], roe[t], r) for t in TIERS}
+    pe = {t: mult(g2[t], t, r) for t in TIERS}
     for t in TIERS:
         if not (inp["pe_own_min"] - 1e-9 <= pe[t] <= inp["pe_own_max"] + 1e-9):
             errors.append(
@@ -168,7 +212,7 @@ def main() -> int:
     window = {t: n_unbooked * (1.0 - b1[t]) for t in TIERS}  # CNY/share
 
     def value(t: str, rr: float) -> float:
-        return (eps[t] * perpetual_pe(g2[t], roe[t], rr) / (1 + rr) ** tau
+        return (eps[t] * mult(g2[t], t, rr) / (1 + rr) ** tau
                 + window[t] / (1 + rr) ** (tau / 2)) / fx
 
     anchor = {t: value(t, r) for t in TIERS}
@@ -178,7 +222,7 @@ def main() -> int:
 
     # Evidence interval = payout policy 80% / 70% (A13): disclosed bands.
     band_ev = {
-        g_ev: tuple((eps[t] * perpetual_pe(g_ev, roe[t], r) / (1 + r) ** tau
+        g_ev: tuple((eps[t] * mult(g_ev, t, r) / (1 + r) ** tau
                      + n_unbooked * (1.0 - g_ev / roe[t]) / (1 + r) ** (tau / 2)) / fx for t in TIERS)
         for g_ev in (inp["g_evid_min"], inp["g_evid_max"])
     }
@@ -195,11 +239,11 @@ def main() -> int:
     dec = decompose(anc_t, pe_t)
 
     # A-share cross band at the same basket r, same multiple (A4 / A9).
-    pe_a = {t: perpetual_pe(g2[t], roe[t], r_a) for t in TIERS}
+    pe_a = {t: mult(g2[t], t, r_a) for t in TIERS}
     band_a = {t: eps[t] * pe_a[t] for t in TIERS}
     # Currency-segment reading (r_f gap HKD → CNY) -- disclosure, not an anchor.
     r_ccy = r_a - inp["cny_rf_gap"]
-    band_ccy = {t: eps[t] * perpetual_pe(g2[t], roe[t], r_ccy) for t in TIERS}
+    band_ccy = {t: eps[t] * mult(g2[t], t, r_ccy) for t in TIERS}
 
     # Disclosure-only readings: book floor in HKD, net cash per share.
     floor_hkd = inp["bps"] / fx
@@ -219,6 +263,8 @@ def main() -> int:
     print(f"B bucket: (actual retention {1 - payout_3y:.0%} − b1) × unbooked = "
           f"{[round(excess_cash[t] / fx, 4) for t in TIERS]} HKD/share modelled-as-distributed, "
           f"actually retained (disclosure only; not a leg, not in BPS)")
+    print(f"steady RONIC (按序取: own {own:.1%}; 持续失败 {[fail[t] for t in TIERS]}) = "
+          f"{[round(ss[t], 4) for t in TIERS]}; Y1 {y1} Y2 {y2}")
     print(f"PE_l/m/h={[round(pe[t], 4) for t in TIERS]}")
     print(f"timing: tau {tau:g}y (2026-06-30 -> 2027-01-01) ÷{(1 + r) ** tau:.4f}; window distributable "
           f"2H26 profit x (1 - b1) = {[round(window[t] / fx, 4) for t in TIERS]} HKD/share at tau/2")

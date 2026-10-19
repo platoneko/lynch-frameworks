@@ -49,9 +49,10 @@ already deducted as a named item -> no growth-period funding gap):
     and the book rolls n_conn at that same b; the multiple's g (peer g2 /
     payout-policy g) is read at the resulting ROE (was: b = multiple g / ROE).
   * three-stage return on the peer-g2 branch (H): forward ROE through Y1 2028,
-    linear to the steady 18.6% by Y2 2032 (medium barrier); steady = mature
-    same-business peer TE Connectivity's 9-year through-cycle return (above
-    the 18% light-asset-assembly floor; own cycle has no connector-leg history).
+    linear to the steady 15.6% by Y2 2032 (medium barrier); steady = ordered
+    pick (2026-10-19): own cycle unusable -> domestic mature connector peers
+    (AVIC Aerospace Electric 13.4% / Hexing 17.8%, invested-capital basis);
+    TE 14.8% and the 18% floor are comparisons only.
     L / M sit on the policy g / dividend ruler (ROE < r + 3pp): untouched.
   * k_H 0.3 sat on the whole H connector value -> removed (no named transaction).  ③: same-earnings weeks exist, the band floor month is distorted
 (step 1b) -> not decidable -> correction gate.
@@ -111,7 +112,7 @@ REQUIRED = [
     "ni_group_fy25", "ni_ttm_2q26", "ni_ttm_2q24", "ni_solar_fy25r", "disposal_fy25", "ni_solar_l",
     "cons_fy27_m", "cons_fy28_l", "cons_fy28_m", "cons_fy28_h",
     "g2", "g2_solar", "r_conn", "r_solar", "r_ctl", "years_to_fy28", "tau", "payout_fy25",
-    "y1", "y2", "ronic_ss", "ronic_ss_te", "ronic_ss_floor", "cons_fy26_m", "ni_group_h1_26",
+    "y1", "y2", "ronic_ss", "ronic_ss_cn", "ronic_ss_te", "ronic_ss_floor", "cons_fy26_m", "ni_group_h1_26",
     "proj_k_spent", "proj_k_total", "proj_years_to_cod", "k_l", "k_m", "k_h",
     "m_prev", "bps", "pb_own_min", "roe_peer_lo", "roe_peer_med", "roe_peer_hi", "ttm_eps",
     "band_pe_min", "band_eps", "band_fwd_growth",
@@ -246,8 +247,10 @@ def main() -> int:
     y1, y2, r_ss = int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"]
     if not (y1 == 2028 and y2 == y1 + 4):
         errors.append("Y1 must be the visible-year end 2028 and Y2 = Y1 + 4 (medium entry barrier)")
-    if abs(r_ss - max(inp["ronic_ss_te"], inp["ronic_ss_floor"])) > 5e-4:
-        errors.append(f"ronic_ss {r_ss} != max(mature peer TE {inp['ronic_ss_te']}, floor {inp['ronic_ss_floor']})")
+    # Ordered pick (2026-10-19): own cycle unusable -> the domestic mature-peer layer is non-empty,
+    # take it; TE (global, invested-capital basis) and the floor are comparisons only.
+    if abs(r_ss - inp["ronic_ss_cn"]) > 5e-4:
+        errors.append(f"ronic_ss {r_ss} != domestic mature-peer median {inp['ronic_ss_cn']} (ordered pick)")
     if any(inp[f"k_{x}"] != 0.0 for x in ("l", "m", "h")):
         errors.append("k must be 0: no named transaction for a k to sit on (k on the whole value removed 2026-10-16)")
 
@@ -356,7 +359,7 @@ def main() -> int:
     sens["k_h 0.3 (removed 2026-10-16)"] = deck(r)
     k["H"] = k_save
     rss_save = r_ss
-    for rs_alt in (inp["ronic_ss_floor"], 0.15):
+    for rs_alt in (inp["ronic_ss_floor"], inp["ronic_ss_te"], 0.131):
         r_ss = rs_alt
         sens[f"steady {rs_alt:.0%}"] = deck(r)
     r_ss = rss_save

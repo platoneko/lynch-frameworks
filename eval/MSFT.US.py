@@ -30,8 +30,9 @@ correction 2026-10-16):
     Plus the window's distributable profit: unbooked FY27 leg NOPAT x (1 - b1),
     discounted tau/2 at r_perp (no funding gap: FY27 capex is covered by OCF).
   * stable-return path (②): A&I rest (M365 etc.) retains at its forward ROE through
-    y1, fading linearly to ronic_ss_rest by y2 (fallback 30%); Azure already retains
-    at the marginal steady-state ROIC and D&C's forward ROE sits below 30%, so both
+    y1, fading linearly to ronic_ss_rest by y2 (own cycle: FY2022-2026 invested-capital
+    mean 50.3%, taken first under the 2026-10-19 order); Azure already retains
+    at the marginal steady-state ROIC and D&C's forward ROE sits below it, so both
     paths are flat.
   * k on the deemed-distributed row removed (k_l/k_m/k_h = 0): it multiplied the
     whole retained surplus, not a named transaction.
@@ -248,8 +249,8 @@ def main() -> int:
             e, unb = n * k, n * k27                          # unbooked FY27
             roe_avg = roe_open(e, ic, g, unb)
             roe_ret = roe_avg if rm is None else rm          # A4: Azure retains at the marginal ROIC
-            # ② only the A&I rest leg fades (to the 30% fallback); Azure retains at the
-            # marginal steady-state ROIC and D&C's forward ROE sits below 30% -> flat.
+            # ② only the A&I rest leg fades (to its own-cycle stable return); Azure retains at
+            # the marginal steady-state ROIC and D&C's forward ROE sits below it -> flat.
             rs = rs_rest if name == "rest" else roe_ret
             pe = path_pe(g, roe_ret, r, t0, y1, y2, rs) if flat is None else flat[name]
             # k_lab leaves the OpenAI sub-leg's value only, never its multiple (axis §3b).

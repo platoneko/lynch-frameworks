@@ -45,11 +45,13 @@ Steady return (valuation-rules「经营价值与超额现金」②, A36):
     new-investment return is min(ROE_k, 30%) for ever — no fade.  The trough tier
     tails on the M ROE, same cap.  The photonics option rides the same ruler.
   * GI / AU legs = 稳态回报三段: ROE holds through Y1 2028, fades linearly to
-    min(ROE, 15%) at Y2 2032, Gordon tail after.  Y1 / Y2 = the default (Y1 =
+    min(ROE, 10%) at Y2 2032, Gordon tail after.  Y1 / Y2 = the default (Y1 =
     visible-year end FY28, 4-year fade = medium barrier; user 2026-10-18 — these
     legs are not on the optical chain, so they no longer borrow the
-    `_AXIS.ai-capex` window; GI's g2 is 0 so only AU moves); 15% = the fallback
-    (own nine-year cycle 12.9% and mature peers sit below it).
+    `_AXIS.ai-capex` window; GI's g2 is 0 so only AU moves); 10% = own cycle taken
+    in order (2026-10-19): trough-to-trough 2020-2023 return on invested capital
+    core 9.3% / GAAP 5.0% sits below r, forward is above r -> floor at r.  Peers
+    and the 15% fallback are contrast only.
   * `y1` / `y2` (the `_AXIS.ai-capex` packaging / fiber-array / connector row,
     2030 / 2035, cross-file checked) stay for the OC leg's three-segment
     sensitivity only.
@@ -135,6 +137,7 @@ CONSENSUS_YEARS = 1  # FY28 point estimates (>= 2 houses) beyond the numerator y
 G2_OC_PEER_RAW = 0.0635  # A25 untruncated peer median, reference only
 CONTRACT_ANNUITY_BASKET = 1
 LISTING_CCY = "USD"
+OWN_CYCLE_IC = 0.093  # GI / AU own cycle 2020-2023, invested-capital basis, core reading (GAAP 5.0% stricter, both < r; A36)
 PREV_M = 85.42  # committed M before the 2026-10-16 / 10-18 corrections, for the 纠正对账门 read
 
 # Option tier realisation (A23a/A23b/A33/A34). Never in Inputs (A2e-7a).
@@ -289,6 +292,9 @@ def main() -> int:
     if inp["y1_ga"] != ANCHOR_YEAR + N_STAGE or inp["y2_ga"] - inp["y1_ga"] != 4:
         guards.append(f"GI/AU window {inp['y1_ga']:g}/{inp['y2_ga']:g} != default "
                       f"{ANCHOR_YEAR + N_STAGE}/{ANCHOR_YEAR + N_STAGE + 4} (A36)")
+    # GI / AU steady return = own cycle in order (A36, 2026-10-19): max(r, own 2020-2023 IC reading).
+    if abs(inp["ss_return"] - max(inp["r_perp"], OWN_CYCLE_IC)) > 1e-9:
+        guards.append(f"ss_return {inp['ss_return']:g} != max(r, own cycle {OWN_CYCLE_IC:g}) (A36)")
     if not (0.0 <= inp["tau"] < 3.0):
         guards.append("tau out of range (A37)")
     if not AXIS_CAPEX.is_file():
@@ -393,7 +399,7 @@ def main() -> int:
         narr = (cap_oc if oc_cap is True else oc_cap) if leg == "oc" else None
         ya, yb = (y1, y2) if leg == "oc" else (y1g, y2g)
         # OC back on three segments (sensitivity only) lands on the _AXIS.ai-capex packaging-row
-        # floor: max(own 12.9%, no same-business peer, axis floor) = the axis floor (A36).
+        # floor: own cycle unusable (business-model change), no same-business peer -> axis floor (A36).
         rsv = inp["ss_floor_ai_capex_package"] if leg == "oc" else rs
         return path_value(ANCHOR_YEAR, ya, yb, rsv, g1s[leg], N_STAGE, g2v, rk, rv, recovery=rec,
                           floor=floor, narrative=narr)  # A36

@@ -101,7 +101,7 @@ RET_YEARS = range(2017, 2026)
 REQUIRED = [
     "shares", "stake_kl", "tax", "tax_prop",
     "na_lam", "na_pcb", "na_chem", "ip_hold",
-    "ret_lam_l", "ret_lam_m", "g1_lam_rec", "n_rec", "e_lam_26", "e_lam_27", "e_lam_27c", "e_lam_28c", "n_fade",
+    "ret_lam_l", "ret_lam_m", "g1_lam_rec", "n_rec", "e_lam_26", "e_lam_27", "e_lam_27c", "e_lam_28c", "n_fade", "rs_lam_h",
     "ret_pcb_l", "ret_pcb_m", "ret_pcb_h",
     "chem_l", "chem_m", "chem_h",
     "rent_l", "rent_m", "rent_h", "noi_margin",
@@ -301,7 +301,9 @@ def main() -> int:
         if x == "m":
             return lam_mid * perpetual_pe(inp["g2_lam"], roe_lam, r)
         path = h_path or [inp["e_lam_26"], inp["e_lam_27"]]
-        return fade(path, lam_mid, int(inp["n_fade"]), perpetual_pe(inp["g2_lam"], roe_lam, r), r)
+        # H: after the shortage fades back to the mid earnings, new investment earns the laminate
+        # own-cycle steady return (ordered pick, 2026-10-19), not the M forward (A2).
+        return fade(path, lam_mid, int(inp["n_fade"]), perpetual_pe(inp["g2_lam"], inp["rs_lam_h"], r), r)
 
     def chem_value(x: str, dr: float) -> float:
         r = inp["r_chem"] + dr
@@ -397,12 +399,13 @@ def main() -> int:
                 errors.append(f"{k} {inp[k]:g} != _AXIS.{axis} {peer.get(k)} — the leg ruler drifted")
         if axis == "hvlp-copper-foil" and abs(peer.get("yield_hvlp3", -1) - inp["cu_yield"]) > 1e-9:
             errors.append(f"cu_yield {inp['cu_yield']:g} != _AXIS.hvlp-copper-foil yield_hvlp3 {peer.get('yield_hvlp3')}")
-    # Same company, same normal (A9, user 2026-10-19): both options fade to the laminate leg's own
-    # cycle return after tax (the main leg's M / H steady end), not below it.
-    own_steady = inp["ret_lam_m"] * (1 - inp["tax"])
-    if abs(inp["rs_gf"] - inp["rs_cu"]) > 1e-9 or inp["rs_gf"] < own_steady - 5e-4:
-        errors.append(f"rs_gf {inp['rs_gf']} / rs_cu {inp['rs_cu']} must be equal and >= laminate own-cycle "
-                      f"steady {own_steady:.4f} (A9)")
+    # Same company, same normal (A9, user 2026-10-19): both options and the main leg's H tail fade to
+    # the laminate leg's own cycle -- the latest full trough-to-trough FY2019 -> FY2023, after tax
+    # (ordered pick, 2026-10-19; replaces max(floor, peers, nine-year mean)).
+    own_steady = sum(HIST_RESULT[y][0] / HIST_NET_ASSETS[y - 1][0] for y in range(2019, 2024)) / 5 * (1 - inp["tax"])
+    for k in ("rs_gf", "rs_cu", "rs_lam_h"):
+        if abs(inp[k] - own_steady) > 5e-4:
+            errors.append(f"{k} {inp[k]} != laminate own cycle FY2019-23 after tax {own_steady:.4f} (A2 / A9)")
     opt = option_values(inp)
     v_l, v_m, v_h = (opt[x]["total"] for x in "lmh")
     if not 0 <= v_l <= v_m <= v_h:

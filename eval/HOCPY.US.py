@@ -33,9 +33,11 @@ deemed-paid row is on the wrong object, A9).  Anchors are computed in JPY and co
 to USD at `fx_jpy_usd` (1 ADR = 1 ordinary share).
 
 Steady return three segments (valuation-rules ② 稳态回报三段, A16): no peer-ruler axis on
-the main scale; steady return = own full-cycle ROIC 40.5% (FY2017–2026 ten-year mean on
-the forward's formula, user 2026-10-16) — above the same-business mature peers and the
-15% fallback; forward ROIC through Y1 FY2028 (visible end), linear to min(forward, 40.5%)
+the main scale; steady return = own cycle 30.1% (FY2017–2026 ten-year mean on invested
+capital: after-tax operating profit / opening (equity + debt incl. leases + after-tax pension
+deficit − cash above a 2-month-revenue operating anchor); taken in order, own cycle first —
+peers and the 15% fallback are contrast only, 2026-10-19; the old net-income ÷ (equity − all
+net cash) reading was 40.5%); forward ROIC through Y1 FY2028 (visible end), linear to min(forward, 30.1%)
 at Y2 FY2034 (high entry barrier, 6-year fade), Gordon tail after.  Timing alignment
 (valuation-rules ③, A16): the Gordon value sits at the FY2028 opening (2027-03-31); tau =
 balance-sheet date 2026-03-31 → 1.0 year; window profit = FY2027E operating EPS × (1 − b),
@@ -383,8 +385,9 @@ def main() -> int:
 
     print(f"  sens g2 −1pp (5%)              → M {m_with(g2=g2 - 0.01):.2f} USD   (+1pp exceeds G_cap, not shown)")
     print(f"  sens k 0.09 (pre-correction, deemed-paid row) → M {m_with(k_m=0.09):.2f} USD")
-    print(f"  sens steady return 15% (fallback) / 39.9% (11y mean) → M {m_with(ss_return=0.15):.2f} / "
-          f"{m_with(ss_return=0.399):.2f} USD; Y2 FY2032 (medium barrier) → M {m_with(y2=2032.0):.2f} USD")
+    print(f"  sens steady return 15% (fallback) / 27.4% (FY2017–21 trough to trough) / 40.5% (old basis) → M "
+          f"{m_with(ss_return=0.15):.2f} / {m_with(ss_return=0.274):.2f} / {m_with(ss_return=0.405):.2f} USD; "
+          f"Y2 FY2032 (medium barrier) → M {m_with(y2=2032.0):.2f} USD")
     wc = inp["net_cash_wc"] / inp["shares"] / fx if "net_cash_wc" in inp else 0.0
     print(f"  sens net cash less 2-month working capital → M {M - wc:.2f} USD (−{wc:.2f})")
     print(f"  sens fx ±5%                    → M {Mj / (fx * 1.05):.2f} / {Mj / (fx * 0.95):.2f} USD")

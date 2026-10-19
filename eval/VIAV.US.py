@@ -35,9 +35,12 @@ wrong object; A12) and the row itself is the window distributable profit below.
 Steady return three segments (valuation-rules ② 稳态回报三段, A25): the new-investment
 return is not the FY28 ROE forever: ROE through Y1 FY2028 (the module-assembly link,
 medium barrier: `_AXIS.pluggable-module` y1_plug / y2_plug, cross-file checked), linear
-to min(ROE, 16.7%) at Y2 FY2032, Gordon tail after; 16.7% = own full-cycle return
-(FY17-FY26, the forward's formula), above the 15% fallback (no mature peer with >= 5
-years).  gordon.py's three-segment function is [待建], so `path_value` lives here.
+to min(ROE, steady) at Y2 FY2032, Gordon tail after.  Per tier (2026-10-19, user-approved):
+L / M steady 12.8% = own trough-to-trough FY17-FY24 mean, GAAP operating profit plus
+acquired-intangible amortisation (the forward's treatment of amortisation) x (1 - 15%) /
+opening invested capital incl. leases; H steady 24.9% = the H-tier forward de-cycled
+(core margin less the cycle-peak uplift and recurring restructuring, x the FY19-24 mean
+turnover).  gordon.py's three-segment function is [待建], so `path_value` lives here.
 
 Timing alignment (valuation-rules ③, A26): the operating value (core x PE) sits at the
 FY28 opening (FY27 end ~2027-07-03); base date = 10-K balance sheet 2026-06-27 ->
@@ -93,7 +96,7 @@ REQUIRED = [
     "nse_rev_fy22", "nse_oi_fy22", "nse_rev_fy24", "nse_oi_fy24", "dc_share_nse",
     "r_perp", "g_nse", "g_peer_median", "g_osp", "k_l", "k_m", "k_h",
     "capex_l", "capex_m", "capex_h",
-    "ss_return", "y1", "y2", "num_year", "tau",
+    "ss_return", "ss_return_h", "y1", "y2", "num_year", "tau",
 ]
 
 
@@ -169,10 +172,13 @@ def main() -> int:
         for mine, theirs in AXIS_ROWS:
             if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
                 errors.append(f"{mine} {inp[mine]:g} != _AXIS.pluggable-module {theirs} {ax.get(theirs)} (A25)")
-    y0, y1, y2, rs, tau = int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["ss_return"], inp["tau"]
+    y0, y1, y2, tau = int(inp["num_year"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
+    rs_tier = {"L": inp["ss_return"], "M": inp["ss_return"], "H": inp["ss_return_h"]}
+    if not (r <= inp["ss_return"] <= inp["ss_return_h"] <= 0.30):
+        errors.append("steady returns must satisfy r <= L/M <= H <= 30% (三档各取各的稳态, A25)")
 
-    def pp(gg: float, roe_: float, rr: float) -> float:
-        return path_value(y0, y1, y2, rs, gg, roe_, rr)
+    def pp(gg: float, roe_: float, rr: float, tier: str) -> float:
+        return path_value(y0, y1, y2, rs_tier[tier], gg, roe_, rr)
 
     # ---- Step 1: share bases (A11) ----
     s_cons = inp["shares_basic"] + inp["dil_q4"]  # street EPS base: post-offering basic + Q4 dilution
@@ -236,7 +242,7 @@ def main() -> int:
                     raise ValueError(f"book roll diverges at {tier}/{name}: g·N/core = {share:.2f}")
                 book = op0 / (1 - share)
                 roe = core / book
-                pe = pp(gg, roe, rr)
+                pe = pp(gg, roe, rr, tier)
                 pre_k = (core * pe + b["closing"]) / b["s"] * 1e6  # FY28-opening operating value + closing
                 excess = (1 - gg / roe) * unbooked / b["s"] * 1e6  # = FY27 window distributable profit
                 # A26: operating value tau back to today, window at tau / 2, closing item not discounted.
@@ -305,9 +311,9 @@ def main() -> int:
         b = bases[row["basis"]]
         oi = street[x] * s_cons / 1e6 / (1 - t) - net_int_pre
         osp_share = (osp_l if x == "L" else osp28) / oi
-        v = (row["core"] * (1 - osp_share) * pp(inp["g_nse"], row["roe"], r)
-             + row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r) + b["closing"]) / b["s"] * 1e6
-        osp_ps = row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r) / b["s"] * 1e6
+        v = (row["core"] * (1 - osp_share) * pp(inp["g_nse"], row["roe"], r, x)
+             + row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r, x) + b["closing"]) / b["s"] * 1e6
+        osp_ps = row["core"] * osp_share * pp(inp["g_osp"], row["roe"], r, x) / b["s"] * 1e6
         print(f"SOTP cross {x}: {v:.2f} vs company pre-k {row['pre_k']:.2f} ({v / row['pre_k'] - 1:+.1%}); OSP share {osp_share:.2f}, OSP {osp_ps:.2f}/sh")
     dc_rev = inp["dc_share_nse"] * (inp["rev_fy28_m"] - osp27_rev * (1 + inp["g_osp"]))
     print(f"capex axis implied share (NSE data-center ~{inp['dc_share_nse']:.0%} of FY28 NSE revenue {dc_rev:.0f}M): {dc_rev * 1e6 / inp['capex_m']:.3%}")

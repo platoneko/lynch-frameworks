@@ -75,7 +75,7 @@ REQUIRED = [
     "neutron_price", "neutron_cadence", "neutron_unit", "t_unit", "t_opt", "neutron_carry",
     "neutron_gm", "neutron_opex", "fleet_n", "fleet_unit_n", "booster_cost", "t_fleet0",
     "g_fade0", "fade_step", "n_fade",
-    "tau", "y1", "y2", "rs_steady",
+    "tau", "y1", "y2", "rs_steady", "opt_fall",
 ]
 TOL = 0.05
 NUM_YEAR = 2027  # numerator year; the option is discounted from t_opt back to here
@@ -106,12 +106,15 @@ def three_segment_pe(t0: int, y1: int, y2: int, rs: float, g2: float, roe: float
         t += 1
 
 
+NARRATIVE_CAP = 0.30  # retention「叙事换代的腿」: steady = min(tier forward, 30%), no fallback floor
+
+
 def steady_pe(inp: dict, t0: int, roic: float, r: float, g2: float | None = None,
-              y1: int | None = None) -> float:
-    """This ticker's ruler on the steady-return path (A19): forward ROIC to y1, then y2 − y1
-    years down to rs_steady."""
+              y1: int | None = None, fall: int | None = None) -> float:
+    """This ticker's ruler on the steady-return path (A19): forward ROIC to y1, then `fall`
+    years down to min(forward, rs_steady) — rs_steady is the 叙事换代 cap 30% (A19)."""
     y1 = int(inp["y1"]) if y1 is None else y1
-    fall = int(inp["y2"] - inp["y1"])
+    fall = int(inp["y2"] - inp["y1"]) if fall is None else fall
     return three_segment_pe(t0, y1, y1 + fall, inp["rs_steady"], inp["g2"] if g2 is None else g2, roic, r)
 
 
@@ -181,6 +184,12 @@ def main() -> int:
     errors += check_r(inp["r_legs"], "r_legs", baskets.get("r_legs"))
     r = inp["r_legs"]
     errors += check_g_cap(inp["g2"], r, "g2")
+    # 叙事换代 (A19): own cycle unusable (never profitable), peer layer empty (user 2026-10-19:
+    # the four defense primes are not the same business) → steady = min(forward, 30%).
+    if abs(inp["rs_steady"] - NARRATIVE_CAP) > 1e-9:
+        errors.append(f"rs_steady {inp['rs_steady']:g} must equal the 叙事换代 cap {NARRATIVE_CAP:g} (A19)")
+    if inp["opt_fall"] not in (2, 4, 6):
+        errors.append(f"opt_fall {inp['opt_fall']:g} must be an entry-barrier rung 2 / 4 / 6 (A11)")
 
     sh = inp["shares_base"] + inp["shares_sep"] + inp["irdm_shares"] * inp["exch_ratio"]
     closure = inp["cash"] + inp["sep_raise"] - inp["debt"]
@@ -213,14 +222,18 @@ def main() -> int:
         errors.append("neutron_cadence below the stated unit cadence: k must be ≥ 1 (A11)")
     k_units = inp["neutron_cadence"] / inp["neutron_unit"]
 
-    # Option unit economics walk the same calendar path (A19): valued in the realisation year on
-    # the steady-return ruler, folded to FY2027, then the deck's tau to the 2026-06-30 book.
+    # Option high-return period follows Neutron's own product stage, not the satellite leg's
+    # calendar (retention「高回报期 MUST 对上该腿自己的产品阶段」, user 2026-10-19): forward
+    # return held through the year the named capacity is reached (Y1 = realisation year),
+    # then opt_fall years (entry barrier: high) down to the same 叙事换代 cap.  Valued in the
+    # realisation year, folded to FY2027, then the deck's tau to the 2026-06-30 book.
     tau_df = (1 + r) ** (-inp["tau"])
+    opt_fall = int(inp["opt_fall"])
 
     def opt_ruler(gm: float, year: int = t_opt) -> tuple[float, float, float]:
         m = gm - inp["neutron_opex"]
         roic = m * (1 - inp["tax"]) / inp["cap_int"]
-        return m, roic, steady_pe(inp, year, roic, r)
+        return m, roic, steady_pe(inp, year, roic, r, y1=year, fall=opt_fall)
 
     m_opt, roic_opt, pe_opt = opt_ruler(inp["neutron_gm"])
 
@@ -289,7 +302,7 @@ def main() -> int:
           f" − unspent fleet {inp['fleet_n']:g} × {inp['booster_cost']:g}bn from {int(inp['t_fleet0'])}"
           f" (PV {fleet_pv(inp['fleet_n']):.4f}bn = {fleet_pv(inp['fleet_n']) / sh:.2f}/sh)"
           f" = {v_gross(t_opt, inp['neutron_cadence']) - fleet_pv(inp['fleet_n']) / sh:.2f} × tau {tau_df:.4f} → {v_opt:.2f}"
-          f"  (steady path: ROIC to {int(inp['y1'])}, {inp['rs_steady']:.1%} from {int(inp['y2'])}; "
+          f"  (own product-stage path: ROIC to {t_opt}, {min(roic_opt, inp['rs_steady']):.1%} from {t_opt + opt_fall}; "
           f"no-fade PE {perpetual_pe(inp['g2'], roic_opt, r):.2f})")
     print(f"  booster cost 0.03 / 0.10 → {v_at(t_opt, inp['neutron_cadence'], cost=0.03):.2f}"
           f" / {v_at(t_opt, inp['neutron_cadence'], cost=0.10):.2f}")
@@ -297,6 +310,13 @@ def main() -> int:
           f" one-year slip → {v_at(t_opt + 1, inp['neutron_cadence']):.2f};"
           f" Morgan Stanley 12/yr @{t_opt} → {v_at(t_opt, 12):.2f};"
           f" price 0.055 → {v_at(t_opt, inp['neutron_cadence'], price=0.055):.2f}")
+    def v_path(y1_: int, fall_: int) -> float:
+        pe_ = steady_pe(inp, t_opt, roic_opt, r, y1=y1_, fall=fall_)
+        return (opt_nopat * pe_ / (1 + r) ** (t_opt - NUM_YEAR) - fleet_pv(inp["fleet_n"])) / sh * tau_df
+
+    print(f"  option path: barrier medium (fall 4, Y2 {t_opt + 4}) → {v_path(t_opt, 4):.2f};"
+          f" satellite-leg calendar {int(inp['y1'])}/{int(inp['y2'])} (old) → "
+          f"{v_path(int(inp['y1']), int(inp['y2'] - inp['y1'])):.2f}")
     for gm in (0.408, 0.60):
         m, roic, pe = opt_ruler(gm)
         print(f"  GM {gm:g} (margin {m:.3f}, ROIC {roic:.1%}, PE {pe:.2f}) → V_opt {v_at(t_opt, inp['neutron_cadence'], gm=gm):.2f}")

@@ -13,8 +13,9 @@ perpetual g, no transition; since the 2026-10-16 framework correction
 (valuation-rules「经营价值与超额现金」) the return walks three stages and M / H
 are time-aligned:
 
-  PE_x   = path_pe(g2, ROE_x): ROE_x to Y1 2028, linear to the steady 11%
-           (整车 = 商品化重资产) by Y2 2030 (low entry barrier), steady after
+  PE_x   = path_pe(g2, ROE_x): ROE_x to Y1 2028, linear to the steady 10%
+           (ordered pick: global mature automakers 4.9% < r -> r) by Y2 2030
+           (low entry barrier), steady after
   anchor = eps_x * PE_x * (1 + r)^-tau_x + window_x
            tau_L = 0 (frozen regime year), tau_M = tau_H = 1.5 (2026-06-30 ->
            2028-01-01); window = unbooked 2H26 + FY2027 EPS x (1 - b) at
@@ -78,7 +79,7 @@ MEGA_HW = True              # A5: hardware, FY2028E revenue >= $150B, no proven 
 FY_NOW = 2026               # current fiscal year: the window segment's growth runs FY2026E -> numerator year
 
 FORMULA_FIELDS = frozenset({
-    "shares", "equity", "dps_after", "ni_1h26", "r_perp", "g2", "tau", "y1", "y2", "rs_ss", "t_num",
+    "shares", "equity", "dps_after", "ni_1h26", "r_perp", "g2", "tau", "y1", "y2", "rs_ss", "rs_ss_h", "t_num",
     "eps_l", "eps_m", "eps_h",
     "eps_fy26_m", "eps_fy26_h", "eps_fy27_m", "eps_fy27_h",
 })
@@ -162,11 +163,17 @@ def path_pe(g2: float, roe_: float, r: float, t0: int, y1: int, y2: int, r_s: fl
         t += 1
 
 
+def rs_tier(inp: dict[str, float], tag: str) -> float:
+    """Steady return by tier (retention「三档各取各的稳态」): L / M = the ordered value 10%
+    (mature-peer layer below r -> r); H = 15% (low entry barrier: one notch up the fallback table)."""
+    return max(inp["rs_ss_h"] if tag == "h" else inp["rs_ss"], inp["r_perp"])
+
+
 def multiple(inp: dict[str, float], tag: str) -> float:
-    """A15: forward ROE to Y1 (2028, visible-year end), linear to the steady return by Y2 (2030,
-    low entry barrier), steady return 11% (整车 = 商品化重资产) after."""
+    """A15: forward ROE to Y1 (2028, visible-year end), linear to the tier's steady return by Y2
+    (2030, low entry barrier), steady after."""
     return path_pe(inp["g2"], roe(inp, tag), inp["r_perp"], int(inp["t_num"]), int(inp["y1"]),
-                   int(inp["y2"]), max(inp["rs_ss"], inp["r_perp"]))
+                   int(inp["y2"]), rs_tier(inp, tag))
 
 
 def disc(inp: dict[str, float], tag: str) -> float:
@@ -199,7 +206,7 @@ def battery_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     Size: k = 1 × the April-2026 snapshot of external installs annualised
     (FinDreams domestic installs × external share × 12), 「快照·下限」.  Unit
     economics: CATL's 2026H1 unit net profit less a named haircut.  Ruler:
-    this ticker's Gordon (same g2, same steady 11%), the return level = the H
+    this ticker's Gordon (same g2, same steady 10%), the return level = the H
     tier's ROE with the option added; only the INCREMENTAL battery EPS is valued,
     on the battery's own return path (2026-10-19 round 9, valuation-rules
     「稳态回报三段」高回报期对产品阶段): the path's calendar starts at the
@@ -218,7 +225,7 @@ def battery_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
     eps_post = inp["eps_h"] + d_eps
     roe_post = eps_post / bps_open(inp, "h")
     pe_post = path_pe(inp["g2"], roe_post, inp["r_perp"], int(inp["t_opt"]), int(inp["y1_opt"]),
-                      int(inp["y2_opt"]), max(inp["rs_ss"], inp["r_perp"]))   # the battery's own path
+                      int(inp["y2_opt"]), rs_tier(inp, "h"))   # the battery's own path, H world
     incr = d_eps * pe_post * disc(inp, "h")
     anchor_post = base_h + incr
     k_ps = gwh * inp["capex_per_gwh"] * 1e8 / inp["shares"] * disc(inp, "h")
@@ -339,7 +346,7 @@ def main() -> int:
 
     # --- report ---------------------------------------------------------------
     print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, g2={g2:.0%}, "
-          f"cap(mega)={g_cap(r, mega_hw=True):.0%}, 三段回报 Y1 {inp['y1']:g} → Y2 {inp['y2']:g} 稳态 {inp['rs_ss']:.0%}，"
+          f"cap(mega)={g_cap(r, mega_hw=True):.0%}, 三段回报 Y1 {inp['y1']:g} → Y2 {inp['y2']:g} 稳态 L/M {inp['rs_ss']:.0%} · H {inp['rs_ss_h']:.0%}，"
           f"M/H 折 τ {inp['tau']:g} + 窗口利润)")
     print(f"{'档':<3}{'EPS':>8}{'年初BPS':>9}{'ROE':>8}{'PE三段':>8}{'折现':>8}{'经营值':>8}{'窗口':>7}{'锚点':>9}")
     for t in TIERS:

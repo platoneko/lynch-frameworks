@@ -278,8 +278,9 @@ def main() -> int:
 
     def gordon(r_: float) -> dict[str, float]:
         # Fluoropolymer leg (g2 > 0, not commodity-axis bridged) on the three-stage path: steady
-        # return = max(layers, r) -- own cycle unusable (group basis != entity forward formula),
-        # no >= 5-year mature same-business peer, fallback 11% < r -> the basket r (A10).
+        # return taken in order, floored at r -- own cycle unavailable (no segment assets; the
+        # Dongyue Polymers entity summary exists only for FY2024-25; the group is a mix of
+        # businesses), no >= 5-year mature same-business peer, fallback 11% < r -> the basket r (A26).
         rs = max(inp["rs_poly"], r_)
         return {
             "ref": perpetual_pe(inp["g2_ref"], roe_poly, r_),

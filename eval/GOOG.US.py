@@ -53,9 +53,10 @@ correction 2026-10-16):
   * growth-period funding gap (①): 2H26 capex - (2H26 OCF - SBC), per share,
     deducted as a debt-like item; with a gap the window's distributable profit is 0.
   * stable-return path (②): Services retention earns the tier's forward ROE
-    through y1, fades linearly to ronic_ss_svc by y2 (fallback 30%, no mature ad
-    peer above it).  The cloud legs already retain at the marginal steady-state
-    ROIC (below 30%), so their path is flat.  g2_svc is the ad-cluster median
+    through y1, fades linearly to ronic_ss_svc by y2 (2026-10-19: own history,
+    FY2018-FY2025 mean on invested capital, 40.2%; ordered, not max'd with the
+    30% fallback).  The cloud legs already retain at the marginal steady-state
+    ROIC (below it), so their path is flat.  g2_svc is the ad-cluster median
     re-solved on the same path and time alignment, capped at 6%.
 
 Disclosures (printed, never errors): the band with g2_svc shifted -1pp / -0.5pp
@@ -629,7 +630,7 @@ def main() -> int:
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"tau {tau} (2026-06-30 -> FY2027 opening; services + cloud-non at {r:.0%}, lab at journey {r_lab_tau:.0%});"
-          f" services path t0 {t0} y1 {y1} y2 {y2} -> stable {rs_svc:.0%}; cloud flat at the marginal ROIC;"
+          f" services path t0 {t0} y1 {y1} y2 {y2} -> stable {rs_svc:.1%}; cloud flat at the marginal ROIC;"
           f" funding gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:,.0f} - (OCF {inp['ocf_2h26']:,.0f}"
           f" - SBC {inp['sbc_2h26']:,.0f})) / shares; window profit 0 (gap present)")
     print("  leg $/sh (legs / (1+r)^tau)   services(PE)      cloud-non(PE)  lab(PE)   net_cash   portfolio(d)     waymo(d)   gap   total")

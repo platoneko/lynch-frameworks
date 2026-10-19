@@ -35,7 +35,9 @@ the cash from the book, and the cash is added back per ADR at face (λ = 1).
 
 Framework correction 2026-10-16 (A31): the excess cash counts at the parent share
 (parent_ratio); every Gordon leg runs on the steady-state-return path (forward
-RONIC through Y1 2030, linear to the own-cycle 35.2% by Y2 2035) and is valued at
+RONIC through Y1 2030, linear to the own-cycle 35.0% by Y2 2035 -- 2026-10-19 in-order
+pick: own trough-to-trough FY2019-23 mean on invested capital; was the 2017-25 median
+35.2%) and is valued at
 the start of 2027, then folded back tau years to the valuation date (B1 at the
 CoWoS capacity value is a today's reading and is not folded), plus the 2H26
 window profit x (1 - b1) at tau/2; COUPE runs the same path from its

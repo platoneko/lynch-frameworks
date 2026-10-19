@@ -26,8 +26,10 @@ Leg split (group ruler, A21):
 Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金」, A22):
 - SiPho leg = 叙事换代的腿 (_AXIS.sipho-wafer): steady return = min(tier forward,
   ss_return_cap_sipho 30%), forward kept through Y1 2030, linear to it by Y2 2035;
-- rest-foundry leg on its own path (Y1 2028, Y2 2032, R_s rs_rest) -- its forward
-  return sits below R_s, so the path does not bind;
+- rest-foundry leg on its own path (Y1 2028, Y2 2032, R_s rs_rest); 2026-10-19:
+  R_s = max(r, own cycle FY2020-24 invested-capital mean `rs_rest_own` ~1.5%) = 10%
+  (taken in order, peers 18.15% contrast only) -- L / M forward sit below it (flat),
+  H 14.6% fades to 10% by 2032;
 - rest-foundry g2 = `g2_rest` (the cluster re-solved once on the same path, shared
   with TSEM.US); `g2_rest_src` stays the raw cluster reading the foundry axis reads;
 - the Gordon legs sit at the start of FY2027 and are folded back tau years; the
@@ -170,6 +172,11 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
         if r - g < MIN_R_MINUS_G:
             errs.append(f"r - g2_{leg} = {r - g:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
     errs += check_transition_years(int(inp["n_stage"]), int(inp["n_consensus"]), "n_stage")
+    # rest-foundry steady return taken in order (2026-10-19): own cycle usable -> own, floored at r
+    if "rs_rest_own" not in inp:
+        errs.append("rs_rest_own missing — the rest-foundry own-cycle reading (A22)")
+    elif abs(inp["rs_rest"] - max(r, inp["rs_rest_own"])) > 1e-9:
+        errs.append(f"rs_rest {inp['rs_rest']:g} != max(r, own cycle {inp['rs_rest_own']:g}) (A22)")
     if not inp["eps_2027_gaap_m"] < inp["eps_2028_gaap_m"]:
         errs.append("2028E GAAP consensus not above 2027E: same-world gate for g2 > 0 no longer holds (A4/A5)")
     errs += ladder("consensus range", inp["eps_2027_l"], inp["eps_2027_m"], inp["eps_2027_h"])

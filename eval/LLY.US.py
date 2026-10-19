@@ -58,7 +58,7 @@ REQUIRED = [
     "eps_fy26e", "eps_h1_26", "bps_h1_26", "dps_post_h1_26",
     "r_perp", "g2", "roe_cap", "payout_actual",
     "pe_own_min", "pe_own_top", "eps_ttm", "net_debt_ebitda", "interest_ebit", "v_opt",
-    "tau", "y1", "y2", "rs_steady",
+    "tau", "y1", "y2", "rs_steady", "rs_steady_h",
 ]
 FIXED_POINT_ITERS = 60
 LISTING_CCY = "USD"
@@ -123,11 +123,15 @@ def main() -> int:
 
     eps = {"l": inp["eps_fy27e_low"], "m": inp["eps_fy27e_consensus"], "h": inp["eps_fy27e_high"]}
     tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+    # Steady return per tier (retention「三档各取各的稳态」): L / M = own cycle, H = min(H forward, 30%).
+    rs_t = {"l": rs, "m": rs, "h": inp["rs_steady_h"]}
+    if rs_t["h"] < rs:
+        errors.append(f"rs_steady_h {rs_t['h']} below the L / M steady {rs}")
     unbooked_26 = inp["eps_fy26e"] - inp["eps_h1_26"]
 
     def price_tier(t: str, r_: float, gg: float = g2) -> dict[str, float]:
         bps0, roe_raw, roe, b = tier_roe(inp, eps[t], gg)
-        pe = three_segment_pe(NUM_YEAR, y1, y2, rs, gg, roe, r_)
+        pe = three_segment_pe(NUM_YEAR, y1, y2, rs_t[t], gg, roe, r_)
         gross = eps[t] * pe
         # Timing (A12): value at t_n discounted tau years; 2026H2 window distributable EPS at tau/2.
         window = max(unbooked_26 * (1 - b), 0.0)
@@ -156,7 +160,7 @@ def main() -> int:
         errors.append("v_opt must be 0 (A9)")
 
     print(f"formula_id={FORMULA_ID}  r={r:g} (篮 {baskets.get('r_perp')})  g2={g2:g} (=G_cap)  ROE cap {inp['roe_cap']:.0%}")
-    print(f"steady path: ROE to {y1}, linear to {rs:.0%} by {y2}; timing ÷ {(1 + r) ** tau:.4f} (tau {tau:g}y) + window at tau/2")
+    print(f"steady path: ROE to {y1}, linear to L/M {rs:.1%} / H {rs_t['h']:.0%} by {y2}; timing ÷ {(1 + r) ** tau:.4f} (tau {tau:g}y) + window at tau/2")
     for t in TIERS:
         x = rows[t]
         print(
@@ -166,7 +170,8 @@ def main() -> int:
         )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(
-        f"L/M={L / M:.3f} (分子比 {eps['l'] / eps['m']:.3f} × 倍数比 1.000) H/M={H / M:.3f} (分子比 {eps['h'] / eps['m']:.3f}) "
+        f"L/M={L / M:.3f} (分子比 {eps['l'] / eps['m']:.3f} × 倍数比 {rows['l']['pe'] / rows['m']['pe']:.3f}) "
+        f"H/M={H / M:.3f} (分子比 {eps['h'] / eps['m']:.3f} × 倍数比 {rows['h']['pe'] / rows['m']['pe']:.3f}) "
         f"width={(H - L) / (2 * M):.3f} V_opt/M=0"
     )
     print(f"flat-multiple ladder @ {rows['m']['pe']:.2f} (gross, before timing): {flat[0]:.0f}/{flat[1]:.0f}/{flat[2]:.0f}")

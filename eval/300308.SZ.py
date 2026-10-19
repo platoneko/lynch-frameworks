@@ -43,7 +43,10 @@ operating part only.
     cash income) x (1 - b), b = g/RONIC of the book roll, at tau/2;
   * three-stage return: forward RONIC through Y1 2028, linear to the steady
     return by Y2 2032 (_AXIS.pluggable-module: module assembly, medium barrier),
-    steady = min(forward, max(axis 18%, own cycle 14.4%)) = 18%;
+    steady = min(forward, axis 18%) = 18% (2026-10-19 ordered pick, no max:
+    own cycle 14.4% is the pre-AI module era, no full cycle since the
+    structural change -> own unusable, comparison only; business model
+    unchanged -> not narrative-shift; peer layer empty -> axis fallback);
   * the user-set k on the whole operating value (A20) is removed (wrong object).
 
 2026-10-19 framework correction (user-approved parameters; rules/retention.md
@@ -149,7 +152,7 @@ REQUIRED = [
     "npo_units_27", "npo_units_28", "oe_l", "oe_m", "oe_h",
     "capex_l", "capex_m", "capex_h",
     "net_cash_ext_h1", "c_ex", "cash_yield", "tax_eff", "payout_op",
-    "buyback", "minority_h1", "parent_ratio", "tau", "y1", "y2", "ss_return", "own_cycle", "npo_roe", "npo_nm_norm",
+    "buyback", "minority_h1", "parent_ratio", "tau", "y1", "y2", "ss_return", "ss_return_m", "ss_return_h", "ss_return_npo", "own_cycle", "npo_roe", "npo_nm_norm",
     "nm_norm_main", "y1_npo", "y2_npo", "npo_share_30",
 ]
 
@@ -246,7 +249,8 @@ def main() -> int:
     # NPO high-return window = the packaging link of _AXIS.ai-capex §4b (near-package product, A13).
     if AXIS_CAPEX.is_file():
         axc = parse_inputs(AXIS_CAPEX.read_text(encoding="utf-8"))
-        for mine, theirs in (("y1_npo", "y1_ai_capex_package"), ("y2_npo", "y2_ai_capex_package")):
+        for mine, theirs in (("y1_npo", "y1_ai_capex_package"), ("y2_npo", "y2_ai_capex_package"),
+                             ("ss_return_npo", "ss_floor_ai_capex_package")):
             if theirs not in axc or abs(axc[theirs] - inp[mine]) > 1e-9:
                 errors.append(f"{mine} {inp[mine]:g} != _AXIS.ai-capex {theirs} {axc.get(theirs)}")
     else:
@@ -292,8 +296,18 @@ def main() -> int:
     tau = inp["tau"]
     y1, y2 = int(inp["y1"]), int(inp["y2"])
     r_s = inp["ss_return"]
-    if r_s < inp["own_cycle"]:
-        errors.append("steady return below the own-cycle floor")
+    # M steady: de-cycled M forward (normal margin x pre-AI turnover 1.05; the margin step is in the
+    # FY2024-25 reports, medium barrier -> raised, A26); H: normal margin x own mean turnover 1.33.
+    if abs(inp["ss_return_m"] - round(inp["nm_norm_main"] * 1.05, 3)) > 5e-4:
+        errors.append(f"ss_return_m {inp['ss_return_m']} != nm_norm_main x pre-AI turnover 1.05 (A26)")
+    if not r_s + 0.02 - 1e-9 <= inp["ss_return_m"] <= inp["ss_return_h"] + 1e-9:
+        errors.append(f"ss_return_m {inp['ss_return_m']} outside [ordered {r_s} + 2pp, H {inp['ss_return_h']}] (A26)")
+    if not inp["ss_return_m"] - 1e-9 <= inp["ss_return_h"] <= 0.30 + 1e-9:
+        errors.append(f"ss_return_h {inp['ss_return_h']} outside [ss_return_m {inp['ss_return_m']}, 30%] (A26)")
+    if abs(inp["ss_return_h"] - round(inp["nm_norm_main"] * 1.33, 3)) > 5e-4:
+        errors.append(f"ss_return_h {inp['ss_return_h']} != nm_norm_main x own mean turnover 1.33 (A26)")
+    # Ordered pick (2026-10-19): own cycle unusable (no full cycle after the structural change), so the
+    # steady return is the axis value as-is (checked against the axis above); own_cycle is display only.
 
     # Margin path (A26, 2026-10-19): each tier's starting net margin (L: FY25 realised; M / H: FY2028
     # company-level consensus = the shortage-period margin) held through y1, linear to nm_norm_main by y2.
@@ -326,8 +340,12 @@ def main() -> int:
         return max(inp["ni_h2_cons"] - 0.5 * c_inc, 0.0) * (1 - b) / sh * (1 + r) ** -(tau / 2)
 
     bps, roe, pe, bb_ = {}, {}, {}, {}
+    # Per-tier steady (retention「三档各取各的稳态」2026-10-19): L = the ordered value (axis 18%);
+    # M = normal margin 20% x pre-AI turnover 1.05 = 21%; H = normal margin 20% x own mean turnover
+    # 1.33 = 26.6% (A26).
+    rs_tier = {"L": r_s, "M": inp["ss_return_m"], "H": inp["ss_return_h"]}
     for t in TIERS:
-        bps[t], roe[t], pe[t], bb_[t] = tier(eop[t], stage[t], mr=mratio(t))
+        bps[t], roe[t], pe[t], bb_[t] = tier(eop[t], stage[t], mr=mratio(t), rs=rs_tier[t])
     k = {"L": inp["k_l"], "M": inp["k_m"], "H": inp["k_h"]}
     pre = {t: eop[t] * pe[t] * (1 + r) ** -tau for t in TIERS}  # operating value, aligned to today
     win = {t: window(bb_[t]) for t in TIERS}
@@ -378,7 +396,9 @@ def main() -> int:
         capital the ramp needs); Gordon at g_term once past a2 and the last named jump."""
         p = path or npo_path()
         gt = inp["g_npo"] if g_term is None else g_term
-        ss = min(roe_book_h, r_s)
+        # The NPO leg sits on the packaging link: its steady is that link's axis floor (A13), not the
+        # pluggable-module 18% of the main leg.
+        ss = min(roe_book_h, inp["ss_return_npo"])
         pv, yr = 0.0, t_opt
         while True:
             t = yr - t_opt + 1
@@ -446,8 +466,8 @@ def main() -> int:
           f" − 9 月回购 {bb:.0f} − 锚 0 − 增长期资金缺口 0 = {c_tot:.0f} × 归母比例 {pr:.4f} = C_ex {c_ex:.0f} 百万"
           f"（每股 {cps:.2f}，占归母权益 {eq0:.0f} 的 {c_ex / eq0:.1%}，λ 1）；"
           f"税后收益 {c_inc:.0f} 百万 = 每股 {c_inc / sh:.4f}，三档分子同扣")
-    print(f"三段回报: Y1 {y1} → Y2 {y2}（_AXIS.pluggable-module），稳态 {r_s:.0%}（= max(轴 18%, 自身周期 {inp['own_cycle']:.1%})，"
-          f"≤ 前瞻）；τ {tau:g}；k 全为 0")
+    print(f"三段回报: Y1 {y1} → Y2 {y2}（_AXIS.pluggable-module），稳态 {r_s:.0%}（按序取 = 轴；自身周期 {inp['own_cycle']:.1%} 结构变化后不可用、只对照，"
+          f"≤ 前瞻）= L 档；M 档 {inp['ss_return_m']:.1%}、H 档 {inp['ss_return_h']:.1%}（去周期前瞻）；τ {tau:g}；k 全为 0")
     for t in TIERS:
         print(f"{t}: EPS {eps[t]:.4f} -> 经营 EPS {eop[t]:.4f} 经营 BPS_open {bps[t]:.2f} RONIC {roe[t]:.3f} PE(三段) {pe[t]:.2f}"
               f" -> V_op x 1.1^-τ {pre[t]:.2f} + 窗口 {win[t]:.2f}（b {bb_[t]:.3f}）+ C_ex {cps:.2f} = {pre[t] + win[t] + cps:.2f}")
@@ -464,7 +484,7 @@ def main() -> int:
     print(f"main margin path: start L {nm0['L']:.2%} / M,H {nm0['M']:.2%} held to {y1} -> {inp['nm_norm_main']:.0%} by {y2}"
           f" (ratio L {mratio('L'):.3f} / M,H {mratio('M'):.3f})")
     print(f"NPO option: FY28 NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f}; margin {nm_opt:.2%} held to {y1n} -> {inp['npo_nm_norm']:.0%} by {y2n},"
-          f" return {roe_book_h:.1%} -> {min(roe_book_h, r_s):.0%} (after {NPO_LAST_NAMED} g {inp['g_npo']:.0%}) -> value in {t_opt} {v_opt_t:.2f}"
+          f" return {roe_book_h:.1%} -> {min(roe_book_h, inp['ss_return_npo']):.0%} (after {NPO_LAST_NAMED} g {inp['g_npo']:.0%}) -> value in {t_opt} {v_opt_t:.2f}"
           f" (implied x{pe_npo:.2f} FY28 NPO EPS) / 1.1^{inp['t_opt'] - NUM_YEAR + tau:g} = V_opt {v_opt:.2f}"
           f"; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
           f" A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}")
@@ -487,6 +507,8 @@ def main() -> int:
                norm: float | None = None) -> float:
         e_ = eop[t]
         mr_ = mratio(t, norm)
+        if rs is None:
+            rs = rs_tier[t]
         _, r_, pe_, b_ = tier(e_, stage[t], g, rs=rs, mr=mr_)
         if stage[t] and g1_ is not None:
             pe_ = path_value(g1_, N_STAGE, g, r_, r, NUM_YEAR, y1, y2, r_s if rs is None else rs, m_ratio=mr_)
@@ -511,7 +533,7 @@ def main() -> int:
     print("  sens steady return = forward (no return fade; margin still fades): "
           + "/".join(f"{anchor(t, rs=1.0):.2f}" for t in TIERS))
     print("  sens Y1/Y2 = ai-capex default 2030/2035 (return and margin move together): " + "/".join(
-        f"{eop[t] * tier(eop[t], stage[t], yy=(2030, 2035), mr=mratio(t))[2] * (1 + r) ** -tau + win[t] + cps:.2f}"
+        f"{eop[t] * tier(eop[t], stage[t], yy=(2030, 2035), mr=mratio(t), rs=rs_tier[t])[2] * (1 + r) ** -tau + win[t] + cps:.2f}"
         for t in TIERS))
     # NPO option sensitivities (A13)
     v_g6 = npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06) / disc

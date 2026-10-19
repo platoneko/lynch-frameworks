@@ -363,8 +363,9 @@ def main() -> int:
     def band(gai: float = g_ai, gau: float = g_au) -> tuple[float, ...]:
         return tuple(legs(t, r, inp["r_disc"], gai, gau)["anchor"] for t in TIERS)
 
-    for label, g in (("-1pp", g_ai - 0.01), ("+1pp", g_ai + 0.01), ("evidence low (JBL)", 0.0286),
-                     ("evidence high (CLS)", 0.0525), ("cap 6% (unadopted)", g_cap(r))):
+    # Evidence ends re-solved on the same return path (A9, 2026-10-19: steady return 18%; CLS 6.68% > cap dropped).
+    for label, g in (("-1pp", g_ai - 0.01), ("+1pp", g_ai + 0.01), ("evidence low (JBL)", 0.0400),
+                     ("evidence high (FLEX)", 0.0579), ("cap 6% (unadopted)", g_cap(r))):
         print(f"  sens g2_ai {label} {g:.2%}: " + "/".join(f"{x:.2f}" for x in band(g)))
     for label, g in (("-1pp", g_au - 0.01), ("+1pp", g_au + 0.01)):
         print(f"  sens g2_auto {label} {g:.2%}: " + "/".join(f"{x:.2f}" for x in band(g_ai, g)))

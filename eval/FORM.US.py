@@ -82,7 +82,7 @@ REQUIRED = [
     "pb_low",
 ]
 TIERS = ("L", "M", "H")
-REQUIRED += ["t0", "y1", "y2", "ss_own", "ss_floor_ai_capex_package", "ronic_ss", "tau"]
+REQUIRED += ["t0", "y1", "y2", "ss_own", "ss_floor_ai_capex_package", "ronic_ss", "ronic_ss_m", "ronic_ss_h", "tau"]
 # A21: the packaging / co-test / fibre-array row of _AXIS.ai-capex §4b — window and steady-return
 # floor are read from the axis cell by cell (user 2026-10-19: the axis floor replaces the 15% table floor).
 AXIS_CAPEX = REPO_ROOT / "frameworks" / "axes" / "ai-capex.md"
@@ -181,11 +181,15 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if not inp["t_opt"] > inp["t_num"]:
         errs.append("t_opt must fall after the numerator year t_num (A16)")
 
-    # A21: steady return = max(own cycle, mature peers (empty — Teradyne is not the same business,
-    # user 2026-10-19), axis floor); each tier is then capped at its forward ROE inside path_pe.
-    want = max(inp["ss_own"], inp["ss_floor_ai_capex_package"])
-    if abs(inp["ronic_ss"] - want) > 1e-9:
-        errs.append(f"ronic_ss {inp['ronic_ss']:g} != max(ss_own, axis floor) {want:g} (A21)")
+    # A21: ordered steady return = the axis floor 20% (user 2026-10-19: it overrides the own cycle
+    # 12.5% for this link; mature peers empty — Teradyne is not the same business). Per tier
+    # (retention「三档各取各的稳态」): L = the ordered value; M / H = the de-cycled forward
+    # (M: the gross-margin step is in the reported numbers; H: the sell-side H improvement).
+    if abs(inp["ronic_ss"] - inp["ss_floor_ai_capex_package"]) > 1e-9:
+        errs.append(f"ronic_ss {inp['ronic_ss']:g} != axis floor {inp['ss_floor_ai_capex_package']:g} (A21)")
+    if not inp["ronic_ss"] <= inp["ronic_ss_m"] <= inp["ronic_ss_h"] <= 0.30:
+        errs.append(f"per-tier steady must ascend L <= M <= H <= 30%: "
+                    f"{inp['ronic_ss']:g} / {inp['ronic_ss_m']:g} / {inp['ronic_ss_h']:g} (A21)")
     if not AXIS_CAPEX.is_file():
         errs.append("axes/ai-capex.md missing — y1 / y2 / steady floor unchecked (A21)")
     else:
@@ -245,6 +249,7 @@ def main() -> int:
         return bps0 / (1.0 - share)
 
     t0, y1, y2, rs, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"], inp["tau"]
+    rs_t = {"L": rs, "M": inp["ronic_ss_m"], "H": inp["ronic_ss_h"]}
 
     def window(n: float, roe_x: float, g: float, rr: float) -> float:
         """FY26H2 distributable profit N x (1 - b1), discounted tau/2 (③ 时点对齐; no minority)."""
@@ -255,7 +260,7 @@ def main() -> int:
         n = unbooked(haircut)
         bps = {t: opening_bps(c[t], g, n) for t in TIERS}
         roe_ = {t: c[t] / bps[t] for t in TIERS}
-        pe_ = {t: path_pe(g, roe_[t], rr, t0, y1, y2, rs) for t in TIERS}
+        pe_ = {t: path_pe(g, roe_[t], rr, t0, y1, y2, rs_t[t]) for t in TIERS}
         val = {t: c[t] * pe_[t] * (1.0 - k[t]) / (1 + rr) ** tau + window(n, roe_[t], g, rr) + cash_ps for t in TIERS}
         return bps, roe_, pe_, val
 
@@ -327,8 +332,8 @@ def main() -> int:
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> core {core[t]:.4f}  BPS_op {bps[t]:.3f}  ROE {roe[t]:.4f}  payout {1 - b1[t]:.3f}  "
               f"PE(path) {pes[t]:.4f}x -> core x PE / 1.1^tau + window {ex_cash[t]:.4f} (k {k[t]:g}) + cash = {scen[t]:.4f}")
-    print(f"path: forward ROE through {y1}, fade to stable {rs:.1%} by {y2} (t0 {t0}; per tier min(ROE, stable) = "
-          + " / ".join(f"{min(roe[t], max(rs, r)):.1%}" for t in TIERS) + f"); tau {tau}; window PV "
+    print(f"path: forward ROE through {y1}, fade to the tier's stable by {y2} (t0 {t0}; per tier min(ROE, stable) = "
+          + " / ".join(f"{min(roe[t], max(rs_t[t], r)):.1%}" for t in TIERS) + f"); tau {tau}; window PV "
           + " / ".join(f"{window(n_unbooked, roe[t], g2, r):.2f}" for t in TIERS))
     print(f"ROE basis (A6): op BPS 2026-06-27 {bps0:.3f} rolled over FY26H2 unbooked core {n_unbooked:.4f}/sh at b1 "
           f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}")

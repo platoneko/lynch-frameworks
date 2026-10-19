@@ -55,7 +55,8 @@ OBPS = OBPS_2Q26 / (1 − g2·N_op/E_op).  Actual retention above b1 is the
     different basis from the forward return; user ruling 2026-10-18).  The
     excess-cash-deducted own-cycle reading 39.0% is not used: stripping the
     cash shrinks the denominator and inflates the return.  Peer layer: only
-    Samsung SDI passes the maturity test, 6.9% < r; floor 11%.  g2 named, not
+    Samsung SDI passes the maturity test, 6.9% < r; floor 11% (comparison only,
+    not a lower bound; the check is steady >= r).  g2 named, not
     re-solved; (1 − 50%) x 22.8% = 11.4% >= g2_h, no cap.
 
 Run:  python3 frameworks/eval/300750.SZ.py
@@ -341,8 +342,9 @@ def main() -> int:
         errors.append(f"tau {inp['tau']} != {tau_calc}")
     if not (inp["y1"] == T0 and inp["y2"] == inp["y1"] + 4):
         errors.append("Y1 must be the visible-year end FY2027 and Y2 = Y1 + 4 (medium entry barrier, A23)")
-    if inp["ronic_ss"] < max(inp["ronic_ss_floor"], inp["r_perp"]):
-        errors.append("ronic_ss below the business-model floor / r (A23)")
+    # The floor is a substitute, not a lower bound (ordered pick, 2026-10-19): only r binds.
+    if inp["ronic_ss"] < inp["r_perp"]:
+        errors.append("ronic_ss below r (A23)")
     eq_adj = inp["equity"] - inp["div_declared"]
     if c_ex < EXCESS_TRIGGER * eq_adj:
         errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")

@@ -69,6 +69,7 @@ REQUIRED = [
     "spec_ebitda", "da", "interest", "tax_rate", "nci",
     "r_perp", "r_spec", "g2", "axis_g2_li",
     "pe_own_min", "pe_own_max", "pb_floor",
+    "ss_own_spec", "ss_return_spec", "t0_spec", "y1_spec", "y2_spec",
 ]
 
 
@@ -113,23 +114,52 @@ def leg_value(s: dict[str, float], g2: float, r_es: float, r_spec: float) -> tup
     return s["eps_es"] * pe_es, s["eps_spec"] * pe_spec, pe_es, pe_spec
 
 
-def h_passby(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float) -> tuple[float, float]:
+def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
+    """Gordon multiple on next-period earnings with the three-stage return path
+    (valuation-rules「经营价值与超额现金」② 稳态回报三段).  Year t = 1 is calendar t0; the
+    retention of calendar c earns the forward return while c <= y1, fades linearly to the
+    stable return by y2, and the stable return from y2 on.  Stable return capped at the
+    forward return and floored at r; a flat path equals `perpetual_pe`."""
+    rs = min(roe, max(rs, r))
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * payout(g, rs) / ((r - g) * (1 + r) ** (t - 1))
+        pv += e * payout(g, ron(cal)) / (1 + r) ** t
+        e *= 1 + g
+        t += 1
+
+
+def h_passby(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float,
+             spec_path: tuple[int, int, int, float]) -> tuple[float, float]:
     """A15: the lithium axis H tier passes through — on the lithium (ES) leg only.  The ES leg
     holds the H world for one year, then the M world, at its own r:
     [E_H x payout(g2, ROE_H) + V_M x (1 + g2)] / (1 + r_es).  The Specialties leg (bromine and the
-    other non-lithium businesses) is not on the lithium axis and stays in its own H world: its H
-    value is the persistent H-tier value (user 2026-10-18; it previously followed the company ROE
-    and the EBITDA-weighted closing item down the lithium pass-by)."""
+    other non-lithium businesses) is not on the lithium axis and stays in its own H world (user
+    2026-10-18).  Its H-tier forward return (11.9%) is above r_spec, so new investment walks the
+    three-stage path down to the own-cycle stable return, floored at r (spec_path = t0, y1, y2,
+    stable; A15 ④, 2026-10-19); L / M forward returns are below r (persistent failure, flat)."""
     vm = leg_value(S["m"], g2, r_es, r_spec)
     h = S["h"]
     es = (h["eps_es"] * payout(g2, h["roe"]) + vm[0] * (1 + g2)) / (1 + r_es)
-    sp = leg_value(h, g2, r_es, r_spec)[1]
+    t0, y1, y2, rs = spec_path
+    sp = h["eps_spec"] * path_pe(g2, h["roe"], r_spec, t0, y1, y2, rs)
     return es, sp
 
 
-def band(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float) -> tuple[float, float, float]:
+def band(S: dict[str, dict[str, float]], g2: float, r_es: float, r_spec: float,
+         spec_path: tuple[int, int, int, float]) -> tuple[float, float, float]:
     l, m = (sum(leg_value(S[t], g2, r_es, r_spec)[:2]) for t in ("l", "m"))
-    return l, m, sum(h_passby(S, g2, r_es, r_spec))
+    return l, m, sum(h_passby(S, g2, r_es, r_spec, spec_path))
 
 
 def main() -> int:
@@ -176,6 +206,13 @@ def main() -> int:
         return 1
 
     g2, r_es, r_spec = inp["g2"], inp["r_perp"], inp["r_spec"]
+    sp_path = (int(inp["t0_spec"]), int(inp["y1_spec"]), int(inp["y2_spec"]), inp["ss_return_spec"])
+    if not (sp_path[0] <= sp_path[1] < sp_path[2]):
+        errors.append(f"Specialties path t0 {sp_path[0]} <= y1 {sp_path[1]} < y2 {sp_path[2]} violated (A15)")
+    # Stable return by order (retention.md 2026-10-19): own cycle first — the stated own-cycle
+    # mean must be the Inputs reading, and below r it lands on r (floor), not on the fallback.
+    if abs(inp["ss_return_spec"] - max(inp["ss_own_spec"], r_spec)) > 1e-9:
+        errors.append(f"ss_return_spec {inp['ss_return_spec']} ≠ max(own cycle {inp['ss_own_spec']}, r_spec {r_spec}) (A15)")
     S = {t: scenario(inp, t) for t in ("l", "m", "h")}
     legs = {t: leg_value(S[t], g2, r_es, r_spec) for t in ("l", "m", "h")}
     for t in ("l", "m", "h"):
@@ -188,7 +225,7 @@ def main() -> int:
             if not (inp["pe_own_min"] - 1e-9 <= pe <= inp["pe_own_max"] + 1e-9):
                 errors.append(f"{t.upper()} {leg} PE {pe:.2f} outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — BLOCKED, do not twist g")
     floor = inp["pb_floor"] * inp["bps"]
-    L, M, H = band(S, g2, r_es, r_spec)
+    L, M, H = band(S, g2, r_es, r_spec, sp_path)
     scenario_L = L  # the floor is disclosed only (A8): L is the scenario value
     A, B = (L + M) / 2, (M + H) / 2
 
@@ -224,9 +261,12 @@ def main() -> int:
         )
     print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bps, disclosed only, A8)  scenario_L={scenario_L:.2f}  "
           f"floor vs band: {zone_of(floor, L, M, H)}")
-    hp = h_passby(S, g2, r_es, r_spec)
-    print(f"H 路过 (A15): persistent H {legs['h'][0] + legs['h'][1]:.2f} (ES {legs['h'][0]:.2f} / Spec {legs['h'][1]:.2f}) "
+    hp = h_passby(S, g2, r_es, r_spec, sp_path)
+    print(f"H 路过 (A15): persistent H {legs['h'][0] + legs['h'][1]:.2f} (ES {legs['h'][0]:.2f} / Spec {legs['h'][1]:.2f} flat) "
           f"-> ES one year then M world {hp[0]:.2f} / Spec stays in its H world {hp[1]:.2f} = {H:.2f}")
+    print(f"Spec H stable-return path (A15 ④): ROE_H {S['h']['roe']:.1%} to {sp_path[1]}, -> {sp_path[2]} stable "
+          f"{min(S['h']['roe'], max(sp_path[3], r_spec)):.1%} (own cycle {inp['ss_own_spec']:.1%}, floored at r) "
+          f"PE {legs['h'][3]:.2f} -> {hp[1] / S['h']['eps_spec']:.2f}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     blended = tuple(v / e for v, e in zip((L, M, H), eps3))
     for line in tier_report((L, M, H), blended, eps3):
@@ -256,16 +296,16 @@ def main() -> int:
         f"{g_lo:+.2%} ({'ok' if ok_lo else 'ill-conditioned'}) / {g_hi:+.2%} ({'ok' if ok_hi else 'ill-conditioned'}) — reported only (A12)"
     )
     for g in (g2 - 0.01, g2 + 0.01, 0.0):
-        l_, m_, h_ = band(S, g, r_es, r_spec)
+        l_, m_, h_ = band(S, g, r_es, r_spec, sp_path)
         print(f"  g2 {g:.4f}: {l_:.2f} / {m_:.2f} / {h_:.2f}")
-    l_, m_, h_ = band(S, g2, r_es, r_es)
+    l_, m_, h_ = band(S, g2, r_es, r_es, sp_path)
     print(f"  both legs at r_ES {r_es:g} (first-leg approximation): {l_:.2f} / {m_:.2f} / {h_:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
     # both legs' basket r 1:1 (ES r_perp, Specialties r_spec); g2, tier ROE and
     # the grid-read numerator stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        return band(S, g2, r_es + dr, r_spec + dr)
+        return band(S, g2, r_es + dr, r_spec + dr, sp_path)
 
     rf = rf_block(LISTING_CCY, {"r_perp": r_es, "r_spec": r_spec}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

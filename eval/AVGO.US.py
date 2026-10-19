@@ -93,6 +93,7 @@ REQUIRED = [
     "y1",
     "y2",
     "rs_semi",
+    "rs_semi_h",
     "y1_sw",
     "y2_sw",
     "rs_sw",
@@ -373,7 +374,7 @@ def main() -> int:
     # drift between the anchors and their sensitivities.
     # Operating value and time alignment (A27; valuation-rules「经营价值与超额现金」② 稳态回报
     # 三段 / ③ 时点对齐, framework correction 2026-10-16): every leg's Gordon runs on the
-    # steady-state-return path -- chip legs Y1 2030 / Y2 2035 at the light-design steady
+    # steady-state-return path -- chip legs Y1 2030 / Y2 2035 at the light-design steady (H tier 30%)
     # return, the VMware leg on the default path (Y1 FY2028 / Y2 FY2034) at the near-zero-
     # marginal-cost steady return -- and is discounted from the FY27 opening (t_n) to the
     # balance-sheet date by tau at the leg's journey basket.  The window (Q4 FY26 unbooked x
@@ -385,7 +386,10 @@ def main() -> int:
         if leg == "sw":
             y1_, y2_, rs_ = int(inp["y1_sw"]), int(inp["y2_sw"]), inp["rs_sw"]
         else:
-            y1_, y2_, rs_ = int(inp["y1"]), int(inp["y2"]), inp["rs_semi"]
+            # per-tier steady (三档各取各的稳态): H = min(H forward, 30%) for a chip leg
+            # whose cycle cannot be stripped; L / M = the ordered value (fallback 22%).
+            y1_, y2_ = int(inp["y1"]), int(inp["y2"])
+            rs_ = inp["rs_semi_h"] if tier == "H" else inp["rs_semi"]
         if transition and leg in TRANSITION_LEGS:
             v = path_value(g1_ai, n, g2, roe[tier], r_j, r_t, t0, y1_, y2_, rs_)
         else:

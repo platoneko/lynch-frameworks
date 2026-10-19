@@ -54,7 +54,8 @@ correction 2026-10-16):
     parent share, deducted as a debt-like item -- the capacity starts at FY28 and
     its output is in the numerator year.  With a gap the window profit is 0.
   * stable-return path (②): the software leg retains at its forward ROE through
-    y1, fading linearly to ronic_ss_sw by y2 (fallback 30%).  The OCI D-bucket
+    y1, fading linearly to ronic_ss_sw by y2 (own cycle FY2013-22 on invested
+    capital, 20.7%; 2026-10-19 steady return taken in order).  The OCI D-bucket
     leg has no perpetual g, so the path does not touch it.
 
 Run:  python3 frameworks/eval/ORCL.US.py
@@ -367,7 +368,7 @@ def main() -> int:
         nopat = ebit * keep
         ic = (inp["equity_aug"] + inp["debt_aug"] - inp["cash_aug"]) - inp["oci_ppe_now"]
         roe = nopat / ic
-        # ② forward ROE through y1, fading to the 30% fallback by y2.
+        # ② forward ROE through y1, fading to ronic_ss_sw (own cycle FY2013-22, 20.7%) by y2.
         return nopat, ic, roe, path_pe(g_sw, roe, r, t0, y1, y2, inp["ronic_ss_sw"])
 
     nopat_sw, ic_sw, roe_sw, pe_sw_m = software_leg(inp["oci_gm_est"], inp["g2_sw"])

@@ -42,7 +42,8 @@ FY2028 Gordon value sits at the start of FY2028 and is discounted tau =
 num_year - t_base = 1.5 years (replacing "FY+2 -> one year"), plus the window
 distributable profit (H2-2026 + FY2027 consensus x (1 - model b)) discounted
 tau/2; g > 0 legs price new investment on the three-segment return path
-(forward ROE to y1_ret, linear fade to ss_return = own-cycle 20.4% by y2_ret);
+(forward ROE to y1_ret, linear fade to ss_return = own cycle 25.7% by y2_ret: 2026-10-19 ordered pick, own cycle usable,
+invested-capital basis, FY2021-25 trough-to-trough mean);
 V_opt items are discounted to t_base instead of the FY+1 basis.
 
 Run:  python3 frameworks/eval/603871.SH.py

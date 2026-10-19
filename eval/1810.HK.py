@@ -106,6 +106,7 @@ REQUIRED = (
     "pe_own_min", "pe_own_max", "eps_ttm_gaap",
     "opt_units", "rev_ev_h1", "r_ev", "g2_ev_opt", "t_opt", "t_num",
     "tau_yr", "nci_cny",
+    "ss_return_eco", "t0_ret", "y1_ret", "y2_ret",
 )
 
 BANDS = ("l", "m", "h")
@@ -189,6 +190,37 @@ def parse_stated(text: str) -> dict:
 
 # ---------------------------------------------------------------- computation
 
+def path_pe(g1: float, n: int, g2: float, roe: float, r: float, r_s: float, v: dict[str, float]) -> float:
+    """Three-segment RONIC path (retention.md 稳态回报三段; gordon.py helper not built yet; same as
+    9988.HK).  Multiple on the numerator year (t = 1 <-> calendar t0_ret), two_stage_pe convention:
+    n transition years at g1 earn the forward return; then at g2 the retention of calendar year c
+    earns the forward return while c <= y1_ret, falls linearly to the steady return by y2_ret,
+    and the steady return holds in a Gordon tail from y2_ret.  Steady capped at the forward return.
+    With r_s >= roe it equals perpetual_pe (n = 0) / two_stage_pe (n > 0)."""
+    t0, y1, y2 = int(v["t0_ret"]), int(v["y1_ret"]), int(v["y2_ret"])
+    rs = min(roe, r_s)
+
+    def ron(cal: int) -> float:
+        if cal <= y1:
+            return roe
+        if cal >= y2:
+            return rs
+        return roe + (rs - roe) * (cal - y1) / (y2 - y1)
+
+    pv, e, t = 0.0, 1.0, 1
+    for _ in range(int(n)):  # stage-1 payout deliberately not floored (two_stage_pe convention)
+        pv += e * (1.0 - g1 / roe) / (1.0 + r) ** t
+        e *= 1.0 + g1
+        t += 1
+    while True:
+        cal = t0 + t - 1
+        if cal > y1 and cal >= y2:
+            return pv + e * (1.0 - g2 / rs) / ((r - g2) * (1.0 + r) ** (t - 1))
+        pv += e * (1.0 - g2 / ron(cal)) / (1.0 + r) ** t
+        e *= 1.0 + g2
+        t += 1
+
+
 def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = False) -> dict:
     """Rebuild every leg from Inputs per §3 Formula (source of truth: the MD)."""
     r = v["r_perp"]
@@ -237,10 +269,11 @@ def compute(v: dict[str, float], candidate: bool = False, flat_at_m: bool = Fals
         if candidate:
             n = int(v["n_fy28_cand"])
             pe_ph = two_stage_pe(v["g1_fy28_ms"], n, v["g2_phone"], roe_ph, r)
-            pe_ec = two_stage_pe(v["g1_fy28_ms"], n, v["g2_eco"], roe_ec, r)
+            pe_ec = path_pe(v["g1_fy28_ms"], n, v["g2_eco"], roe_ec, r, max(v["ss_return_eco"], r), v)
         else:
             pe_ph = perpetual_pe(v["g2_phone"], roe_ph, r)
-            pe_ec = perpetual_pe(v["g2_eco"], roe_ec, r)
+            # eco: steady return 按序取 = own cycle (A25 ③), path Y1 -> Y2
+            pe_ec = path_pe(0.0, 0, v["g2_eco"], roe_ec, r, max(v["ss_return_eco"], r), v)
         b1_ec = g_roll["eco"] / roe_ec
         return {"pe_phone": pe_ph, "pe_eco": pe_ec, "roe_eco": roe_ec, "roe_phone": roe_ph,
                 "eq_eco_open": eq_ec_open, "b1_eco": b1_ec, "b1_phone": g_roll["phone"] / roe_ph,

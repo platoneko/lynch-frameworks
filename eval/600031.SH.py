@@ -48,15 +48,20 @@ value (lambda = 1) on every tier.
     discount), plus the window distributable profit (2H26 + FY2027 unbooked
     operating EPS x (1 - g/RONIC)) at tau/2.  L (trough from today) n/a.
   * three-stage return: forward RONIC through Y1 2028, linear to the steady
-    return by Y2 2032, perpetual after.  Steady = max(own cycle 10.9%, mature
-    same-business peers' through-cycle median 36.8% (Caterpillar 40.3% /
-    Deere 33.3%, >= 5 years), floor 15%) = 36.8%, capped by each tier's
-    forward (M 22.9% / H 25.1%) -> the path is flat: three stages bite nowhere.
+    return by Y2 2032, perpetual after.
   * g2 pairing: the same-earnings months are re-solved on the same aligned
     ruler — each month's operating multiple = path_PE(g, month ROE) x
     1.1^-tau + u x (1 - g/ROE) x 1.1^-(tau/2), u = the tier's unbooked
     window EPS / FY2028 operating EPS — median of the well-posed months.
   * k = 0 on every tier (no k on this ticker).
+
+2026-10-19 framework correction (retention.md「稳态回报三段」taken in order,
+user-approved 2026-10-19): steady = own cycle, the latest complete
+trough-to-trough cycle FY2016-23 on the invested-capital basis, mean 17.9%.
+Caterpillar / Deere dropped (competitive arena is domestic); domestic peers
+XCMG 9.3-11.5% / Liugong 6.8% (Zoomlion in decline) and the floor 15% are
+comparisons only.  The path now bites (forward M 22.8% / H 25.0% > 17.9%), so
+g2 is re-solved on the same path (pairing): M 4.37% / H 3.97%.
 
 V_opt = 0: electrification, mining and overseas expansion are inside the
 consensus years.  CNY segment of _AXIS.rates is [待建] → no r_f readings.
@@ -90,6 +95,7 @@ PAIR_BAND = 0.12          # same-earnings window, valuation-rules 裁决顺序 �
 MIN_GOOD = 6
 LEV_DEBT_EBITDA = 3.0
 LEV_INT_EBIT = 1 / 3
+G2_PREV = {"m": 0.034720, "h": 0.031965}   # g2 before the 2026-10-19 correction (switch-effect reading only)
 
 # Same-earnings months (A-share monthly close, unadjusted; TTM EPS = the latest
 # report visible at month end; BPS same report; shares then 84.9亿).  Built by
@@ -119,7 +125,7 @@ REQUIRED = [
     "cons_np28_l", "cons_np28_m", "cons_np28_h", "np_l", "np_ttm", "equity", "n_rec_l",
     "np_fy22", "np_fy25", "np_mid10", "np_peak_own", "np_2016",
     "r_perp", "g2_m", "g2_h", "payout_obs", "payout_op", "k_l", "k_m", "k_h", "tau",
-    "minority_h1", "parent_ratio", "y1", "y2", "ronic_own", "ronic_ss_cat", "ronic_ss_de", "ronic_ss_floor", "ronic_ss",
+    "minority_h1", "parent_ratio", "y1", "y2", "ronic_own", "ronic_own_1925", "ronic_own_2125", "ronic_ss_floor", "ronic_ss",
     "pe_band_min", "pe_band_max", "pb_own_min",
     "net_debt", "net_debt_ext", "ebitda", "ebit", "interest",
     "net_cash_ext_h1", "div_declared", "c_ex", "cash_yield", "tax_eff",
@@ -207,9 +213,9 @@ def main() -> int:
     y1, y2 = int(inp["y1"]), int(inp["y2"])
     if not (y1 == NUM_YEAR and y2 == y1 + 4):
         errors.append("Y1 must be the visible-year end FY2028 and Y2 = Y1 + 4 (medium entry barrier)")
-    ss_want = max(inp["ronic_own"], statistics.median([inp["ronic_ss_cat"], inp["ronic_ss_de"]]), inp["ronic_ss_floor"])
-    if abs(inp["ronic_ss"] - ss_want) > 5e-4:
-        errors.append(f"ronic_ss {inp['ronic_ss']} != max(own, mature-peer median, floor) {ss_want:.3f}")
+    # steady return in order (retention.md 2026-10-19): own cycle usable -> own; peers / floor are comparisons
+    if abs(inp["ronic_ss"] - inp["ronic_own"]) > 5e-4:
+        errors.append(f"ronic_ss {inp['ronic_ss']} != own trough-to-trough cycle {inp['ronic_own']}")
     r_ss = inp["ronic_ss"]
     errors += ladder("FY2028 consensus", inp["cons_np28_l"], inp["cons_np28_m"], inp["cons_np28_h"])
     if not (inp["k_h"] >= inp["k_m"] >= inp["k_l"]):
@@ -258,13 +264,13 @@ def main() -> int:
     disc_w = (1 + r) ** (tau / 2)
     obps = inp["bps"] - cps  # operating book per share (equity − excess cash)
 
-    def tier(t: str, g: float) -> dict:
+    def tier(t: str, g: float, rs: float | None = None) -> dict:
         e26, e27, e28 = op[t]
         roe = e28 / obps
         for _ in range(300):  # operating BPS roll, b = g/RONIC (③ 步 2)
             bps28 = obps + g / roe * unb[t]
             roe = e28 / bps28
-        pe = path_pe(g, roe, r, y1, y2, r_ss)
+        pe = path_pe(g, roe, r, y1, y2, r_ss if rs is None else rs)
         w = max(unb[t] * (1 - g / roe), 0.0) / disc_w   # window distributable profit (③ 时点对齐)
         return dict(eps=e28, roe=roe, bps=bps28, pe=pe, w=w, pe_1=perpetual_pe(g, roe, r),
                     anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc + w + cps)
@@ -320,9 +326,9 @@ def main() -> int:
     print(f"formula_id={FORMULA_ID}")
     print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus ÷1.1^{tau:g} = ÷{disc:.3f} + window ÷1.1^{tau / 2:g}; "
           f"同世界门 own FY22→25 NP CAGR {cagr:+.1%}")
-    print(f"三段回报: Y1 {y1} Y2 {y2} 稳态 = max(自身周期 {inp['ronic_own']:.1%}, 成熟同业中位 "
-          f"{statistics.median([inp['ronic_ss_cat'], inp['ronic_ss_de']]):.1%}, 兜底 {inp['ronic_ss_floor']:.0%}) = {r_ss:.1%} "
-          f"≥ 前瞻 M {rows['m']['roe']:.1%} / H {rows['h']['roe']:.1%} → 路径不起作用")
+    print(f"三段回报: 前瞻 M {rows['m']['roe']:.1%} / H {rows['h']['roe']:.1%} 维持到 Y1 {y1}，Y2 {y2} 线性回落到稳态 {r_ss:.1%}"
+          f"（自身最近一轮谷到谷 FY2016–23 投入资本口径均值；兜底 {inp['ronic_ss_floor']:.0%} 只作对照）"
+          f"；倍数 M {rows['m']['pe']:.2f}（单段 {rows['m']['pe_1']:.2f}）/ H {rows['h']['pe']:.2f}（单段 {rows['h']['pe_1']:.2f}）")
     print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付股息 {inp['div_declared'] / YI:.2f}亿 "
           f"− 锚 0 − 增长期资金缺口 0 = {c_tot / YI:.2f}亿 × 归母比例 {pr:.4f} = C_ex {c_ex / YI:.2f}亿（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；"
           f"税后收益 {c_inc / YI:.2f}亿 从各档分子扣除")
@@ -363,6 +369,22 @@ def main() -> int:
         ll = inp["np_l"] / sh * recovery_two_stage_pe(g1, inp["n_rec_l"], inp["g2_m"] + dg, roe_mid, r) + cps
         return f"{ll:.2f}/{tier('m', inp['g2_m'] + dg)['anchor']:.2f}/{tier('h', inp['g2_h'] + dg)['anchor']:.2f}"
     print(f"敏感性 g2 −1pp {band(-0.01)} | +1pp {band(0.01)}")
+
+    # steady-return sensitivity: g2 re-solved on the same path (配对), L takes the re-solved M-tier g2
+    def at_ss(rs: float) -> str:
+        gs = {t: print_match(op[t][2] * sh, r, aligned_solver(unb[t] / op[t][2], r, tau, y1, y2, rs))[1] for t in ("m", "h")}
+        if None in gs.values() or max(gs.values()) > min(0.06, r - 0.04):
+            return f"g2 无解或超上限（M {gs['m']} / H {gs['h']}）"
+        ll = inp["np_l"] / sh * recovery_two_stage_pe(g1, inp["n_rec_l"], gs["m"], roe_mid, r) + cps
+        return (f"g2 {gs['m']:.2%}/{gs['h']:.2%} -> {ll:.2f}/{tier('m', gs['m'], rs)['anchor']:.2f}/"
+                f"{tier('h', gs['h'], rs)['anchor']:.2f}")
+    for lab, rs in (("兜底 15%", inp["ronic_ss_floor"]), ("自身 FY2021–25", inp["ronic_own_2125"]),
+                    ("自身 FY2019–25", inp["ronic_own_1925"])):
+        print(f"敏感性 稳态 {lab} {rs:.1%}（g2 重解）: {at_ss(rs)}")
+    # switch effect without re-pairing: g2 held at the pre-2026-10-19 values (steady 36.8% did not bite)
+    for rs in (r_ss, inp["ronic_ss_floor"]):
+        print(f"敏感性 g2 不重解（停在 {G2_PREV['m']:.2%} / {G2_PREV['h']:.2%}）稳态 {rs:.1%}: "
+              f"M {tier('m', G2_PREV['m'], rs)['anchor']:.2f} / H {tier('h', G2_PREV['h'], rs)['anchor']:.2f}")
     print(f"M 分子换 FY2028 下沿 {inp['cons_np28_l'] / YI:.2f}亿 -> M "
           f"{(inp['cons_np28_l'] - c_inc) / sh * rows['m']['pe'] / disc + rows['m']['w'] + cps:.2f}")
     print(f"H 坐标·自身实测利润高点 {inp['np_peak_own'] / YI:.1f}亿 x H PE -> "

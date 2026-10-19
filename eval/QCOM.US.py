@@ -93,7 +93,7 @@ REQUIRED = (
     ["shares", "tax_rate", "equity", "r_op", "pe_own_min", "pe_own_max"]
     + ["dc_target_rev", "dc_cons_rev", "hsbc_eps_fy27", "hsbc_dc_uplift", "hsbc_dc_drev", "g2_dc_src", "t_opt"]
     + ["eps_fy26_cons", "eps_9m_fy26", "payout_3y"]
-    + ["g2_auto_today", "tau", "t0_cal", "y1", "y2", "rs_steady"]
+    + ["g2_auto_today", "tau", "t0_cal", "y1", "y2", "rs_steady", "rs_steady_dc", "y1_dc", "y2_dc"]
     + [f"ev_ebit_ts_{t}" for t in TIERS]
     + [f"rev_{leg}_{t}" for leg in LEGS for t in TIERS]
     + [f"om_{leg}_{t}" for leg in LEGS for t in TIERS]
@@ -260,9 +260,14 @@ def main() -> int:
     # A10: recomputed on this ticker's ruler (v2); see option_value.  Unit economics on the
     # same return path from the realisation year, folded to FY27 and then by tau (A17).
     g2_dc = min(inp["g2_dc_src"], g_cap(inp["r_op"]))
+    # The DC option is a narrative-change leg (new product line, no mature same-business peer):
+    # steady = min(forward, 30%) on its own product-stage window (A10 / A17), not the chip legs' path.
+    y1_dc, y2_dc, rs_dc = int(inp["y1_dc"]), int(inp["y2_dc"]), inp["rs_steady_dc"]
+    if y1_dc < int(inp["t_opt"]):
+        errors.append(f"y1_dc {y1_dc} before the option's realisation year {inp['t_opt']:g} (A10)")
     v_opt, opt_inc, dc_margin, pe_dc = option_value(
         inp, roe_m, g2_dc, inp["r_op"],
-        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1, y2, rs))
+        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1_dc, y2_dc, rs_dc))
     v_opt *= (1 + inp["r_op"]) ** -tau
     adj = [base[i] + P_K[i] * v_opt for i in range(3)]
 
@@ -345,7 +350,7 @@ def main() -> int:
           f"H+V={old_ladder[2] + v_opt:.2f}")
     v_alt_path = option_value(
         inp, roe_m, 0.04, inp["r_op"],
-        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1, y2, rs))[0] * (1 + inp["r_op"]) ** -tau
+        pe_fn=lambda g, roe, rr: path_pe(g, roe, rr, int(inp["t_opt"]), y1_dc, y2_dc, rs_dc))[0] * (1 + inp["r_op"]) ** -tau
     print(f"V_opt path ruler: FY29 value {opt_inc * pe_dc:.2f}; g2_dc 4% -> {v_alt_path:.2f}; "
           f"p_M 0.25/0.35/0.50 -> M' " + " / ".join(f"{M + p * v_opt:.2f}" for p in (0.25, 0.35, 0.50)))
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves

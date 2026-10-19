@@ -25,8 +25,8 @@ Time alignment (③): the Gordon value sits at the FY27 opening (2027-01-01);
 discounted tau = 0.5 years to the 2026-06-30 balance sheet.  With a funding gap
 the window's distributable profit is booked as 0 (OCF already carries it).
 Stable-return path (②): the FoA leg's forward ROIC (21.6 / 24.8 / 28.7%) sits
-below the stable return ronic_ss (30%: mature ad peers below the fallback, the
-fallback for near-zero-marginal-cost platforms), so the path is flat and the
+below the stable return ronic_ss (41.9%: own trough-to-trough cycle 2019-2022 on
+invested capital, taken first under the 2026-10-19 order), so the path is flat and the
 multiple is the plain perpetual_pe; the eval asserts ROIC <= ronic_ss.
 
 The numerator is the FY2027E GAAP consensus at its low / mean / high (A3); the

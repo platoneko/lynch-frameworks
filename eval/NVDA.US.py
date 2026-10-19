@@ -13,7 +13,8 @@ Main ruler: one whole-company FY2028 bridge run at three *named* scenarios --
     ROE_i = eps_i / BPS_open_FY28_i      (E_{n+1} / B_n, A24)
     anchor_i = eps_i * path_pe(g2, ROE_i, r_perp; Y1 / Y2 / R_s) / (1 + r)^tau + window_i
     (valuation-rules「经营价值与超额现金」② 稳态回报三段 / ③ 时点对齐, A26; framework
-    correction 2026-10-16: steady return 22%, Y1 2030 / Y2 2035, tau 0.50, window =
+    correction 2026-10-16: Y1 2030 / Y2 2035, tau 0.50; steady return per tier on
+    2026-10-19: L / M 22% (fallback, single non-same-business peer dropped), H 30%; window =
     2H FY27 unbooked x (1 - g2/ROE) at tau/2)
 The multiple is generated, not borrowed: one perpetual g2 shared by all three
 tiers (peer cross-section reverse-solve, capped at the mega-hardware g_cap --
@@ -137,6 +138,7 @@ REQUIRED = [
     "y1",
     "y2",
     "rs_steady",
+    "rs_steady_h",
 ]
 
 _ANCHORS = re.compile(
@@ -288,13 +290,18 @@ def main() -> int:
     # tau/2, floored at 0).  The multiples below are TODAY's operating multiples (anchor / eps).
     tau, t0 = inp["tau"], int(inp["t0_cal"])
     y1, y2, rs = int(inp["y1"]), int(inp["y2"]), inp["rs_steady"]
+    # Steady return per tier (retention「三档各取各的稳态」, A26): L / M = fallback, H (and the
+    # China-DC option, valued on the H tier's ruler) = min(H forward, 30%).
+    rs_t = {"l": rs, "m": rs, "h": inp["rs_steady_h"]}
+    if rs_t["h"] < rs:
+        errors.append(f"rs_steady_h {rs_t['h']} below the L / M steady {rs}")
 
-    def today_pe(g: float, roe: float, rr: float, e: float, b1_: float) -> float:
+    def today_pe(g: float, roe: float, rr: float, e: float, b1_: float, t: str = "m") -> float:
         win = max(unbooked * (1.0 - b1_), 0.0) * (1 + rr) ** -(tau / 2)
-        return path_pe(g, roe, rr, t0, y1, y2, rs) * (1 + rr) ** -tau + win / e
+        return path_pe(g, roe, rr, t0, y1, y2, rs_t[t]) * (1 + rr) ** -tau + win / e
 
     eps_t = {"l": eps_l, "m": eps_m, "h": eps_h}
-    pe_l, pe_m, pe_h = (today_pe(g2, roe_t[t], r, eps_t[t], b1[t]) for t in ("l", "m", "h"))
+    pe_l, pe_m, pe_h = (today_pe(g2, roe_t[t], r, eps_t[t], b1[t], t) for t in ("l", "m", "h"))
     # Guardrail (裁决顺序 ③, A19): today's operating multiple inside the own realised next-FY PE band.
     for label, pe in (("L", pe_l), ("M", pe_m), ("H", pe_h)):
         if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
@@ -402,7 +409,7 @@ def main() -> int:
     disc = (1.0 + r) ** (inp["t_opt"] - NUM_YEAR)
     # Option unit economics on the same return path (from the realisation year), folded to
     # FY2028 and then by tau to today (valuation-rules「经营价值与超额现金」③ 时点对齐).
-    v_opt = d_eps_opt * path_pe(g2, roe_h, r, int(inp["t_opt"]), y1, y2, rs) / disc * (1 + r) ** -tau
+    v_opt = d_eps_opt * path_pe(g2, roe_h, r, int(inp["t_opt"]), y1, y2, rs_t["h"]) / disc * (1 + r) ** -tau
 
     # --- Step 5: compare against the stated Outputs block ---
     out_sec = md.split("### Outputs", 1)[-1] if "### Outputs" in md else md
@@ -479,7 +486,7 @@ def main() -> int:
     # A22 candidate band: same formula, only g2 -> g2_cand (the post-horizon
     # runway the mega-hardware cap keeps out of the base).
     g2c = inp["g2_cand"]
-    pe_c = tuple(today_pe(g2c, roe_t[t], r, eps_t[t], b1[t]) for t in ("l", "m", "h"))
+    pe_c = tuple(today_pe(g2c, roe_t[t], r, eps_t[t], b1[t], t) for t in ("l", "m", "h"))
     cand = (eps_l * pe_c[0], eps_m * pe_c[1], eps_h * pe_c[2])
     if not (cand[0] < cand[1] < cand[2]):
         errors.append(f"candidate band not a ladder: {cand}")
@@ -499,7 +506,7 @@ def main() -> int:
     # priced r; Δr_f moves it 1:1 in each tier's Gordon multiple while the FY28 EPS
     # bridge, tier ROE and g2 stay put.  Disclosure only.
     def band_rf(dr: float) -> tuple[float, float, float]:
-        return tuple(eps_t[t] * today_pe(g2, roe_t[t], r + dr, eps_t[t], b1[t]) for t in ("l", "m", "h"))
+        return tuple(eps_t[t] * today_pe(g2, roe_t[t], r + dr, eps_t[t], b1[t], t) for t in ("l", "m", "h"))
 
     rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):

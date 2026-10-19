@@ -42,8 +42,9 @@ sell-side quantity exists for Track 2, so only H carries it at full weight.
 Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金」, A19):
 - SiPho leg = 叙事换代的腿 (_AXIS.sipho-wafer): steady return = min(tier forward,
   ss_return_cap_sipho 30%), forward kept through Y1 2030, linear to it by Y2 2035;
-- rest-foundry leg on its own path (Y1 2028, Y2 2032, R_s rs_rest) -- its forward
-  return sits below R_s, so the path does not bind;
+- rest-foundry leg on its own path (Y1 2028, Y2 2032, R_s rs_rest) -- 2026-10-19 in-order
+  pick: R_s = own trough-to-trough FY2019-23 return on invested capital 11.7% (was the
+  15% fallback); only H's forward (14.1%) sits above it, so only H fades;
 - rest-foundry g2 = `g2_rest` (the cluster re-solved once on the same path, shared
   with GFS.US); `g2_rest_src` stays the raw cluster reading;
 - the Gordon legs sit at the start of FY2027 and are folded back tau years; the
@@ -377,7 +378,7 @@ def main() -> int:
     print(f"  capital {o['k'] / 1e9:.3f}B (= {inp['k_dual'] / 1e9:g}B x capacity share {t2_share:.4f}) -> ROE {o['roe']:.4f}, SiPho path PE {o['pe']:.2f}x; "
           f"value {o['gross']:.2f} at {int(inp['t_opt'])} / 1.1^{int(inp['t_opt']) - NUM_YEAR} - unspent {o['k_ps']:.2f}/sh, x 1.1^-{tau:g} = {v_opt:.2f}")
     print(f"path (A19): SiPho forward ROE through {path_s[1]}, to min(fwd, {path_s[3]:.0%}) by {path_s[2]} (叙事换代); "
-          f"rest to min(fwd, {path_r[3]:.0%}) {path_r[1]}/{path_r[2]}; tau {tau:g}; parent ratio {pr:g}; "
+          f"rest to min(fwd, {path_r[3]:.1%}) {path_r[1]}/{path_r[2]}; tau {tau:g}; parent ratio {pr:g}; "
           f"window L/M/H " + "/".join(f"{base[t]['win']:.3f}" for t in TIERS)
           + f"; g2 rest {g2r:.4%} (raw cluster src {inp['g2_rest_src']:.4%})")
     for lab, ps_ in (("axis 16.9% (UMC only), 2030/2035", (NUM_YEAR, path_s[1], path_s[2], inp["ss_return_sipho_ref"])),

@@ -41,7 +41,9 @@ correction 2026-10-16):
     deducted as a debt-like item; with a gap the window's distributable profit is 0.
   * stable-return path (②): retained earnings of calendar c earn the tier's
     forward return while c <= y1, fade linearly to the leg's stable return by y2.
-    Retail's stable return = mature-retail through-cycle median (ronic_ss_ret);
+    Retail's L/M stable return (ronic_ss_ret) = advertising (near-zero marginal
+    cost fallback 30%) blended with the mature-retail through-cycle median 13.8% by
+    retention need; H = ronic_ss_ret_h;
     the AWS legs already retain at the sell-side marginal steady-state ROIC, so
     their path is flat.  Stable return capped at the forward return, floored at r.
   * candidate band: FY2028 operating legs discounted tau + 1 years, same gap.
@@ -127,7 +129,7 @@ REQUIRED = [
     "capex_guide", "net_debt_ebitda", "interest_ebit",
     "eps_fy28e_single", "r_disc",
     "v_opt",
-    "tau", "t0", "y1", "y2", "ronic_ss_ret",
+    "tau", "t0", "y1", "y2", "ronic_ss_ret", "ronic_ss_ret_h",
     "capex_2h26", "ocf_2h26", "sbc_2h26",
 ]
 
@@ -248,7 +250,9 @@ def main() -> int:
         k_lab = inp["k_lab"] if k_lab is None else k_lab
         g_aws = inp["g2_aws"] if g_aws is None else g_aws
         g_ret = inp["g2_ret"] if g_ret is None else g_ret
-        rs_ret = inp["ronic_ss_ret"] if rs_ret is None else rs_ret
+        # Steady return per tier (retention「三档各取各的稳态」): L / M = mature-retail peers, H = min(H forward, 30%).
+        if rs_ret is None:
+            rs_ret = inp["ronic_ss_ret_h"] if t == "h" else inp["ronic_ss_ret"]
         dy = tau if disc_years is None else disc_years
         scale = aws_retreat if (t == "l" and retreat) else 1.0
         n_aws = nopat_aws * scale
@@ -352,7 +356,7 @@ def main() -> int:
           f" | AWS retention at marginal ROIC {inp['roic_marg_aws']:.1%} (A4)")
     print(f"asset legs $/sh: portfolio net {port_net / sh:.2f} (gross {inp['port_gross'] / BN:.1f}B − DTL) | net cash {net_cash / sh:.2f}")
     print(f"tau {tau} (2026-06-30 -> FY2027 opening; AWS non-lab + retail at {r4:.0%}, lab at journey {r7:.0%});"
-          f" path t0 {t0} y1 {y1} y2 {y2}, retail stable {inp['ronic_ss_ret']:.2%}, AWS flat at the marginal ROIC;"
+          f" path t0 {t0} y1 {y1} y2 {y2}, retail stable L/M {inp['ronic_ss_ret']:.2%} / H {inp['ronic_ss_ret_h']:.0%}, AWS flat at the marginal ROIC;"
           f" funding gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:,.0f} - (OCF {inp['ocf_2h26']:,.0f} - SBC {inp['sbc_2h26']:,.0f})) / sh;"
           " window profit 0 (gap present)")
     print("  tier  k_eps   AWS-non PE(ROEavg/ret)   lab PE   retail PE(ROE->stable)   port(d)   cash   gap   deemed  total  (legs / (1+r)^tau)")
