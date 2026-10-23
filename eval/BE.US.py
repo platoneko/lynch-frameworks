@@ -25,9 +25,9 @@ the journey — stage-1 cash and the year the tail is discounted back over — w
 consensus lands is a proven power-equipment supplier, not a story stock.  The
 split is worth only 4.3% on its own at n=1, so the arrival risk it stops
 charging moves to an explicit numerator haircut k (A21), and tier
-ROE = EPS_x ÷ the FY27 OPENING book per share (A8/A9/A19): the 2Q26
-if-converted book rolled over the 2H26 earnings not yet booked (FY26 consensus
-minus 1H26 actual) at the growth-required retention b1 = g1/ROE — the same b
+ROE = EPS_x ÷ the FY27 OPENING book per share (A8/A9/A19): the latest 10-Q
+if-converted book rolled over the FY26 earnings not yet booked (FY26 estimate
+minus year-to-date actual) at the growth-required retention b1 = g1/ROE — the same b
 `two_stage_pe` charges in stage 1 (valuation-rules 2026-09-21).  b1 >
 1 here is the issuance the framework already prices as a negative stage-1
 payout, so it is allowed and printed, not failed.  The L tier carries the
@@ -110,7 +110,7 @@ REQUIRED = [
     "shares",
     "equity",
     "eps_fy26_m",
-    "eps_1h26_a",
+    "eps_ytd26_a",
     "payout_3y",
     "eps_fy27_l",
     "eps_fy27_m",
@@ -268,15 +268,15 @@ def main() -> int:
         errors.append(f"g1: stated {inp['g1']:.4f} vs recomputed {g1:.4f}")
 
     # ROE = E_{n+1} / B_n: FY27 EPS over the FY27 OPENING book (= end-2026), not
-    # the 2Q26 book (A19; valuation-rules 2026-09-21).  The 2Q26 if-converted book
-    # is rolled over the 2H26 earnings not yet booked (FY26 consensus minus 1H26
+    # the latest 10-Q book (A19; valuation-rules 2026-09-21).  That if-converted book
+    # is rolled over the FY26 earnings not yet booked (FY26 estimate minus year-to-date
     # actual) at the growth-required retention b1 = g1/ROE — all three tiers
     # carry the FY28 window, so all three roll at g1.  ROE and BPS depend on
     # each other; the fixed point is closed-form: BPS = BPS0 / (1 - g1·N/eps).
     # b1 > 1 is the equity issuance the negative stage-1 payout already prices,
     # so it is disclosed, not failed; only a diverging roll (g1·N/eps >= 1) stops.
     bps_2q26 = inp["equity"] / inp["shares"]
-    unbooked = inp["eps_fy26_m"] - inp["eps_1h26_a"]  # per share, 2H26 only (opening-FY27 book)
+    unbooked = inp["eps_fy26_m"] - inp["eps_ytd26_a"]  # per share, rest of FY26 only (opening-FY27 book)
 
     def opening_bps(eps_x: float) -> float:
         share = g1 * unbooked / eps_x
@@ -291,7 +291,7 @@ def main() -> int:
         if abs(roe[t] - inp[key]) > DERIVED_TOL:
             errors.append(f"{key}: stated {inp[key]:.4f} vs recomputed {roe[t]:.4f}")
     ret_actual = 1.0 - inp["payout_3y"]
-    # (actual retention − b1) × N: negative here = the 2H26 issuance the model books (disclosure only)
+    # (actual retention − b1) × N: negative here = the rest-of-FY26 issuance the model books (disclosure only)
     excess_cash = {t: (ret_actual - b1[t]) * unbooked for t in TIERS}
 
     # ---- Step 2: multiples (g shared across tiers; only ROE varies) and anchors ----
@@ -306,7 +306,7 @@ def main() -> int:
         }
 
     # Timing (A22): the Gordon value sits at t_n = 2027-01-01; discount tau years at the journey
-    # basket to the 2026-06-30 balance sheet, plus the 2H26 window's distributable earnings
+    # basket to the latest 10-Q balance sheet, plus the rest-of-FY26 window's distributable earnings
     # (unbooked x (1 - b1), clipped at 0 — b1 > 1 in every tier, so the window is 0).
     tau = inp["tau"]
     window = {t: max(unbooked * (1.0 - b1[t]), 0.0) * inp["parent_share"] for t in TIERS}
@@ -394,15 +394,15 @@ def main() -> int:
     print(f"tier ROE L/M/H = {roe['L']:.4f}/{roe['M']:.4f}/{roe['H']:.4f} (FY27 EPS / opening-FY27 if-converted book)")
     print(
         f"ROE basis: BPS_open_FY27 = {bps_open['L']:.2f}/{bps_open['M']:.2f}/{bps_open['H']:.2f} USD/sh "
-        f"(2Q26 book {bps_2q26:.2f} rolled over 2H26 unbooked {unbooked:.3f}/sh at b1 = g1/ROE = "
+        f"(10-Q book {bps_2q26:.2f} rolled over rest-of-FY26 unbooked {unbooked:.3f}/sh at b1 = g1/ROE = "
         f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}; b1 > 1 = the issuance stage-1 payout < 0 already prices); "
-        f"old basis (2Q26 book) would read ROE {eps['L'] * inp['shares'] / inp['equity']:.4f}/"
+        f"old basis (10-Q book) would read ROE {eps['L'] * inp['shares'] / inp['equity']:.4f}/"
         f"{eps['M'] * inp['shares'] / inp['equity']:.4f}/{eps['H'] * inp['shares'] / inp['equity']:.4f}"
     )
     print(
-        f"B bucket (actual retention {ret_actual:.0%} − b1) × 2H26 unbooked → "
+        f"B bucket (actual retention {ret_actual:.0%} − b1) × rest-of-FY26 unbooked → "
         f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
-        f"(negative = equity the model books as raised over 2H26; disclosure only, not a leg, not in BPS)"
+        f"(negative = equity the model books as raised over the rest of FY26; disclosure only, not a leg, not in BPS)"
     )
     for t in TIERS:
         p1 = 1.0 - g1 / roe[t]
@@ -412,7 +412,7 @@ def main() -> int:
             f"{t}: eps {eps[t]:.3f} x {pes[t]:.2f}x = {anchors[t]:.2f}  "
             f"stage-1 payout {p1:+.2f} ({tag}) stage-2 payout {p2:.2f}"
         )
-    print(f"timing (A22): tau {tau:g}y at r_journey -> x {(1 + r) ** -tau:.4f}; window 2H26 "
+    print(f"timing (A22): tau {tau:g}y at r_journey -> x {(1 + r) ** -tau:.4f}; window rest-of-FY26 "
           + "/".join(f"{window[t]:.2f}" for t in TIERS)
           + f" (unbooked {unbooked:.3f} x (1 - b1) clipped at 0); steady path Y1 {y1} -> Y2 {y2}, steady {rs:.1%}")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
@@ -470,9 +470,9 @@ def main() -> int:
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
 
     # Gate watch (framework §3 G2): non-failing — trigger needs 2 consecutive quarters
-    conc = inp.get("conc_q2_max")
+    conc = inp.get("conc_q_max")
     if conc is not None and conc > 0.40:
-        print(f"WARN[G2-watch]: conc_q2_max={conc:.2f} > 0.40 quarterly threshold")
+        print(f"WARN[G2-watch]: conc_q_max={conc:.2f} > 0.40 quarterly threshold")
     # Only a clean run writes, so a FAIL never feeds the daily digest.
     if not errors:
         write_rf_readings("BE.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
