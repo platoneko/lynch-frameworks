@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """000725.SZ (BOE) valuation eval — recompute anchors from frameworks/000725.SZ.md.
 
-formula_id: boe_fy27_econdep_gordon_tail_v4
+formula_id: boe_fy27_econdep_gordon_tail_v5
 
 Economic-depreciation Gordon + depreciation-tail annuity (construction.md §5b
 「经济折旧 Gordon」, 2026-10-05; this ticker is the rule's sample).  Panel lines
@@ -74,12 +74,14 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "000725.SZ.md"
 GCS_AXIS = axis_path("_AXIS.glass-core-substrate")
 GCS_SHARED = ("gcs_abs_rev_usd", "gcs_abs_cap_m2", "gcs_panel_m2", "gcs_price_h_usd",
               "gcs_opm_weak", "gcs_opm_strong", "gcs_yield_disc", "g2_gcs_src")
-FORMULA_ID = "boe_fy27_econdep_gordon_tail_v4"
+PANEL_AXIS = axis_path("_AXIS.lcd-tv-panel")
+AXIS_SHARED = {"r_perp": "r_panel", "r_perp_ref": "r_panel_ref"}  # framework row -> axis row
+FORMULA_ID = "boe_fy27_econdep_gordon_tail_v5"
 TIERS = ("l", "m", "h")
 REQUIRED = [
     "shares", "bps", "ni_2026h1", "ni_ttm",
     "ni26_m", "ni26_h", "ni27_m", "ni27_h", "ni27_lo", "ni28_m",
-    "ni_l", "ni_l_rec", "n_rec", "payout", "r_perp",
+    "ni_l", "ni_l_rec", "n_rec", "payout", "r_perp", "r_perp_ref",
     "da_2023", "da_2025", "da_27", "da_nonfa",
     "gross_equip", "cip", "gross_bldg", "gross_other", "life_bldg", "life_other",
     "life_l", "life_m", "life_h", "tax", "parent_share",
@@ -250,6 +252,14 @@ def main() -> int:
         errors.append("r_perp: no 篮 N in the Inputs source cell (valuation-rules.md「§r 篮子」)")
     r, po, sh = inp["r_perp"], inp["payout"], inp["shares"]
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
+    # shared scenario axis (_AXIS.lcd-tv-panel): the panel-leg r is the axis' (user ruling 2026-10-23)
+    if PANEL_AXIS.is_file():
+        ax = parse_inputs(PANEL_AXIS.read_text(encoding="utf-8"))
+        for k, ak in AXIS_SHARED.items():
+            if ak not in ax or abs(ax[ak] - inp[k]) > 1e-12:
+                errors.append(f"{k} {inp[k]:g} != _AXIS.lcd-tv-panel {ak} {ax.get(ak)} — the panel ruler drifted")
+    else:
+        errors.append("frameworks/axes/lcd-tv-panel.md missing — panel-leg r unchecked")
 
     d = deck(inp)
     L, M, H = (d[t]["a"] for t in TIERS)
@@ -392,6 +402,9 @@ def main() -> int:
         print(f"sens {name}: L {s_['l']['a']:.2f} M {s_['m']['a']:.2f} H {s_['h']['a']:.2f}")
 
     # cross-checks and gate coordinates (disclosure only)
+    ref = deck(inp, r=inp["r_perp_ref"])
+    print(f"axis review base: same ruler at r {inp['r_perp_ref']:.0%} → L {ref['l']['a']:.2f} M {ref['m']['a']:.2f} "
+          f"H {ref['h']['a']:.2f} (_AXIS.lcd-tv-panel §2 trigger)")
     bl, bm, bh = book_deck(inp)
     print(f"cross book Gordon FY2027 (old ruler, no econ D, no tail): {bl:.2f}/{bm:.2f}/{bh:.2f}")
     oe = [(inp[f"ocf_{t}"] - inp["interest"] - inp[f"maint_{t}"]) * inp["parent_share"] / sh / r - ded for t in TIERS]

@@ -75,10 +75,10 @@
 
 ## A股
 
-- [000100.SZ](./000100.SZ.md) — TCL科技 · 篮子：r_display 篮 6 13% · r_pv 篮 6 13% · r_dist 篮 4 10% · r_shb 篮 5 11%
+- [000100.SZ](./000100.SZ.md) — TCL科技 · 篮子：r_display 篮 5 11% · r_pv 篮 6 13% · r_dist 篮 4 10% · r_shb 篮 5 11%
 - [000338.SZ](./000338.SZ.md) — 潍柴动力 · 篮子：篮 4 10%
 - [000543.SZ](./000543.SZ.md) — 皖能电力 · 篮子：篮 4 10%
-- [000725.SZ](./000725.SZ.md) — 京东方A · 篮子：篮 6 13%
+- [000725.SZ](./000725.SZ.md) — 京东方A · 篮子：篮 5 11%
 - [000792.SZ](./000792.SZ.md) — 盐湖股份 · 篮子：篮 6 13%
 - [000933.SZ](./000933.SZ.md) — 神火股份 · 篮子：篮 6 13%
 - [002423.SZ](./002423.SZ.md) — 中粮资本 · 篮子：r_op 篮 4 10% · r_bank 篮 5 11%
@@ -128,6 +128,7 @@
 - [`_AXIS.hdd-glass-substrate`](./axes/hdd-glass-substrate.md) — HDD 玻璃基板 · 挂载票：— ｜ 参照：HOCPY.US
 - [`_AXIS.hvlp-copper-foil`](./axes/hvlp-copper-foil.md) — 高频高速电子铜箔（RTF / HVLP）同业尺轴 · 挂载票：— ｜ 参照：0148.HK | 候选：301511.SZ（德福科技）、301217.SZ（铜冠铜箔）、5706.T（三井金属）、5801.T（古河电工）、8358.TWO（金居）——未入库，只作尺的提供方
 - [`_AXIS.inp-laser`](./axes/inp-laser.md) — 磷化铟基激光芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US · AAOI.US · COHR.US（数通腿，只引用本轴「稳态回报」「高回报期」两行，见 §1 / §1c）
+- [`_AXIS.lcd-tv-panel`](./axes/lcd-tv-panel.md) — LCD 电视面板价格情景轴（控产格局下的面板价位 + 面板腿折现率） · 挂载票：`000725.SZ` 京东方（整公司）· `000100.SZ` TCL科技（只挂华星显示腿）
 - [`_AXIS.leading-edge-foundry`](./axes/leading-edge-foundry.md) — 先进逻辑晶圆代工 · 挂载票：— ｜ 参照：INTC.US · 0981.HK（先进制程腿：利润率尺、g2、对齐年份、稳态回报） | 候选：TSM.US（尺的提供方：本轴借它的实测营业利润率作上界；其框架未按本轴拆腿，输入不变）
 - [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
