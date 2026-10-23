@@ -28,8 +28,8 @@ level: Anhui's annual market tariff is signed on the prior year's coal, so a
 falling coal year is a fat year (FY2024 0.91 / FY2025 0.95) and a rising coal
 year is a squeeze (2026H1 0.36).  Hence
 
-  * L = the 2026E squeeze year taken as steady state: H1 realised + the bridge
-    for H2 at the 2026-09 spot platform and the FY2025 tariff, with the 2026
+  * L = the 2026E squeeze year taken as steady state: 9M realised + the bridge
+    for Q4 at the 2026-10 spot platform and the FY2025 tariff, with the 2026
     capacity tariff (165 CNY/kW-yr, 发改价格〔2023〕1501号) that every tier
     carries.  It loses to the PB floor (own-year PB low x BPS), which is what
     the framework reports (skill A2e-1: scenario_L and floor both stated).
@@ -86,9 +86,9 @@ M_V3_TTM, M_V4_FROZEN = 8.50, 3.78
 REQUIRED = [
     "shares", "bps", "equity", "r_perp", "g2", "pe_m",
     "eps_l", "eps_m", "eps_h", "eps_m_lo", "eps_m_hi",
-    "eps_h1_26", "eps_h2_26_bridge", "eps_ttm", "eps_fy26e",
+    "eps_9m_26", "eps_q4_26_bridge", "eps_ttm", "eps_fy26e",
     "eps_fy25", "eps_fy24", "eps_fy23", "eps_fy22",
-    "coal_l", "coal_m", "coal_h", "coal_m_lo", "coal_m_hi", "coal_h2_26", "coal_fy2026e",
+    "coal_l", "coal_m", "coal_h", "coal_m_lo", "coal_m_hi", "coal_q4_26", "coal_fy2026e",
     "coal_fy2019", "coal_fy2020", "coal_fy2021", "coal_fy2022", "coal_fy2023", "coal_fy2024", "coal_fy2025",
     "uf_a", "uf_b",
     "tariff_fy22", "tariff_fy23", "tariff_fy24", "tariff_fy25", "tariff_fy26_impl",
@@ -295,12 +295,12 @@ def main() -> int:
         return report(errors, "FAIL (bridge)")
 
     # --- Step 3: tier numerators from the lag wave -----------------------------
-    h2 = world_eps(inp, inp["coal_h2_26"], inp["tariff_fy25"], inp["cap_tariff_2026"], frac=0.5)
-    squeeze = inp["eps_h1_26"] + h2
-    if abs(h2 - inp["eps_h2_26_bridge"]) > EPS_TOL:
-        errors.append(f"eps_h2_26_bridge {inp['eps_h2_26_bridge']} vs bridge H2 {h2:.4f}")
+    q4 = world_eps(inp, inp["coal_q4_26"], inp["tariff_fy25"], inp["cap_tariff_2026"], frac=0.25)
+    squeeze = inp["eps_9m_26"] + q4
+    if abs(q4 - inp["eps_q4_26_bridge"]) > EPS_TOL:
+        errors.append(f"eps_q4_26_bridge {inp['eps_q4_26_bridge']} vs bridge Q4 {q4:.4f}")
     if abs(squeeze - eps["l"]) > EPS_TOL:
-        errors.append(f"eps_l {eps['l']} vs 2026E squeeze {inp['eps_h1_26']} + {h2:.4f} = {squeeze:.4f}")
+        errors.append(f"eps_l {eps['l']} vs 2026E squeeze {inp['eps_9m_26']} + {q4:.4f} = {squeeze:.4f}")
     e_h = world_eps(inp, inp["coal_m"], inp["tariff_h"], inp["cap_tariff_2026"])
     if abs(e_h - eps["h"]) > 0.01:
         errors.append(f"eps_h {eps['h']} vs bridge at coal {inp['coal_m']:g} / tariff {inp['tariff_h']:g} / cap {inp['cap_tariff_2026']:g}: {e_h:.4f}")
@@ -313,15 +313,16 @@ def main() -> int:
         errors.append(f"evidence interval [{inp['eps_m_lo']}, {inp['eps_m_hi']}] vs readings [{lo:.4f}, {hi:.4f}]")
     if not (inp["eps_m_lo"] <= eps["m"] <= inp["eps_m_hi"]):
         errors.append(f"eps_m {eps['m']} outside [{inp['eps_m_lo']}, {inp['eps_m_hi']}]")
-    print(f"L 挤压年 2026E：H1 实测 {inp['eps_h1_26']} + H2 桥（煤 {inp['coal_h2_26']:g} / 电价 {inp['tariff_fy25']} / 容量 {inp['cap_tariff_2026']:g}，半年）{h2:.4f} = {squeeze:.4f} → eps_l {eps['l']} ✓"
-          f"（Q3 单季桥 ≈ {world_eps(inp, inp['coal_h2_26'], inp['tariff_fy25'], inp['cap_tariff_2026'], frac=0.25):.3f}；电价 {inp['tariff_fy26_impl']:g} → H2 {world_eps(inp, inp['coal_h2_26'], inp['tariff_fy26_impl'], inp['cap_tariff_2026'], frac=0.5):.4f}）")
+    print(f"L 挤压年 2026E：9M 实测 {inp['eps_9m_26']} + Q4 桥（煤 {inp['coal_q4_26']:g} / 电价 {inp['tariff_fy25']} / 容量 {inp['cap_tariff_2026']:g}，单季）{q4:.4f} = {squeeze:.4f} → eps_l {eps['l']} ✓"
+          f"（电价 {inp['tariff_fy26_impl']:g} → Q4 {world_eps(inp, inp['coal_q4_26'], inp['tariff_fy26_impl'], inp['cap_tariff_2026'], frac=0.25):.4f}；"
+          f"Q3 复现：桥（煤 875 / 电价 428.5）{world_eps(inp, 875, 428.5, inp['cap_tariff_2026'], frac=0.25):.4f} vs 实测 0.1271）")
     print("M 中枢 = 五个跨周期读数的均值：")
     for k, v in reads.items():
         print(f"  {v:.4f}  {k}")
     print(f"  mean {e_m:.4f} → eps_m {eps['m']} ✓; 证据区间 [{lo:.4f}, {hi:.4f}] → [{inp['eps_m_lo']}, {inp['eps_m_hi']}] ✓")
     print(f"H 肥年世界：桥（煤 {inp['coal_m']:g} / 电价 {inp['tariff_h']:g} / 容量 {inp['cap_tariff_2026']:g}）= {e_h:.4f} → eps_h {eps['h']} ✓")
     print(f"周期位置（轴 4c-4）：当期 ÷ 中枢 — TTM {inp['eps_ttm'] / eps['m']:.2f} · FY2025 {inp['eps_fy25'] / eps['m']:.2f} · FY26E {inp['eps_fy26e'] / eps['m']:.2f} · 2026E {squeeze / eps['m']:.2f}；"
-          f"煤价：2026H1 772 / YTD ~796 = L–M 之间，现货 962–989 = 轴 H 状态 = 本票 L 世界")
+          f"煤价：2026H1 772 / Q3 ~875 / 2026-10 现货 1,003–1,013（≥ 轴 H 状态 = 本票 L 世界）")
     if errors:
         return report(errors, "FAIL (numerators)")
 
@@ -387,7 +388,7 @@ def main() -> int:
         m_t = em * inp["pe_m"]
         print(f"  敏感性 中枢单取桥稳态 电价 {t:g}: E_M {em:.4f} → M {m_t:.2f}（H {H:.2f} 不动）"
               + (" M=H 塌" if m_t >= H - 1e-9 else ""))
-    sq100 = inp["eps_h1_26"] + world_eps(inp, inp["coal_h2_26"], inp["tariff_fy25"], inp["cap_tariff_2025"], frac=0.5)
+    sq100 = inp["eps_9m_26"] + world_eps(inp, inp["coal_q4_26"], inp["tariff_fy25"], inp["cap_tariff_2025"], frac=0.25)
     em100 = statistics.mean(midcycle_readings(inp, inp["coal_m"], inp["cap_tariff_2025"], sq100).values())
     eh100 = world_eps(inp, inp["coal_m"], inp["tariff_h"], inp["cap_tariff_2025"])
     b100 = anchors_of(inp, sq100, em100, eh100)
