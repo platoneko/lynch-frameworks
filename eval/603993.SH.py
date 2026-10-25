@@ -66,6 +66,7 @@ REQUIRED = [
     "shares", "fx_usd_cny", "vol_cu", "p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h",
     "lme_au_l", "lme_au_m", "lme_au_h", "vol_au_oz", "cost_au_oz", "price_au_m_oz",
     "realization_cu", "royalty_cu", "cogs_cu", "gp_cu_base", "gp_co_l", "gp_co_m", "gp_co_h",
+    "gp_co_h1", "mi_rate_h1",
     "gp_other", "gp_ixm", "gp_misc", "opex", "opex_vol", "tax_rate", "mi_rate", "mi_kfm",
     "vol_cu_2028", "vol_au_2028_oz", "ach_l_cu", "ach_l_au", "ach_m_cu", "ach_m_au",
     "payout_actual", "n_transition", "growth_capex_26_28", "capex_kfm2", "net_debt",
@@ -251,8 +252,10 @@ def main() -> int:
 
     T = {t: tier(inp, t) for t in TIERS}
     # M guard: base-volume M run-rate reproduces the audited interim ×2, and the
-    # volume × (unit revenue − unit COGS) copper leg reproduces gp_cu_base.
-    base_m = T["m"]["cur"]
+    # volume × (unit revenue − unit COGS) copper leg reproduces gp_cu_base.  The
+    # cobalt M rung and the base NCI rate are re-pinned to 9M data (2026-10-25),
+    # so the closure runs on their 2026H1 values (gp_co_h1 / mi_rate_h1).
+    base_m = year({**inp, "gp_co_m": inp["gp_co_h1"], "mi_rate": inp["mi_rate_h1"]}, "m", inp["vol_cu"], inp["vol_au_oz"], False)
     if abs(base_m["np"] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
         errors.append(f"M base parent {base_m['np']:.4f}亿 vs audited {BASE_NP_PARENT_YI}")
     if abs(base_m["gp_cu"] - inp["gp_cu_base"]) > 0.5:
