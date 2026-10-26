@@ -75,7 +75,8 @@ GCS_AXIS = axis_path("_AXIS.glass-core-substrate")
 GCS_SHARED = ("gcs_abs_rev_usd", "gcs_abs_cap_m2", "gcs_panel_m2", "gcs_price_h_usd",
               "gcs_opm_weak", "gcs_opm_strong", "gcs_yield_disc", "g2_gcs_src")
 PANEL_AXIS = axis_path("_AXIS.lcd-tv-panel")
-AXIS_SHARED = {"r_perp": "r_panel", "r_perp_ref": "r_panel_ref"}  # framework row -> axis row
+AXIS_SHARED = {"r_perp": "r_panel", "r_perp_ref": "r_panel_ref",  # framework row -> axis row
+               "life_l": "panel_life_l", "life_m": "panel_life_m", "life_h": "panel_life_h"}
 FORMULA_ID = "boe_fy27_econdep_gordon_tail_v5"
 TIERS = ("l", "m", "h")
 REQUIRED = [
