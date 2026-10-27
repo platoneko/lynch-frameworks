@@ -16,7 +16,7 @@ range (yfinance, 18 houses, 3.853 / 4.354 / 4.990).  M = mean, H = high.
 Corning is a demand-cycle manufacturer (prices negotiated, cycle in volume),
 so the mid-cycle rule does not apply; L is the stock's own MEASURED digestion
 year instead of the consensus low: the OC leg falls from its latest run-rate
-(Q2'26 x 4) by the FY2022 -> FY2023 OC segment NI ratio (661 -> 478, the
+(latest quarter x 4, Q3'26 since 2026-10-27) by the FY2022 -> FY2023 OC segment NI ratio (661 -> 478, the
 carrier / hyperscale inventory digestion), every other leg as in M.
 FY2028 has only point estimates (each house one number, no range); the ones
 whose original could be checked (Barclays 5.17, Wolfe 5.75, BofA 6.50, Citi
@@ -24,7 +24,7 @@ whose original could be checked (Barclays 5.17, Wolfe 5.75, BofA 6.50, Citi
 three tiers.  The self-built leg bridge is retired as a numerator.
 
 Legs keep the existing split: GI / Automotive / Solar revenue / LS revenue
-follow the bridge factors (FY28 factors over two years from the Q2'26
+follow the bridge factors (FY28 factors over two years from the latest-quarter
 run-rate; FY27 takes the geometric half-way point g^0.5), Solar / LS run-rate
 losses stay flat, and OC is the RESIDUAL of company EPS (eps x shares +
 close_core - GI - AU - Solar/LS losses).  Leg g1 (shared across tiers) = OC
@@ -32,8 +32,8 @@ FY28 residual (point mean) over OC FY27 residual (M) - 1; GI / AU g1 = the
 bridge's second-year step.
 
 Multiples: OC / GI / AU = one transition year (g1_leg) + g2_leg Gordon tail, r =
-basket 4 10%.  ROE_k = FY27 EPS / FY27 OPENING BPS, the Q2'26 book rolled over the
-unbooked 2H26 (FY26 consensus - 1H26 actual) at the ACTUAL retention (unbooked
+basket 4 10%.  ROE_k = FY27 EPS / FY27 OPENING BPS, the latest 10-Q book rolled over the
+unbooked rest of FY26 (FY26 consensus - YTD actual) at the ACTUAL retention (unbooked
 - half-year dividend; user ruling 2026-10-18, A31).  g1 above ROE: stage-1 payout
 is FLOORED at 0 (user ruling 2026-10-18: the $2B ATM is unsold, the build-out is
 funded by customer prepayments and operating cash flow — no issuance charge);
@@ -59,10 +59,10 @@ gordon.py's three-segment function is [待建], so `path_value` lives here (it a
 carries the trough tier's recovery form: stage-1 payout 100%, tail on the M ROE).
 
 Timing alignment (valuation-rules ③, A37): the Gordon legs are FY27-opening values
-(2027-01-01); the base date is the 10-Q balance sheet 2026-06-30 -> tau 0.5.  Only
+(2027-01-01); the base date is the latest 10-Q balance sheet (2026-09-30 since 2026-10-27) -> tau = `tau`.  Only
 the three Gordon legs are discounted; the P/S legs, the prepaid lock-in, the
 capitalised corporate / NCI items, net debt and pension stay (the discount-all
-reading differs < 0.3).  Window distributable profit = unbooked 2H26 core EPS x
+reading differs < 0.3).  Window distributable profit = unbooked rest-of-FY26 core EPS x
 (1 - b1), b1 = g1_co / ROE > 1 in every tier, so the window is clipped to 0 (a
 negative window is a funding gap, and the growth-period funding gap is 0).  The
 options (carrier LTAs, photonics) are FY27-opening values too and take the same tau.
@@ -235,7 +235,7 @@ def main() -> int:
         "ni_oc_q", "ni_gi_q", "ni_au_q", "sales_so_q", "sales_ls_q",
         "g_gi", "g_au", "g_so", "g_ls", "bridge_frac_fy27", "g_so_l", "sales_so_fy28_guide",
         "unalloc_rde_q", "net_interest_q", "so_ls_ni_q",
-        "equity", "eps_fy26_cons", "eps_1h26",
+        "equity", "eps_fy26_cons", "eps_ytd26", "div_q_left",
         "r_perp", "g2_oc", "g2_gi", "g2_au", "dps_annual", "core_eps_ann",
         "pe_own_min", "pe_own_max", "ps_so", "ps_ls",
         "corp_pretax_q", "tax_core", "nci_q", "pe_corp", "net_debt", "pension",
@@ -362,8 +362,8 @@ def main() -> int:
 
     # ---- Step 2: ROE on the FY27 opening book, rolled at the actual retention (A31) ----
     bps0 = inp["equity"] / sh
-    unbooked = inp["eps_fy26_cons"] - inp["eps_1h26"]
-    bps_open = bps0 + unbooked - inp["dps_annual"] / 2  # user ruling 2026-10-18: actual retention over 2H26
+    unbooked = inp["eps_fy26_cons"] - inp["eps_ytd26"]
+    bps_open = bps0 + unbooked - inp["dps_annual"] / 4 * inp["div_q_left"]  # user ruling 2026-10-18: actual retention over the rest of FY26
     ni_leg27 = {"oc": ni_oc, "gi": {k: ni_gi[27] for k in TIERS}, "au": {k: ni_au[27] for k in TIERS}}
 
     def g1_co(k: str, g1s: dict[str, float]) -> float:
@@ -422,7 +422,7 @@ def main() -> int:
     pp_locked_ni = inp["contract_liab"] * inp["pp_margin"]
 
     def window(k: str, rd: float) -> float:
-        """A37: unbooked 2H26 core EPS x (1 - b1), clipped at 0 (b1 > 1 = issuance-funded growth)."""
+        """A37: unbooked rest-of-FY26 core EPS x (1 - b1), clipped at 0 (b1 > 1 = issuance-funded growth)."""
         return unbooked * max(0.0, 1.0 - b1[k]) * (1.0 + rd) ** (-tau / 2)
 
     def anchor(k: str, *, pe_k: dict[str, float] | None = None, sales_so_k: float | None = None,
@@ -503,14 +503,14 @@ def main() -> int:
         return inc, ni_oc28 / rev28
 
     pairs = {
-        "Q2'25->Q2'26": (inp["ni_oc_q"] - inp["ni_oc_q_yago"], inp["sales_oc_q"] - inp["sales_oc_q_yago"]),
+        "latest qtr YoY": (inp["ni_oc_q"] - inp["ni_oc_q_yago"], inp["sales_oc_q"] - inp["sales_oc_q_yago"]),
         "FY24->FY25": (inp["ni_oc_fy25"] - inp["ni_oc_fy24"], inp["sales_oc_fy25"] - inp["sales_oc_fy24"]),
-        "Q1->Q2'26": (inp["ni_oc_q"] - inp["ni_oc_q1"], inp["sales_oc_q"] - inp["sales_oc_q1"]),
+        "latest qtr QoQ": (inp["ni_oc_q"] - inp["ni_oc_q1"], inp["sales_oc_q"] - inp["sales_oc_q1"]),
     }
     margins = {lab: fy28_oc_margin(*p) for lab, p in pairs.items()}
-    _, opt_margin = margins["Q2'25->Q2'26"]
+    _, opt_margin = margins["latest qtr YoY"]
     if not (inp["pp_margin"] < opt_margin < 1):
-        errors.append(f"aligned-year OC margin {opt_margin:.4f} not above the Q2'26 print (A32)")
+        errors.append(f"aligned-year OC margin {opt_margin:.4f} not above the latest-quarter print (A32)")
 
     carrier_rate = inp["carrier_anchor"] / inp["carrier_years"]
 
@@ -582,7 +582,7 @@ def main() -> int:
           f"OC FY28 residual {ni_oc28:,.1f}; g1 OC/GI/AU = {g1['oc']:.4f}/{g1['gi']:.4f}/{g1['au']:.4f} (shared)")
     print(f"ROE L/M/H = {roe['l']:.4f}/{roe['m']:.4f}/{roe['h']:.4f} (FY27 EPS / opening BPS "
           + "/".join(f"{eps[k] / roe[k]:.2f}" for k in TIERS)
-          + f"; BPS0 {bps0:.3f}, unbooked 2H26 {unbooked:.3f}; g1_co "
+          + f"; BPS0 {bps0:.3f}, unbooked rest-of-FY26 {unbooked:.3f}; g1_co "
           + "/".join(f"{gco[k]:.2%}" for k in TIERS) + "; b1 " + "/".join(f"{b1[k]:.2f}" for k in TIERS) + ")")
     p1 = {leg: {k: (1.0 if k == "l" else 1 - g1[leg] / roe[k]) for k in TIERS} for leg in LEGS}
     print("stage-1 payout 1-g1/ROE (unfloored)  " + "  ".join(
@@ -590,7 +590,7 @@ def main() -> int:
           + "  (L = trough tier, 100% payout; negative floored at 0 — no issuance charge, user ruling 2026-10-18)")
     print("unfloored stage-1 issuance OC+GI+AU, USD/sh (not charged): " + "/".join(
               f"{sum(max(0.0, -p1[leg][k]) * ni_leg27[leg][k] for leg in LEGS) / sh:.2f}" for k in TIERS)
-          + f"; FY27 opening BPS actual retention {bps_open:.3f} (= {bps0:.3f} + {unbooked:.3f} − {inp['dps_annual'] / 2:.2f})"
+          + f"; FY27 opening BPS actual retention {bps_open:.3f} (= {bps0:.3f} + {unbooked:.3f} − {inp['dps_annual'] / 4 * inp['div_q_left']:.2f})"
           + f" vs retired b1 roll M/H " + "/".join(f"{eps[k] / roe_at(k, rolled=True):.2f}" for k in ("m", "h")))
     print("window b1 = g1_co/ROE M/H " + "/".join(f"{b1[k]:.2f}" for k in ("m", "h")) + " > 1 -> window 0; OC steady "
           f"min(ROE, {cap_oc:.0%}) M/H " + "/".join(f"{min(roe[k], cap_oc):.2%}" for k in ("m", "h"))
@@ -625,7 +625,7 @@ def main() -> int:
           f"{A / inp['eps_fy27_m']:.1f}-{B / inp['eps_fy27_m']:.1f}x")
 
     rev_oc_m = ni_oc["m"] / inp["pp_margin"]
-    print(f"capex axis implied share (OC FY27 M NI / Q2 margin = ${rev_oc_m / 1e3:.1f}B): M {rev_oc_m * MM / inp['capex_m']:.2%}")
+    print(f"capex axis implied share (OC FY27 M NI / latest-quarter margin = ${rev_oc_m / 1e3:.1f}B): M {rev_oc_m * MM / inp['capex_m']:.2%}")
     print("aligned-year OC margin (FY28 OC NI {:,.1f}): ".format(ni_oc28)
           + "  ".join(f"{lab} inc {inc:.1%} -> {mg:.2%}" for lab, (inc, mg) in margins.items()))
     print(f"V_opt={v_opt:.2f}/sh: Verizon {vz_s:.2f}+{vz_r:.2f}, AT&T {att_s:.2f}+{att_r:.2f}, photonics {v_phot:.2f}  "
@@ -694,7 +694,7 @@ def main() -> int:
         s = with_g1(g)
         print(f"sens g1 {lab}: g1_oc {g:.4f} -> L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
 
-    for lab, mg in (("company OM 20% x (1-21%)", 0.20 * 0.79), ("Q2'26 OC print", inp["pp_margin"])):
+    for lab, mg in (("company OM 20% x (1-21%)", 0.20 * 0.79), ("latest-quarter OC print", inp["pp_margin"])):
         vp = (phot_units * mg * phot_pe - capex_unspent) * disc_phot / sh * df_opt
         print(f"sens photonics margin {lab} {mg:.4f}: photonics {vp:.2f}, V_opt {v_opt - v_phot + vp:.2f}")
     cap_int = inp["seg_assets_oc"] / (inp["sales_oc_q"] * 4)
