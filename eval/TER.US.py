@@ -19,15 +19,16 @@ Multiples are generated, not borrowed: `perpetual_pe(g2, ROE_x, r)` with
 g2 = the test-equipment peer cluster's reverse-solved median truncated to
 g_cap(r) (A7), r = 10% basket 4 常规经营 (A8), and tier ROE = FY27 core EPS
 over the FY27 OPENING operating book: book equity less net cash and the
-Technoprobe carrying value at 2026-06-28, rolled over the FY26 second half
-not yet booked at the growth-required retention b1 = g2/ROE (A9).
+Technoprobe carrying value at the latest balance-sheet date, rolled over the
+FY26 quarters not yet booked (q_left) at the growth-required retention
+b1 = g2/ROE (A9).
 Stable-return path (valuation-rules「经营价值与超额现金」② 稳态回报三段): the
 retention of calendar year c earns the tier's forward ROE while c <= y1, fades
 linearly to the stable return ronic_ss by y2, and earns ronic_ss from y2 on
 (ronic_ss = own full-cycle return, same formula as the forward ROE; L's forward
 sits below it and keeps its own).  Time alignment (③): the Gordon value sits at
-the FY27 opening (t_n), so it is discounted tau years back to the 2026-06-28
-balance-sheet date and the FY26H2 window's distributable profit
+the FY27 opening (t_n), so it is discounted tau years back to the
+balance-sheet date and the unbooked FY26 window's distributable profit
 N x (1 - b1) x parent share is added at tau/2.  Parent share also scales the
 net-cash row (①「归母份额」).
 
@@ -81,7 +82,7 @@ MIN_R_MINUS_G = 0.02
 REQUIRED = [
     "shares", "shares_out", "equity", "cash", "lease", "net_cash", "int_q", "tax",
     "tp_fv", "tp_book", "tp_tax", "tp_eq_q",
-    "eps_fy26_m", "eps_h1_26", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
+    "eps_fy26_m", "eps_ytd_26", "q_left", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
     "eps_fy27_ms", "eps_fy28_ms",
     "payout_3y", "r_perp", "g2", "g_peer_median", "k_l", "k_m", "k_h",
     "eps_trough_ratio", "pb_low",
@@ -208,12 +209,15 @@ def main() -> int:
     closing = cash_ps + tp_ps
 
     # ---- Step 3-5: tier ROE on the FY27 opening operating book, Gordon multiple ----
-    # Operating book = equity - net cash - Technoprobe carrying value (2026-06-28),
-    # rolled over the FY26 second half not yet booked at b = g/ROE (A9).
+    # Operating book = equity - net cash - Technoprobe carrying value (balance-sheet
+    # date), rolled over the q_left FY26 quarters not yet booked at b = g/ROE (A9).
     # Closed form BPS = BPS0 / (1 - g·N/core); a diverging roll stops.
     equity_op = inp["equity"] - inp["net_cash"] - inp["tp_book"]
     bps0 = equity_op * MILLION / sh
-    n_unbooked = inp["eps_fy26_m"] - inp["eps_h1_26"] - strip / 2
+    q_left = inp["q_left"]
+    if q_left not in (1, 2, 3, 4):
+        errors.append(f"q_left {q_left:g} must be the whole number of FY26 quarters not yet booked (1-4)")
+    n_unbooked = inp["eps_fy26_m"] - inp["eps_ytd_26"] - strip * q_left / 4
 
     def opening_bps(core_x: float, g: float) -> float:
         share = g * n_unbooked / core_x
@@ -224,7 +228,7 @@ def main() -> int:
     t0, y1, y2, rs, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["ronic_ss"], inp["tau"]
 
     def window(roe_x: float, g: float, rr: float) -> float:
-        """FY26H2 distributable profit N x (1 - b1) x parent, discounted tau/2 (③ 时点对齐)."""
+        """Unbooked FY26 distributable profit N x (1 - b1) x parent, discounted tau/2 (③ 时点对齐)."""
         return n_unbooked * max(1.0 - g / roe_x, 0.0) * parent / (1 + rr) ** (tau / 2)
 
     def deck(g: float, rr: float, rs_: float | None = None) -> tuple[dict, dict, dict, dict]:
@@ -296,16 +300,16 @@ def main() -> int:
     print(f"r={r:g} (篮 {baskets.get('r_perp')}) g2={g2:.4f} (peer median {inp['g_peer_median']:.4f} truncated to g_cap(r) {cap:.3f})")
     print(f"strip from street EPS: interest {int_ps:.4f} + Technoprobe pick-up {tp_eps:.4f} = {strip:.4f}/sh")
     print(f"path: forward ROE through {y1}, linear fade to stable {rs:.1%} by {y2} (t0 {t0}); tau {tau} "
-          f"(Gordon value at FY27 opening -> 2026-06-28); parent share {parent:.4f}")
-    print("window FY26H2 N x (1 - b1) x parent, PV: " + " / ".join(f"{window(roe[t], g2, r):.2f}" for t in TIERS))
+          f"(Gordon value at FY27 opening -> balance-sheet date); parent share {parent:.4f}")
+    print("window FY26 unbooked N x (1 - b1) x parent, PV: " + " / ".join(f"{window(roe[t], g2, r):.2f}" for t in TIERS))
     print(f"closing: net cash x parent {cash_ps:.4f} + Technoprobe after tax {tp_ps:.4f} "
           f"(fv {inp['tp_fv']:g}M - ({inp['tp_fv']:g} - {inp['tp_book']:g}) x {inp['tp_tax']:g} = {tp_after:.1f}M) = {closing:.4f}/sh")
-    print(f"operating equity {equity_op:.3f}M -> BPS0 {bps0:.4f}; FY26H2 unbooked core {n_unbooked:.4f}/sh")
+    print(f"operating equity {equity_op:.3f}M -> BPS0 {bps0:.4f}; FY26 unbooked core ({q_left:g}q) {n_unbooked:.4f}/sh")
     for t in TIERS:
         print(f"{t}: street {street[t]:.4f} -> core {core[t]:.4f}  BPS_op {bps[t]:.3f}  ROE {roe[t]:.4f}  "
               f"payout {1 - b1[t]:.3f}  PE(path) {pes[t]:.4f}x -> core x PE / 1.1^tau + window {ex_close[t]:.4f} "
               f"(k {k[t]:g}) + closing = {scen[t]:.4f}")
-    print(f"deemed-distributed cash (actual retention {ret_actual:.1%} − b1) × FY26H2 unbooked → "
+    print(f"deemed-distributed cash (actual retention {ret_actual:.1%} − b1) × FY26 unbooked → "
           f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (k = 0; disclosure only)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+closing): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
