@@ -9,18 +9,18 @@ derived live by the daily digest and the app, so nothing here reads a price.
 formula_id: sofi_gordon_tbv_oe_v1
 
 Main ruler: Gordon PB-ROE on tangible book, with *owner earnings* as the numerator.
-  r comes from the leg's basket (A24: whole company → 篮 6 周期商品 / 小盘, 13%),
+  r comes from the leg's basket (A24: whole company → 篮 5 大行 / 优质股份行, 11%),
   read from the Inputs row and checked against gordon.BASKET_R via the 篮 N tag.
   SoFi expenses all customer acquisition, so GAAP NI is an investment-phase P&L.
   OE = NI + growth-acquisition-spend × (1 - t); the growth share of acquisition
   spend is derived from the fair-value model's runoff inputs (CPR + default +
   amortisation), and LPB origination marketing is treated as COGS.
 
-  M/H (two-stage on, n = 1.5y — the excess-capital runway back to own-tested CET1 16%):
-      E_term = OE_27 - GS_27 × (g / rev_g_27) × (1 - t)      # growth spend g needs
+  M/H (two-stage on, n = 1.25y from the 2026-09-30 balance sheet: Q4'26 + FY27):
+      E_term = OE_27 - GS_27 × (g / rev_g_27) × (1 - t27)    # growth spend g needs
       b      = g × cet1_tgt × RWA_T / E_term                   # capital retention g needs
       P      = (1 - b) × E_term / (r - g) / shares / (1 + r)^n
-  L (two-stage off, g = 0, undiscounted):
+  L (two-stage off, g = 0, undiscounted; FY26 tax t):
       OE_L = OE_26 - (ΔNII_{+100bp} + ΔCredit_{NCO→3.8%}) × (1 - t);  P_L = OE_L / r / shares
 
 Run:  python3 frameworks/eval/SOFI.US.py
@@ -49,19 +49,20 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "SOFI.US.md"
 FORMULA_ID = "sofi_gordon_tbv_oe_v1"
 LISTING_CCY = "USD"
 MAINT_TOL = 0.005
+MAINT_STATED = 0.485  # A18 stated value (Inputs 中间量表)
 # Own-tested P/TBV band (2022-12 trough 1.26×, 2026-07 cycle low 2.03×) — guardrail, not a generator.
 PB_BAND = (1.26, 2.03)
 
 REQUIRED = [
     "shares", "tce", "cet1_cap", "cet1_ratio", "cet1_tgt",
-    "ni_q1_26", "ni_q2_26", "ni_q3e_26", "ni_q4e_26",
+    "ni_q1_26", "ni_q2_26", "ni_q3_26", "ni_q4e_26",
     "eps_27_l", "eps_27_m", "eps_27_h", "rev_g_27",
     "lend_mkt_q", "fs_mkt_q", "pl_book", "pl_runoff", "sl_book", "sl_runoff",
-    "orig_q", "lpb_q", "maint_fs", "tax", "r_op", "g2", "g2_l", "n",
+    "orig_q", "lpb_q", "maint_fs", "tax", "tax_27", "r_op", "g2", "g2_l", "n",
     "nii_shock", "pl_loss_rate", "nco_peak", "mark_rate", "credit_sens_10",
     "rev_27", "piper_rev_g_28", "incr_ni_margin",
 ]
-N_FY28 = 2.5  # coordinate band only: stage one stretched through FY28
+# Coordinate band only: stage one stretched one year further, through FY28 (n + 1).
 # Stage one may only run as long as a consensus exists: FY26 and FY27 (A5/A6).
 CONSENSUS_YEARS = 2
 
@@ -76,11 +77,14 @@ def growth_spend_26(inp: dict[str, float], maint_lend: float) -> float:
 
 
 def tier_mh(inp: dict[str, float], eps27: float, gs27: float, g: float) -> dict[str, float]:
-    """One M/H tier: returns price per share plus the disclosed intermediates."""
-    ni_h2 = inp["ni_q3e_26"] + inp["ni_q4e_26"]
+    """One M/H tier: returns price per share plus the disclosed intermediates.
+
+    The balance sheet (tce, cet1_cap) is at 2026-09-30, so only Q4'26 is still to be
+    retained before the FY27 terminal year.
+    """
     ni27 = eps27 * inp["shares"]
     return _terminal(inp, ni_term=ni27, gs_term=gs27, rev_g_term=inp["rev_g_27"], g=g,
-                     retained_before=ni_h2, n=inp["n"])
+                     retained_before=inp["ni_q4e_26"], n=inp["n"])
 
 
 def _terminal(inp: dict[str, float], *, ni_term: float, gs_term: float, rev_g_term: float,
@@ -90,7 +94,7 @@ def _terminal(inp: dict[str, float], *, ni_term: float, gs_term: float, rev_g_te
     `retained_before` is the NI retained between today and the terminal year's
     opening balance; the terminal year's own NI is added on top for TCE_T / RWA_T.
     """
-    t, r = inp["tax"], inp["r_op"]
+    t, r = inp["tax_27"], inp["r_op"]
     oe = ni_term + gs_term * (1.0 - t)
     e_term = oe - gs_term * (g / rev_g_term) * (1.0 - t)
     rwa_t = (inp["cet1_cap"] + retained_before + ni_term) / inp["cet1_tgt"]
@@ -112,22 +116,22 @@ def fy28_coordinate(inp: dict[str, float], eps27: float, gs27: float, g: float) 
     """A22 coordinate band (single-house Piper FY28 × own realized incremental NI margin).
 
     Reference only — never an anchor, never a zone input.  Same terminal mechanics
-    as M/H with the stage stretched one year (N_FY28) so the two bands are comparable.
+    as M/H with the stage stretched one year (n + 1) so the two bands are comparable.
     """
-    ni_h2 = inp["ni_q3e_26"] + inp["ni_q4e_26"]
+    ni_q4 = inp["ni_q4e_26"]
     ni27 = eps27 * inp["shares"]
     d_rev_28 = inp["rev_27"] * inp["piper_rev_g_28"]
     ni28 = ni27 + inp["incr_ni_margin"] * d_rev_28
     gs28 = gs27 * (1.0 + inp["piper_rev_g_28"])
     out = _terminal(inp, ni_term=ni28, gs_term=gs28, rev_g_term=inp["piper_rev_g_28"], g=g,
-                    retained_before=ni_h2 + ni27, n=N_FY28)
-    out["rwa_g_28"] = out["rwa_t"] / ((inp["cet1_cap"] + ni_h2 + ni27) / inp["cet1_tgt"]) - 1.0
+                    retained_before=ni_q4 + ni27, n=inp["n"] + 1.0)
+    out["rwa_g_28"] = out["rwa_t"] / ((inp["cet1_cap"] + ni_q4 + ni27) / inp["cet1_tgt"]) - 1.0
     return out
 
 
 def tier_l(inp: dict[str, float], gs26: float) -> dict[str, float]:
     t, r = inp["tax"], inp["r_op"]
-    ni_26 = inp["ni_q1_26"] + inp["ni_q2_26"] + inp["ni_q3e_26"] + inp["ni_q4e_26"]
+    ni_26 = inp["ni_q1_26"] + inp["ni_q2_26"] + inp["ni_q3_26"] + inp["ni_q4e_26"]
     oe26 = ni_26 + gs26 * (1.0 - t)
     uplift = inp["nco_peak"] / inp["pl_loss_rate"] - 1.0
     d_credit = inp["pl_book"] * inp["pl_loss_rate"] * uplift
@@ -176,8 +180,8 @@ def main() -> int:
     maint_lend = maint_lend_of(inp)
     if not 0.0 < maint_lend < 1.0:
         errors.append(f"maint_lend={maint_lend:.3f} out of (0,1)")
-    if abs(maint_lend - 0.464) > MAINT_TOL:
-        errors.append(f"maint_lend recomputed {maint_lend:.4f} vs stated 0.464 (tol {MAINT_TOL})")
+    if abs(maint_lend - MAINT_STATED) > MAINT_TOL:
+        errors.append(f"maint_lend recomputed {maint_lend:.4f} vs stated {MAINT_STATED} (tol {MAINT_TOL})")
 
     gs26 = growth_spend_26(inp, maint_lend)
     gs27 = gs26 * (1.0 + inp["rev_g_27"])
@@ -219,7 +223,7 @@ def main() -> int:
     print(f"maint_lend={maint_lend:.3f}  GS26={gs26:.1f}  GS27={gs27:.1f}  X={x_excess:.0f}")
     print(f"{'档':<3}{'分子':>10}{'倍数':>8}{'ROTCE':>8}{'PB':>7}{'锚点':>8}")
     print(f"{'L':<3}{tl['oe_l']:10.1f}{1 / r:8.2f}{tl['rotce_l']:8.1%}{tl['pb_l']:7.2f}{L:8.2f}   (OE26 {tl['oe26']:.1f} − 冲击, g=0, 不折现)")
-    print(f"{'M':<3}{tm['e_term']:10.1f}{tm['mult']:8.2f}{tm['rotce_oe']:8.1%}{tm['pb_t']:7.2f}{M:8.2f}   (OE27 {tm['oe27']:.1f}, b={tm['b']:.3f}, 折 {inp['n']:.1f}y)")
+    print(f"{'M':<3}{tm['e_term']:10.1f}{tm['mult']:8.2f}{tm['rotce_oe']:8.1%}{tm['pb_t']:7.2f}{M:8.2f}   (OE27 {tm['oe27']:.1f}, b={tm['b']:.3f}, 折 {inp['n']:.2f}y)")
     print(f"{'H':<3}{th['e_term']:10.1f}{th['mult']:8.2f}{th['rotce_oe']:8.1%}{th['pb_t']:7.2f}{H:8.2f}   (OE27 {th['oe27']:.1f}, b={th['b']:.3f})")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.0%}  V_opt/M=0")
@@ -230,7 +234,7 @@ def main() -> int:
     print(f"flat(mult_M 全档): L={L_flat:.2f} M={M:.2f} H={H_flat:.2f}")
     # Disclosure only (A24 / Outputs): the band-low check is ③ 护栏 read on M/H only (L is
     # *built* to sit at the tested trough).  The 2022-12 band low printed in a loss year
-    # (1b 失真), so a reading below it is disclosed, not a downgrade trigger and not an error.
+    # (1b 失真), so a reading below it would be disclosed, not a downgrade trigger.
     mh_ok = all(PB_BAND[0] <= pb for pb in (tm["pb_t"], th["pb_t"]))
     print(
         f"③ 护栏 P/TBV 带 {PB_BAND}: PB_M {tm['pb_t']:.2f} / PB_H {th['pb_t']:.2f} → "
@@ -275,7 +279,7 @@ def main() -> int:
             if abs(said - got) > 0.05:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     print(
-        f"候选带（Piper 营收 +{inp['piper_rev_g_28']:.0%} × 增量净利率 {inp['incr_ni_margin']:.0%}，n={N_FY28}；不进底牌/zone 判定）: "
+        f"候选带（Piper 营收 +{inp['piper_rev_g_28']:.0%} × 增量净利率 {inp['incr_ni_margin']:.0%}，n={inp['n'] + 1.0:g}；不进底牌/zone 判定）: "
         f"NI28 {cm['ni27']:.0f}/{ch['ni27']:.0f}  E_term {cm['e_term']:.0f}/{ch['e_term']:.0f}  "
         f"b {cm['b']:.3f}/{ch['b']:.3f}  L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  "
         f"CET1 钉 16% 时 FY28 RWA 增速 {cm['rwa_g_28']:.0%}"
