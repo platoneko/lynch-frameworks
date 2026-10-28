@@ -11,20 +11,25 @@ formula_id: meta_fwd_numerator_gordon_foa_rl_icpath_v1
 
 Main ruler: two legs summed per tier k in {L, M, H} (one estimation date, FY2027 = t=1).
 
-  FoA leg   NOPAT_k = eps_k + rl_loss_k(1-tax)/shares + interest(1-tax)/shares
+  FoA leg   NOPAT_k = eps_k + rl_addback(1-tax)/shares + interest(1-tax)/shares
             ROIC_k  = NOPAT_k * shares / ic_fy27        (invested-capital PATH, not equity)
             PE_k    = perpetual_pe(g2, ROIC_k, r_foa)  (Gordon, generated not borrowed)
   RL leg    -rl_loss_k(1-tax) / (shares * r_rl)        (loss capitalised, g = 0)
+
+The RL add-back is the loss the consensus EPS already carries (one value for
+all tiers); the RL leg runs the loss path (A7).  Wiring one number into both
+made a smaller RL loss lower the value (the add-back is multiplied by the FoA
+multiple, the leg only by 1/r) -- split 2026-10-28.
   closing   -(net_debt + settlement_npv) / shares
   gap       growth-period funding gap (valuation-rules「经营价值与超额现金」①):
-            2H26 capex + SBC - 2H26 OCF (window EPS x shares x OCF/NI), per share,
+            Q4'26 capex + SBC - Q4'26 OCF (window EPS x shares x OCF/NI), per share,
             deducted as a debt-like item (no excess-cash row; parent share 1.0)
   V_k       = (NOPAT_k * PE_k + RL_k) / (1 + r)^tau + closing - gap
 
 Time alignment (③): the Gordon value sits at the FY27 opening (2027-01-01);
-discounted tau = 0.5 years to the 2026-06-30 balance sheet.  With a funding gap
+discounted tau = 0.25 years to the 2026-09-30 balance sheet.  With a funding gap
 the window's distributable profit is booked as 0 (OCF already carries it).
-Stable-return path (②): the FoA leg's forward ROIC (21.6 / 24.8 / 28.7%) sits
+Stable-return path (②): the FoA leg's forward ROIC (22.3 / 25.2 / 29.8%) sits
 below the stable return ronic_ss (41.9%: own trough-to-trough cycle 2019-2022 on
 invested capital, taken first under the 2026-10-19 order), so the path is flat and the
 multiple is the plain perpetual_pe; the eval asserts ROIC <= ronic_ss.
@@ -32,7 +37,7 @@ multiple is the plain perpetual_pe; the eval asserts ROIC <= ronic_ss.
 The numerator is the FY2027E GAAP consensus at its low / mean / high (A3); the
 tiers differ ONLY in that layer plus the RL loss path (A7).  The multiple is
 told apart by tier ROIC, whose denominator is the FY27 invested-capital path
-$425B (A6): capex is half debt-funded, so equity alone cannot see it.
+$421.1B (A6): capex is half debt-funded, so equity alone cannot see it.
 
 Option (meta_amd_warrant_option_v1, A14) -- table 3 only, never the deck:
   V_opt = amd_warrant_shares * (amd_price - amd_warrant_strike) * (1-tax) / shares
@@ -56,6 +61,8 @@ Sanity checks beyond the anchor comparison:
     payout_gap printed as a disclosure
   * guardrail ③: M / reported TTM EPS inside the own 5-year band
     [pe_own_min, pe_own_max]; H / clean TTM EPS at or below the band top
+    (within H_BAND_TOL: an overshoot up to 1% is printed as a disclosure,
+    user 2026-10-22)
   * constituent mount on _AXIS.ai-capex (share of the 2026 base is sane)
   * no p-class fields in Inputs; L < M < H; stated anchors / cut points
 
@@ -101,9 +108,10 @@ FRAMEWORK = REPO_ROOT / "frameworks" / "META.US.md"
 FORMULA_ID = "meta_fwd_numerator_gordon_foa_rl_icpath_v1"
 LISTING_CCY = "USD"
 MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
-# Observed payout for check_branch: dividend ~6% + buybacks ~55% of earnings
-# (framework §3 step 3).  With ROIC >= r + 3pp the branch test is sign-only.
-PAYOUT_OBSERVED = 0.61
+# Observed payout for check_branch, 9M26: dividends 4.06B + tax paid on net share
+# settlement 12.77B over NI 52.48B; no buybacks in 2026 (framework §3 step 3).
+# With ROIC >= r + 3pp the branch test is sign-only.
+PAYOUT_OBSERVED = 0.32
 # Contingent 30% of the state settlement (A8), pressure row only.
 SETTLEMENT_CONTINGENT_B = 5.3
 IC_STRESS_MULT = 1.58  # A9 upper IC stress
@@ -111,6 +119,9 @@ IC_STRESS_MULT = 1.58  # A9 upper IC stress
 # (tranche sizes undisclosed, linear in GW), H = full vesting.
 P_TIERS = (0.0, 1.0 / 6.0, 1.0)
 V_OPT_TOL = 0.05
+# Guardrail ③ H side: overshoot of the band top up to this share is disclosed,
+# not failed (user 2026-10-22: strict clean TTM 30.61, H 28.7x vs top 28.7x).
+H_BAND_TOL = 0.01
 
 REQUIRED = [
     "shares",
@@ -120,6 +131,7 @@ REQUIRED = [
     "rl_loss_l",
     "rl_loss_m",
     "rl_loss_h",
+    "rl_addback",
     "interest",
     "tax",
     "equity",
@@ -141,17 +153,17 @@ REQUIRED = [
     "tau",
     "ronic_ss",
     "eps_fy26",
-    "eps_h1_26",
+    "eps_9m_26",
     "ocf_ni",
-    "capex_2h26",
-    "sbc_2h26",
+    "capex_q4_26",
+    "sbc_q4_26",
 ]
 
 
 def funding_gap(inp: dict[str, float]) -> float:
-    """① growth-period funding gap per share: 2H26 capex + SBC beyond 2H26 OCF."""
-    ocf = (inp["eps_fy26"] - inp["eps_h1_26"]) * inp["shares"] * inp["ocf_ni"]
-    return max(inp["capex_2h26"] + inp["sbc_2h26"] - ocf, 0.0) / inp["shares"]
+    """① growth-period funding gap per share: Q4'26 capex + SBC beyond Q4'26 OCF."""
+    ocf = (inp["eps_fy26"] - inp["eps_9m_26"]) * inp["shares"] * inp["ocf_ni"]
+    return max(inp["capex_q4_26"] + inp["sbc_q4_26"] - ocf, 0.0) / inp["shares"]
 
 TIERS = ("l", "m", "h")
 
@@ -194,7 +206,8 @@ def band(
     out: dict[str, dict[str, float]] = {}
     for k in TIERS:
         rl_ps = inp[f"rl_loss_{k}"] * rl_scale * (1.0 - tax) / shares
-        nopat = inp[f"eps_{k}"] + rl_ps + inp["interest"] * (1.0 - tax) / shares
+        add_ps = inp["rl_addback"] * (1.0 - tax) / shares
+        nopat = inp[f"eps_{k}"] + add_ps + inp["interest"] * (1.0 - tax) / shares
         roic = nopat * shares / ic
         pe = perpetual_pe(g2, roic, r_foa)
         rl_leg = -rl_ps / r_rl
@@ -268,8 +281,9 @@ def main() -> int:
             f"M / reported TTM = {pe_m_ttm:.1f}x outside own band "
             f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (③ 出带)"
         )
-    if pe_h_clean > inp["pe_own_max"]:
-        errors.append(f"H / clean TTM = {pe_h_clean:.1f}x above band top {inp['pe_own_max']:g}")
+    h_over = pe_h_clean / inp["pe_own_max"] - 1.0
+    if h_over > H_BAND_TOL:
+        errors.append(f"H / clean TTM = {pe_h_clean:.1f}x above band top {inp['pe_own_max']:g} by {h_over:.1%}")
 
     # --- Step 4: current invested capital, the base of the IC-path disclosures ---
     ic_now = inp["equity"] + inp["net_debt"]
@@ -304,9 +318,9 @@ def main() -> int:
             f"  {k.upper()}: NOPAT {t['nopat']:.2f} x PE {t['pe']:.2f} (ROIC {t['roic']:.1%}) "
             f"= {t['nopat'] * t['pe']:.1f}  RL {t['rl']:.1f}  / 1.1^tau {disc:.4f}  closing {closing:.1f}  -> {t['v']:.1f}"
         )
-    print(f"tau {inp['tau']} (2026-06-30 -> FY27 opening); window profit 0 (funding gap present); "
-          f"gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:g}B + SBC {inp['sbc_2h26']:g}B - OCF "
-          f"{(inp['eps_fy26'] - inp['eps_h1_26']) * shares * inp['ocf_ni']:.2f}B) / {shares}B; "
+    print(f"tau {inp['tau']} (2026-09-30 -> FY27 opening); window profit 0 (funding gap present); "
+          f"gap {gap_ps:.2f}/sh = (Q4'26 capex {inp['capex_q4_26']:g}B + SBC {inp['sbc_q4_26']:g}B - OCF "
+          f"{(inp['eps_fy26'] - inp['eps_9m_26']) * shares * inp['ocf_ni']:.2f}B) / {shares}B; "
           f"stable return {inp['ronic_ss']:.0%} >= every tier ROIC -> path flat")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
     print(f"flat (all {pe_m:.2f}x): " + " / ".join(f"{x:.1f}" for x in flat))
@@ -327,7 +341,8 @@ def main() -> int:
     )
     print(
         f"guardrail ③: M / reported TTM {inp['eps_ttm_reported']:g} = {pe_m_ttm:.1f}x in "
-        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.1f}x"
+        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.2f}x"
+        + (f" — above band top by {h_over:.1%}, disclosed (H_BAND_TOL {H_BAND_TOL:.0%}, user 2026-10-22)" if h_over > 0 else "")
     )
     lo, hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
     print(f"axis _AXIS.ai-capex constituent: FY26 capex guide share of 2026 base {lo:.1%}–{hi:.1%}")
