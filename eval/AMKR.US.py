@@ -12,7 +12,7 @@ the Taiwan OSAT peer cluster's reverse-solved median truncated to g_cap(r)
 the cycle is customers' unit volumes and utilisation, not a commodity price;
 Apple 29.8% + Qualcomm 11.1% stay under the basket-7 thresholds, A9) — and
 tier ROE = FY27 core EPS over the FY27 OPENING *operating* book (book equity
-plus net debt at 2026-06-30, rolled over the FY26 second half not yet booked
+plus net debt at the valuation date, rolled over the rest of FY26 not yet booked
 at b1 = g2/ROE, A6).  After-tax net interest is stripped from the numerator,
 net debt (incl. leases and the 0% 2031 convertible at par, A11) is a closing
 item, and the Arizona phase-1 capital not yet earning in FY27 is charged at
@@ -23,8 +23,8 @@ Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金�
     Y1 = FY2027 (visible end), linear to the steady 15% (OSAT, user-set) by
     Y2 = 2031 (barrier 中 -> 4 years), capped at the tier's forward value;
   * time alignment (③): the Gordon value sits at the start of FY27; today =
-    V_op / (1+r)^tau + window distributable profit (FY26H2 unbooked core EPS x
-    (1 - b1), at tau/2), tau = 2026-06-30 -> 2027-01-01 = 0.5;
+    V_op / (1+r)^tau + window distributable profit (FY26 unbooked core EPS x
+    (1 - b1), at tau/2), tau = valuation date -> 2027-01-01 (0.25 from 2026-09-30);
   * the deemed-distribution k is dropped (it multiplied the whole operating value).
 anchor_x = core_x x path_pe x (1+r)^-tau + window_x + closing.
 
@@ -80,7 +80,7 @@ PEER_PE_SAME_RULER = (18.65, 20.33)  # A12 ⑤: PTI / ASE at r 10%, g 6% (KYEC 1
 
 REQUIRED = [
     "shares", "shares_out", "equity", "cash", "debt", "lease_fin", "lease_op", "net_cash",
-    "int_q", "tax", "eps_fy26_m", "eps_h1_26", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
+    "int_q", "tax", "eps_fy26_m", "eps_ytd_26", "eps_fy27_l", "eps_fy27_m", "eps_fy27_h",
     "payout_3y", "r_perp", "g2", "g_peer_median", "g_peer_low",
     "az_rev", "az_gm", "opex_ratio", "az_tax", "az_capex", "az_itc", "az_grant",
     "mgmt_rev_2030", "mgmt_eps_2030", "rev_fy27_m", "rev_fy27_h", "t_opt", "t_num",
@@ -207,7 +207,9 @@ def main() -> int:
     # ---- Step 3-5: tier ROE on the FY27 opening operating book, Gordon multiple ----
     equity_op = inp["equity"] - inp["net_cash"]
     bps0 = equity_op * MILLION / inp["shares"]
-    n_unbooked = inp["eps_fy26_m"] - inp["eps_h1_26"] - int_ps / 2
+    # tau is also the share of FY26 still unbooked (valuation date -> year end), so the
+    # interest stripped from the unbooked part scales with it (2026-10-28: Q3 booked, tau 0.25).
+    n_unbooked = inp["eps_fy26_m"] - inp["eps_ytd_26"] - int_ps * tau
 
     def opening_bps(core_x: float, g: float) -> float:
         share = g * n_unbooked / core_x
@@ -220,7 +222,7 @@ def main() -> int:
         return path_pe(g, roe_x, rr, t0, y1, y2, rs) * (1.0 + rr) ** -tau
 
     def window(g: float, roe_x: float, rr: float) -> float:
-        """FY26H2 unbooked core EPS x (1 - b1), floored at 0, at tau/2 (A18)."""
+        """FY26 unbooked core EPS x (1 - b1), floored at 0, at tau/2 (A18)."""
         return max(n_unbooked * (1.0 - g / roe_x), 0.0) * (1.0 + rr) ** -(tau / 2)
 
     def deck(g: float, rr: float) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
@@ -311,10 +313,10 @@ def main() -> int:
               f"payout {modelled:.3f} (paid {inp['payout_3y']:.3f}, gap {gap:+.3f})  today PE {pes[t]:.4f}x "
               f"(path Gordon {gordon_today(g2, roe[t], r) * core[t]:.4f} + window {win[t]:.4f}) + closing = {scen[t]:.4f}")
     print(f"path (A18): forward ROE through Y1 {y1}, linear to R_s {rs:.0%} (capped at forward) by Y2 {y2}; "
-          f"tau {tau:g}, window = FY26H2 unbooked x (1 - b1) at tau/2")
-    print(f"ROE basis (A6): op BPS 2026-06-30 {bps0:.3f} rolled over FY26H2 unbooked {n_unbooked:.4f}/sh at b1 "
+          f"tau {tau:g}, window = FY26 unbooked x (1 - b1) at tau/2")
+    print(f"ROE basis (A6): op BPS at the valuation date {bps0:.3f} rolled over FY26 unbooked {n_unbooked:.4f}/sh at b1 "
           f"{b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}")
-    print(f"retained beyond the model (actual retention {ret_actual:.0%} − b1) × FY26H2 unbooked → "
+    print(f"retained beyond the model (actual retention {ret_actual:.0%} − b1) × FY26 unbooked → "
           f"{excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh (no k; disclosure only)")
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+closing): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
@@ -339,7 +341,7 @@ def main() -> int:
     print(f"V_opt cross-check on the target EPS (company margin, not used): ({c30:.4f} - H {core['H']:.4f}) x PE_H / "
           f"{1 + r:g}^{years:g} = {(c30 - core['H']) * pe_opt / (1.0 + r) ** years:.2f}")
     print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    for tp in (65.0, 73.5, 92.0):
+    for tp in (41.0, 66.5, 92.0):  # yfinance low / median / high, 2026-10-28
         target = (tp - closing) / core["M"]
         lo_g, hi_g = -0.30, r - 1e-4
         for _ in range(200):
