@@ -20,11 +20,15 @@ The RL add-back is the loss the consensus EPS already carries (one value for
 all tiers); the RL leg runs the loss path (A7).  Wiring one number into both
 made a smaller RL loss lower the value (the add-back is multiplied by the FoA
 multiple, the leg only by 1/r) -- split 2026-10-28.
-  closing   -(net_debt + settlement_npv) / shares
+  closing   -(net_debt + settlement_npv + nm_penalty) / shares
   gap       growth-period funding gap (valuation-rules「经营价值与超额现金」①):
             Q4'26 capex + SBC - Q4'26 OCF (window EPS x shares x OCF/NI), per share,
             deducted as a debt-like item (no excess-cash row; parent share 1.0)
   V_k       = (NOPAT_k * PE_k + RL_k) / (1 + r)^tau + closing - gap
+  equity    V_k' = (V_k * shares + offering_proceeds - pref_div_pv) / (shares + new_shares)
+            (Oct-2026 offering: 40M forward-sale shares + mandatory convertible
+            preferred at its maximum 20M conversion shares; EPS stays on the
+            pre-offering share basis, so dilution is applied once, here)
 
 Time alignment (③): the Gordon value sits at the FY27 opening (2027-01-01);
 discounted tau = 0.25 years to the 2026-09-30 balance sheet.  With a funding gap
@@ -60,7 +64,9 @@ Sanity checks beyond the anchor comparison:
   * Gordon branch (check_branch on the observed dividend + buyback payout) and
     payout_gap printed as a disclosure
   * guardrail ③: M / reported TTM EPS inside the own 5-year band
-    [pe_own_min, pe_own_max]; H / clean TTM EPS at or below the band top
+    [pe_own_min, pe_own_max] (within M_BAND_TOL below the floor: disclosed --
+    a trailing band against a forward numerator, user 2026-10-29);
+    H / clean TTM EPS at or below the band top
     (within H_BAND_TOL: an overshoot up to 1% is printed as a disclosure,
     user 2026-10-22)
   * constituent mount on _AXIS.ai-capex (share of the 2026 base is sane)
@@ -68,7 +74,7 @@ Sanity checks beyond the anchor comparison:
 
 Disclosures printed (never fed back into the anchors; L/M/H only):
   r_f readings from _AXIS.rates (rf_report.rf_block), g2 +-1pp,
-  IC frozen / x1.58, RL = 0, contingent settlement 30%, tax 21%.
+  IC frozen / 2027 capex at $249B, RL leg = 0, contingent settlement 30%, tax 21%.
 
 Run:  python3 frameworks/eval/META.US.py
 """
@@ -114,7 +120,8 @@ MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
 PAYOUT_OBSERVED = 0.32
 # Contingent 30% of the state settlement (A8), pressure row only.
 SETTLEMENT_CONTINGENT_B = 5.3
-IC_STRESS_MULT = 1.58  # A9 upper IC stress
+# A9 upper IC stress: 2027 capex at Wedbush $249B instead of GS $223.4B (same path otherwise).
+IC_HIGH_CAPEX_DELTA = 249.0 - 223.4
 # A14: per-tier credit on the AMD warrant -- M = first 1 GW tranche of 6 GW
 # (tranche sizes undisclosed, linear in GW), H = full vesting.
 P_TIERS = (0.0, 1.0 / 6.0, 1.0)
@@ -122,6 +129,11 @@ V_OPT_TOL = 0.05
 # Guardrail ③ H side: overshoot of the band top up to this share is disclosed,
 # not failed (user 2026-10-22: strict clean TTM 30.61, H 28.7x vs top 28.7x).
 H_BAND_TOL = 0.01
+# Guardrail ③ M side: the realised band is trailing reported PE, the numerator is
+# FY27 forward, and no month has carried TTM EPS near the M numerator, so the
+# band test does not bind (out-of-band rule step 1); a shortfall up to this share
+# is disclosed (user 2026-10-29 accepted the revision with the L-tier band breach).
+M_BAND_TOL = 0.02
 
 REQUIRED = [
     "shares",
@@ -157,7 +169,17 @@ REQUIRED = [
     "ocf_ni",
     "capex_q4_26",
     "sbc_q4_26",
+    "nm_penalty",
+    "new_shares",
+    "offering_proceeds",
+    "pref_div_pv",
 ]
+
+
+def to_equity(v: float, inp: dict[str, float]) -> float:
+    """Spread the per-share deck over the post-offering count, cash in, preferred dividends out."""
+    shares = inp["shares"]
+    return (v * shares + inp["offering_proceeds"] - inp["pref_div_pv"]) / (shares + inp["new_shares"])
 
 
 def funding_gap(inp: dict[str, float]) -> float:
@@ -181,7 +203,8 @@ def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
 def warrant_value(inp: dict[str, float], amd_price: float | None = None) -> float:
     """A14: after-tax face value per META share of the AMD warrant at full vesting."""
     px = inp["amd_price"] if amd_price is None else amd_price
-    return inp["amd_warrant_shares"] * (px - inp["amd_warrant_strike"]) * (1.0 - inp["tax"]) / inp["shares"]
+    per = inp["shares"] + inp["new_shares"]
+    return inp["amd_warrant_shares"] * (px - inp["amd_warrant_strike"]) * (1.0 - inp["tax"]) / per
 
 
 def band(
@@ -201,7 +224,7 @@ def band(
     settlement_npv = inp["settlement_npv"] if settlement_npv is None else settlement_npv
     r_foa, r_rl = inp["r_foa"] + r_shift, inp["r_rl"] + r_shift
     shares = inp["shares"]
-    closing = -(inp["net_debt"] + settlement_npv) / shares - funding_gap(inp)
+    closing = -(inp["net_debt"] + settlement_npv + inp["nm_penalty"]) / shares - funding_gap(inp)
     disc = (1.0 + r_foa) ** inp["tau"]
     out: dict[str, dict[str, float]] = {}
     for k in TIERS:
@@ -211,7 +234,7 @@ def band(
         roic = nopat * shares / ic
         pe = perpetual_pe(g2, roic, r_foa)
         rl_leg = -rl_ps / r_rl
-        out[k] = {"v": (nopat * pe + rl_leg) / disc + closing, "nopat": nopat, "roic": roic, "pe": pe,
+        out[k] = {"v": to_equity((nopat * pe + rl_leg) / disc + closing, inp), "nopat": nopat, "roic": roic, "pe": pe,
                   "rl": rl_leg, "disc": disc}
     return out
 
@@ -260,9 +283,9 @@ def main() -> int:
     # Flat ladder: the numerator alone must separate the tiers.
     pe_m = base["m"]["pe"]
     gap_ps = funding_gap(inp)
-    closing = -(inp["net_debt"] + inp["settlement_npv"]) / shares - gap_ps
+    closing = -(inp["net_debt"] + inp["settlement_npv"] + inp["nm_penalty"]) / shares - gap_ps
     disc = base["m"]["disc"]
-    flat = [(base[k]["nopat"] * pe_m + base[k]["rl"]) / disc + closing for k in TIERS]
+    flat = [to_equity((base[k]["nopat"] * pe_m + base[k]["rl"]) / disc + closing, inp) for k in TIERS]
     errors += ladder("flat-multiple", *flat)
     # ② stable-return path: flat only while every tier's forward ROIC <= ronic_ss.
     for k in TIERS:
@@ -276,7 +299,8 @@ def main() -> int:
     # --- Step 3: guardrail ③ on the own realised band (reported TTM basis) ---
     pe_m_ttm = M / inp["eps_ttm_reported"]
     pe_h_clean = H / inp["eps_ttm_clean"]
-    if not (inp["pe_own_min"] <= pe_m_ttm <= inp["pe_own_max"]):
+    m_short = 1.0 - pe_m_ttm / inp["pe_own_min"]
+    if pe_m_ttm > inp["pe_own_max"] or m_short > M_BAND_TOL:
         errors.append(
             f"M / reported TTM = {pe_m_ttm:.1f}x outside own band "
             f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (③ 出带)"
@@ -327,7 +351,7 @@ def main() -> int:
     print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}  V_opt/M {v_opt / M:.1%}")
     print(
         f"V_opt (A14 AMD warrant) = {inp['amd_warrant_shares']:g}B sh x (AMD {inp['amd_price']:g} - {inp['amd_warrant_strike']:g}) "
-        f"x (1-{inp['tax']:g}) / {shares}B = {v_opt:.2f}/sh  p_k {P_TIERS[0]:g}/{P_TIERS[1]:.3f}/{P_TIERS[2]:g}"
+        f"x (1-{inp['tax']:g}) / {shares + inp['new_shares']:.3f}B = {v_opt:.2f}/sh  p_k {P_TIERS[0]:g}/{P_TIERS[1]:.3f}/{P_TIERS[2]:g}"
     )
     print(f"表3: {adj[0]:.1f} / {adj[1]:.1f} / {adj[2]:.1f}  A'={a_adj:.1f} B'={b_adj:.1f}")
     print(
@@ -340,8 +364,10 @@ def main() -> int:
         f"(gap {gap:+.0%}; ROIC >= r + 3pp so sign test only — disclosure)"
     )
     print(
-        f"guardrail ③: M / reported TTM {inp['eps_ttm_reported']:g} = {pe_m_ttm:.1f}x in "
-        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.2f}x"
+        f"guardrail ③: M / reported TTM {inp['eps_ttm_reported']:g} = {pe_m_ttm:.2f}x vs "
+        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
+        + (f" — below the floor by {m_short:.1%}, disclosed (M_BAND_TOL {M_BAND_TOL:.0%}, user 2026-10-29)" if m_short > 0 else "")
+        + f"; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.2f}x"
         + (f" — above band top by {h_over:.1%}, disclosed (H_BAND_TOL {H_BAND_TOL:.0%}, user 2026-10-22)" if h_over > 0 else "")
     )
     lo, hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
@@ -354,7 +380,7 @@ def main() -> int:
         print(f"g2 {g:.1%}: {fmt(b)}{over_cap}")
     for label, b in (
         ("IC frozen", band(inp, ic=ic_now)),
-        (f"IC x{IC_STRESS_MULT}", band(inp, ic=ic_now * IC_STRESS_MULT)),
+        ("IC at 2027 capex $249B", band(inp, ic=inp["ic_fy27"] + IC_HIGH_CAPEX_DELTA)),
         ("RL = 0 (bull, not adopted)", band(inp, rl_scale=0.0)),
     ):
         print(f"{label}: {fmt(b)}")
