@@ -8,7 +8,7 @@ no current price or zone (the digest and the app zone on live quotes).
 formula_id: chalco_al_spread_gm_bridge_gordon_v5
 
 Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
-aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
+aluminium spread axis.  M is the 2026 9M filing annualised; L and H are M moved
 by 753.3万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
 marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
 g rows (flat 0% / 0% / 0% → 1/r) at the tier's own forward ROE (NP_x /
@@ -34,8 +34,8 @@ max()'d into L.
 
 The one thing that makes Chalco different from the other three mounts is where
 the profit stops.  2026H1 operating profit was 269.4亿 but only 118.7亿 reached
-the parent — listed subsidiaries (Yunnan Aluminium and others) take roughly
-41%, up from about 31% in 2025H1, because their earnings are the more
+the parent — listed subsidiaries (Yunnan Aluminium and others) take 44.8% of
+net profit, up from 36.3% in 2025H1 (42.3% in 2026Q3), because their earnings are the more
 leveraged ones.  That drain is not modelled explicitly; it is carried by the
 marginal conversion rate, which is why k must stay far below the other mounts'.
 The guard below asserts exactly that, so a future revision cannot quietly
@@ -64,9 +64,9 @@ from lib.zones import cut_points  # noqa: E402
 FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601600.SH.md"
 FORMULA_ID = "chalco_al_spread_gm_bridge_gordon_v5"
 
-GP_M_FILING = 670.5  # 亿 CNY, 2026H1 x2 at 26.73%
-NP_M_FILING = 237.4  # 亿 CNY, 2026H1 归母 118.71 x2
-K_MINORITY_CEILING = 0.50  # §1 属性 A: minorities take ~41% of the margin
+GP_M_FILING = 669.3  # 亿 CNY, 2026 9M (1,865.94 - 1,363.97) x 4/3
+NP_M_FILING = 238.9  # 亿 CNY, 2026 9M 归母 179.16 x 4/3
+K_MINORITY_CEILING = 0.50  # §1 属性 A: minorities take ~44% of net profit
 SHARES_STATIC = 171.55  # 亿股, LB static total_shares 17,154,971,327
 NP_TROUGH_2023H1 = 67.33  # 亿 CNY, 2023H1 归母 33.66 x2 — pressure coordinate only (A13)
 BASKET_INITIAL = 6  # A15: 周期商品 — the basket the leg qualifies for, overturned by ③ 出带
@@ -120,7 +120,7 @@ def main() -> int:
     if br["k"] >= K_MINORITY_CEILING:
         errors.append(
             f"marginal conversion k={br['k']:.4f} >= {K_MINORITY_CEILING} — "
-            "minorities take ~41% of profit (§1 属性 A); a k this high means "
+            "minorities take ~44% of profit (§1 属性 A); a k this high means "
             "the drain has been modelled away"
         )
 
