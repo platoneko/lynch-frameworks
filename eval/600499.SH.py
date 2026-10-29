@@ -71,7 +71,8 @@ Operating value and excess cash (valuation-rules「经营价值与超额现金�
 no excess-cash line (net debt).  Time alignment on the Lanke leg only (its
 numerator is the 2027 run-rate): τ = `n_disc` = 0.5 y at the Lanke basket r,
 plus the window distributable profit (Keda's 2026H2 Lanke share, no consensus
-→ the 2026H1 print `lk_h2_parent`, × (1 − g2_li/ROE)) discounted τ/2; the
+→ the Q3 print + Q4 at the Q3 rate, `lk_h2_parent`, × (1 − g2_li/ROE))
+discounted τ/2; the
 Africa / machinery numerators are 2026H1 annualised (no alignment).  Steady
 return three segments (valuation-rules ②) on the legs with g > 0: RONIC =
 forward ROE through `y1_path`, linear to the steady return by `y2_path`
@@ -140,6 +141,7 @@ REQUIRED = [
     "afr_rev_yoy_fy2025", "tile_sales_fy2025", "tile_sales_yoy_fy2025", "glass_out_fy2025",
     "tile_cap_now", "tile_cap_after", "glass_peru", "glass_ghana", "t_tile", "t_peru", "t_ghana",
     "capex_kisumu2", "prog_kisumu2", "capex_ci2", "prog_ci2", "capex_peru", "prog_peru", "spent_ghana",
+    "glass_kenya", "t_kenya", "capex_kenya",
     "lk_h2_parent", "y1_path", "y2_path", "rs_afr", "rs_mac",
 ]
 RS_ROWS = {"afr": "rs_afr", "mac": "rs_mac"}
@@ -162,17 +164,19 @@ def opt_units(inp: dict[str, float]) -> dict[str, float]:
 def unspent(inp: dict[str, float]) -> dict[str, float]:
     """A22 (valuation-rules 2026-10-04: capacity options deduct unspent capital), 亿元, 100% basis.
 
-    Budgets / progress from the 2026H1 在建工程 note.  Guinea and Ghana have no
-    disclosed budget: Guinea = mean of the two ceramic phase-II budgets, Ghana =
-    the Peru budget (same 20 万吨 float line) less what it has already booked —
-    proxies, named in A22.
+    Budgets / progress from the 2026H1 在建工程 note.  Guinea, Senegal phase III
+    and Ghana have no disclosed budget: Guinea and Senegal III = mean of the two
+    ceramic phase-II budgets each, Ghana = the Peru budget (same 20 万吨 float
+    line) less what it has already booked — proxies, named in A22.  Kenya glass
+    = the 2026-10-28 announced total, nothing spent yet.
     """
     kis = inp["capex_kisumu2"] * (1.0 - inp["prog_kisumu2"])
     ci2 = inp["capex_ci2"] * (1.0 - inp["prog_ci2"])
-    guinea = (inp["capex_kisumu2"] + inp["capex_ci2"]) / 2.0
-    return {"tile": kis + ci2 + guinea,
+    phase2_mean = (inp["capex_kisumu2"] + inp["capex_ci2"]) / 2.0
+    return {"tile": kis + ci2 + 2.0 * phase2_mean,
             "peru": inp["capex_peru"] * (1.0 - inp["prog_peru"]),
-            "ghana": max(0.0, inp["capex_peru"] - inp["spent_ghana"])}
+            "ghana": max(0.0, inp["capex_peru"] - inp["spent_ghana"]),
+            "kenya": inp["capex_kenya"]}
 
 
 def opt_items(inp: dict[str, float], pe_afr_h: float, glass_scale: float = 1.0) -> list[tuple[str, float, float, float, float]]:
@@ -184,9 +188,10 @@ def opt_items(inp: dict[str, float], pe_afr_h: float, glass_scale: float = 1.0) 
     u = opt_units(inp)
     k = unspent(inp)
     items = [
-        ("瓷砖 科特迪瓦二期 + 基苏木二期 + 几内亚", (inp["tile_cap_after"] - inp["tile_cap_now"]) * u["p_tile"], inp["t_tile"], k["tile"]),
+        ("瓷砖 科特迪瓦二期 + 基苏木二期 + 塞内加尔三期 + 几内亚", (inp["tile_cap_after"] - inp["tile_cap_now"]) * u["p_tile"], inp["t_tile"], k["tile"]),
         ("秘鲁玻璃 20 万吨", inp["glass_peru"] * u["p_glass"] * glass_scale / 1e4, inp["t_peru"], k["peru"]),
         ("加纳玻璃 20 万吨", inp["glass_ghana"] * u["p_glass"] * glass_scale / 1e4, inp["t_ghana"], k["ghana"]),
+        ("肯尼亚玻璃 20 万吨", inp["glass_kenya"] * u["p_glass"] * glass_scale / 1e4, inp["t_kenya"], k["kenya"]),
     ]
     out = []
     for label, rev, t, cap in items:
@@ -498,7 +503,7 @@ def main() -> int:
     v_opt = sum(x[4] for x in items)
     if v_opt <= 0:
         errors.append(f"V_opt {v_opt:.2f} <= 0 after unspent capital (A22, 回对话)")
-    for t_key in ("t_tile", "t_peru", "t_ghana"):
+    for t_key in ("t_tile", "t_peru", "t_ghana", "t_kenya"):
         if inp[t_key] < NUM_YEAR:
             errors.append(f"{t_key} before the numerator year")
     if not inp["tile_cap_after"] > inp["tile_cap_now"] > 0:
@@ -528,7 +533,7 @@ def main() -> int:
         "li2co3 OK vs _AXIS.lithium-carbonate: "
         + "/".join(f"{inp[k]:g}" for k in ("li2co3_l", "li2co3_m", "li2co3_h"))
         + f"  蓝科量={inp['vol_lk_plan']:g} x disc={disc:.4f} (r_disc = r_li)"
-        f" (H1 sales x2 = {inp['vol_lk_h1']:g}, not in formula)"
+        f" (latest sales annualised = {inp['vol_lk_h1']:g}, not in formula)"
     )
     print(f"{'档':<3}{'蓝科归母':>9}{'非洲NI':>8}{'机械NI':>8}"
           f"{'g_afr':>7}{'g_mac':>7}{'ROE':>8}{'派息afr':>8}{'PE蓝科':>7}{'PE非洲':>7}{'PE机械':>7}"
@@ -600,7 +605,7 @@ def main() -> int:
     print(f"V_opt 单位（A22 公开数据推断）: 瓷砖 {u['p_tile']:.2f} 元/㎡ · 玻璃 {u['p_glass']:,.0f} 元/吨 · "
           f"非洲腿归母利润率 {u['margin']:.2%} · PE_afr_H {pe['h']['afr']:.2f}")
     k = unspent(inp)
-    for (label, rev, dni, gross, net), cap in zip(items, (k["tile"], k["peru"], k["ghana"])):
+    for (label, rev, dni, gross, net), cap in zip(items, (k["tile"], k["peru"], k["ghana"], k["kenya"])):
         print(f"  {label:<22} 收入 {rev:6.2f} 亿 → ΔNI {dni:5.2f} 亿 → 毛值 {gross:.2f} − 未投资本 {cap:.2f} 亿 × "
               f"{inp['stake_tf']:.2%} ({cap * inp['stake_tf'] * YI / inp['shares']:.2f}) = {net:.2f} 元/股")
     a2, b2 = cut_points(*adj)
@@ -658,7 +663,7 @@ def main() -> int:
               f"隐含 PE非洲={p:6.2f} → g={gi:+.2%}{flag}")
     print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿"
           f" | FY2024 锂谷底归母 {inp['ni_fy2024']:.2f} 亿 | FY2025 ex-蓝科 {inp['ni_exli_fy2025']:.2f} 亿")
-    print(f"  国金 2026E 归母 {inp['ni_2026e_street']:.2f} 亿（锂价按 2026 平台）"
+    print(f"  国金 2026E 归母 {inp['ni_2026e_street']:.2f} 亿（2026-10-29 点评）"
           f" vs 本框架 H 档两腿合计 {total['h']:.2f} 亿 — 仅交叉")
 
     return report(errors)
