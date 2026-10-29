@@ -16,7 +16,7 @@ percentile (AGENTS.md「永续增长口径」), and each leg carries its own inv
 capital, so its ROE — and therefore the retention its growth costs — is
 derived, not chosen.  ROE is E_{n+1}/B_n (valuation-rules 2026-09-21, A25): the
 tier's FY2027E leg NOPAT over the leg's FY2027 OPENING invested capital = the
-2026-06-30 capital rolled over the unbooked 2H26 run-rate NOPAT at the
+2026-09-30 capital rolled over the unbooked Q4 2026 run-rate NOPAT at the
 growth-required retention b1 = g/ROE, closed form IC_open = IC0 / (1 - g*N/E).  r comes from the basket each leg is assigned
 to (valuation-rules「§r 篮子」): both Gordon legs sit in 篮 4 龙头制造
 (`r_perp`, A24); the Inputs source cell names the basket and `check_r` demands
@@ -48,9 +48,9 @@ every screen PE built on it - is meaningless for this name.
 Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
 correction 2026-10-16):
   * time alignment (③): the Gordon legs sit at the FY2027 opening; discounted
-    tau = 0.5 years to the 2026-06-30 balance sheet -- Services and cloud non-lab
+    tau = 0.25 years to the 2026-09-30 balance sheet -- Services and cloud non-lab
     at r_perp, the Anthropic sub-leg at its journey basket r_cld_lab.
-  * growth-period funding gap (①): 2H26 capex - (2H26 OCF - SBC), per share,
+  * growth-period funding gap (①): Q4 2026 capex - (Q4 OCF - SBC), per share,
     deducted as a debt-like item; with a gap the window's distributable profit is 0.
   * stable-return path (②): Services retention earns the tier's forward ROE
     through y1, fades linearly to ronic_ss_svc by y2 (2026-10-19: own history,
@@ -96,8 +96,10 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GOOG.US.md"
 FORMULA_ID = "goog_fwd_numerator_gordon_services_cloud_assets_v3"
 TOL = 0.05
 BN = 1e3  # inputs are in $M; report in $B
-# 10-Q 2026-06-30 Note 15: H1 consolidated income from operations ($M)
-H1_TOTAL_OPERATING_INCOME = 80466.0
+# 8-K Ex-99.1 2026-10-28: Q3 2026 consolidated income from operations ($M)
+Q3_TOTAL_OPERATING_INCOME = 40576.0
+# The run-rate is the latest quarter x4 (event update 2026-10-29; was H1 x2).
+ANNUALIZE = 4
 # AGENTS.md「永续增长口径」: inside 2pp of the pole at r the multiple/g map is
 # ill-conditioned — a whole turn of PE moves g by a rounding error — so a g that
 # close to r may not carry an anchor.
@@ -107,7 +109,7 @@ MIN_R_MINUS_G = 0.02
 MAX_CONSENSUS_GAP = 0.10
 # The tier scalars must be the consensus range itself, not three free numbers.
 K_LADDER_TOL = 1e-4
-# The opening-book roll retains only b1 = g/ROE of the unbooked 2H26 (A25); the
+# The opening-book roll retains only b1 = g/ROE of the unbooked window (A25); the
 # capex wave retains far more (A23 待补), so report the band under a materially
 # larger FY2027 opening capital base.
 EQUITY_SENSITIVITY = (1.20, 1.40)
@@ -150,11 +152,13 @@ def first_float(pattern: str, md: str) -> float | None:
 REQUIRED = [
     "shares_diluted",
     "tax_rate",
-    "oi_services_h1",
-    "oi_cloud_h1",
-    "oi_corp_h1",
-    "corp_oneoff_h1",
-    "oi_other_bets_h1",
+    "oi_services_q3",
+    "oi_cloud_q3",
+    "oi_corp_q3",
+    "corp_oneoff_q3",
+    "oi_other_bets_q3",
+    "ebit_q3e_consensus",
+    "ebit_fy27e_3leg",
     "r_perp",
     "r_cld_lab",
     "r_cld_lab_t",
@@ -188,8 +192,8 @@ REQUIRED = [
     "d_ob_l",
     "d_ob_m",
     "d_ob_h",
-    "capex_h1",
-    "dep_h1",
+    "capex_9m",
+    "dep_9m",
     "ebit_fy26e_consensus",
     "eps_fy27e_consensus",
     "cloud_om_l",
@@ -198,7 +202,7 @@ REQUIRED = [
     "capex_guide_high",
     "v_opt",
     "tau", "t0", "y1", "y2", "ronic_ss_svc",
-    "capex_2h26", "ocf_2h26", "sbc_2h26",
+    "capex_q4", "ocf_q4", "sbc_q4",
 ]
 
 
@@ -313,22 +317,32 @@ def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     if not (0.0 < inp["tax_rate"] < 0.5):
         errs.append("tax_rate out of plausible range")
 
-    # 10-Q Note 15 segment identity — guards against a stale/miskeyed segment row.
+    # 8-K segment identity — guards against a stale/miskeyed segment row.
     seg_sum = (
-        inp["oi_services_h1"]
-        + inp["oi_cloud_h1"]
-        + inp["oi_other_bets_h1"]
-        + inp["oi_corp_h1"]
+        inp["oi_services_q3"]
+        + inp["oi_cloud_q3"]
+        + inp["oi_other_bets_q3"]
+        + inp["oi_corp_q3"]
     )
-    if abs(seg_sum - H1_TOTAL_OPERATING_INCOME) > 1.0:
+    if abs(seg_sum - Q3_TOTAL_OPERATING_INCOME) > 1.0:
         errs.append(
-            f"segment identity: sum {seg_sum:.0f} != H1 operating income "
-            f"{H1_TOTAL_OPERATING_INCOME:.0f}"
+            f"segment identity: sum {seg_sum:.0f} != Q3 operating income "
+            f"{Q3_TOTAL_OPERATING_INCOME:.0f}"
         )
 
     # Other Bets losses stay out of the earnings legs (A2/A15 no-double-count).
-    if inp["oi_other_bets_h1"] >= 0:
-        errs.append("oi_other_bets_h1 expected negative; recheck A15 handling")
+    if inp["oi_other_bets_q3"] >= 0:
+        errs.append("oi_other_bets_q3 expected negative; recheck A15 handling")
+
+    # k_eps_m is the bridge from the run-rate three legs to the FY2027E three-leg
+    # EBIT, marked down by this quarter's EBIT surprise (A2, 2026-10-29: sell-side
+    # revisions not yet out) -- a derived number, not a free scalar.
+    base_3leg = (inp["oi_services_q3"] + inp["oi_cloud_q3"] + inp["oi_corp_q3"] + inp["corp_oneoff_q3"]) * ANNUALIZE
+    want_km = inp["ebit_fy27e_3leg"] * (seg_sum / inp["ebit_q3e_consensus"]) / base_3leg
+    if abs(inp["k_eps_m"] / want_km - 1.0) > K_LADDER_TOL:
+        errs.append(
+            f"k_eps_m = {inp['k_eps_m']:.5f} != ebit_fy27e_3leg x (Q3 actual / Q3E) / run-rate = {want_km:.5f} (A2)"
+        )
 
     return errs
 
@@ -348,13 +362,13 @@ def main() -> int:
     baskets = parse_baskets(md)
     errors = sanity_checks(inp, baskets)
 
-    # Step 1 — trailing base: H1 x2 segment OI, after normalized tax. This is
+    # Step 1 — trailing base: latest quarter x4 segment OI, after normalized tax. This is
     # the base the forward scalars ride on, and the denominator of the A6
     # guardrail; it is no longer itself the numerator.
     keep = 1.0 - inp["tax_rate"]
-    nopat_services = inp["oi_services_h1"] * 2 * keep
-    nopat_cloud = inp["oi_cloud_h1"] * 2 * keep
-    nopat_corp = (inp["oi_corp_h1"] + inp["corp_oneoff_h1"]) * 2 * keep
+    nopat_services = inp["oi_services_q3"] * ANNUALIZE * keep
+    nopat_cloud = inp["oi_cloud_q3"] * ANNUALIZE * keep
+    nopat_corp = (inp["oi_corp_q3"] + inp["corp_oneoff_q3"]) * ANNUALIZE * keep
     svc_leg = nopat_services + nopat_corp
     core_eps = (nopat_services + nopat_cloud + nopat_corp) / inp["shares_diluted"]
 
@@ -382,14 +396,15 @@ def main() -> int:
     cloud_retreat = inp["cloud_om_l"] / inp["cloud_om_now"]
 
     # Step 3 — ONE growth rate per leg; ROE per tier on the leg's FY2027
-    # OPENING invested capital (A25): IC0 (2026-06-30) rolled over the unbooked
-    # 2H26 run-rate NOPAT at b1 = g/ROE, closed form IC_open = IC0/(1 - g*N/E).
+    # OPENING invested capital (A25): IC0 (2026-09-30) rolled over the unbooked
+    # Q4 2026 run-rate NOPAT at b1 = g/ROE, closed form IC_open = IC0/(1 - g*N/E).
     # No multiple can move without a capital base, a numerator or a growth rate
     # moving first.  The L tier's margin retreat scales the cloud numerator, so
     # the same capital earns less: the retreat costs ROE too, it is not free.
     r = inp["r_perp"]
-    unbooked_svc = svc_leg / 2.0
-    unbooked_cld = nopat_cloud / 2.0
+    # The unbooked window runs from the balance-sheet date to the FY2027 opening: tau years.
+    unbooked_svc = svc_leg * inp["tau"]
+    unbooked_cld = nopat_cloud * inp["tau"]
 
     def roe_open(e_fy27: float, ic0: float, g: float, unbooked: float) -> float:
         if g * unbooked / e_fy27 >= 1.0:
@@ -401,8 +416,8 @@ def main() -> int:
     k_lab = inp["k_lab"]
     t0, y1, y2, tau = int(inp["t0"]), int(inp["y1"]), int(inp["y2"]), inp["tau"]
     rs_svc = inp["ronic_ss_svc"]
-    # ① growth-period funding gap: 2H26 capex beyond 2H26 OCF net of SBC (debt-like, parent 1.0)
-    gap_ps = max(inp["capex_2h26"] - (inp["ocf_2h26"] - inp["sbc_2h26"]), 0.0) / inp["shares_diluted"]
+    # ① growth-period funding gap: Q4 2026 capex beyond Q4 OCF net of SBC (debt-like, parent 1.0)
+    gap_ps = max(inp["capex_q4"] - (inp["ocf_q4"] - inp["sbc_q4"]), 0.0) / inp["shares_diluted"]
 
     def tier_multiples(g_svc: float, g_cld: float, ic_scale: float = 1.0,
                        roic_marg: float | None = None, r_lab_: float | None = None) -> dict[str, dict[str, float]]:
@@ -475,7 +490,7 @@ def main() -> int:
         """
         sh = inp["shares_diluted"]
         cld_num = nopat_cloud * cloud_scale * k_eps
-        d4, d7 = (1 + r) ** tau, (1 + r_lab_tau) ** tau  # ③ FY2027 opening -> 2026-06-30
+        d4, d7 = (1 + r) ** tau, (1 + r_lab_tau) ** tau  # ③ FY2027 opening -> 2026-09-30
         return {
             "svc": svc_leg * k_eps * mult_svc / sh / d4,
             "cld": cld_num * (1 - share_lab) * mult_cld / sh / d4,
@@ -537,18 +552,18 @@ def main() -> int:
     # Diagnostics: the trailing base the forward scalars ride on, and the
     # depreciation lag the FY27E consensus is assumed to already carry (A5).
     ebit_runrate = (
-        inp["oi_services_h1"]
-        + inp["oi_cloud_h1"]
-        + inp["oi_corp_h1"]
-        + inp["oi_other_bets_h1"]
-    ) * 2
+        inp["oi_services_q3"]
+        + inp["oi_cloud_q3"]
+        + inp["oi_corp_q3"]
+        + inp["oi_other_bets_q3"]
+    ) * ANNUALIZE
     consensus_gap = ebit_runrate / inp["ebit_fy26e_consensus"] - 1.0
     if abs(consensus_gap) > MAX_CONSENSUS_GAP:
         errors.append(
             f"run-rate EBIT {ebit_runrate:.0f} deviates {consensus_gap:+.1%} "
             f"from FY26E consensus (>{MAX_CONSENSUS_GAP:.0%})"
         )
-    capex_lag = inp["capex_h1"] / inp["dep_h1"]
+    capex_lag = inp["capex_9m"] / inp["dep_9m"]
 
     # The roll retains only b1 = g/ROE; the capex wave retains far more, so the
     # true FY2027 opening capital is larger and these multiples too high (A23).
@@ -587,15 +602,15 @@ def main() -> int:
         f"  waymo/sh(gross)={waymo_gross / inp['shares_diluted']:.2f}"
     )
     print(
-        f"depreciation lag: capex_h1/dep_h1={capex_lag:.1f}x"
+        f"depreciation lag: capex_9m/dep_9m={capex_lag:.1f}x"
         f" — the FORWARD numerator is assumed to already carry the 2026-27 capex"
         f" wave's D&A (A5 falsifier: FY27E EPS cut >10% on unchanged capex guidance)"
     )
     ret_actual = 1.0 - inp["payout_3y"]
     print(
-        f"invested capital IC0($B, 2026-06-30): services+corp={inp['equity_services'] / BN:.1f}"
+        f"invested capital IC0($B, 2026-09-30): services+corp={inp['equity_services'] / BN:.1f}"
         f" cloud={inp['equity_cloud'] / BN:.1f}"
-        f" | ROE basis (A25) = FY2027E leg NOPAT / FY2027 opening IC = IC0 rolled over unbooked 2H26"
+        f" | ROE basis (A25) = FY2027E leg NOPAT / FY2027 opening IC = IC0 rolled over unbooked Q4 2026"
         f" (svc {unbooked_svc / BN:.1f}B, cld {unbooked_cld / BN:.1f}B) at b1 = g/ROE"
         f" | on IC0 (old basis): svc {svc_leg / inp['equity_services']:.1%} cld {nopat_cloud / inp['equity_cloud']:.1%}"
     )
@@ -619,7 +634,7 @@ def main() -> int:
             f"{t.upper()} {((ret_actual - b1_svc[t]) * unbooked_svc + (ret_actual - b1_cld[t]) * unbooked_cld) / inp['shares_diluted']:.2f}"
             for t in "lmh"
         )
-        + f"   [(1 - payout_3y {inp['payout_3y']:.2f} - b1) x unbooked 2H26 per leg]"
+        + f"   [(1 - payout_3y {inp['payout_3y']:.2f} - b1) x unbooked Q4 2026 per leg]"
     )
     print(
         f"numerator ladder = FY2027E consensus range {inp['eps_fy27e_low']}"
@@ -629,10 +644,10 @@ def main() -> int:
         f" {pe_svc['l'] / pe_svc['m']:.3f} / {pe_svc['h'] / pe_svc['m']:.3f} (ROE-mechanical, one g)"
     )
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"tau {tau} (2026-06-30 -> FY2027 opening; services + cloud-non at {r:.0%}, lab at journey {r_lab_tau:.0%});"
+    print(f"tau {tau} (2026-09-30 -> FY2027 opening; services + cloud-non at {r:.0%}, lab at journey {r_lab_tau:.0%});"
           f" services path t0 {t0} y1 {y1} y2 {y2} -> stable {rs_svc:.1%}; cloud flat at the marginal ROIC;"
-          f" funding gap {gap_ps:.2f}/sh = (2H26 capex {inp['capex_2h26']:,.0f} - (OCF {inp['ocf_2h26']:,.0f}"
-          f" - SBC {inp['sbc_2h26']:,.0f})) / shares; window profit 0 (gap present)")
+          f" funding gap {gap_ps:.2f}/sh = (Q4 2026 capex {inp['capex_q4']:,.0f} - (OCF {inp['ocf_q4']:,.0f}"
+          f" - SBC {inp['sbc_q4']:,.0f})) / shares; window profit 0 (gap present)")
     print("  leg $/sh (legs / (1+r)^tau)   services(PE)      cloud-non(PE)  lab(PE)   net_cash   portfolio(d)     waymo(d)   gap   total")
     for tier, k_field, scale, dp_field, do_field in (
         ("L", "k_eps_l", cloud_retreat, "d_port_l", "d_ob_l"),
