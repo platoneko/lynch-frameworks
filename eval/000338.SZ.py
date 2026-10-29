@@ -21,7 +21,7 @@ loses the cash in both numerator and denominator (RONIC).  No peak guard.
              update): M = mean, H = high.
              FY2028 = current FY2026 + 2 -> the consensus legs are discounted
              one year at the basket r (construction §3).  ②-b: the old
-             run-rate ladder (TTM / Q2 x 4) fails both tests and is replaced.
+             run-rate ladder (TTM / latest quarter x 4) fails both tests and is replaced.
   legs       * power leg (scope widened 2026-10-04 v7: large-bore diesel
                backup + gas gensets + SOFC; not turbines).  M = mean of the
                three houses that print an FY2028 revenue on this scope (CMBI
@@ -33,11 +33,12 @@ loses the cash in both numerator and denominator (RONIC).  No peak guard.
                flash note (2027 profit = 主业 110 + AIDC 110亿; 主业 carried flat
                to 2028), power NI = FY2028 NP - 主业.  g2 = power-generation peer
                cross-section reverse-solved on this ruler (CMI / Generac /
-               Jereh; CAT and Wärtsilä exceed the cap and are dropped,
-               Rolls-Royce mtu is inseparable) -> median 4.41%.
-             * KION leg = run-rate equity NI (1H26 x 2 x 46.52%) x KGX.DE
-               forward PE refreshed 2026-10-04 (7.98); today's market value,
-               not discounted.
+               Jereh / CAT, re-solved each report; a peer above the cap is
+               dropped, not capped — Wärtsilä now, CAT until 2026-10-04;
+               Rolls-Royce mtu is inseparable) -> median.
+             * KION leg = run-rate equity NI (latest year-to-date annualised
+               x 46.52%) x KGX.DE forward PE; today's market value, not
+               discounted.
              * core = consensus - power leg - KION run-rate; g2 = 0: the
                same-world Chinese truck peers (Sinotruk A/H) price below 1/r
                and have no retention-branch solution; the US cluster's 4.74%
@@ -72,7 +73,13 @@ loses the cash in both numerator and denominator (RONIC).  No peak guard.
     KION (today's run-rate x today's PE) and L (trough from today) are n/a.
   * three-stage return on the power leg: forward RONIC through Y1 2028,
     linear to the steady return by Y2 2032 (medium entry barrier), then
-    perpetual.  Power g2 4.41% is not re-solved (A17).  No k on this ticker.
+    perpetual.  Power g2 was not re-solved by the correction (A17).  No k on
+    this ticker.
+
+2026-10-29 Q3 event update: the valuation date moves to the latest
+balance-sheet date (VAL_DATE, 2026-09-30 -> tau 1.25); booked EPS is the
+year-to-date figure; a dividend declared before that date is already out of
+BPS / equity (dps_after_bs = 0) but still owed in cash (div_declared).
 
 2026-10-19 framework correction (retention.md「稳态回报三段」taken in order,
 user-approved 2026-10-19): own cycle unusable (not on the same formula);
@@ -124,29 +131,29 @@ GATE_BAND = 0.20
 MARGIN_XCHK = 0.25               # sell-side leg margin vs public cross-check
 
 REQUIRED = [
-    "shares", "bps", "dps_after_h1", "eps_h1", "fx_hkdcny", "fx_eurcny",
+    "shares", "bps", "dps_after_bs", "eps_h1", "eps_ytd", "fx_hkdcny", "fx_eurcny",
     "cons_fy26_m", "cons_fy26_h", "cons_fy27_m", "cons_fy27_h",
     "cons_fy28_l", "cons_fy28_m", "cons_fy28_h",
-    "np_l", "np_ttm", "np_q2x4", "np_mid5", "n_rec_l",
-    "kion_np_h1_eur", "kion_stake", "kion_l_factor", "pe_kion",
+    "np_l", "np_ttm", "np_qx4", "np_mid5", "n_rec_l",
+    "kion_np_rr_eur", "kion_stake", "kion_l_factor", "pe_kion",
     "ms_units_l", "ms_units_m", "ms_price",
     "lb_rev_fy28", "pw_rev_cmbi", "pw_rev_ct", "pw_rev_yh", "cj_main", "seg_margin", "seg_tax", "power_np_share_h1", "power_rev_h1",
     "equity", "r_perp", "g2_core", "g2_core_us", "pe_sinotruk_a", "pe_sinotruk_h",
-    "g2_pw_cmi", "g2_pw_gnrc", "g2_pw_jereh", "g2_power", "payout_obs", "tau",
-    "parent_eq_h1", "minority_h1", "kion_nfd_eur", "lease_liab_h1", "kion_eq_eur", "parent_ratio",
+    "g2_pw_cmi", "g2_pw_gnrc", "g2_pw_jereh", "g2_pw_cat", "g2_power", "payout_obs", "tau",
+    "parent_eq", "minority", "kion_nfd_eur", "lease_liab", "kion_eq_eur", "parent_ratio",
     "y1_power", "y2_power", "ronic_ss_wrt", "ronic_ss_power", "ronic_ss_floor",
     "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "pb_own_min",
     "aft_share_peer", "t_align", "t_aft",
-    "net_cash_ext_h1", "div_declared", "ncx_min", "rev_min", "rev_fy25", "c_ex", "cash_yield", "tax_eff",
+    "net_cash_ext", "div_declared", "ncx_min", "rev_min", "rev_fy25", "c_ex", "cash_yield", "tax_eff",
     "ncx_l", "rev_l", "cash_yield_l", "tax_eff_l", "cash_inc_mid5", "payout_op",
 ]
 NOT_FORMULA = ("pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h", "g2_core_us", "lb_rev_fy28",
-               "cons_fy28_l", "np_q2x4", "pb_own_min", "cash_inc_mid5")
-PREV_M = 32.97                   # M before the 2026-10-19 correction, gate coordinate ①
+               "cons_fy28_l", "np_qx4", "pb_own_min", "cash_inc_mid5")
+PREV_M = 31.51                   # M before the 2026-10-29 Q3 update, gate coordinate ①
 EX_TRIGGER = 0.15                # C_ex >= 15% of parent equity -> own line
 CASH_CAP = 2 / 12                # anchor ratio capped at two months of revenue
 GATE_TRIGGER = 0.25              # gate is mandatory when |ΔM| > 25%
-VAL_DATE = (2026, 6)             # balance-sheet date of the excess cash (month end)
+VAL_DATE = (2026, 9)             # balance-sheet date of the excess cash (month end)
 
 
 def path_pe(g2: float, roe: float, r: float, t0: int, y1: int, y2: int, r_ss: float) -> float:
@@ -208,7 +215,7 @@ def main() -> int:
         errors.append("g2_core must be 0 (same-world Chinese truck peers have no retention-branch solution)")
     if not all(p < 1.0 / r for p in (inp["pe_sinotruk_a"], inp["pe_sinotruk_h"])):
         errors.append("a Sinotruk forward PE is now >= 1/r — the core g2 = 0 reading must be redone (A14)")
-    peer_g = [inp["g2_pw_cmi"], inp["g2_pw_gnrc"], inp["g2_pw_jereh"]]
+    peer_g = [inp["g2_pw_cmi"], inp["g2_pw_gnrc"], inp["g2_pw_jereh"], inp["g2_pw_cat"]]
     if any(g > g_cap(r) for g in peer_g):
         errors.append("a power peer g exceeds g_cap — it must be dropped, not capped")
     g_pw = statistics.median(peer_g)
@@ -230,7 +237,7 @@ def main() -> int:
         return report(errors, "FAIL (basket / g)")
 
     # --- ②-b: the old run-rate ladder against the FY2028 mean -----------------
-    eps_ttm, eps_q2 = inp["np_ttm"] / sh, inp["np_q2x4"] / sh
+    eps_ttm, eps_q2 = inp["np_ttm"] / sh, inp["np_qx4"] / sh
     mean28 = inp["cons_fy28_m"]
     b2_i = eps_ttm <= mean28 <= eps_q2
     b2_dev = eps_ttm / mean28 - 1
@@ -238,24 +245,25 @@ def main() -> int:
         errors.append("②-b passes — the run-rate ladder would be admissible; numerator choice must be revisited")
 
     # --- excess cash (经营价值与超额现金 ①②) ------------------------------------------
-    if abs(inp["div_declared"] - inp["dps_after_h1"] * sh) > 1e6:
-        errors.append("div_declared != dps_after_h1 x shares")
+    div_after = inp["dps_after_bs"] * sh                   # declared after the balance-sheet date: not yet out of BPS
+    if inp["div_declared"] < div_after - 1e6:
+        errors.append("div_declared (unpaid at the balance-sheet date) < dps_after_bs x shares")
     rho = min(max(inp["ncx_min"] / inp["rev_min"], 0.0), CASH_CAP)   # lowest net-cash / revenue in FY2019–25
     anchor = rho * inp["rev_fy25"]
-    c_ex_tot = inp["net_cash_ext_h1"] - inp["div_declared"] - anchor
+    c_ex_tot = inp["net_cash_ext"] - inp["div_declared"] - anchor
     if abs(c_ex_tot - inp["c_ex"]) > 1e6:
-        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext_h1 − div_declared − anchor {c_ex_tot:.4e}")
+        errors.append(f"c_ex {inp['c_ex']:.4e} != net_cash_ext − div_declared − anchor {c_ex_tot:.4e}")
     # parent share (① 归母份额), subsidiary-disclosure reading: KION's own extended net debt (its net
     # financial debt + the whole lease line, upper bound) at the 46.52% stake; the rest of the excess cash
     # at the ex-KION equity ratio.
     fx = inp["fx_eurcny"]
-    kion_nc = -(inp["kion_nfd_eur"] * fx + inp["lease_liab_h1"])
+    kion_nc = -(inp["kion_nfd_eur"] * fx + inp["lease_liab"])
     kion_eq = inp["kion_eq_eur"] * fx
-    eq_par = inp["parent_eq_h1"] - inp["div_declared"]
+    eq_par = inp["parent_eq"] - div_after
     par_x = eq_par - inp["kion_stake"] * kion_eq
-    min_x = inp["minority_h1"] - (1 - inp["kion_stake"]) * kion_eq
+    min_x = inp["minority"] - (1 - inp["kion_stake"]) * kion_eq
     pr = ((c_ex_tot - kion_nc) * par_x / (par_x + min_x) + kion_nc * inp["kion_stake"]) / c_ex_tot
-    pr_eqm = eq_par / (eq_par + inp["minority_h1"])
+    pr_eqm = eq_par / (eq_par + inp["minority"])
     if abs(pr - inp["parent_ratio"]) > 5e-4:
         errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
     c_ex = c_ex_tot * pr
@@ -288,23 +296,23 @@ def main() -> int:
     npm_pub = inp["power_np_share_h1"] * inp["eps_h1"] * sh / inp["power_rev_h1"]
     if abs(npm / npm_pub - 1) > MARGIN_XCHK:
         errors.append(f"power-leg margin {npm:.1%} vs public cross-check {npm_pub:.1%} (> {MARGIN_XCHK:.0%})")
-    kion = inp["kion_np_h1_eur"] * 2 * inp["kion_stake"] * inp["fx_eurcny"]
+    kion = inp["kion_np_rr_eur"] * inp["kion_stake"] * inp["fx_eurcny"]
     kion_share = kion / inp["np_ttm"]
     lo, hi = KION_SHARE_BAND
     if not (lo <= kion_share <= hi):
         errors.append(f"KION run-rate is {kion_share:.1%} of TTM NP, outside {lo:.0%}-{hi:.0%} (属性 A)")
 
-    obps0 = inp["bps"] - inp["dps_after_h1"] - cps   # operating book: less the interim dividend and the excess cash
+    obps0 = inp["bps"] - inp["dps_after_bs"] - cps   # operating book: less any dividend declared after the BS date and the excess cash
     ci = c_inc / sh
     cons = {"m": (inp["cons_fy26_m"], inp["cons_fy27_m"], inp["cons_fy28_m"]),
             "h": (inp["cons_fy26_h"], inp["cons_fy27_h"], inp["cons_fy28_h"])}
     rows = {}
     for t, (e26, e27, e28) in cons.items():
         o26, o27, o28 = e26 - ci, e27 - ci, e28 - ci        # operating EPS (cash income out, all years)
-        o_h1 = inp["eps_h1"] - ci / 2
+        o_ytd = inp["eps_ytd"] - ci * VAL_DATE[1] / 12      # booked through the balance-sheet date
         np28 = o28 * sh
         roe = o28 / obps0
-        unb = (o26 - o_h1) + o27                             # unbooked operating EPS, 2H26 + FY2027
+        unb = (o26 - o_ytd) + o27                            # unbooked operating EPS, rest of FY2026 + FY2027
         for _ in range(300):  # operating BPS roll, b = g/RONIC; only the power leg funds growth
             b = inp["g2_power"] * (pw_ni[t] / np28) / roe
             bps28 = obps0 + b * unb
@@ -326,7 +334,7 @@ def main() -> int:
             errors.append(f"{t.upper()}: g2_power above (1 − d) x RONIC (约束 2)")
 
     np_ttm_op = inp["np_ttm"] - c_inc
-    eq_op = inp["equity"] - inp["div_declared"] - c_ex
+    eq_op = inp["equity"] - div_after - c_ex
     np_l_op = inp["np_l"] - c_inc_l
     roe_mid = np_ttm_op / eq_op
     if np_l_op / eq_op >= r:
@@ -398,7 +406,7 @@ def main() -> int:
     print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus legs ÷{disc:.2f}; "
           f"g2 core {inp['g2_core']:g} (Sinotruk A/H fPE {inp['pe_sinotruk_a']}/{inp['pe_sinotruk_h']} < 1/r; "
           f"US cluster {inp['g2_core_us']:.2%} control only); g2 power median({', '.join(f'{g:.2%}' for g in peer_g)}) = {g_pw:.2%}")
-    print(f"②-b: FY28 mean {mean28} in [TTM {eps_ttm:.3f}, Q2x4 {eps_q2:.3f}]? {b2_i}; TTM dev {b2_dev:+.1%} -> consensus three points")
+    print(f"②-b: FY28 mean {mean28} in [TTM {eps_ttm:.3f}, Qx4 {eps_q2:.3f}]? {b2_i}; TTM dev {b2_dev:+.1%} -> consensus three points")
     print(f"power leg revenue FY2028 (大缸径+气发+SOFC): CMBI 08-31 {inp['pw_rev_cmbi'] / YI:.2f} (大缸径 {inp['lb_rev_fy28'] / YI:.2f} + 气发) | "
           f"诚通 {inp['pw_rev_ct'] / YI:.2f} | 银河 {inp['pw_rev_yh'] / YI:.2f} (纪要) -> L/M/H {min(pw_revs) / YI:.1f}/{pw_rev_m / YI:.1f}/{max(pw_revs) / YI:.1f}亿")
     print(f"power margin {inp['seg_margin']:.1%}x(1-{inp['seg_tax']:.1%}) = {npm:.2%}; public cross {inp['power_np_share_h1']:.0%} x 1H NP / "
@@ -406,7 +414,7 @@ def main() -> int:
           f"{inp['cj_main'] / YI:.0f}) {pw_ni['h'] / YI:.2f}亿 = {pw_ni['h'] / (inp['cons_fy28_h'] * sh):.0%} of NP; 3-house top x margin "
           f"{max(pw_revs) * npm / YI:.1f}亿; L = FY2025 {inp['ms_units_l']:.0f} units -> {pw_ni_l / YI:.2f}亿")
     print(f"KION run-rate {kion / YI:.2f}亿 = {kion_share:.1%} of TTM NP; pe_kion {inp['pe_kion']}")
-    print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派未付中期股息 {inp['div_declared'] / YI:.2f}亿 "
+    print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext'] / YI:.2f}亿 − 已宣派未付中期股息 {inp['div_declared'] / YI:.2f}亿 "
           f"− 锚 {anchor / YI:.2f}亿（FY2019 净现金/收入 {rho:.2%} x FY2025 收入 {inp['rev_fy25'] / YI:.1f}亿；2 个月上限 {CASH_CAP:.1%}）"
           f"= C_ex {c_ex_tot / YI:.2f}亿 × 归母比例 {pr:.4f}（凯傲那块 {kion_nc / YI:.1f}亿 × {inp['kion_stake']:.2%}，"
           f"其余 × 剔凯傲权益比 {par_x / (par_x + min_x):.4f}；权益法参照 {pr_eqm:.4f}）= {c_ex / YI:.2f}亿"
@@ -430,7 +438,7 @@ def main() -> int:
           f"@{inp['t_aft']:g} ÷1.1^{inp['t_aft'] - NUM_YEAR + tau:g} = {v_opt:.2f} (AIDC increment 0, SOFC 0: inside consensus)")
     print("表3 " + " / ".join(f"{n} {b:.2f}+{p:g}x{v_opt:.2f}={a:.2f}" for n, b, p, a in zip("LMH", (L, M, H), P_TIERS, adj))
           + f"  A'={A2:.2f} B'={B2:.2f}")
-    print(f"③ band test n/a: TTM 经营 EPS {np_ttm_op / sh:.4f} (all-time high) < 0.88 x FY28 经营 {mean28 - ci:.4f} — no same-earnings months; "
+    print(f"③ band test n/a: TTM 经营 EPS {np_ttm_op / sh:.4f} (peak 2026-06) < 0.88 x FY28 经营 {mean28 - ci:.4f} — no same-earnings months; "
           f"L trough-basis PE {pe_l:.2f} vs own monthly band [{inp['pe_own_min']}, {inp['pe_own_max']}] (L disclosed only)")
     print(f"周期中枢: core FY28 M {rows['m']['core'] / YI:.1f}亿 vs core 中枢 {core_mid / YI:.1f}亿 "
           f"(5y mean {inp['np_mid5'] / YI:.1f} - own C_ex(t) income {inp['cash_inc_mid5'] / YI:.2f} - KION - power FY25) = {mid_ratio:.2f}x "
@@ -465,7 +473,7 @@ def main() -> int:
               + pw_ni_l * path_pe(gp, roe_mid, r, NUM_YEAR, y1, y2, rss)) / sh + cps
         return "/".join(f"{v:.2f}" for v in [ll] + out)
 
-    print(f"敏感性: g2_power {inp['g2_pw_cmi']:.2%} {band_at(g_pw=inp['g2_pw_cmi'])} | {inp['g2_pw_gnrc']:.2%} {band_at(g_pw=inp['g2_pw_gnrc'])} "
+    print(f"敏感性: g2_power {min(peer_g):.2%} {band_at(g_pw=min(peer_g))} | {max(peer_g):.2%} {band_at(g_pw=max(peer_g))} "
           f"| power ±1pp {band_at(g_pw=inp['g2_power'] - 0.01)} / {band_at(g_pw=inp['g2_power'] + 0.01)} "
           f"| core +1pp {band_at(g_core=0.01)} | core = US 4.74% {band_at(g_core=inp['g2_core_us'])} | pe_kion 9.97 {band_at(kion_pe=9.97)} "
           f"| 稳态 瓦锡兰 {inp['ronic_ss_wrt']:.1%} {band_at(rs=inp['ronic_ss_wrt'])} / 不回落 {band_at(rs=1.0)}")
