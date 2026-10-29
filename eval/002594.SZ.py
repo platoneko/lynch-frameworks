@@ -17,8 +17,8 @@ are time-aligned:
            (ordered pick: global mature automakers 4.9% < r -> r) by Y2 2030
            (low entry barrier), steady after
   anchor = eps_x * PE_x * (1 + r)^-tau_x + window_x
-           tau_L = 0 (frozen regime year), tau_M = tau_H = 1.5 (2026-06-30 ->
-           2028-01-01); window = unbooked 2H26 + FY2027 EPS x (1 - b) at
+           tau_L = 0 (frozen regime year), tau_M = tau_H = 1.25 (2026-09-30 ->
+           2028-01-01); window = unbooked 4Q26 + FY2027 EPS x (1 - b) at
            tau/2 (M / H only), b = g_win/ROE cut to [0, 1], g_win = the tier's own
            consensus path FY2026E -> FY2028E annualised (2026-10-18 窗口留存口径改正;
            was g2).  No excess-cash line (net debt), no k.
@@ -29,17 +29,17 @@ policy; A5), ≤ the mega-hardware cap min(4%, r-4%).
 
 Numerators (A1 / A2):
   M / H = FY2028E 归母 EPS — consensus mean / high of the post-interim house set
-          (Eastmoney F10, 19 houses); value at 2028-01-01 discounted tau 1.5
+          (Eastmoney F10, 19 houses); value at 2028-01-01 discounted tau 1.25
           years to the balance-sheet date (③ 时点对齐).
   L     = FY2025 actual EPS (the price-war digestion year) frozen as a regime
           world; numerator year t = 1, not discounted.
 
-ROE (A6): tier EPS ÷ the numerator year's OPENING BPS (E_{n+1}/B_n).  The 2Q26
+ROE (A6): tier EPS ÷ the numerator year's OPENING BPS (E_{n+1}/B_n).  The 3Q26
 common book (归母权益 less perpetual bonds, less the FY2025 dividend paid
 after the balance-sheet date) is rolled over the not-yet-booked earnings at
 the growth-required retention b = g_win/ROE (the same b as the window; fixed
-point, cut to [0, 1]).  M / H roll 2H26 + FY2027 along their own house path
-(mean / 广发) at that path's FY2026E -> FY2028E growth; L rolls 2H26 at the
+point, cut to [0, 1]).  M / H roll 4Q26 + FY2027 along their own house path
+(mean / 广发) at that path's FY2026E -> FY2028E growth; L rolls 4Q26 at the
 frozen FY2025 level at g2 (the regime world grows at g2 from today).
 
 ③ (A9): the M numerator has never been realised (no equal-earnings months),
@@ -73,13 +73,14 @@ FORMULA_ID = "byd_group_ni_fy28_consensus_perpetual_gordon_v1"
 TIERS = ("l", "m", "h")
 MIN_SPREAD = 0.02           # r - g2 floor (valuation-rules ①)
 MIN_CONSENSUS_HOUSES = 2    # a numerator year needs >= 2 houses with a range (②)
-DISTORTED_GAP = 0.10        # ③ step 1b: then-expected growth − model g >= 10pp/yr
+MONO_GAP = 0.03             # 域判定表: ROE − r ≥ 3pp is the monotone domain
+DISTORTED_GAP = 0.10       # ③ step 1b: then-expected growth − model g >= 10pp/yr
 RECONCILE_TOL = 0.20        # 纠正对账门: M within 20% of >= 1 independent coordinate
 MEGA_HW = True              # A5: hardware, FY2028E revenue >= $150B, no proven pricing power
 FY_NOW = 2026               # current fiscal year: the window segment's growth runs FY2026E -> numerator year
 
 FORMULA_FIELDS = frozenset({
-    "shares", "equity", "dps_after", "ni_1h26", "r_perp", "g2", "tau", "y1", "y2", "rs_ss", "rs_ss_h", "t_num",
+    "shares", "equity", "dps_after", "ni_booked", "r_perp", "g2", "tau", "y1", "y2", "rs_ss", "rs_ss_h", "t_num",
     "eps_l", "eps_m", "eps_h",
     "eps_fy26_m", "eps_fy26_h", "eps_fy27_m", "eps_fy27_h",
 })
@@ -87,7 +88,7 @@ FORMULA_FIELDS = frozenset({
 REQUIRED = sorted(FORMULA_FIELDS | {
     "consensus_n_fy28", "eps_fy28_lo", "eps_ttm", "payout_fy25", "payout_3y", "g_win_m", "g_win_h",
     "pe_eq_lo", "pe_eq_n", "roe_band", "g_exp_band", "pb_lo_5y", "pb_lo_all",
-    "net_debt", "ebit_fy25", "da_1h26", "int_1h26",
+    "net_debt", "ebit_fy25", "da_1h26", "int_9m26",
     "fd_install_apr", "fd_ext_share", "unit_profit_catl", "unit_disc",
     "capex_per_gwh", "t_opt", "y1_opt", "y2_opt",
     "tp_hsbc", "tp_citi", "tp_ubs", "tp_consensus",
@@ -99,19 +100,20 @@ P_K = (0.0, 0.0, 1.0)
 
 
 def bps0(inp: dict[str, float]) -> float:
-    """2Q26 common BPS (perpetual bonds excluded) less the dividend paid after 2Q26."""
+    """Common BPS at the latest balance sheet (perpetual bonds excluded) less any dividend paid after it."""
     return inp["equity"] * 1e8 / inp["shares"] - inp["dps_after"]
 
 
-def eps_1h26(inp: dict[str, float]) -> float:
-    return inp["ni_1h26"] * 1e8 / inp["shares"]
+def eps_booked(inp: dict[str, float]) -> float:
+    """FY2026 EPS already in the book (1-3Q26)."""
+    return inp["ni_booked"] * 1e8 / inp["shares"]
 
 
 def unbooked(inp: dict[str, float], tag: str) -> float:
-    """EPS earned before the numerator year but not yet in the 2Q26 book."""
+    """EPS earned before the numerator year but not yet in the 3Q26 book."""
     if tag == "l":
-        return inp["eps_l"] - eps_1h26(inp)                 # 2H26 at the frozen FY2025 level
-    return inp[f"eps_fy26_{tag}"] - eps_1h26(inp) + inp[f"eps_fy27_{tag}"]
+        return inp["eps_l"] - eps_booked(inp)               # 4Q26 at the frozen FY2025 level
+    return inp[f"eps_fy26_{tag}"] - eps_booked(inp) + inp[f"eps_fy27_{tag}"]
 
 
 def g_win(inp: dict[str, float], tag: str) -> float:
@@ -169,22 +171,29 @@ def rs_tier(inp: dict[str, float], tag: str) -> float:
     return max(inp["rs_ss_h"] if tag == "h" else inp["rs_ss"], inp["r_perp"])
 
 
+def peak_domain(inp: dict[str, float], tag: str) -> bool:
+    """ROE − r < 3pp: no longer in the monotone domain (valuation-rules 域判定表)."""
+    return roe(inp, tag) - inp["r_perp"] < MONO_GAP
+
+
 def multiple(inp: dict[str, float], tag: str) -> float:
     """A15: forward ROE to Y1 (2028, visible-year end), linear to the tier's steady return by Y2
-    (2030, low entry barrier), steady after."""
-    return path_pe(inp["g2"], roe(inp, tag), inp["r_perp"], int(inp["t_num"]), int(inp["y1"]),
-                   int(inp["y2"]), rs_tier(inp, tag))
+    (2030, low entry barrier), steady after.  A tier in the peak domain is capped at 1/r (A6, 2026-10-30:
+    the frozen L world's surplus retention goes into working capital and capacity without adding profit)."""
+    pe = path_pe(inp["g2"], roe(inp, tag), inp["r_perp"], int(inp["t_num"]), int(inp["y1"]),
+                 int(inp["y2"]), rs_tier(inp, tag))
+    return min(pe, 1.0 / inp["r_perp"]) if peak_domain(inp, tag) else pe
 
 
 def disc(inp: dict[str, float], tag: str) -> float:
     """Time alignment (valuation-rules「经营价值与超额现金」③): M / H are FY2028 values at
-    2028-01-01 -> (1+r)^-tau from the 2026-06-30 balance sheet; L (frozen FY2025 regime year) is not aligned."""
+    2028-01-01 -> (1+r)^-tau from the 2026-09-30 balance sheet; L (frozen FY2025 regime year) is not aligned."""
     years = 0.0 if tag == "l" else inp["tau"]
     return (1.0 + inp["r_perp"]) ** (-years)
 
 
 def window(inp: dict[str, float], tag: str) -> float:
-    """Window distributable profit (2H26 + FY2027 unbooked consensus EPS) x (1 - b), b = g_win/ROE cut to
+    """Window distributable profit (4Q26 + FY2027 unbooked consensus EPS) x (1 - b), b = g_win/ROE cut to
     [0, 1], discounted tau/2; L none."""
     if tag == "l":
         return 0.0
@@ -255,8 +264,8 @@ def main() -> int:
     errors += ladder("FY2028E range", inp["eps_fy28_lo"], inp["eps_m"], inp["eps_h"])
     if inp["consensus_n_fy28"] < MIN_CONSENSUS_HOUSES:
         errors.append(f"consensus_n_fy28={inp['consensus_n_fy28']:.0f} < {MIN_CONSENSUS_HOUSES} (A1)")
-    if abs(inp["tau"] - 1.5) > 1e-9:
-        errors.append("tau must be 1.5: 2026-06-30 balance sheet → FY2028 opening (A1)")
+    if abs(inp["tau"] - 1.25) > 1e-9:
+        errors.append("tau must be 1.25: 2026-09-30 balance sheet → FY2028 opening (A17)")
     for t in TIERS:
         if unbooked(inp, t) <= 0.0:
             errors.append(f"unbooked EPS for {t} must be positive (A6)")
@@ -279,8 +288,14 @@ def main() -> int:
         pay = payout(g2, rho[t])
         if not 0.0 < pay <= 1.0 + 1e-12:
             errors.append(f"payout_{t}={pay:.3f} outside (0, 1]")
-        if rho[t] - r < 0.03:
-            errors.append(f"ROE_{t}={rho[t]:.2%} not in the monotone domain (ROE − r < 3pp) — re-audit")
+        if peak_domain(inp, t):
+            if t != "l":
+                errors.append(f"ROE_{t}={rho[t]:.2%} not in the monotone domain (ROE − r < 3pp) — re-audit")
+            # L (A6, 2026-10-30): peak domain → multiple capped at 1/r; the payout gap is surplus
+            # retention into working capital / capacity — disclosed, not a branch error (retention ④)
+            if g2 > 0.0 and inp["payout_fy25"] >= 1.0:              # sign only
+                errors.append(f"g2@{t}: retention branch but the company retains nothing")
+            continue
         errors += check_branch(g2, rho[t], r, inp["payout_fy25"], f"g2@{t}")
     if errors:
         return report(errors, "FAIL (basket/caps/branch)")
@@ -378,7 +393,7 @@ def main() -> int:
         print(f"敏感 g2 {g2 + dg:.0%}: L {la:.2f} M {ma:.2f} H {ha:.2f}")
     nd_ebitda = inp["net_debt"] / (inp["ebit_fy25"] + 2 * inp["da_1h26"])
     print(f"杠杆门：净债 {inp['net_debt']:.1f} 亿 / EBITDA≈{inp['ebit_fy25'] + 2 * inp['da_1h26']:.0f} = "
-          f"{nd_ebitda:.2f}；利息(1H26×2) / EBIT = {2 * inp['int_1h26'] / inp['ebit_fy25']:.1%} → 未触发")
+          f"{nd_ebitda:.2f}；利息(1-3Q26×4/3) / EBIT = {inp['int_9m26'] * 4 / 3 / inp['ebit_fy25']:.1%} → 未触发")
     print(f"V_opt：{opt['gwh']:.1f} GWh × {opt['unit']:.2f} 元/kWh = {opt['d_ni']:.2f} 亿（ΔEPS {opt['d_eps']:.3f}）"
           f" → ROE {opt['roe_post']:.2%}、电池自己的路径 {inp['t_opt']:g} 起 Y1 {inp['y1_opt']:g} → Y2 {inp['y2_opt']:g}"
           f" PE {opt['pe_post']:.3f} → 增量 {opt['incr']:.2f}（÷1.1^τ）"
