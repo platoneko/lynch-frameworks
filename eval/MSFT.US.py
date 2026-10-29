@@ -105,6 +105,7 @@ def first_float(pattern: str, md: str) -> float | None:
 REQUIRED = [
     "shares_diluted", "tax_rate",
     "oi_total_fy26", "share_ai_oi", "rev_azure_fy26", "rev_ic_fy26", "oi_ic_fy26", "rev_openai_fy26",
+    "share_openai_az",
     "r_perp", "r_az_lab", "r_az_lab_t", "k_lab",
     "ic_group", "ic_azure", "ic_dc", "roic_marg_az",
     "g2_ai", "g2_dc",
@@ -207,7 +208,12 @@ def main() -> int:
     azure_om = inp["oi_ic_fy26"] / inp["rev_ic_fy26"]           # proxy (待补)
     oi_azure = inp["rev_azure_fy26"] * azure_om
     share_az = oi_azure / oi_ai
-    share_lab_az = inp["rev_openai_fy26"] / inp["rev_azure_fy26"]
+    # A6: the OpenAI cut is the latest quarterly reading (10-Q), not the FY26 average;
+    # FY26 (rev_openai_fy26 / rev_azure_fy26) is kept as a sensitivity row.
+    share_lab_az = inp["share_openai_az"]
+    share_lab_fy26 = inp["rev_openai_fy26"] / inp["rev_azure_fy26"]
+    if not 0.0 < share_lab_az < 1.0:
+        errors.append(f"share_openai_az = {share_lab_az} outside (0,1)")
     nopat_ai, nopat_dc = oi_ai * keep, oi_dc * keep
     core_eps = (nopat_ai + nopat_dc) / sh
     ic_rest = inp["ic_group"] - inp["ic_azure"] - inp["ic_dc"]
@@ -303,7 +309,7 @@ def main() -> int:
         return 1
 
     # --- cross-check (b): FY26 old segments
-    share_lab_ic = inp["rev_openai_fy26"] / inp["rev_ic_fy26"]
+    share_lab_ic = share_lab_az * inp["rev_azure_fy26"] / inp["rev_ic_fy26"]  # same OpenAI dollars on the old cloud segment
     ic_old = {"pbp": inp["ic_pbp"], "ic": inp["ic_azure"] * inp["rev_ic_fy26"] / inp["rev_azure_fy26"], "mpc": inp["ic_dc"]}
     oi_old = {"pbp": inp["oi_pbp_fy26"], "ic": inp["oi_ic_fy26"], "mpc": inp["oi_mpc_fy26"]}
     g_old = {"pbp": inp["g_b_pbp"], "ic": inp["g2_ai"], "mpc": inp["g_b_mpc"]}
@@ -351,7 +357,7 @@ def main() -> int:
     print(f"IC0($B): Azure {inp['ic_azure'] / BN:.1f} rest {ic_rest / BN:.1f} D&C {inp['ic_dc'] / BN:.1f} = {inp['ic_group'] / BN:.1f}"
           f" | avg ROIC on IC0: Azure {nopat_ai * share_az / inp['ic_azure']:.1%} rest {nopat_ai * (1 - share_az) / ic_rest:.1%} D&C {nopat_dc / inp['ic_dc']:.1%}"
           f" | Azure retention at marginal ROIC {inp['roic_marg_az']:.1%} (A4)")
-    print(f"asset legs $/sh: OpenAI 25% x {inp['openai_post'] / BN:.0f}B = {openai_gross / BN:.0f}B gross, net of DTL {openai_net / sh:.2f}; other eq inv {inp['other_eq_inv'] / sh:.2f}; net cash {net_cash / sh:.2f}")
+    print(f"asset legs $/sh: OpenAI {inp['openai_stake']:.0%} x {inp['openai_post'] / BN:.0f}B = {openai_gross / BN:.0f}B gross, net of DTL {openai_net / sh:.2f}; other eq inv {inp['other_eq_inv'] / sh:.2f}; net cash {net_cash / sh:.2f}")
     print(f"tau {tau} (2026-06-30 -> FY2028 opening; Azure-non / rest / D&C at {r4:.0%}, OpenAI sub-leg at journey {r7:.0%});"
           f" path t0 {t0} y1 {y1} y2 {y2}: A&I rest -> stable {inp['ronic_ss_rest']:.0%}, Azure / D&C flat; no funding gap")
     print("  tier  k_eps   Azure-non PE(ROEavg/ret)  lab PE   rest PE(ROE->stable)  D&C PE(ROE)     oai(d)   cash  window  deemed(k)   total  (legs / (1+r)^tau)")
@@ -373,7 +379,8 @@ def main() -> int:
     sens = [
         ("Azure marginal ROIC 20% (consensus-implied FY26→28)", dict(roic_marg=0.20)),
         ("Azure marginal ROIC 10% (= r; realised first-year lower bound)", dict(roic_marg=0.10)),
-        ("OpenAI share of Azure 30% (FY28 ramp of the $250B commitment)", dict(share_lab=0.30)),
+        ("OpenAI share of Azure 35% (FY28 ramp of the $250B commitment)", dict(share_lab=0.35)),
+        (f"OpenAI share of Azure at the FY26 average {share_lab_fy26:.1%}", dict(share_lab=share_lab_fy26)),
         ("k_lab = 0 (no arrival haircut)", dict(k_lab=0.0)),
         ("single-basket OpenAI (篮 7 15%, no k — the pre-pair ruler)", dict(r_lab=r7, k_lab=0.0)),
         ("g2_ai −0.5pp", dict(g_ai=inp["g2_ai"] - 0.005)),
