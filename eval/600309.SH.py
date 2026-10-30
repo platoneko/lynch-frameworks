@@ -124,7 +124,8 @@ EPS_PEAK_FY2021 = 7.85  # highest EPS the company has ever printed
 # never been given.
 PRICE_AT_EPS_PEAK = 88.34
 H_ANCHOR_HEADROOM = 1.25  # 2026's balance sheet and capex carry the difference
-SEG_RESIDUAL_MAX = 0.05  # segment table vs consolidated GP, as a share of GP
+SEG_RESIDUAL_MAX = 0.08  # segment table vs consolidated GP, as a share of GP; since 2026-10-28 the
+# residual is the filing's own 其他 series + 产品间抵销 + 其他业务 (13.06亿 = 6.4% in 2026H1), not rounding
 
 MIN_R_MINUS_G = 0.02      # 裁决顺序 ①: r - g >= 2%
 G_TOL = 5e-5              # A15: stated g2_m must equal the reverse-solve of the elasticity-spaced M
@@ -141,8 +142,8 @@ REQUIRED = [
     "gm_m_pu", "gm_m_pc", "gm_m_nm",
     "gm_l_pu", "gm_l_pc", "gm_l_nm",
     "gm_h_blended", "conv", "equity",
-    "r_perp", "g2_l", "g2_m", "g2_h", "g_print_h", "g_print_m", "n_print_h", "n_print_m",
-    "g_peer_median", "pe_own_min", "pe_own_max",
+    "r_perp", "g2_m", "g2_h", "g_print_h", "g_print_m", "n_print_h", "n_print_m",
+    "g_peer_median", "pe_own_min", "pe_own_max", "pe_l_down",
     "pe_own_p75", "pe_own_med", "pe_own_p25", "gamma_pe", "gamma_pe_se",
     "eps_trough_fy2020",
     "opt_cap", "opt_price", "vat", "t_opt", "opt_budget", "opt_spent", "opt_eq",
@@ -257,9 +258,12 @@ def main() -> int:
 
     # --- Step 3: tier ROE from one equity field, then the Gordon multiple ----
     roe = {t: np_parent[t] / inp["equity"] for t in TIERS}
-    g2 = {t: inp[f"g2_{t.lower()}"] for t in TIERS}
+    # A10: L's multiple is what the market actually paid on this earnings level, not a generated one;
+    # only M and H are Gordon-generated (g2).
+    pe_l_down = inp["pe_l_down"]
+    g2 = {t: inp[f"g2_{t.lower()}"] for t in ("M", "H")}
     errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    for t in TIERS:
+    for t in ("M", "H"):
         errors += check_g_cap(g2[t], r, f"g2_{t.lower()}")
         if r - g2[t] < MIN_R_MINUS_G:
             errors.append(f"g2_{t.lower()} {g2[t]:+.4f}: r-g {r - g2[t]:.4f} < {MIN_R_MINUS_G} (裁决顺序 ①)")
@@ -285,8 +289,17 @@ def main() -> int:
             f"g2_m {g2['M']:+.5f} != reverse-solve of M = H x (EPS_M/EPS_H)^{b_elastic:.3f} "
             f"-> PE_M {pe_m:.4f} -> g {g_m_derived:+.5f} (A15)"
         )
-    if abs(g2["L"] - g2["M"]) > G_TOL:
-        errors.append(f"g2_l {g2['L']:+.5f} != g2_m {g2['M']:+.5f} (A15: L carries the M world's g, no recovery)")
+    # A10: L's multiple is the measured trough print (pe_l_down), so it has no g of its own. It must sit
+    # inside the realised band and must not invert the cyclical ladder (L's implied g >= M's g, i.e. no
+    # higher multiple than M). The implied g exceeds the cap by construction and is a coordinate only.
+    if not (inp["pe_own_min"] <= pe_l_down <= inp["pe_own_max"]):
+        errors.append(f"pe_l_down {pe_l_down} outside realised band [{inp['pe_own_min']}, {inp['pe_own_max']}] (A6)")
+    g_l_implied, _ = implied_g(pe_l_down, roe["L"], r)
+    if g_l_implied < g2["M"] - G_TOL:
+        errors.append(
+            f"L implied g {g_l_implied:+.5f} < g2_m {g2['M']:+.5f} (裁决顺序 ⑤: 周期票倍数反向，"
+            "L 的实测倍数不得高于 M 生成的倍数)"
+        )
     m_print_cap = eps["M"] * perpetual_pe(inp["g_print_m"], roe["M"], r)
     if M_anchor > m_print_cap + 0.05:
         errors.append(f"M {M_anchor:.2f} above its own print evidence {m_print_cap:.2f} (g_print_m {inp['g_print_m']:+.2%}) — A15")
@@ -298,7 +311,7 @@ def main() -> int:
     if errors:
         return report(errors, "FAIL (print-matched g)")
 
-    pe = {t: perpetual_pe(g2[t], roe[t], r) for t in TIERS}
+    pe = {"L": pe_l_down, "M": perpetual_pe(g2["M"], roe["M"], r), "H": perpetual_pe(g2["H"], roe["H"], r)}
     # 校验步骤 5: guardrail — generated multiples inside the realised band.
     for t in TIERS:
         if not (inp["pe_own_min"] - GUARDRAIL_SLACK <= pe[t] <= inp["pe_own_max"]):
@@ -311,9 +324,13 @@ def main() -> int:
 
     # 校验步骤 6: shape is a RESULT check (裁决顺序 ⑤ / A6).  g must run reversed
     # or flat across tiers; the H-side implied gamma equals the measured one by
-    # construction; the L side is ROE-gated (A10) and only has to clear the floor.
-    if not (g2["L"] >= g2["M"] >= g2["H"]):
-        errors.append(f"g tiers not reversed/flat: {g2['L']:+.4f}/{g2['M']:+.4f}/{g2['H']:+.4f} (cyclical, 裁决顺序 ⑤)")
+    # construction; L enters through its implied g (its multiple is a measured
+    # print, A10), so the ladder is checked as implied-g_L >= g_M >= g_H.
+    if not (g_l_implied >= g2["M"] >= g2["H"]):
+        errors.append(
+            f"g tiers not reversed/flat: L(implied) {g_l_implied:+.4f}/{g2['M']:+.4f}/{g2['H']:+.4f} "
+            "(cyclical, 裁决顺序 ⑤)"
+        )
     gamma_band = {t: math.log(pe[t] / pe["M"]) / math.log(eps[t] / eps["M"]) for t in ("L", "H")}
     if abs(gamma_band["H"] - inp["gamma_pe"]) > GAMMA_TOL:
         errors.append(f"H-side implied gamma {gamma_band['H']:+.3f} != gamma_pe {inp['gamma_pe']:+.3f} (A6/A15 construction)")
@@ -404,7 +421,7 @@ def main() -> int:
     lever = []
     for g in (lo_g, 0.03, g2["M"], hi_g):
         m_g = eps["M"] * perpetual_pe(g, roe["M"], r)
-        l_g = eps["L"] * perpetual_pe(g, roe["L"], r)
+        l_g = eps["L"] * pe["L"]  # A10: L 的倍数是实测下行，不随 g 变
         a_g, b_g = cut_points(l_g, m_g, m_g + h_excess)
         lever.append((g, l_g, m_g, a_g, b_g))
 
@@ -429,14 +446,18 @@ def main() -> int:
         gp, op, np_, e = num[t]
         print(
             f"{t}: {desc[t]:<44} gp={gp:7.2f}  op={op:7.2f}  np={np_:7.2f}亿  eps={e:.4f}  "
-            f"ROE={roe[t]:.1%}  g2={g2[t]:+.2%}{'(ROE≈r 门)' if abs(roe[t] - r) < 0.03 else ''}  "
-            f"payout={1 - g2[t] / roe[t]:.3f}  PE={pe[t]:.3f}  anchor={anchor:.2f}"
+            f"ROE={roe[t]:.1%}  "
+            + (f"倍数=实测下行 {pe['L']:.3f}x (隐含 g {g_l_implied:+.2%}, 越 cap, 只作坐标)  "
+               if t == "L" else
+               f"g2={g2[t]:+.2%}{'(ROE≈r 门)' if abs(roe[t] - r) < 0.03 else ''}  "
+               f"payout={1 - g2[t] / roe[t]:.3f}  ")
+            + f"PE={pe[t]:.3f}  anchor={anchor:.2f}"
         )
     print(
         f"倍数生成 (A15 盈利配对): H g_print_h {inp['g_print_h']:+.2%} ({inp['n_print_h']:.0f} 个月) @ROE {roe['H']:.1%} -> PE_H {pe_h:.3f} -> H {H_anchor:.2f}; "
         f"M = H x (EPS_M/EPS_H)^{b_elastic:.3f} = {M_anchor:.2f} -> PE_M {pe_m:.3f} -> g_M {g_m_derived:+.2%} (conditioned={m_conditioned}); "
         f"M 档自身配对 g_print_m {inp['g_print_m']:+.2%} ({inp['n_print_m']:.0f} 个月) -> {m_print_cap:.2f} (证据上沿, > H); "
-        f"L 配 g_M -> PE_L {pe['L']:.3f}"
+        f"L = 同等盈利月份市场实付的下沿 PE_L {pe['L']:.3f} (含回归; A10)"
     )
     print(
         f"同世界门 (交叉): 同业反解 g_peer={inp['g_peer_median']:+.2%} -> PE "
@@ -445,8 +466,8 @@ def main() -> int:
         f"护栏 [{inp['pe_own_min']}, {inp['pe_own_max']}] ✓"
     )
     print(
-        f"形状结果检查 (裁决顺序 ⑤ / A6): g {g2['L']:+.2%} >= {g2['M']:+.2%} >= {g2['H']:+.2%} ✓; "
-        f"带隐含 gamma H={gamma_band['H']:+.3f} (= 实测 {inp['gamma_pe']:+.3f}), L={gamma_band['L']:+.3f} (ROE 门, 同向)"
+        f"形状结果检查 (裁决顺序 ⑤ / A6): g L(隐含) {g_l_implied:+.2%} >= M {g2['M']:+.2%} >= H {g2['H']:+.2%} ✓; "
+        f"带隐含 gamma H={gamma_band['H']:+.3f} (= 实测 {inp['gamma_pe']:+.3f}), L={gamma_band['L']:+.3f} (实测倍数, 反向)"
     )
     d = decompose((L, M, H), (pe["L"], pe["M"], pe["H"]))
     print(f"H 路过 (A17): persistent-peak H {H_persist:.2f} (spaces M only) -> H = M + (EPS_H - EPS_M)/(1+r) "
