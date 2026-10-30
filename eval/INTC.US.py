@@ -136,7 +136,7 @@ AXIS_ROWS = {"g2_foundry": "g2_foundry_src", "g2_foundry_h": "g2_foundry_h_src",
 
 ADJ_PS = ("net_cash_ps", "nci_ps", "mbly_stake_ps", "altera_stake_ps", "tax_asset_ps")
 
-QTRS = ("q1", "q2")
+QTRS = ("q1", "q2", "q3")
 EXT_YEARS = (2027, 2028, 2030)
 # H full capacity (A6b): wafer starts per month by node group, priced at TSMC's comparable node.
 WSPM = ("wspm_f52", "wspm_f62", "wspm_ie_now", "wspm_ie_full", "wspm_i7", "wspm_legacy")
@@ -160,7 +160,7 @@ REQUIRED = [
     "ie_budget", "ie_done",
     "ss_year_h", "g2_foundry_h", "tsm_rev_2025", "tsm_ppe_net_2025", "tsm_ppe_net_2024",
     "corp_other_eps", *ADJ_PS,
-    "tau", "y1", "y2", "rs_cpu", "eps_fy26_cons", "eps_h1_26",
+    "tau", "y1", "y2", "rs_cpu", "eps_fy26_cons", "eps_9m26",
 ]
 TIERS = ("L", "M", "H")
 MM = 1e6  # $M fields
@@ -229,9 +229,10 @@ def main() -> int:
     # ---- Step 0: leg economics by public-data inference (A5c) ----
     q_margin = {q: inp[f"prod_oi_{q}"] / inp[f"prod_rev_{q}"] for q in QTRS}
     q_share = {q: inp[f"prod_rev_{q}"] / inp[f"cons_rev_{q}"] for q in QTRS}
-    for lab, d in (("margin", q_margin), ("share", q_share)):
-        if max(d.values()) - min(d.values()) > 0.01:
-            errors.append(f"product {lab} not constant across {QTRS}: {d} — inference assumption fails (A5c)")
+    if max(q_share.values()) - min(q_share.values()) > 0.01:
+        errors.append(f"product share not constant across {QTRS}: {q_share} — inference assumption fails (A5c)")
+    if max(q_margin.values()) - min(q_margin.values()) > 0.05:
+        errors.append(f"product margin regime break across {QTRS}: {q_margin} — back to the conversation (A5c)")
     p_rev_h1 = sum(inp[f"prod_rev_{q}"] for q in QTRS)
     margin = sum(inp[f"prod_oi_{q}"] for q in QTRS) / p_rev_h1
     share = p_rev_h1 / sum(inp[f"cons_rev_{q}"] for q in QTRS)
@@ -246,7 +247,7 @@ def main() -> int:
     tau, y1, y2, rs = inp["tau"], int(inp["y1"]), int(inp["y2"]), inp["rs_cpu"]
     # FY26H2 unbooked company adjusted EPS less the half-year SBC / acquisition add-back (the
     # closure capitalises them): the window distributable profit base (A24).
-    unbooked = inp["eps_fy26_cons"] - inp["eps_h1_26"] - inp["sbc_acq_eps"] / 2
+    unbooked = inp["eps_fy26_cons"] - inp["eps_9m26"] - inp["sbc_acq_eps"] / 4
 
     def compute(m_: float = margin, s_: float = share, g_: float = g2, r_: float = r,
                 l28: float | None = None, be_: dict | None = None, fy28_num: bool = False,
@@ -337,7 +338,8 @@ def main() -> int:
         errors.append(f"named packaging {pkg_named / B:.1f}B above the low path in 2029 ({ext['L'][2029] / B:.2f}B) — add the excess, A6")
     if not inp["ext_pkg_h_2030"] <= ext["H"][2030]:
         errors.append("high-path packaging exceeds the high path total — recheck A6")
-    int_ratio = (inp["foundry_rev_h1"] - inp["foundry_ext_h1"]) / p_rev_h1
+    int_ratio = ((inp["foundry_rev_h1"] - inp["foundry_ext_h1"])
+                 / (inp["prod_rev_q1"] + inp["prod_rev_q2"]))  # H1 ratio; Q3 jump disclosed in A6/A9
     prod_rev = {"L": inp["prod_rev_fy25"] * MM, "M": inp["rev_fy27_m"] * share, "H": inp["rev_fy27_h"] * share}
 
     # Leg ruler from _AXIS.leading-edge-foundry
@@ -542,8 +544,8 @@ def main() -> int:
     print(f"g2_cpu={g2:.4f} r={r:g} (篮 {baskets.get('r_perp')}) equity={eq / 1e9:.1f}B shares={sh / 1e9:.2f}B "
           f"+ escrow {esc_sh / 1e6:.0f}M @ ${esc_px:g} = {sh_post / 1e9:.3f}B")
     print(f"leg inference (A5c): margin " + " / ".join(f"{q} {q_margin[q]:.4f}" for q in QTRS)
-          + f" -> H1 {margin:.4f} (FY25 {margin_fy25:.4f}); share " + " / ".join(f"{q} {q_share[q]:.4f}" for q in QTRS)
-          + f" -> H1 {share:.4f}")
+          + f" -> 9M {margin:.4f} (FY25 {margin_fy25:.4f}); share " + " / ".join(f"{q} {q_share[q]:.4f}" for q in QTRS)
+          + f" -> 9M {share:.4f}")
     for t in TIERS:
         print(f"{t}: OI {oi[t]:,.0f}M -> eps {eps[t]:.4f} ROE {roe[t]:.3f} -> path PE {pe[t]:.2f}x x fold {dfac[t]:.4f} "
               f"= today {pe_today[t]:.2f}x -> CPU {cpu[t]:.2f}/sh + window {win[t]:.3f}")
