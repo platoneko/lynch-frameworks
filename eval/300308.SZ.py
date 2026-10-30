@@ -65,6 +65,12 @@ operating part only.
     so it is not in the module-assembly 2028 bottleneck); payout 1 - g_t/ROE_t
     (negative in ramp years = capital the ramp needs); valued at the start of
     2028, back to FY2027, then tau.
+2026-10-29 event update (Q3 report): the book, C_ex and the minority share are read
+straight off the 2026-09-30 balance sheet (H-share proceeds and the September buyback
+are already inside it); the strategic stake in a listed upstream supplier (交易性
+金融资产) is not excess cash; the declared interim dividend is the 应付股利 line;
+the base date moves to 2026-09-30 (tau 0.25) and the window is the unbooked Q4.
+The buyback shares are to be cancelled, so shares_total is the post-cancellation count.
 p_L / p_M / p_H are constants here, never Inputs.
 
 Run:  python3 frameworks/eval/300308.SZ.py
@@ -146,13 +152,12 @@ REQUIRED = [
     "eps_fy27_l", "eps_fy27_m", "eps_fy27_h", "shares_a", "shares_total",
     "ubs_eps27", "ubs_eps28", "citi_ni27", "citi_ni28", "npo_share_28", "ubs_rev28",
     "citi_nm28", "t_opt",
-    "equity_h1", "h_shares", "h_price_hkd", "hkdcny", "h_fee", "dps_interim",
-    "shares_div", "ni_h2_cons", "r_perp", "g2", "g_npo", "k_l", "k_m", "k_h",
+    "equity_q3", "div_payable", "ni_q4_cons", "r_perp", "g2", "g_npo", "k_l", "k_m", "k_h",
     "payout_obs", "pe_own_min", "pe_own_max", "rev_fy27_cons", "usdcny",
     "npo_units_27", "npo_units_28", "oe_l", "oe_m", "oe_h",
     "capex_l", "capex_m", "capex_h",
-    "net_cash_ext_h1", "c_ex", "cash_yield", "tax_eff", "payout_op",
-    "buyback", "minority_h1", "parent_ratio", "tau", "y1", "y2", "ss_return", "ss_return_m", "ss_return_h", "ss_return_npo", "own_cycle", "npo_roe", "npo_nm_norm",
+    "net_cash_ext_q3", "c_ex", "cash_yield", "tax_eff", "payout_op",
+    "minority_q3", "parent_ratio", "tau", "y1", "y2", "ss_return", "ss_return_m", "ss_return_h", "ss_return_npo", "own_cycle", "npo_roe", "npo_nm_norm",
     "nm_norm_main", "y1_npo", "y2_npo", "npo_share_30",
 ]
 
@@ -277,14 +282,13 @@ def main() -> int:
     stage = {"L": False, "M": True, "H": True}
 
     # ---- Step 3: FY27 opening book, excess cash, fixed point on b = g/RONIC (A5 / A25) ----
-    h_net = inp["h_shares"] * inp["h_price_hkd"] * inp["hkdcny"] * (1 - inp["h_fee"])
-    div = inp["dps_interim"] * inp["shares_div"]  # declared, ex 2026-10-12: debt-like
-    bb = inp["buyback"]                            # 2026-09 A-share buyback (ESOP), cash out, book down
-    eq0 = inp["equity_h1"] + h_net - div - bb
-    c_tot = inp["net_cash_ext_h1"] + h_net - div - bb  # operating-cash anchor 0 (A25)
+    # 2026-09-30 balance sheet (Q3 report): H-share proceeds and the September buyback are inside it.
+    div = inp["div_payable"]  # 应付股利 on the Q3 balance sheet (interim, ex 2026-10-12): debt-like
+    eq0 = inp["equity_q3"]
+    c_tot = inp["net_cash_ext_q3"] - div  # operating-cash anchor 0 (A25)
     if abs(c_tot - inp["c_ex"]) > 1.0:
-        errors.append(f"c_ex {inp['c_ex']:.2f} != net_cash_ext_h1 + H-share net - declared div - buyback {c_tot:.2f}")
-    pr = eq0 / (eq0 + inp["minority_h1"])          # ① 归母份额: no subsidiary cash disclosure
+        errors.append(f"c_ex {inp['c_ex']:.2f} != net_cash_ext_q3 - dividend payable {c_tot:.2f}")
+    pr = eq0 / (eq0 + inp["minority_q3"])          # ① 归母份额: no subsidiary cash disclosure
     if abs(pr - inp["parent_ratio"]) > 5e-5:
         errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
     c_ex = c_tot * pr
@@ -322,10 +326,10 @@ def main() -> int:
              yy: tuple[int, int] | None = None, mr: float = 1.0) -> tuple[float, float, float, float]:
         """(operating BPS_open, RONIC, three-stage multiple, b) for one FY27 numerator."""
         grow = g1 if with_g1 else g
-        bps = (eq0 + inp["ni_h2_cons"]) / sh - cash
+        bps = (eq0 + inp["ni_q4_cons"]) / sh - cash
         for _ in range(300):
             roe = e / bps
-            nxt = (eq0 + inp["ni_h2_cons"] * min(1.0, grow / roe)) / sh - cash
+            nxt = (eq0 + inp["ni_q4_cons"] * min(1.0, grow / roe)) / sh - cash
             if abs(nxt - bps) < 1e-12:
                 break
             bps = nxt
@@ -336,8 +340,8 @@ def main() -> int:
         return bps, roe, pe, min(1.0, grow / roe)
 
     def window(b: float) -> float:
-        """2H26 window distributable profit per share (③ 时点对齐), discounted tau/2."""
-        return max(inp["ni_h2_cons"] - 0.5 * c_inc, 0.0) * (1 - b) / sh * (1 + r) ** -(tau / 2)
+        """4Q26 window distributable profit per share (③ 时点对齐), discounted tau/2."""
+        return max(inp["ni_q4_cons"] - tau * c_inc, 0.0) * (1 - b) / sh * (1 + r) ** -(tau / 2)
 
     bps, roe, pe, bb_ = {}, {}, {}, {}
     # Per-tier steady (retention「三档各取各的稳态」2026-10-19): L = the ordered value (axis 18%);
@@ -460,10 +464,9 @@ def main() -> int:
     print(f"FY28: UBS {inp['ubs_eps28'] / inp['ubs_eps27'] - 1:+.1%}, Citi {inp['citi_ni28'] / inp['citi_ni27'] - 1:+.1%}"
           f" -> mean {g_total - 1:+.1%}, NPO {inp['npo_share_28']:.0%} stripped -> g1 {g1:+.2%} (M/H, n={N_STAGE})")
     print(f"g2 {g2:.2%} (user-set; named macro {MACRO_G:.0%}, cap {g_cap(r):.0%}) r {r:g} (篮 {baskets['r_perp']})")
-    print(f"FY27 opening equity: H1 {inp['equity_h1']:.0f} + H-share net {h_net:.0f} - interim div "
-          f"{div:.0f} + retained share of H2 NI {inp['ni_h2_cons']:.0f} (百万 CNY)")
-    print(f"超额现金: 扩展口径净现金 2026H1 {inp['net_cash_ext_h1']:.0f} + H 股净募资 {h_net:.0f} − 已宣派中期股息 {div:.0f}"
-          f" − 9 月回购 {bb:.0f} − 锚 0 − 增长期资金缺口 0 = {c_tot:.0f} × 归母比例 {pr:.4f} = C_ex {c_ex:.0f} 百万"
+    print(f"FY27 opening equity: 2026-09-30 {eq0:.0f} + retained share of Q4 NI {inp['ni_q4_cons']:.0f} (百万 CNY)")
+    print(f"超额现金: 扩展口径净现金 2026-09-30 {inp['net_cash_ext_q3']:.0f}（不含战略持股）− 应付股利 {div:.0f}"
+          f" − 锚 0 − 增长期资金缺口 0 = {c_tot:.0f} × 归母比例 {pr:.4f} = C_ex {c_ex:.0f} 百万"
           f"（每股 {cps:.2f}，占归母权益 {eq0:.0f} 的 {c_ex / eq0:.1%}，λ 1）；"
           f"税后收益 {c_inc:.0f} 百万 = 每股 {c_inc / sh:.4f}，三档分子同扣")
     print(f"三段回报: Y1 {y1} → Y2 {y2}（_AXIS.pluggable-module），稳态 {r_s:.0%}（按序取 = 轴；自身周期 {inp['own_cycle']:.1%} 结构变化后不可用、只对照，"
