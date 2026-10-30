@@ -25,6 +25,7 @@ description: >
 | 第 3 块归篮 / 任何涉及 \(r\) 的讨论 | `references/rules/basket.md`「§r 篮子」 |
 | 第 7 块定锚**之前**、任何选倍数形式（完整式 / \(1/r\) / \(1/(r-g)\) / 窗口 NPV）的讨论 | `references/rules/retention.md`「经营价值与超额现金」+「留存去向审计」+「杠杆门」（先拉 ≥7 年 capex / NPPE / 净债 / 现金，拆超额现金、定 RONIC 层级、分桶、算净债 / EBITDA 与利息 / EBIT 后才许定形式；2026-10-13） |
 | 第 6 块定锚 / 框架纠正改尺 | `references/construction.md` |
+| 定 L 档倍数，或公式生成的倍数掉出本票历史实付区间（护栏红） | `references/rules/anchors.md`「L 的倍数也要有实证」（L 的倍数取同等盈利月份实付的下沿，不由 g 生成；隐含 g 只作坐标） |
 | 定 \(g\) / \(g_2\)、两段式、周期票中枢分子或 regime / point 双口径 | `references/rules/growth.md` |
 | 定 \(V_{opt}\) / 候选带 / 共享轴的构造 | `references/rules/options.md` |
 | 保险腿、被动 ETF、\(r_f\) 敏感带 | `references/rules/special-legs.md` |
@@ -34,6 +35,7 @@ description: >
 | 任何锚点 / 敏感性 / 子代理结果交给用户之前；落盘前 | `references/self-review.md`（四问 + 稳态回报与 \(g_2\) 认可门） |
 | 拟落盘摘要之后、授权之前 | `references/checklist.md` |
 | 写或改标的文档、轴文件之前（含题头修补） | `references/contracts.md` |
+| 落盘后代码侧测试红、而 `just check` 是绿的 | `references/contracts.md`「代码侧不抄真书的数字」（红的是手抄的拷贝：删掉换成从书里自省的断言，**MUST NOT** 更新成新数字） |
 
 未按上表加载对应 reference → **不得**报价带 / 声称 A2f 完成 / 勾自检完成。
 
@@ -79,7 +81,7 @@ description: >
 |----------|------|
 | 新 ticker / 尚无文件 | **初建** |
 | 纠正口径 / 修公式 / 证据链 / skill 对齐 | **框架纠正** — 改现行块，**不写 Changelog** |
-| 财报后更新 / 假设状态变化 / 里程碑 | **事件增量** — 改现行块 **并** append Changelog |
+| 财报后核对（假设与锚点都没变也算）/ 假设状态变化 / 里程碑 | **事件增量** — 改现行块 **并** append Changelog（`references/contracts.md`「Changelog 何时写」） |
 | 只改分类或题头主尺一行 | **题头修补** |
 
 已有文件却说「重写」→ 先确认纠正 vs 事件；Changelog 默认保留。
@@ -160,7 +162,7 @@ description: >
 
 ## 步骤 C — 事件增量（写 Changelog）
 
-读现行 → 逐条判定 confirmed / weakened / falsified → 若改 Inputs/锚点则重算 + 必要时 A2f（研究当日现价，不落盘） → **授权后**改现行块，Changelog 按当日合并 + `touched: […]`。
+读现行 → 逐条判定 confirmed / weakened / falsified / 维持 → 若改 Inputs/锚点则重算 + 必要时 A2f（研究当日现价，不落盘） → **授权后**改现行块，Changelog 按当日合并 + `touched: […]`（何时写、题头日期：`references/contracts.md`「框架文档」）。
 
 ## 步骤 D — 题头修补
 
