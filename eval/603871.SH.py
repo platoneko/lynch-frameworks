@@ -82,7 +82,7 @@ DESCENT = (("初分 篮 6 / 篮 7", 0.13, 0.15), ("非洲腿降篮 6", 0.13, 0.1
 REQUIRED = [
     "shares", "bps", "equity", "r_mgl", "r_afr", "concession_years",
     "ni_group_l", "ni_group_m", "ni_group_h", "num_year",
-    "ni_2026_cons", "ni_h1_2026", "ni_2027_m", "ni_2027_h", "w_afr",
+    "ni_2026_cons", "ni_ytd_2026", "ni_2027_m", "ni_2027_h", "w_afr",
     "g2_mgl_l", "g2_mgl_m", "g2_mgl_h",
     "g2_afr_l", "g2_afr_m", "g2_afr_h",
     "ni_ttm", "net_cash", "tp_street", "pe_own_hi", "pe_own_lo",
@@ -104,13 +104,13 @@ def model_b(inp: dict[str, float], tag: str, roe: float) -> float:
 
 
 def book(inp: dict[str, float], tag: str) -> float:
-    """Start-of-numerator-year 归母 book.  L = 2026-06-30 equity (FY2025 as the FY2026 case);
-    M / H = 2026-06-30 equity + H2-2026 and FY2027 consensus profit × model b."""
+    """Start-of-numerator-year 归母 book.  L = base-date equity (FY2025 as the FY2026 case);
+    M / H = base-date equity + the rest of FY2026 and FY2027 consensus profit × model b."""
     e = inp["equity"]
     if tag == "l":
         return e
     roe26 = inp["ni_2026_cons"] / e
-    e += (inp["ni_2026_cons"] - inp["ni_h1_2026"]) * model_b(inp, tag, roe26)
+    e += (inp["ni_2026_cons"] - inp["ni_ytd_2026"]) * model_b(inp, tag, roe26)
     n27 = inp[f"ni_2027_{tag}"]
     e += n27 * model_b(inp, tag, n27 / e)
     return e
@@ -166,13 +166,13 @@ def leg_pes(inp: dict[str, float], tag: str, r_mgl: float | None = None,
 def window_ps(inp: dict[str, float], tag: str) -> float:
     """Window distributable profit, CNY/share, undiscounted (valuation-rules ③ 时点对齐;
     A18): consensus profit not yet booked between the base date and the numerator year
-    (H2-2026 = ni_2026_cons - ni_h1_2026, then FY2027) x (1 - model b), b = the same
+    (rest of FY2026 = ni_2026_cons - ni_ytd_2026, then FY2027) x (1 - model b), b = the same
     retention the book roll charges.  L has none."""
     if tag == "l":
         return 0.0
     e = inp["equity"]
     b26 = model_b(inp, tag, inp["ni_2026_cons"] / e)
-    n26 = inp["ni_2026_cons"] - inp["ni_h1_2026"]
+    n26 = inp["ni_2026_cons"] - inp["ni_ytd_2026"]
     e26 = e + n26 * b26
     n27 = inp[f"ni_2027_{tag}"]
     b27 = model_b(inp, tag, n27 / e26)
@@ -215,7 +215,7 @@ def kasa_ni(inp: dict[str, float]) -> float:
 def unit_value(inp: dict[str, float], t: float, pe_afr_h: float, r_afr: float | None = None,
                k: float = 1.0) -> float:
     """k × one measured Kasa unit on the Africa-leg H multiple, discounted to the base date
-    2026-06-30 (t_base; A18 时点对齐 -- formerly to the FY+1 deck basis)."""
+    (t_base; A18 时点对齐 -- formerly to the FY+1 deck basis)."""
     ra = inp["r_afr"] if r_afr is None else r_afr
     return k * kasa_ni(inp) * pe_afr_h * 1e8 / inp["shares"] / (1 + ra) ** (t - inp["t_base"])
 
@@ -271,8 +271,8 @@ def main() -> int:
         errors.append(f"w_afr={inp['w_afr']} outside (0, 1)")
     if inp["num_year"] - 2026 < 2:
         errors.append("num_year must be ≥ FY+2 for the one-year discount (construction.md §3)")
-    if not 0 < inp["ni_h1_2026"] < inp["ni_2026_cons"]:
-        errors.append("ni_h1_2026 must lie inside (0, ni_2026_cons)")
+    if not 0 < inp["ni_ytd_2026"] < inp["ni_2026_cons"]:
+        errors.append("ni_ytd_2026 must lie inside (0, ni_2026_cons)")
     for t in TIERS:
         roe = forward_roe(inp, t)
         for leg, r in (("mgl", r_mgl), ("afr", r_afr)):
@@ -387,7 +387,7 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} V_opt/M={v_opt / M:.1%}")
     num = [inp[f"ni_group_{t}"] for t in TIERS]
-    print(f"分子比 L/M={num[0] / num[1]:.2f} H/M={num[2] / num[1]:.2f}（分子年不同：L FY2025、M/H FY2028 折 1 年）")
+    print(f"分子比 L/M={num[0] / num[1]:.2f} H/M={num[2] / num[1]:.2f}（分子年不同：L FY2025、M/H FY2028 折 τ）")
     print(f"flat-multiple @PE_M: {flat[0]:.2f} / {flat[1]:.2f} / {flat[2]:.2f}")
     print(f"卡萨单位：陆港毛利 {kasa_gp(inp):.3f} 亿 / 集团毛利 {group_gp_fy25(inp):.3f} 亿 → 归母 {kasa_ni(inp):.3f} 亿"
           f" × PE_afr_H {pe_afr_h:.2f}")
