@@ -2,6 +2,15 @@
 check:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Skills must remain usable when this content repo is cloned elsewhere.
+    python3 - <<'PY'
+    from pathlib import Path
+    root = Path.cwd().resolve()
+    skills = root / ".claude/skills"
+    for path in [skills, *skills.rglob("*")]:
+        if path.is_symlink() and (path.readlink().is_absolute() or not path.exists() or not path.resolve().is_relative_to(root)):
+            raise SystemExit(f"FAIL {path.relative_to(root)}: skill symlink must be relative and stay inside the content repo")
+    PY
     cd ..
     python3 -c 'from eval.lib.frameworks import list_framework_paths, load_framework; ps = list_framework_paths(); [load_framework(p) for p in ps]; print(f"parsed {len(ps)} frameworks")'
     fail=0
