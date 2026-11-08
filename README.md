@@ -12,7 +12,9 @@ gh repo clone platoneko/lynch-frameworks frameworks
 cd frameworks && just check
 ```
 
-`.claude/skills/` 中的技能与参考文档直接随本仓库保存，不需要原机器上的 `agent/finance-skills`。外层代码仓库的 `.claude/skills` 只通过相对软链接访问这里；迁移时保持上面的两层目录关系即可。`just check` 会拒绝技能目录内的绝对软链接、失效软链接，以及指向本内容仓库之外的软链接。
+`.claude/skills/` 中的技能与参考文档直接随本仓库保存，不需要原机器上的 `agent/finance-skills`。`.agents/skills` 和 `.grok/skills` 通过仓库内相对软链接访问同一份文件；单独检出本仓库也能发现技能。外层 lynch app 同样使用这里的文件。`just check` 会拒绝技能目录内的绝对软链接、失效软链接，以及指向本内容仓库之外的软链接。
+
+在本仓库执行 `just skills-update` 同步上游全部 finance-skills；这个命令只需 Python 3、npx 和网络，不依赖 lynch 的代码或服务。更新器会保留 sediment-framework，拒绝覆盖本地改写及未知技能；完整文件与来源清单更新后可用 Git 检视，不会自动暂存或提交。终端研究前先运行此命令；lynch app 会在启动或恢复研究进程前自动调用。执行 `just skills-test` 可独立验证更新器，完整框架与演算检查仍使用上述两层目录中的 `just check`。
 
 第三方技能的来源和更新方式见 [技能来源说明](.claude/README.md)。
 

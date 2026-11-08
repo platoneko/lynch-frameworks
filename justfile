@@ -7,7 +7,7 @@ check:
     from pathlib import Path
     root = Path.cwd().resolve()
     skills = root / ".claude/skills"
-    for path in [skills, *skills.rglob("*")]:
+    for path in [root / ".agents/skills", root / ".grok/skills", skills, *skills.rglob("*")]:
         if path.is_symlink() and (path.readlink().is_absolute() or not path.exists() or not path.resolve().is_relative_to(root)):
             raise SystemExit(f"FAIL {path.relative_to(root)}: skill symlink must be relative and stay inside the content repo")
     PY
@@ -68,3 +68,10 @@ check:
       python3 "$f" >/dev/null 2>&1 || { echo "FAIL $f"; fail=1; }
     done
     exit $fail
+
+# Update vendored skills; works without the code repository.
+skills-update:
+    python3 scripts/update_finance_skills.py --repo-root {{quote(justfile_directory())}}
+
+skills-test:
+    python3 -m unittest discover -s tests -p 'test_finance_skills_update.py'
