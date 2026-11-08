@@ -16,14 +16,15 @@ sum-of-the-parts would have to invent margins (A2c 反信号).
        PE = (1 - g2/ROE_x) / (r - g2),  ROE_x = EPS_x * shares / equity
   L:   bottom-up scenario ladder — every line is a measured print (crypto back
        to its FY2023 full-year 135, options/equities back to 2025Q2, net
-       interest less the 10-K's own -100bp sensitivity of 304) — then g = 0,
+       interest less the Q3 10-Q's -100bp sensitivity of 366, and parent NI
+       after the disclosed minority-income run rate) — then g = 0,
        so the multiple collapses to 1/r.
 
 r is the leg's basket value read from the Inputs row and checked against
 gordon.BASKET_R via the 篮 N tag.  A2 records that no basket's written
 criterion holds positively and that 篮 4 is the user's ruling, not a derivation.
 
-Axis: mounts _AXIS.crypto-cycle on the L tier only (axis §2b) — crypto is 7.6%
+Axis: mounts _AXIS.crypto-cycle on the L tier only (axis §2b) — crypto is 8.4%
 of revenue, so M/H do not consume rung values; the L tier's crypto line must be
 this ticker's own measured trough.  The axis L rung is restated in Inputs but
 never used in the formula: what the two sides share is the constraint "this
@@ -63,10 +64,10 @@ REQUIRED = [
     "shares", "equity",
     "eps_27_l", "eps_27_m", "eps_27_h", "eps_28_ms",
     "opt_l", "pred_l", "eq_l", "crypto_l", "othtx_l", "nii_l", "othrev_l",
-    "opex_l", "nii_shock_100", "tax",
+    "opex_l", "nci_l", "nii_shock_100", "tax",
     "r_op", "g2", "g2_l", "crypto_trough", "axis_ebitda_l", "payout_obs",
     "seller_tp_mean", "seller_tp_lo", "seller_tp_hi",
-    "tau", "eps26_cons", "ni_h1_26", "y1", "y2", "rs_steady", "rs_steady_h",
+    "tau", "eps26_cons", "ni_ytd_26", "y1", "y2", "rs_steady", "rs_steady_h",
 ]
 NUM_YEAR = 2027  # M / H numerator FY2027; t_n = 2027-01-01
 
@@ -127,7 +128,8 @@ def main() -> int:
 
     # --- 1) L numerator: bottom-up ladder ------------------------------------
     rev_l = sum(inp[k] for k in L_REVENUE_LINES)
-    ni_l = (rev_l - inp["opex_l"]) * (1 - tax)
+    # Revenues and expenses consolidate Rothera; minority income is already after tax.
+    ni_l = (rev_l - inp["opex_l"]) * (1 - tax) - inp["nci_l"]
     eps_l = ni_l / shares
 
     # --- 2) M/H numerators: consensus ----------------------------------------
@@ -157,9 +159,9 @@ def main() -> int:
     errors += check_branch(g2, roe_m, r, inp["payout_obs"], "M")
 
     # --- 5) anchors ----------------------------------------------------------
-    # Timing (A15): M / H Gordon value at t_n 2027-01-01, discounted tau to the 2026-06-30 book, plus the
-    # 2026H2 unbooked consensus NI x (1 - g2/ROE_tier) per share at tau/2 (clipped at 0).
-    win_ni = inp["eps26_cons"] * shares - inp["ni_h1_26"]
+    # Timing (A15): discount to the 2026-09-30 book and add only the unbooked
+    # Q4 parent NI window; Q1-Q3 profits already belong to the book date.
+    win_ni = inp["eps26_cons"] * shares - inp["ni_ytd_26"]
     win = {"M": max(win_ni * (1 - g2 / roe_m), 0.0) / shares, "H": max(win_ni * (1 - g2 / roe_h), 0.0) / shares}
 
     def timed(pe_: float, eps_: float, tier: str, r_: float) -> float:
@@ -193,11 +195,13 @@ def main() -> int:
             if abs(said - got) > 0.05:
                 errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
     # A4 prints two readings because the sports share of event-contract revenue
-    # is not disclosed: half as a proxy for a sports-only ban, and the whole line.
+    # is not disclosed: half as the existing proxy, 70% as an activity-share
+    # proxy only, and the whole line. Hold NCI fixed in all three stresses.
     def eps_l_less_pred(share: float) -> float:
-        return (rev_l - inp[PRED_ZERO_SENSITIVITY] * share - inp["opex_l"]) * (1 - tax) / shares
+        return ((rev_l - inp[PRED_ZERO_SENSITIVITY] * share - inp["opex_l"]) * (1 - tax)
+                - inp["nci_l"]) / shares
 
-    eps_l_half, eps_l_zero = eps_l_less_pred(0.5), eps_l_less_pred(1.0)
+    eps_l_half, eps_l_70, eps_l_zero = (eps_l_less_pred(s) for s in (0.5, 0.7, 1.0))
 
     print(f"formula_id {FORMULA_ID}")
     print(f"  L rev {rev_l:.0f}  NI_L {ni_l:.1f}  EPS  {eps_l:.4f} / {eps_m:.4f} / {eps_h:.4f}")
@@ -210,6 +214,7 @@ def main() -> int:
           f" B' {(cand[1] + cand[2]) / 2:.2f}; H FY2028 EPS {eps_h * (1 + g1_cand):.3f}")
     print(f"  payout modelled {modelled_payout:.1%} vs observed {inp['payout_obs']:.1%} gap {gap:+.1%}")
     print(f"  A4 sensitivity: prediction markets halved -> L {eps_l_half * pe_l:.2f}"
+          f"  |  70% activity proxy -> L {eps_l_70 * pe_l:.2f}"
           f"  |  zeroed -> L {eps_l_zero * pe_l:.2f}")
 
     # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves

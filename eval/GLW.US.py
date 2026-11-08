@@ -1,96 +1,17 @@
 #!/usr/bin/env python3
-"""GLW.US (Corning) valuation eval — recompute anchors from frameworks/GLW.US.md.
+"""GLW FY2027 SOTP and a separate optical revenue/profit bridge.
 
-frameworks/GLW.US.md is the source of truth; this script re-derives
-L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries no
-current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
-derived live by the daily digest and the app, so nothing here reads a price.
+The framework Markdown is the source of truth. Q3 10-Q and post-earnings
+estimates update the base; the direct optical bridge is a sensitivity, not
+an alternative official numerator. Existing growth/return policies remain.
 
-formula_id: glw_sotp_core_segment_pe_gordon_v8
+Carrier contracts have no demonstrated increment beyond the adopted forecasts
+and receive no separate credit. New inside-the-box passive photonics is
+separate from enterprise scale-out/scale-up. Its $10B year-end 2030 run-rate
+is valued in 2031, less an explicitly estimated initial-capital proxy, with
+credit only in H. That condition is neither a forecast nor a proven bound.
 
-v8 (user ruling 2026-10-04; valuation-rules 裁决表 ② / 数据优先级 / 周期票中枢
-「适用范围」/ 未建模期权):
-
-Numerator year = FY2027, the farthest consensus year with >= 2 houses AND a
-range (yfinance, 18 houses, 3.853 / 4.354 / 4.990).  M = mean, H = high.
-Corning is a demand-cycle manufacturer (prices negotiated, cycle in volume),
-so the mid-cycle rule does not apply; L is the stock's own MEASURED digestion
-year instead of the consensus low: the OC leg falls from its latest run-rate
-(latest quarter x 4, Q3'26 since 2026-10-27) by the FY2022 -> FY2023 OC segment NI ratio (661 -> 478, the
-carrier / hyperscale inventory digestion), every other leg as in M.
-FY2028 has only point estimates (each house one number, no range); the ones
-whose original could be checked (Barclays 5.17, Wolfe 5.75, BofA 6.50, Citi
-220 / 32x) are averaged into a one-year transition g1 (n = 1), shared by all
-three tiers.  The self-built leg bridge is retired as a numerator.
-
-Legs keep the existing split: GI / Automotive / Solar revenue / LS revenue
-follow the bridge factors (FY28 factors over two years from the latest-quarter
-run-rate; FY27 takes the geometric half-way point g^0.5), Solar / LS run-rate
-losses stay flat, and OC is the RESIDUAL of company EPS (eps x shares +
-close_core - GI - AU - Solar/LS losses).  Leg g1 (shared across tiers) = OC
-FY28 residual (point mean) over OC FY27 residual (M) - 1; GI / AU g1 = the
-bridge's second-year step.
-
-Multiples: OC / GI / AU = one transition year (g1_leg) + g2_leg Gordon tail, r =
-basket 4 10%.  ROE_k = FY27 EPS / FY27 OPENING BPS, the latest 10-Q book rolled over the
-unbooked rest of FY26 (FY26 consensus - YTD actual) at the ACTUAL retention (unbooked
-- half-year dividend; user ruling 2026-10-18, A31).  g1 above ROE: stage-1 payout
-is FLOORED at 0 (user ruling 2026-10-18: the $2B ATM is unsold, the build-out is
-funded by customer prepayments and operating cash flow — no issuance charge);
-the unfloored reading is printed.  Solar / LS stay on P/S of the FY27 revenue.
-The Gordon legs are start-of-FY27 values, discounted by tau (below).
-
-Steady return (valuation-rules「经营价值与超额现金」②, A36):
-  * OC leg = 叙事换代的腿 (user ruling 2026-10-18; both criteria in A36): the
-    new-investment return is min(ROE_k, 30%) for ever — no fade.  The trough tier
-    tails on the M ROE, same cap.  The photonics option rides the same ruler.
-  * GI / AU legs = 稳态回报三段: ROE holds through Y1 2028, fades linearly to
-    min(ROE, 10%) at Y2 2032, Gordon tail after.  Y1 / Y2 = the default (Y1 =
-    visible-year end FY28, 4-year fade = medium barrier; user 2026-10-18 — these
-    legs are not on the optical chain, so they no longer borrow the
-    `_AXIS.ai-capex` window; GI's g2 is 0 so only AU moves); 10% = own cycle taken
-    in order (2026-10-19): trough-to-trough 2020-2023 return on invested capital
-    core 9.3% / GAAP 5.0% sits below r, forward is above r -> floor at r.  Peers
-    and the 15% fallback are contrast only.
-  * `y1` / `y2` (the `_AXIS.ai-capex` packaging / fiber-array / connector row,
-    2030 / 2035, cross-file checked) stay for the OC leg's three-segment
-    sensitivity only.
-gordon.py's three-segment function is [待建], so `path_value` lives here (it also
-carries the trough tier's recovery form: stage-1 payout 100%, tail on the M ROE).
-
-Timing alignment (valuation-rules ③, A37): the Gordon legs are FY27-opening values
-(2027-01-01); the base date is the latest 10-Q balance sheet (2026-09-30 since 2026-10-27) -> tau = `tau`.  Only
-the three Gordon legs are discounted; the P/S legs, the prepaid lock-in, the
-capitalised corporate / NCI items, net debt and pension stay (the discount-all
-reading differs < 0.3).  Window distributable profit = unbooked rest-of-FY26 core EPS x
-(1 - b1), b1 = g1_co / ROE > 1 in every tier, so the window is clipped to 0 (a
-negative window is a funding gap, and the growth-period funding gap is 0).  The
-options (carrier LTAs, photonics) are FY27-opening values too and take the same tau.
-
-Closing items (A7): only the unallocated RD&E is capitalised; the amortisation of
-purchased intangibles is excluded from core EPS (10-Q reconciliation note (4)) and
-is not a future cash cost, so it is not capitalised (2026-10-18 correction).
-
-Guardrail: only the M tier blocks against the own realised band (valuation-rules
-「永续增长口径」: L / H positions are disclosure only, 2026-09-21).
-
-Options (never touch the base hand, p hard-coded here, A2e-7a):
-  * Verizon 2027-2032 LTA: annual rate re-anchored on the carrier unit (AT&T
-    > $3B / 4 years ≈ $750M/yr) instead of Meta; signed 6y annuity + k=1 renewal.
-  * AT&T > $3B multi-year (2026-09-29): announced after every sell-side point,
-    same construction on its own disclosed rate, term 4y (2027-2030) + renewal.
-  * Photonics MAP $10B by 2030 (company target; GlassBridge / glass substrate
-    folded in): count = 10,000 - consensus-included 0; unit economic = the
-    aligned-year OC net margin (A32 inference, held to 2030 on the company's
-    "OM at or above 20%, EPS faster than sales"); valued on this ticker's OC
-    ruler (g2_oc, min(ROE_M, 30%) for ever) at 2030 and discounted to FY27;
-    no named photonics capacity budget -> unspent capital deducted = 0
-    (capital-intensity sensitivity printed).
-Warrants: NVIDIA's 3M pre-funded warrant is already counted as outstanding in
-EPS shares; the 15M $180 traditional warrant is out of the money at every
-anchor (holder's choice) — any table-3 value above the strike is flagged.
-
-Run:  python3 frameworks/eval/GLW.US.py
+Run: python3 frameworks/eval/GLW.US.py
 """
 
 from __future__ import annotations
@@ -125,7 +46,7 @@ FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "GLW.US.md"
 AXIS_CAPEX = Path(__file__).resolve().parents[2] / "frameworks" / "axes" / "ai-capex.md"
 AXIS_ROWS = (("y1", "y1_ai_capex_package"), ("y2", "y2_ai_capex_package"),
              ("ss_floor_ai_capex_package", "ss_floor_ai_capex_package"))  # A36
-FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v8"
+FORMULA_ID = "glw_sotp_core_segment_pe_gordon_v9"
 ANCHOR_YEAR = 2027  # numerator year FY2027 = t1; anchors are start-of-FY27 values
 TOL = 0.05
 PE_HARD_CAP = 30.0  # user: generated OC PE and H / FY28 low EPS must be < this
@@ -138,14 +59,13 @@ G2_OC_PEER_RAW = 0.0635  # A25 untruncated peer median, reference only
 CONTRACT_ANNUITY_BASKET = 1
 LISTING_CCY = "USD"
 OWN_CYCLE_IC = 0.093  # GI / AU own cycle 2020-2023, invested-capital basis, core reading (GAAP 5.0% stricter, both < r; A36)
-PREV_M = 85.42  # committed M before the 2026-10-16 / 10-18 corrections, for the 纠正对账门 read
+PREV_M = 91.94  # previous committed M, comparison only
 
-# Option tier realisation (A23a/A23b/A33/A34). Never in Inputs (A2e-7a).
-P_SIGNED = {"l": 0.0, "m": 0.50, "h": 1.0}   # carrier LTAs: incremental vs substitution
-P_RENEW = {"l": 0.0, "m": 0.25, "h": 1.0}    # carrier LTAs: renewed after build-out
-# Photonics: M = company high-confidence / internal discount on the 2030 increment
-# (0.5) x the solar precedent (profit two years late) at the basket r: 0.5/1.1^2.
-P_PHOT = {"l": 0.0, "m": 0.41, "h": 1.0}
+# Post-earnings estimates do not identify a separate carrier increment.
+P_SIGNED = {"l": 0.0, "m": 0.0, "h": 0.0}
+P_RENEW = {"l": 0.0, "m": 0.0, "h": 0.0}
+# No independent leg-level revenue path: new photonics is H success only.
+P_PHOT = {"l": 0.0, "m": 0.0, "h": 1.0}
 
 ATM_GROSS_MM = 2000.0
 ATM_FEE = 0.01
@@ -230,7 +150,7 @@ def main() -> int:
     required = [
         "shares_diluted", "shares_outstanding", "prefunded_warrant", "warrant_shares", "warrant_strike",
         "eps_fy27_m", "eps_fy27_h", "eps_fy27_low",
-        "eps_fy28_pt_barclays", "eps_fy28_pt_wolfe", "eps_fy28_pt_bofa", "eps_fy28_pt_citi",
+        "eps_fy28_pt_ms", "eps_fy28_pt_bernstein",
         "oc_ni_fy22", "oc_ni_fy23",
         "ni_oc_q", "ni_gi_q", "ni_au_q", "sales_so_q", "sales_ls_q",
         "g_gi", "g_au", "g_so", "g_ls", "bridge_frac_fy27", "g_so_l", "sales_so_fy28_guide",
@@ -242,9 +162,10 @@ def main() -> int:
         "contract_liab", "pp_margin",
         "sales_oc_q", "sales_oc_q_yago", "ni_oc_q_yago", "sales_oc_q1", "ni_oc_q1",
         "sales_oc_fy24", "ni_oc_fy24", "sales_oc_fy25", "ni_oc_fy25",
-        "carrier_anchor", "carrier_years", "contract_years", "t_opt",
+        "carrier_anchor", "carrier_years", "carrier_unincluded", "contract_years", "t_opt",
         "att_years", "t_att", "meta_anchor", "meta_years",
-        "phot_rev_target", "phot_cons_included", "t_phot", "phot_capex_named", "seg_assets_oc",
+        "phot_rev_target", "phot_cons_included", "t_phot", "phot_capex_unspent", "seg_assets_oc",
+        "enterprise_growth_q", "carrier_growth_q", "enterprise_growth_single", "phot_margin_reference",
         "r_disc", "capex_l", "capex_m", "capex_h",
         "ss_return", "ss_cap_oc", "ss_mgmt_lo", "ss_mgmt_hi", "y1", "y2", "y1_ga", "y2_ga", "tau", "amort_q",
         "ss_floor_ai_capex_package",
@@ -284,8 +205,12 @@ def main() -> int:
         guards.append("equity must be positive")
     if not (0 < inp["pe_own_min"] < inp["pe_own_max"]):
         guards.append("pe_own_min/max guardrail inverted")
-    if inp["phot_cons_included"] != 0:
-        guards.append("phot_cons_included must stay 0 unless a consensus year covers photonics (A34)")
+    if not (0 <= inp["phot_cons_included"] <= inp["phot_rev_target"]):
+        guards.append("photonics included revenue must lie within the opportunity")
+    if inp["carrier_unincluded"] not in (0, 1):
+        guards.append("carrier_unincluded must be 0 or 1")
+    if inp["phot_capex_unspent"] < 0:
+        guards.append("photonics unspent capital cannot be negative")
     if not (ANCHOR_YEAR + N_STAGE <= inp["y1"] < inp["y2"]):
         guards.append("high-return window must satisfy transition end <= Y1 < Y2 (A36)")
     # GI / AU: default window — Y1 = visible-year end (FY28), Y2 - Y1 = 4 (medium barrier), A36.
@@ -526,18 +451,20 @@ def main() -> int:
         if abs(s_ + r_ - whole) > 1e-9:
             errors.append(f"{name} segments do not sum to the {2 * n:.0f}y annuity")
 
-    # Photonics (A34): count x aligned margin -> 2030 NI x OC ruler at ROE_M, back to FY27.
+    # Photonics (A34): first full revenue year at t_phot, valued back to FY27.
     phot_units = inp["phot_rev_target"] - inp["phot_cons_included"]
     phot_ni = phot_units * opt_margin
-    # Success world on the same OC ruler (A36): valued at 2030, RONIC = min(ROE_M, cap) for ever.
+    # Success world uses the OC ruler: RONIC = min(ROE_M, cap) for ever.
     phot_pe = path_value(int(inp["t_phot"]), y1, y2, rs, 0.0, 0, inp["g2_oc"], roe["m"], r, narrative=cap_oc)
     disc_phot = (1.0 + r) ** -(inp["t_phot"] - ANCHOR_YEAR)
-    capex_unspent = inp["phot_capex_named"]
+    capex_unspent = inp["phot_capex_unspent"]
     v_phot = (phot_ni * phot_pe - capex_unspent) * disc_phot / sh
 
     # All option parts are FY27-opening values: one more tau to today (A37).
     df_opt = (1.0 + r_disc) ** (-tau)
-    v_parts = {"vz_s": vz_s, "vz_r": vz_r, "att_s": att_s, "att_r": att_r, "phot": v_phot}
+    carrier_credit = inp["carrier_unincluded"]
+    v_parts = {"vz_s": vz_s * carrier_credit, "vz_r": vz_r * carrier_credit,
+               "att_s": att_s * carrier_credit, "att_r": att_r * carrier_credit, "phot": v_phot}
     v_parts = {k: v * df_opt for k, v in v_parts.items()}
     vz_s, vz_r, att_s, att_r, v_phot = (v_parts[k] for k in ("vz_s", "vz_r", "att_s", "att_r", "phot"))
     v_opt = sum(v_parts.values())
@@ -592,7 +519,8 @@ def main() -> int:
               f"{sum(max(0.0, -p1[leg][k]) * ni_leg27[leg][k] for leg in LEGS) / sh:.2f}" for k in TIERS)
           + f"; FY27 opening BPS actual retention {bps_open:.3f} (= {bps0:.3f} + {unbooked:.3f} − {inp['dps_annual'] / 4 * inp['div_q_left']:.2f})"
           + f" vs retired b1 roll M/H " + "/".join(f"{eps[k] / roe_at(k, rolled=True):.2f}" for k in ("m", "h")))
-    print("window b1 = g1_co/ROE M/H " + "/".join(f"{b1[k]:.2f}" for k in ("m", "h")) + " > 1 -> window 0; OC steady "
+    print("window b1 = g1_co/ROE M/H " + "/".join(f"{b1[k]:.2f}" for k in ("m", "h"))
+          + "; window USD/sh " + "/".join(f"{window(k, r):.3f}" for k in TIERS) + "; OC steady "
           f"min(ROE, {cap_oc:.0%}) M/H " + "/".join(f"{min(roe[k], cap_oc):.2%}" for k in ("m", "h"))
           + f" (L tail on M); GI/AU steady min(ROE, {rs:.0%}) via Y1 {y1g} / Y2 {y2g} (default; OC-link axis {y1}/{y2} for the OC three-segment sens)")
     # cyclical multiple policy (construction §5): reverse or flat, pe_L >= pe_M.
@@ -631,7 +559,7 @@ def main() -> int:
     print(f"V_opt={v_opt:.2f}/sh: Verizon {vz_s:.2f}+{vz_r:.2f}, AT&T {att_s:.2f}+{att_r:.2f}, photonics {v_phot:.2f}  "
           f"(carrier rate {carrier_rate:,.0f}M/y x {opt_margin:.4f}; ann6 {annuity_factor(0, r_disc, inp['contract_years']):.4f} "
           f"ann4 {annuity_factor(0, r_disc, inp['att_years']):.4f}; photonics {phot_units:,.0f} x {opt_margin:.4f} = {phot_ni:,.1f}M "
-          f"x PE {phot_pe:.3f} (g2 {inp['g2_oc']:g}, ROE_M {roe['m']:.4f}) = {phot_ni * phot_pe:,.0f}M @2030 x {disc_phot:.4f})  "
+          f"x PE {phot_pe:.3f} (g2 {inp['g2_oc']:g}, ROE_M {roe['m']:.4f}) = {phot_ni * phot_pe:,.0f}M less initial capital {capex_unspent:,.0f}M @{inp['t_phot']:g} x {disc_phot:.4f})  "
           f"V_opt/M {v_opt / M:.1%}")
     print("zone+V: " + " ".join(f"{k.upper()}={zone_v[k]:.2f}" for k in TIERS)
           + f"  A'={(zone_v['l'] + zone_v['m']) / 2:.2f} B'={(zone_v['m'] + zone_v['h']) / 2:.2f}  "
@@ -687,33 +615,40 @@ def main() -> int:
           f"L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
     y1g, y2g = y1gs, y2gs
 
-    for lab, val in (("Barclays+Citi only (Wisburg-checked)", (inp["eps_fy28_pt_barclays"] + inp["eps_fy28_pt_citi"]) / 2),
-                     ("+UBS 6.70 (superseded)", (sum(pts.values()) + 6.70) / (len(pts) + 1)),
+    for lab, val in (("Morgan Stanley only", inp["eps_fy28_pt_ms"]),
+                     ("Bernstein only", inp["eps_fy28_pt_bernstein"]),
                      ("OC g1 = 0", None)):
         g = 0.0 if val is None else oc_residual(val, 28) / ni_oc["m"] - 1
         s = with_g1(g)
         print(f"sens g1 {lab}: g1_oc {g:.4f} -> L/M/H = {s['l']:.2f} / {s['m']:.2f} / {s['h']:.2f}")
 
-    for lab, mg in (("company OM 20% x (1-21%)", 0.20 * 0.79), ("latest-quarter OC print", inp["pp_margin"])):
+    for lab, mg in (("company OM 20% x (1-21%) stress", 0.20 * 0.79),
+                    ("latest-quarter OC print", inp["ni_oc_q"] / inp["sales_oc_q"]),
+                    ("prior reference margin", inp["phot_margin_reference"])):
         vp = (phot_units * mg * phot_pe - capex_unspent) * disc_phot / sh * df_opt
         print(f"sens photonics margin {lab} {mg:.4f}: photonics {vp:.2f}, V_opt {v_opt - v_phot + vp:.2f}")
     cap_int = inp["seg_assets_oc"] / (inp["sales_oc_q"] * 4)
     cap_need = phot_units * cap_int
     vp_cap = (phot_ni * phot_pe - cap_need) * disc_phot / sh * df_opt
-    print(f"sens photonics capital at OC asset intensity {cap_int:.3f} -> ${cap_need:,.0f}M deducted at 2030: photonics {vp_cap:.2f}")
+    if abs(capex_unspent - cap_need) > 0.01:
+        errors.append("photonics initial capital does not match the disclosed asset-density proxy")
+    vp_gross = phot_ni * phot_pe * disc_phot / sh * df_opt
+    print(f"sens photonics initial capital proxy {cap_int:.3f}: ${cap_need:,.0f}M; "
+          f"net success {vp_cap:.2f}, gross without initial capital {vp_gross:.2f}")
     vp_late = v_phot / (1 + r) ** 2
-    print(f"sens photonics two years late (2032): {vp_late:.2f}")
+    print(f"sens photonics two years late ({inp['t_phot'] + 2:g}): {vp_late:.2f}")
     meta_rate = inp["meta_anchor"] / inp["meta_years"]
     vm_s, vm_r = lta(meta_rate, inp["contract_years"], inp["t_opt"], opt_margin, r_disc)
-    print(f"sens Verizon on old Meta anchor {meta_rate:,.0f}M/y: {(vm_s + vm_r) * df_opt:.2f} (vs {vz_s + vz_r:.2f})")
+    print(f"excluded carrier gross audit: Verizon on old Meta anchor {meta_rate:,.0f}M/y: {(vm_s + vm_r) * df_opt:.2f} (vs {vz_s + vz_r:.2f})")
     r_c = basket_r(CONTRACT_ANNUITY_BASKET)
     c_s, c_r = lta(carrier_rate, inp["contract_years"], inp["t_opt"], opt_margin, r_c)
-    print(f"sens Verizon r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: {(c_s + c_r) * (1 + r_c) ** (-tau):.2f}")
+    print(f"excluded carrier gross audit: Verizon r_disc -> 篮 {CONTRACT_ANNUITY_BASKET} {r_c:.1%}: {(c_s + c_r) * (1 + r_c) ** (-tau):.2f}")
     for lab, (_, mg) in margins.items():
         a_, b_ = lta(carrier_rate, inp["contract_years"], inp["t_opt"], mg, r_disc)
         c_, d_ = lta(carrier_rate, inp["att_years"], inp["t_att"], mg, r_disc)
-        vp = phot_units * mg * phot_pe * disc_phot / sh
-        print(f"sens opt margin {lab} {mg:.4f}: V_opt {(a_ + b_ + c_ + d_ + vp) * df_opt:.2f}")
+        vp = (phot_units * mg * phot_pe - capex_unspent) * disc_phot / sh
+        print(f"sens opt margin {lab} {mg:.4f}: V_opt "
+              f"{((a_ + b_ + c_ + d_) * carrier_credit + vp) * df_opt:.2f}")
 
     atm_shares = ATM_GROSS_MM / ATM_REF_PRICE
     atm_net = ATM_GROSS_MM * (1 - ATM_FEE)
@@ -721,6 +656,39 @@ def main() -> int:
     print(f"ATM pro-forma: L/M/H = {pf['l']:.2f} / {pf['m']:.2f} / {pf['h']:.2f}")
     nci_oc = (inp["nci_q"] * 4 * (pe["oc"]["m"] - inp["pe_corp"])) / sh
     print(f"sens A8 NCI at OC M multiple {pe['oc']['m']:.2f}x: each tier −{nci_oc:.2f}")
+
+    # Independent optical revenue sensitivities never feed official numerators.
+    ent_prev = (inp["sales_oc_q"] - inp["sales_oc_q_yago"] * (1 + inp["carrier_growth_q"])) / (
+        inp["enterprise_growth_q"] - inp["carrier_growth_q"])
+    ent_q = ent_prev * (1 + inp["enterprise_growth_q"])
+    carrier_q = inp["sales_oc_q"] - ent_q
+    inc_margin = pairs["latest qtr YoY"][0] / pairs["latest qtr YoY"][1]
+    other_ps = M - legs_m["oc"] / sh - window("m", r)
+    bridge_section = out_sec.split("表4 · 光通信收入桥", 1)[-1]
+    for label, ent_growth, margin in (
+            ("企业网络 +30%", 0.30, inc_margin),
+            ("企业网络 +40%", 0.40, inc_margin),
+            ("企业网络 +51%", inp["enterprise_growth_single"], inc_margin),
+            ("企业网络 +51%·利润率持平", inp["enterprise_growth_single"],
+             inp["ni_oc_q"] / inp["sales_oc_q"])):
+        revenues = {yr: 4 * (ent_q * (1 + ent_growth) ** (yr - 2026)
+                    + carrier_q * (1 + inp["carrier_growth_q"]) ** (yr - 2026)) for yr in (2027, 2028)}
+        profits = {yr: inp["ni_oc_q"] * 4 + (rev - inp["sales_oc_q"] * 4) * margin
+                   for yr, rev in revenues.items()}
+        eps_b = (profits[2027] + ni_gi[27] + ni_au[27] + so_ls_ni - close_core) / sh
+        roe_b = eps_b / bps_open
+        pe_b = path_value(ANCHOR_YEAR, y1, y2, rs, profits[2028] / profits[2027] - 1,
+                          N_STAGE, inp["g2_oc"], roe_b, r, narrative=cap_oc)
+        optical_ps = profits[2027] * pe_b * (1 + r) ** (-tau) / sh
+        total_ps = optical_ps + other_ps
+        print(f"AI bridge {label}: OC NI27/28 {profits[2027]:.2f}/{profits[2028]:.2f}M; "
+              f"optical {optical_ps:.2f} + other {other_ps:.2f} = {total_ps:.2f}")
+        row = next((ln for ln in bridge_section.splitlines() if ln.startswith(f"| {label} |")), "")
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 4:
+            errors.append(f"optical bridge row missing: {label}")
+        elif any(abs(float(said) - got) > TOL for said, got in zip(cells[1:], (optical_ps, other_ps, total_ps))):
+            errors.append(f"optical bridge row mismatch: {label}")
 
     def band_at(dr: float) -> tuple[float, float, float]:
         return tuple(anchor(k, pe_k={leg: leg_pe(leg, k, rr=r + dr) for leg in LEGS}, rd=r + dr)[1] for k in TIERS)
