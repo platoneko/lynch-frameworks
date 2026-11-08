@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """000100.SZ (TCL科技) valuation eval — recompute anchors from frameworks/000100.SZ.md.
 
-formula_id: tcl_sotp_fy27_econdep_roic_gordon_tail_v6
+formula_id: tcl_sotp_fy27_econdep_roic_gordon_tail_v7
 
 Four-leg SOTP, each leg at its own basket r, legs added (no blended r):
 
@@ -23,9 +23,9 @@ FY2028 goes to H only.  Leverage gate read at FY2027 → every leg's retention
 earns ROIC (g = (1 - payout) x ROIC, PE = payout / (r - g)); for display the ROIC
 uses the economic-depreciation numerator.  Time alignment (valuation-rules
 「经营价值与超额现金」③): display and PV values at the numerator year start
-are discounted from the 2026-06-30 balance-sheet date (tau = 0.5 for FY2027,
-1.5 for FY2028) and the not-yet-booked window profit x payout is added back;
-the tail (from 2027) is discounted tau = 0.5.  Distribution and the bank stake
+are discounted from the 2026-09-30 balance-sheet date (tau = 0.25 for FY2027,
+1.25 for FY2028) and the Q4 window profit x payout is added back;
+the tail (from 2027) is discounted tau = 0.25.  Distribution and the bank stake
 are latest actuals (not aligned).  L replays the display segment's measured
 2022-2025 profits on economic depreciation (today's assets, so conservative)
 from FY2027, stays at the 2025 level with the M-tier multiple, plus the L tail.
@@ -56,7 +56,7 @@ from eval.lib.axes import axis_path  # noqa: E402
 from eval.lib.zones import cut_points  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "000100.SZ.md"
-FORMULA_ID = "tcl_sotp_fy27_econdep_roic_gordon_tail_v6"
+FORMULA_ID = "tcl_sotp_fy27_econdep_roic_gordon_tail_v7"
 PANEL_AXIS = axis_path("_AXIS.lcd-tv-panel")
 AXIS_SHARED = {"r_display": "r_panel", "r_display_ref": "r_panel_ref",  # framework row -> axis row
                "life_l": "panel_life_l", "life_m": "panel_life_m", "life_h": "panel_life_h"}
@@ -66,14 +66,15 @@ REQUIRED = [
     "shares", "bps", "payout", *R_LEGS, "r_display_ref",
     "ni26_m", "ni27_m", "ni28_m", "ni27_h", "ni28_h", "ni27_lo", "ni28_lo",
     "zh26_m", "zh27_m", "zh28_m", "zh27_h", "zh28_h", "zh_share", "zh_roe27_m", "zh_roe28_m",
-    "disp_share", "disp_na", "disp_assets", "pv_assets", "disp_att_2026h1", "pv_att_2026h1",
+    "disp_share", "disp_na", "disp_assets", "pv_assets", "disp_att_ytd", "pv_att_ytd", "disp_att_h1",
+    "da_window26", "window26_years",
     *(f"seg_ni_{y}" for y in SEG_YEARS), *(f"seg_da_{y}" for y in SEG_YEARS),
     "tax", "da_27", "da_28", "da_2026h1", "gross_equip", "d_bldg_other", "da_nonfa",
     "t8_budget", "t8_eq_frac", "t8_progress", "t8_share", "unspent_years",
     "life_l", "life_m", "life_h", "maint_l", "maint_m", "maint_h",
     "cohort_year", "tail_start", "tau", "capex_ex_2025", "da_2025", "capex_ex_2026h1",
     "ni_dist", "ni_dist_l", "roe_dist", "roic_dist", "ni_shb", "roe_shb", "payout_shb",
-    "ebt27_m", "ebt28_m", "interest_ann", "net_debt", "da_ann", "v_opt", "m_prev",
+    "op27_m", "op28_m", "interest_ann", "net_debt", "da_ann", "v_opt", "m_prev", "release_years",
 ]
 YI = 1e8
 TIERS = ("l", "m", "h")
@@ -118,8 +119,8 @@ def deck(i: dict[str, float], dg: float = 0.0, flat_pe: float | None = None) -> 
         n = tail_years(i, t)
         return per * annuity_factor(0.0, r6, n), per, n
 
-    def window26(t: str) -> float:  # 2026H2 display att on the economic ruler x payout (亿)
-        a = disp_att(26, "m") - i["disp_att_2026h1"] + (i["da_2026h1"] - econ_d(i, t) / 2) * k
+    def window26(t: str) -> float:  # Q4 display attributable profit on the economic ruler (亿)
+        a = disp_att(26, "m") - i["disp_att_ytd"] + (i["da_window26"] - econ_d(i, t) * i["window26_years"]) * k
         return a * po
 
     def pv_leg(zh: float) -> tuple[float, float, float]:
@@ -146,7 +147,7 @@ def deck(i: dict[str, float], dg: float = 0.0, flat_pe: float | None = None) -> 
         v_disp = v_perp * (1 + r6) ** -yrs + tl * (1 + r6) ** -tau + w - ded
         zh = i[f"zh{yy}_{t}"]
         pe_pv, g_pv, roic_pv = pv_leg(zh)
-        w_pv = max(0.0, (i["zh26_m"] * zs - i["pv_att_2026h1"]) * po) / sh * (1 + r_pv) ** (-tau / 2)
+        w_pv = max(0.0, (i["zh26_m"] * zs - i["pv_att_ytd"]) * po) / sh * (1 + r_pv) ** (-tau / 2)
         if year == 2028:
             w_pv += max(0.0, i["zh27_m"] * zs * po) / sh * (1 + r_pv) ** -(tau + 0.5)
         v_pv = zh * zs * pe_pv / sh * (1 + r_pv) ** -yrs + w_pv
@@ -159,7 +160,8 @@ def deck(i: dict[str, float], dg: float = 0.0, flat_pe: float | None = None) -> 
     out["h27hi"] = tier(2027, "h", "h")   # same-year (FY2027) counterpart of H
     out["h28hi"] = tier(2028, "h", "h")
     # ROE-side domain (disclosure): economic-ruler display ROE on segment net assets rolled to the year start
-    a26 = disp_att(26, "m") - i["disp_att_2026h1"]
+    # Segment equity is only available at H1; bridge all H2 profit, not just Q4.
+    a26 = disp_att(26, "m") - i["disp_att_h1"]
     na27 = i["disp_na"] + (1 - po) * a26 / sd
     out["m"]["roe"] = (out["m"]["att"] / sd) / na27
     out["h"]["roe"] = (out["h"]["att"] / sd) / (na27 + (1 - po) * out["m"]["att"] / sd)
@@ -215,9 +217,9 @@ def main() -> int:
     else:
         errors.append("frameworks/axes/lcd-tv-panel.md missing — panel-leg r unchecked")
 
-    # leverage gate at the mid-cycle year (EBIT = 报表营业利润 ≈ 利润总额 consensus)
-    int_ebit27 = inp["interest_ann"] / inp["ebt27_m"]
-    nd_ebitda27 = inp["net_debt"] / (inp["ebt27_m"] + inp["da_ann"])
+    # Keep the stricter operating-profit proxy at the boundary; disclose the add-back case.
+    int_ebit27 = inp["interest_ann"] / inp["op27_m"]
+    nd_ebitda27 = inp["net_debt"] / (inp["op27_m"] + inp["da_ann"])
     if not (int_ebit27 > 1 / 3 or nd_ebitda27 > 3):
         errors.append("leverage gate no longer triggered at FY2027 — the ROIC retention branch (A9) must be revisited")
 
@@ -254,14 +256,18 @@ def main() -> int:
         errors.append("perpetual segment moved with maintenance capex — tail leaked into the perpetual")
     flat = deck(inp, flat_pe=d["m"]["pe"])
     errors += ladder("flat-multiple anchors", *(flat[t]["a"] for t in TIERS))
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
+    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, tol=0.005)
     if inp["v_opt"] != 0:
         errors.append("V_opt must stay 0 (A6) until a named quantity exists")
 
     sh = inp["shares"] / YI
     print(f"formula_id={FORMULA_ID}")
     print(f"leverage gate @FY2027: interest/EBIT {int_ebit27:.1%} net debt/EBITDA {nd_ebitda27:.2f} → triggered; "
-          f"@FY2028 {inp['interest_ann'] / inp['ebt28_m']:.1%} / {inp['net_debt'] / (inp['ebt28_m'] + inp['da_ann']):.2f}")
+          f"@FY2028 {inp['interest_ann'] / inp['op28_m']:.1%} / {inp['net_debt'] / (inp['op28_m'] + inp['da_ann']):.2f}")
+    print(f"leverage add-back case: interest/(OP+interest) "
+          f"{inp['interest_ann'] / (inp['op27_m'] + inp['interest_ann']):.1%}; "
+          f"net debt/(OP+interest+D&A) {inp['net_debt'] / (inp['op27_m'] + inp['interest_ann'] + inp['da_ann']):.2f}; "
+          "proxy choice flips gate; retain triggered case")
     print(f"§5b entry ratios (ex t8 / t9): FY2025 {e25:.2f}, 2026H1 {e26:.2f}; t8 unspent deduction {d['ded']:.3f}/股")
     for t, lab in (("m", "M FY2027 mean"), ("h", "H FY2028 mean")):
         x = d[t]
@@ -281,7 +287,15 @@ def main() -> int:
     print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
     print(f"L/M={L / M:.2f} H/M={H / M:.2f} width={(H - L) / (2 * M):.2f} V_opt/M=0")
     print(f"flat (all PE {d['m']['pe']:.2f}): " + " / ".join(f"{flat[t]['a']:.2f}" for t in TIERS))
-    print(f"same-year (FY2027) H' = consensus high, H ruler = {d['h27hi']['a']:.2f}; FY2028 high = {d['h28hi']['a']:.2f} (disclosure)")
+    print(f"same-year (FY2027) H' = visible-detail maxima, H ruler = {d['h27hi']['a']:.2f}; "
+          f"FY2028 visible maxima = {d['h28hi']['a']:.2f} (not full-sample bounds; disclosure)")
+    # Conditional cash-use research only: unchanged earnings/growth, no terminal release.
+    # This is retained economic earnings, not the depreciation tail or the t8 budget.
+    retained_per_share = d["m"]["att"] * (1 - po) / sh
+    release_pv = retained_per_share * annuity_factor(0, inp["r_display"], int(inp["release_years"]))
+    release_pv *= (1 + inp["r_display"]) ** -inp["tau"]
+    print("cash-use conditional M (release fraction 0/25/50/75/100%, 2027-2031 only): "
+          + " / ".join(f"{M + fraction * release_pv:.2f}" for fraction in (0, 0.25, 0.5, 0.75, 1)))
     for dg in (-0.01, 0.01):
         s = deck(inp, dg)
         print(f"g ±1pp {dg:+.0%}: L {s['l']['a']:.2f} M {s['m']['a']:.2f} H {s['h']['a']:.2f}")

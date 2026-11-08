@@ -109,8 +109,8 @@
 - [600900.SH](./600900.SH.md) — 长江电力 · 篮子：篮 2 7.5%
 - [601600.SH](./601600.SH.md) — 中国铝业 · 篮子：篮 5 11%
 - [601899.SH](./601899.SH.md) — 紫金矿业 · 篮子：r_perp 篮 4 10% · r_li 篮 6 13% · r_rest 篮 6 13%
-- [603799.SH](./603799.SH.md) — 华友钴业 · 篮子：篮 6 13%
 - [601975.SH](./601975.SH.md) — 招商南油 · 篮子：篮 5 11%
+- [603799.SH](./603799.SH.md) — 华友钴业 · 篮子：篮 6 13%
 - [603871.SH](./603871.SH.md) — 嘉友国际 · 篮子：篮 4 10%
 - [603993.SH](./603993.SH.md) — 洛阳钼业 · 篮子：r_perp 篮 4 10% · r_co 篮 6 13% · r_other 篮 6 13% · r_ixm 篮 5 11%
 
@@ -135,7 +135,7 @@
 - [`_AXIS.inp-laser`](./axes/inp-laser.md) — 磷化铟基激光芯片同业尺轴 · 挂载票：— ｜ 参照：LITE.US · AAOI.US · COHR.US（数通腿，只引用本轴「稳态回报」「高回报期」两行，见 §1 / §1c）
 - [`_AXIS.lcd-tv-panel`](./axes/lcd-tv-panel.md) — LCD 电视面板价格情景轴（控产格局下的面板价位 + 面板腿折现率） · 挂载票：`000725.SZ` 京东方（整公司）· `000100.SZ` TCL科技（只挂华星显示腿）
 - [`_AXIS.leading-edge-foundry`](./axes/leading-edge-foundry.md) — 先进逻辑晶圆代工 · 挂载票：— ｜ 参照：INTC.US · 0981.HK（先进制程腿：利润率尺、g2、对齐年份、稳态回报） | 候选：TSM.US（尺的提供方：本轴借它的实测营业利润率作上界；其框架未按本轴拆腿，输入不变）
-- [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.6%）
+- [`_AXIS.lithium-carbonate`](./axes/lithium-carbonate.md) — 电池级碳酸锂 CNY 价格情景轴 · 挂载票：9696.HK · 000792.SZ · ALB.US · 1772.HK · 600499.SH ｜ 参照：601899.SH（锂腿占 M 2.4%）
 - [`_AXIS.optical-comms`](./axes/optical-comms.md) — 光通信 / CPO·NPO 光引擎出货情景轴 · 挂载票：— ｜ 参照：NOK.US · LITE.US · COHR.US · AVGO.US · TSM.US · 300308.SZ
 - [`_AXIS.optical-electrical-chip`](./axes/optical-electrical-chip.md) — 光模块电芯片同业尺轴 · 挂载票：— ｜ 参照：MTSI.US | 候选：MRVL.US（Connectivity 腿含光 DSP、驱动 / TIA，但与交换、CXL、DCI 模块混在一腿，本次只作尺提供方——借用过渡年的贷方，未迁移）· CRDO.US（主业有源电缆 DSP / SerDes，属同层；本次只作 \(g_2\) 互证与尺提供方，未迁移）· AVGO.US（光 DSP 与驱动混在半导体网络业务里，拆不出）· SMTC.US（信号完整性分部是本腿，但公司另有物联网、模拟业务，主业构成未核实，未入库）
 - [`_AXIS.optical-fiber`](./axes/optical-fiber.md) — 光纤价格情景轴（中国 G.652.D 裸纤现货年均价） · 挂载票：`600522.SH` 中天科技（光纤腿定档，2026-10-13）｜ 参照：`GLW.US` 康宁（光通信腿是需求周期型、美国长约定价，不跟本轴的中国现货价，只作交叉）；候选：`601869.SH` 长飞光纤、`600487.SH` 亨通光电、`600498.SH` 烽火通信——未入库

@@ -5,7 +5,7 @@ The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which
 quote falls in is derived live by the daily digest and the app, so nothing
 here reads a price.
 
-formula_id: tsem_gordon_twoleg_2027_v4
+formula_id: tsem_gordon_twoleg_2027_v5
 
 Two-leg Gordon on the FY2027 consensus (the furthest year with a >=2-house
 *range*, valuation-rules 裁决顺序 ②), with the SiPho leg on the peer-ruler axis
@@ -48,7 +48,7 @@ Framework correction 2026-10-16 (valuation-rules「经营价值与超额现金�
 - rest-foundry g2 = `g2_rest` (the cluster re-solved once on the same path, shared
   with GFS.US); `g2_rest_src` stays the raw cluster reading;
 - the Gordon legs sit at the start of FY2027 and are folded back tau years; the
-  window distributable profit (2H26 unbooked x (1 - b1), floored at 0) at tau/2;
+  window distributable profit (Q4 unbooked x (1 - b1), floored at 0) at tau/2;
 - V_opt on the SiPho path (from FY2027), net of unspent capital, folded by tau.
 
 Cross-file: shared rows must equal frameworks/axes/sipho-wafer.md; g2_rest /
@@ -90,7 +90,7 @@ from eval.lib.rf_report import rf_block  # noqa: E402
 
 FRAMEWORK = REPO_ROOT / "frameworks" / "TSEM.US.md"
 PEER = REPO_ROOT / "frameworks" / "axes" / "sipho-wafer.md"
-FORMULA_ID = "tsem_gordon_twoleg_2027_v4"
+FORMULA_ID = "tsem_gordon_twoleg_2027_v5"
 LISTING_CCY = "USD"
 TOL = 0.05
 MIN_R_MINUS_G = 0.02
@@ -104,7 +104,7 @@ MONTHS = 12
 
 REQUIRED = [
     "shares", "equity", "net_cash", "nii_4q", "gaap_gap_ps", "tax",
-    "eps_2026_m", "eps_1h26_a", "payout_3y",
+    "eps_2026_m", "eps_ytd26_a", "payout_3y",
     "eps_2027_l", "eps_2027_m", "eps_2027_h", "eps_2027_gaap_m", "eps_2028_gaap_m",
     "n_stage", "n_consensus", "r_perp", "pe_own_min", "pe_own_max", "bvps", "pb_floor",
     "rev_2026", "rev_2027", "sipho_rev_2026", "sipho_rev_2027", "sipho_rev_2028", "opex_ratio",
@@ -232,8 +232,10 @@ def main() -> int:
     ops = {t: street[t] - inp["gaap_gap_ps"] - nii_ps for t in TIERS}
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] / inp["shares"]
-    bps_op_2q26 = equity_op / inp["shares"]
-    unbooked = (inp["eps_2026_m"] - inp["eps_1h26_a"]) - 0.5 * inp["gaap_gap_ps"] - 0.5 * nii_ps
+    bps_op_latest = equity_op / inp["shares"]
+    # Q3 is already in the latest book: only Q4 profit and a quarter of the
+    # annual GAAP bridge / cash income remain in the opening-FY27 roll.
+    unbooked = inp["eps_2026_m"] - inp["eps_ytd26_a"] - tau * (inp["gaap_gap_ps"] + nii_ps)
 
     # ---- Step 2: leg split (group ruler) ----
     def split(gm: float, cap_mult: float = 1.0):
@@ -259,7 +261,7 @@ def main() -> int:
             frac = g_roll * unbooked / ops[t]
             if frac >= 1.0:
                 raise ValueError(f"{t}: book roll diverges, g·N/eps = {frac:.2f} >= 1 (BLOCKED-by-rule)")
-            bps = bps_op_2q26 / (1.0 - frac)
+            bps = bps_op_latest / (1.0 - frac)
             es, er = ops[t] * sh[t], ops[t] * (1.0 - sh[t])
             roe_s, roe_r = es / (bps * cap[t]), er / (bps * (1.0 - cap[t]))
             n_t = 0 if t == "L" else n
@@ -331,7 +333,7 @@ def main() -> int:
         res = []
         for t in TIERS:
             g_roll = g if t == "L" else g1
-            roe = ops[t] / (bps_op_2q26 / (1.0 - g_roll * unbooked / ops[t]))
+            roe = ops[t] / (bps_op_latest / (1.0 - g_roll * unbooked / ops[t]))
             pe = perpetual_pe(g, roe, r) if t == "L" else two_stage_pe(g1, n, g, roe, r)
             res.append(ops[t] * pe + cash_ps)
         return tuple(res)
