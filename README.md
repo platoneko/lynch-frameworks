@@ -12,8 +12,8 @@ gh repo clone platoneko/lynch-frameworks frameworks
 cd frameworks && just check
 ```
 
-`.claude/skills/` 中的技能与参考文档直接随本仓库保存，不需要原机器上的 `agent/finance-skills`。外层代码仓库的 `.claude/skills` 只通过相对软链接访问这里；迁移时保持上面的两层目录关系即可。`just check` 会拒绝技能目录内的绝对软链接、失效软链接，以及指向本内容仓库之外的软链接。
+`.claude/skills/sediment-framework/` 是随本仓库保存的项目自有技能。其他研究技能由各工具的用户级环境提供，与 Longbridge 技能一样，不在本仓库存放或更新。`just check` 会拒绝项目技能目录内的绝对软链接、失效软链接，以及指向本内容仓库之外的软链接。
 
-第三方技能的来源和更新方式见 [技能来源说明](.claude/README.md)。
+第三方技能的来源和管理位置见 [技能来源说明](.claude/README.md)。
 
 契约见 `AGENTS.md`；研究会话在 `lynch/` 根打开。
