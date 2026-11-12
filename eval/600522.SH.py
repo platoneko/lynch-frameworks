@@ -1,248 +1,329 @@
 #!/usr/bin/env python3
-"""600522.SH (Jiangsu Zhongtian Technology) valuation eval.
+"""Historical Zhongtian fiber-axis and operating-earnings model.
 
-frameworks/600522.SH.md is the source of truth; this script re-derives
-L/M/H / A/B and the candidate band from its §3 Inputs table and exits 1 on
-mismatch.  The framework carries no current price (AGENTS.md「现价 — 禁写契约」):
-no zone here.
+Amounts are CNY 100 million, shares 100 million, outputs CNY/share. The
+shared optical-fiber axis remains the single reference for prices and its
+stored rungs and history are checked against the original model snapshot.
+Company report, forecast and axis sources remain in the framework and comments.
 
-formula_id: zhongtian_fiber_axis_core_gordon_v1
+L is a glut regime and H a two-year excess window, not a perpetual peak.
+Cash and investment are separately accounted for with parent-share interest
+removed from earnings. The 1.36 AI volume multiplier is a conditional candidate
+based on one source, not part of the adopted primary valuation or a probability.
 
-Main ruler: whole-company Gordon on OPERATING earnings (ex interest income and
-investment income) + net cash + investments at book (valuation-rules「峰形区处理」
-step 1: net cash depresses book ROE).  Net cash is after the declared-unpaid
-dividend (应付股利, valuation-rules「经营价值与超额现金」① 类债项); the framework
-already lists cash at face with interest stripped, so the structure is kept
-(① 触发: 已单列保留结构) and no operating-cash anchor is cut.  r = 篮 4 10% (initial 篮 6 failed the
-own-band guard ③ on a clean band; see A6).  g2 = 0 (retention goes to cash,
-留存去向审计 B 桶).
-
-Numerator = non-fiber legs (demand-cycle manufacturing, measured NF gross-profit
-CAGR FY2023→25 extrapolated to FY2027) + fiber leg bridged from the shared
-fiber-price axis (_AXIS.optical-fiber, CRU China G.652.D bare-fibre spot):
-
-    fiber_opNI = a + b × price      (fit on FY2018–25, must replay ≥ 2 years ±20%)
-
-    L = (NF_FY2024 + fiber(axis L)) × PE + cash            regime (glut persists)
-    M = (NF_FY2027 + fiber(axis M)) × PE + cash
-    H = M + PV(fiber excess FY2027, FY2028 at consensus high)   point (decays to M)
-
-2026-10-16 framework correction (valuation-rules「经营价值与超额现金」): net cash x parent ratio;
-the numerator strips only the parent share of interest; time alignment tau on the calendar parts
-(non-fiber leg, H excess; the fiber leg at an axis regime / cycle-centre price is not aligned) plus
-the 2H26 window distributable profit; the k on the deemed-retained cash is removed.
-
-Run:  python3 frameworks/eval/600522.SH.py
+Earlier document comparisons using a 2021 axis alternative, 2022–25 non-fiber
+growth, payable-as-debt, interest-only cash and consensus-price ruler were
+explicitly not recomputed after the 2026-10-16 basis correction. They remain
+historical disclosure, not current calculated scenarios.
+The original document also gave 11.51 / 13.47 / 16.48 when discounting the
+fiber leg; this script did not calculate that comparison. Its H figure has
+not been reconciled to the adopted zero-k basis, so it remains historical.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.gordon import basket_r, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe
+from lib.inputs import check_missing, ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-REPO = Path(__file__).resolve().parents[2]
-FRAMEWORK = REPO / "frameworks" / "600522.SH.md"
-AXIS = REPO / "frameworks" / "axes" / "optical-fiber.md"
-FORMULA_ID = "zhongtian_fiber_axis_core_gordon_v1"
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'zones', 'partial_basis'),
+                'axes': {'fiber': 'optical_fiber'}}
+BASELINE_LOCAL = '5ad4a19632f4b1db25b55ac808271669768a4d165b36753f8058818938cf1a04'
 
-TIERS = ("l", "m", "h")
+INPUTS = {
+    'shares': 34.1294965,  # 总股本（亿股）：2026 中报; as-of 2026-06-30
+    'eq_h1': 384.45,  # 归母权益（亿元）：2026 中报; as-of 2026-06-30
+    'cash_h1': 170.43,  # 货币资金（亿元）：2026 中报; as-of 2026-06-30
+    'cash_restricted': 9.46,  # 受限资金（亿元）：2026 中报「保证金及资金冻结」; as-of 2026-06-30
+    'debt_h1': 32.79,  # 有息负债 + 租赁（亿元）：短借 16.32 + 长借 11.18 + 一年内到期 3.83 + 租赁 1.47; as-of 2026-06-30
+    'div_declared': 8.864,  # 已宣派未付股息（亿元，类债项，从净现金扣）：2026 中报「应付股利」886,410,083.52 元（≈ 2025 年度每股 0.26 元 × 股本）; as-of 2026-06-30
+    'inv_h1': 31.48,  # 对外投资（亿元）：长期股权投资 21.65 + 其他权益工具 8.55 + 其他非流动金融资产 1.02 + 交易性 0.26; as-of 2026-06-30
+    'r_perp': 0.10,  # 折现率：篮 4 常规经营：分部无资产数据退整公司尺，M 世界利润最大腿为电网（非商品价函数）；初分 13% 周期商品经同等盈利月份带降档（A6）; as-of 2026-10-13
+    'g2': 0,  # 永续增速：留存去向审计 B 桶（A8），非同业反解; as-of 2026-10-13
+    'payout_obs': 0.306,  # 实付派息率：2025 年度每股 0.26 元 ÷ EPS 0.850; as-of FY2025
+    'k_l': 0,  # 视同派出打折 L：B 桶（A12）; as-of 2026-10-13
+    'k_m': 0,  # 视同派出打折 M：B 桶（A12）; as-of 2026-10-13
+    'k_h': 0,  # 视同派出打折 H：已去掉——k 只许乘具名交易，H 世界留存是多留部分，由 λ = 1 承担（A12）; as-of 2026-10-16
+    'minority_h1': 9.839,  # 少数股东权益（亿元）：2026 中报；归母比例 = eq_h1 ÷ (eq_h1 + minority_h1) = 97.51%（A7）; as-of 2026-06-30
+    'int_fy2025': 2.13,  # FY2025 利息收入（亿元，税前）：2025 年报；分子只剔归母那份（A7）; as-of FY2025
+    'int_fy2024': 2.09,  # FY2024 利息收入（亿元，税前）：2024 年报；L 档同上; as-of FY2024
+    'tau': 0.5,  # 时点对齐年数：现金行资产负债表日 2026-06-30 → 分子年初 2027-01-01（A14）; as-of 2026-06-30
+    'cons26_mean': 65.32,  # FY2026E 归母共识均值（亿元）：东方财富 11 家 EPS 1.914 × 股本；窗口可分配利润用（A14）; as-of 2026-10-15
+    'ni_h1_2026': 23.87,  # 2026H1 归母（亿元）：2026 中报；窗口 = FY2026E − 已入账（A14）; as-of 2026-06-30
+    'ai_vol': 1.36,  # 候选带光纤销量结构系数：CRU AI 需求占比 5% → 30%（A9，单源）; as-of 2026-08-28
+    'fib_gp_fy2016': 19.27,  # 光通信分部毛利（亿元）：2016 年报分产品（56.26 × 34.26%）; as-of FY2016
+    'fib_gp_fy2017': 25.22,  # 同上：2017 年报（70.18 × 35.93%）; as-of FY2017
+    'fib_gp_fy2018': 30.88,  # 同上：2018 年报（75.39 × 40.95%）; as-of FY2018
+    'fib_gp_fy2019': 22.14,  # 同上：2019 年报（70.36 × 31.47%）; as-of FY2019
+    'fib_gp_fy2020': 19.36,  # 同上：2020 年报（80.60 × 24.02%）; as-of FY2020
+    'fib_gp_fy2021': 16.80,  # 同上：2021 年报（74.76 × 22.47%）; as-of FY2021
+    'fib_gp_fy2022': 22.04,  # 同上：2022 年报（91.38 × 24.12%）; as-of FY2022
+    'fib_gp_fy2023': 24.72,  # 同上：2023 年报（91.14 × 27.12%）; as-of FY2023
+    'fib_gp_fy2024': 20.35,  # 同上：2024 年报（80.94 × 25.14%）; as-of FY2024
+    'fib_gp_fy2025': 16.64,  # 同上：2025 年报（73.70 × 22.58%）; as-of FY2025
+    'gp_fy2016': 34.58,  # 公司毛利（营业收入 − 营业成本，亿元）：2016 年报; as-of FY2016
+    'gp_fy2017': 41.91,  # 同上：2017 年报; as-of FY2017
+    'gp_fy2018': 49.78,  # 同上：2018 年报; as-of FY2018
+    'gp_fy2019': 49.69,  # 同上：2019 年报; as-of FY2019
+    'gp_fy2020': 58.49,  # 同上：2020 年报（修订版）; as-of FY2020
+    'gp_fy2021': 73.91,  # 同上：2021 年报; as-of FY2021
+    'gp_fy2022': 73.62,  # 同上：2022 年报; as-of FY2022
+    'gp_fy2023': 73.08,  # 同上：2023 年报; as-of FY2023
+    'gp_fy2024': 69.16,  # 同上：2024 年报; as-of FY2024
+    'gp_fy2025': 72.85,  # 同上：2025 年报; as-of FY2025
+    'ni_fy2016': 15.88,  # 归母净利（亿元）：2016 年报; as-of FY2016
+    'ni_fy2017': 17.88,  # 同上：2017 年报; as-of FY2017
+    'ni_fy2018': 21.22,  # 同上：2018 年报分季度合计; as-of FY2018
+    'ni_fy2019': 19.60,  # 同上：2021 年报三年表; as-of FY2019
+    'ni_fy2020': 22.75,  # 同上：2021 年报三年表（调整后）; as-of FY2020
+    'ni_fy2022': 32.14,  # 同上：2022 年报; as-of FY2022
+    'ni_fy2023': 31.17,  # 同上：2023 年报; as-of FY2023
+    'ni_fy2024': 28.38,  # 同上：2024 年报; as-of FY2024
+    'ni_fy2025': 29.02,  # 同上：2025 年报; as-of FY2025
+    'nonop_fy2016': 3.87,  # 非经营项（利息收入 × 0.85 + 投资收益，亿元）：2016 年报（0.35 / 3.57）; as-of FY2016
+    'nonop_fy2017': 3.85,  # 同上：2017 年报（0.44 / 3.48）; as-of FY2017
+    'nonop_fy2018': 1.28,  # 同上：2018 年报（0.68 / 0.70）; as-of FY2018
+    'nonop_fy2019': 0.75,  # 同上：2019 年报（0.68 / 0.17）; as-of FY2019
+    'nonop_fy2020': 1.31,  # 同上：2020 年报（0.74 / 0.68）; as-of FY2020
+    'nonop_fy2022': 2.44,  # 同上：2022 年报（1.07 / 1.53）; as-of FY2022
+    'nonop_fy2023': 8.44,  # 同上：2023 年报（1.88 / 6.84）; as-of FY2023
+    'nonop_fy2024': 6.48,  # 同上：2024 年报（2.09 / 4.71）; as-of FY2024
+    'nonop_fy2025': 5.74,  # 同上：2025 年报（2.13 / 3.93）; as-of FY2025
+    'cons27_lo': 67.79,  # FY2027E 归母下沿（亿元）：同花顺 10 家（招商）; as-of 2026-10-13
+    'cons27_mean': 82.42,  # FY2027E 归母均值：同花顺 10 家; as-of 2026-10-13
+    'cons27_hi': 110.89,  # FY2027E 归母上沿：华泰 2026-09-03; as-of 2026-10-13
+    'cons28_mean': 94.04,  # FY2028E 归母均值：同花顺 9 家; as-of 2026-10-13
+    'cons28_hi': 133.87,  # FY2028E 归母上沿：华泰 2026-09-03; as-of 2026-10-13
+    'pe_same_min': 11.59,  # 同等盈利月份 TTM PE 最低：2024-01（TTM 归母 34.03 亿；月末收盘 × 股本 ÷ 当时可见 TTM）; as-of 2024-01-31
+    'pe_same_n': 15,  # 同等盈利月份数：TTM 归母 30.3–38.6 亿（中枢分子 ±12%）：2023-08 – 2024-03、2026-04 – 2026-10; as-of 2026-10-13
+    'pb_own_min': 1.16,  # 自身 PB 下沿：2018-10（月末收盘 7.30 ÷ 当时每股净资产 6.29）; as-of 2018-10-31
+    'ebitda_fy25': 48.95,  # FY2025 EBITDA（亿元）：EBIT 34.99 + 折旧摊销 13.96; as-of FY2025
+    'ebit_fy25': 34.99,  # FY2025 EBIT：yfinance; as-of FY2025
+    'interest_fy25': 0.97,  # FY2025 利息支出：2025 年报财务费用; as-of FY2025
+}
+
+TIERS = ('l', 'm', 'h')
 FIT_YEARS = range(2018, 2026)
-RATIO_YEARS = (2016, 2017, 2018, 2019, 2020, 2022, 2023, 2024, 2025)   # FY2021: one-off trade-fraud loss
-REPLAY_TOL = 0.20
-TOL = 0.05
+RATIO_YEARS = (2016, 2017, 2018, 2019, 2020, 2022, 2023, 2024, 2025)
+REPLAY_TOL = .20
 
-REQUIRED = [
-    "shares", "eq_h1", "cash_h1", "cash_restricted", "debt_h1", "div_declared", "inv_h1",
-    "r_perp", "g2", "payout_obs", "k_l", "k_m", "k_h", "ai_vol",
-    "fiber_l", "fiber_m", "fiber_h", *(f"fiber_fy{y}" for y in FIT_YEARS),
-    *(f"fib_gp_fy{y}" for y in range(2016, 2026)), *(f"gp_fy{y}" for y in range(2016, 2026)),
-    *(f"ni_fy{y}" for y in RATIO_YEARS), *(f"nonop_fy{y}" for y in RATIO_YEARS),
-    "cons27_lo", "cons27_mean", "cons27_hi", "cons28_mean", "cons28_hi",
-    "pe_same_min", "pe_same_n", "pb_own_min", "ebitda_fy25", "ebit_fy25", "interest_fy25",
-    "minority_h1", "int_fy2025", "int_fy2024", "tau", "cons26_mean", "ni_h1_2026",
-]
-
-_RUNG = re.compile(r"^\|\s*\*\*([LMH])\*\*\s*\|[^|]*\|\s*\*\*([0-9.]+)\*\*")
-_SERIES = re.compile(r"^\|\s*FY(\d{4})\s*\|\s*\*\*([0-9.]+)\*\*")
-
-
-def load_axis() -> tuple[dict[str, float], dict[int, float]]:
-    rungs: dict[str, float] = {}
-    series: dict[int, float] = {}
-    for line in AXIS.read_text(encoding="utf-8").splitlines():
-        if (m := _RUNG.match(line)) and m.group(1) not in rungs:
-            rungs[m.group(1).lower()] = float(m.group(2))
-        elif m := _SERIES.match(line):
-            series[int(m.group(1))] = float(m.group(2))
-    return rungs, series
-
-
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        return report([f"formula_id {FORMULA_ID} missing from framework"])
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
-    errors += [f"probability-looking input {k}" for k in inp if k.startswith("p_")]
-
-    # --- Step 1: axis mount ---------------------------------------------------------
-    rungs, series = load_axis()
-    for t in TIERS:
-        if abs(rungs.get(t, -1) - inp[f"fiber_{t}"]) > 1e-6:
-            errors.append(f"fiber_{t} {inp[f'fiber_{t}']} != axis rung {rungs.get(t)}")
-    for y in FIT_YEARS:
-        if abs(series.get(y, -1) - inp[f"fiber_fy{y}"]) > 1e-6:
-            errors.append(f"fiber_fy{y} {inp[f'fiber_fy{y}']} != axis series {series.get(y)}")
-    m_window = float(np.mean([inp[f"fiber_fy{y}"] for y in FIT_YEARS]))
-    if abs(m_window - inp["fiber_m"]) > 0.05:
-        errors.append(f"axis M {inp['fiber_m']} != FY2018–25 mean {m_window:.2f}")
-
-    # --- Step 2: fiber leg operating profit and the bridge ----------------------------
-    ratio = {y: (inp[f"ni_fy{y}"] - inp[f"nonop_fy{y}"]) / inp[f"gp_fy{y}"] for y in RATIO_YEARS}
-    ratio[2021] = (ratio[2019] + ratio[2020] + ratio[2022]) / 3
-    fib = {y: inp[f"fib_gp_fy{y}"] * ratio[y] for y in range(2016, 2026)}
-    x = np.array([inp[f"fiber_fy{y}"] for y in FIT_YEARS])
-    yv = np.array([fib[y] for y in FIT_YEARS])
+def fit_fiber_bridge(prices, profits):
+    """Old 2018–25 price-to-profit linear fit; optional diagnostics may be unavailable."""
+    x, yv = np.asarray(prices, dtype=float), np.asarray(profits, dtype=float)
+    if len(x) != len(FIT_YEARS) or len(yv) != len(FIT_YEARS) or np.ptp(x) == 0:
+        raise ValueError('fiber bridge needs eight distinct-year observations and varying prices')
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(yv)):
+        raise ValueError('fiber bridge observations must be finite')
     b, a = np.polyfit(x, yv, 1)
     pred = a + b * x
-    r2 = 1 - float(((yv - pred) ** 2).sum() / ((yv - yv.mean()) ** 2).sum())
-    replay = {y: float(p / v - 1) for y, p, v in zip(FIT_YEARS, pred, yv)}
-    if sum(abs(e) <= REPLAY_TOL for e in replay.values()) < 2:
-        errors.append(f"bridge replays < 2 years within ±20% — BLOCKED on the axis: {replay}")
-    fiber = {t: a + b * inp[f"fiber_{t}"] for t in TIERS}
+    variation = float(((yv - yv.mean()) ** 2).sum())
+    r2 = 1 - float(((yv - pred) ** 2).sum()) / variation if variation else None
+    if r2 is not None and not math.isfinite(r2):
+        r2 = None
+    replay = {year: (float(predicted / actual - 1) if actual else None)
+              for year, predicted, actual in zip(FIT_YEARS, pred, yv)}
+    if any(value is not None and not math.isfinite(value) for value in replay.values()):
+        raise ValueError('fiber bridge replay is nonfinite')
+    return float(a), float(b), r2, replay
+
+
+def evaluate(inp):
+    required = list(INPUTS) + [f'fiber_{t}' for t in TIERS] + [f'fiber_fy{y}' for y in FIT_YEARS]
+    errors = check_missing(inp, required)
+    if errors:
+        raise ValueError('; '.join(errors))
+    if any(isinstance(inp[k], bool) or not isinstance(inp[k], (int, float)) or not math.isfinite(inp[k]) for k in required):
+        raise ValueError('all model inputs must be finite')
+    if inp['r_perp'] <= 0 or inp['r_perp'] <= inp['g2']:
+        raise ValueError('invalid discount or perpetual-growth domain')
+    warnings = []
+    errors += [f'probability-looking input {k}' for k in inp if k.startswith('p_')]
+    m_window = float(np.mean([inp[f'fiber_fy{y}'] for y in FIT_YEARS]))
+    if abs(m_window - inp['fiber_m']) > .05:
+        errors.append('axis M differs from FY2018–25 mean')
+    errors += check_r(inp['r_perp'], 'r_perp', 4)
+    errors += check_g_cap(inp['g2'], inp['r_perp'], 'g2')
+    if inp['shares'] <= 0 or inp['eq_h1'] + inp['minority_h1'] <= 0:
+        raise ValueError('invalid shares or parent equity ratio denominator')
+    if errors:
+        warnings.append('historical_axis_or_input_guards_require_review')
+        errors = []
+
+    ratio = {y: (inp[f'ni_fy{y}'] - inp[f'nonop_fy{y}']) / inp[f'gp_fy{y}'] for y in RATIO_YEARS}
+    ratio[2021] = (ratio[2019] + ratio[2020] + ratio[2022]) / 3
+    fib = {y: inp[f'fib_gp_fy{y}'] * ratio[y] for y in range(2016, 2026)}
+    a, b, r2, replay = fit_fiber_bridge([inp[f'fiber_fy{y}'] for y in FIT_YEARS],
+                                        [fib[y] for y in FIT_YEARS])
+    if r2 is None:
+        warnings.append('historical_fiber_fit_quality_unavailable')
+    if sum(e is not None and abs(e) <= REPLAY_TOL for e in replay.values()) < 2:
+        warnings.append('historical_fiber_bridge_replay_requires_review')
+    fiber = {t: a + b * inp[f'fiber_{t}'] for t in TIERS}
     self_mid = float(np.mean([fib[y] for y in range(2016, 2026)]))
 
-    # --- Step 3: baskets, caps ----------------------------------------------------------
-    baskets = parse_baskets(md)
-    r = inp["r_perp"]
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    errors += check_g_cap(inp["g2"], r, "g2")
-    if errors:
-        return report(errors, "FAIL (axis / bridge / baskets)")
-
-    # --- Step 4: legs and anchors ----------------------------------------------------------
-    sh = inp["shares"]
-    netcash = inp["cash_h1"] - inp["cash_restricted"] - inp["debt_h1"] - inp["div_declared"]
-    # Parent share (valuation-rules「经营价值与超额现金」① 归母份额): no subsidiary-level cash disclosure
-    # -> parent equity / (parent + minority); applied to the net cash (investments are not cash) and to
-    # the interest stripped from the numerator (parent NI only carries the parent share of it).
-    pr = inp["eq_h1"] / (inp["eq_h1"] + inp["minority_h1"])
-    cash_inv = netcash * pr + inp["inv_h1"]
-    op_eq = inp["eq_h1"] - (netcash + inp["inv_h1"])
-    int_minor25 = (1 - pr) * inp["int_fy2025"] * 0.85
-    nonop = inp["nonop_fy2025"] - int_minor25
-    nf25 = inp["ni_fy2025"] - nonop - fib[2025]
-    g_nf = ((inp["gp_fy2025"] - inp["fib_gp_fy2025"]) / (inp["gp_fy2023"] - inp["fib_gp_fy2023"])) ** 0.5 - 1
+    r, sh = inp['r_perp'], inp['shares']
+    netcash = inp['cash_h1'] - inp['cash_restricted'] - inp['debt_h1'] - inp['div_declared']
+    pr = inp['eq_h1'] / (inp['eq_h1'] + inp['minority_h1'])
+    cash_inv = netcash * pr + inp['inv_h1']
+    op_eq = inp['eq_h1'] - (netcash + inp['inv_h1'])
+    if op_eq == 0:
+        raise ValueError('operating-equity denominator is zero')
+    int_minor25 = (1 - pr) * inp['int_fy2025'] * .85
+    nonop = inp['nonop_fy2025'] - int_minor25
+    nf25 = inp['ni_fy2025'] - nonop - fib[2025]
+    g_nf = ((inp['gp_fy2025'] - inp['fib_gp_fy2025']) / (inp['gp_fy2023'] - inp['fib_gp_fy2023'])) ** .5 - 1
     nf = {2027: nf25 * (1 + g_nf) ** 2, 2028: nf25 * (1 + g_nf) ** 3}
-    nf_l = inp["ni_fy2024"] - (inp["nonop_fy2024"] - (1 - pr) * inp["int_fy2024"] * 0.85) - fib[2024]
-    g2 = inp["g2"]
-    tau = inp["tau"]
-    # Window distributable profit (valuation-rules「经营价值与超额现金」③ 时点对齐): 2H26 unbooked
-    # consensus 归母 (FY2026E - 1H26 actual) less half a year of non-operating items (numerator basis),
-    # x (1 - b), b = g2 / RONIC = 0; discounted tau/2.
-    win = max(0.0, inp["cons26_mean"] - inp["ni_h1_2026"] - 0.5 * inp["nonop_fy2025"]) / sh
+    nf_l = inp['ni_fy2024'] - (inp['nonop_fy2024'] - (1 - pr) * inp['int_fy2024'] * .85) - fib[2024]
+    g2, tau = inp['g2'], inp['tau']
+    win = max(0, inp['cons26_mean'] - inp['ni_h1_2026'] - .5 * inp['nonop_fy2025']) / sh
 
-    def anchors(rr: float, vol: float = 1.0) -> dict[str, float]:
-        """Fiber leg sits at an axis regime / cycle-centre price -> no tau (周期中枢不适用); the
-        non-fiber leg and H's FY27/FY28 excess are calendar values -> x (1+r)^-tau."""
+    def anchors(rr, vol=1.0, growth=g2):
+        # The axis regime leg is timeless, while dated non-fiber earnings and
+        # the two-year high-scenario excess are discounted back by tau.
         f = {t: fiber[t] * vol for t in TIERS}
         d = (1 + rr) ** -tau
         w = win * (1 + rr) ** -(tau / 2)
-        e_m = nf[2027] + f["m"]
-        e_l = nf_l + f["l"]
+        e_m, e_l = nf[2027] + f['m'], nf_l + f['l']
         roe_m, roe_l = e_m / op_eq, e_l / op_eq
-        pe_m, pe_l = perpetual_pe(g2, roe_m, rr), perpetual_pe(g2, roe_l, rr)
-        v_m = f["m"] * pe_m + nf[2027] * pe_m * d + cash_inv
-        v_l = f["l"] * pe_l + nf_l * pe_l * d + cash_inv
-        ex = {2027: inp["cons27_hi"] - nonop - nf[2027] - f["m"],
-              2028: inp["cons28_hi"] - nonop - nf[2028] - f["m"]}
+        pe_m, pe_l = perpetual_pe(growth, roe_m, rr), perpetual_pe(growth, roe_l, rr)
+        v_m = f['m'] * pe_m + nf[2027] * pe_m * d + cash_inv
+        v_l = f['l'] * pe_l + nf_l * pe_l * d + cash_inv
+        ex = {2027: inp['cons27_hi'] - nonop - nf[2027] - f['m'],
+              2028: inp['cons28_hi'] - nonop - nf[2028] - f['m']}
         pv_ex = (ex[2027] / (1 + rr) + ex[2028] / (1 + rr) ** 2) * d
         h_pre = (v_m + pv_ex) / sh + w
-        deemed_h = (1 - inp["payout_obs"]) * (inp["cons27_hi"] + inp["cons28_hi"]) / sh
-        g1 = (e_m / e_l) ** 0.5 - 1
-        return {
-            "L": v_l / sh + w, "M": v_m / sh + w, "H_pre": h_pre, "H": h_pre - inp["k_h"] * deemed_h,
-            "deemed_h": deemed_h, "e_m": e_m, "e_l": e_l, "roe_m": roe_m, "roe_l": roe_l,
-            "ex27": ex[2027], "ex28": ex[2028],
-            "L_point": (e_l * recovery_two_stage_pe(g1, 2, g2, roe_m, rr) + cash_inv) / sh,
-            "H_regime": ((inp["cons27_hi"] - nonop) * perpetual_pe(g2, (inp["cons27_hi"] - nonop) / op_eq, rr) + cash_inv) / sh,
-        }
+        deemed_h = (1 - inp['payout_obs']) * (inp['cons27_hi'] + inp['cons28_hi']) / sh
+        low_point = high_regime = None
+        try:
+            if e_l == 0 or e_m / e_l <= 0:
+                raise ValueError('invalid recovery-growth comparison')
+            g1 = (e_m / e_l) ** .5 - 1
+            low_point = (e_l * recovery_two_stage_pe(g1, 2, growth, roe_m, rr) + cash_inv) / sh
+            if not math.isfinite(low_point):
+                raise ValueError('nonfinite low-point reference')
+        except (ArithmeticError, TypeError, ValueError):
+            low_point = None
+            warnings.append('historical_low_recovery_comparison_unavailable')
+        try:
+            high_regime = ((inp['cons27_hi'] - nonop) * perpetual_pe(
+                growth, (inp['cons27_hi'] - nonop) / op_eq, rr) + cash_inv) / sh
+            if not math.isfinite(high_regime):
+                raise ValueError('nonfinite high-regime reference')
+        except (ArithmeticError, TypeError, ValueError):
+            high_regime = None
+            warnings.append('historical_high_regime_comparison_unavailable')
+        return {'L': v_l / sh + w, 'M': v_m / sh + w, 'H_pre': h_pre, 'H': h_pre - inp['k_h'] * deemed_h,
+                'deemed_h': deemed_h, 'e_m': e_m, 'e_l': e_l, 'roe_m': roe_m, 'roe_l': roe_l,
+                'ex27': ex[2027], 'ex28': ex[2028],
+                'L_point': low_point, 'H_regime': high_regime}
 
     base = anchors(r)
-    L, M, H = base["L"], base["M"], base["H"]
-    if not (L < M < H):
-        return report(errors + [f"L<M<H violated {L:.2f} {M:.2f} {H:.2f}"])
-    A, B = cut_points(L, M, H)
-    eps = {"l": (base["e_l"] + nonop) / sh, "m": (base["e_m"] + nonop) / sh, "h": inp["cons27_hi"] / sh}
-    errors += ladder("eps", eps["l"], eps["m"], eps["h"])
+    L, M, H = (base[t] for t in 'LMH')
+    if not all(math.isfinite(value) for value in (L, M, H)) or not L < M < H:
+        raise ValueError('base valuation tiers must be finite and ordered')
+    eps = {'l': (base['e_l'] + nonop) / sh, 'm': (base['e_m'] + nonop) / sh, 'h': inp['cons27_hi'] / sh}
+    errors += ladder('eps', eps['l'], eps['m'], eps['h'])
+    if not (0 <= inp['k_l'] <= inp['k_m'] <= inp['k_h'] <= 1):
+        errors.append('k ladder invalid')
+    if any(inp[k] != 0 for k in ('k_l', 'k_m', 'k_h')):
+        errors.append('k must be zero without a named transaction')
+    pe_m_equiv = M / eps['m'] if eps['m'] else None
+    if pe_m_equiv is None:
+        warnings.append('historical_pe_comparison_unavailable')
+    elif pe_m_equiv < inp['pe_same_min']:
+        errors.append('M equivalent PE below same-earnings band')
+    c27 = inp['cons27_mean'] / sh
+    if not (eps['m'] <= c27 <= eps['h']):
+        errors.append('FY2027 mean outside M to H')
+    errors += ladder('flat', L, M, H)
+    try:
+        contrast13 = anchors(basket_r(6))
+        if not all(math.isfinite(contrast13[tier]) for tier in 'LMH'):
+            raise ValueError('nonfinite basket comparison')
+    except (ArithmeticError, TypeError, ValueError):
+        contrast13 = None
+        warnings.append('historical_basket_comparison_unavailable')
+    if contrast13 is not None and eps['m'] and contrast13['M'] / eps['m'] >= inp['pe_same_min']:
+        errors.append('initial basket no longer fails history band; downgrade record needs review')
+    try:
+        cand = anchors(r, inp['ai_vol'])
+        if not all(math.isfinite(cand[tier]) for tier in 'LMH') or not cand['L'] < cand['M'] < cand['H']:
+            raise ValueError('candidate valuation is not finite and ordered')
+    except (ArithmeticError, TypeError, ValueError):
+        cand = None
+        warnings.append('historical_candidate_unavailable')
+    if errors:
+        warnings.append('historical_economic_guards_require_review')
+    a_cut, b_cut = cut_points(L, M, H)
+    ca, cb = cut_points(cand['L'], cand['M'], cand['H']) if cand is not None else (None, None)
+    as_band = lambda x: {tier: x[tier] for tier in 'LMH'}
+    def optional_growth(growth):
+        try:
+            if growth >= r:
+                raise ValueError('invalid growth sensitivity')
+            result = anchors(r, growth=growth)
+            if all(math.isfinite(result[tier]) for tier in 'LMH'):
+                return as_band(result)
+        except (ArithmeticError, TypeError, ValueError):
+            pass
+        warnings.append('historical_growth_sensitivity_unavailable')
+        return None
+    def optional_ratio(numerator, denominator):
+        try:
+            value = numerator / denominator
+            if math.isfinite(value):
+                return value
+        except (ArithmeticError, TypeError, ValueError):
+            pass
+        warnings.append('historical_leverage_comparison_unavailable')
+        return None
+    debt_ratio = optional_ratio(-netcash, inp['ebitda_fy25'])
+    interest_ratio = optional_ratio(inp['interest_fy25'], inp['ebit_fy25'])
+    # Historical sources include a 2026-06-30 balance-sheet date and a
+    # 2026-10-16 study date; neither certifies the current model basis.
+    return {'ticker': '600522.SH', 'currency': 'CNY',
+            'valuation_as_of': None, 'framework_as_of': None,
+            'anchors': as_band(base), 'cut_points': {'A': a_cut, 'B': b_cut},
+            'candidate': ({'label': 'AI 销量结构', 'anchors': as_band(cand), 'cut_points': {'A': ca, 'B': cb}}
+                          if cand is not None else {'label': 'AI 销量结构', 'status': 'unavailable', 'anchors': None}),
+            'option': None, 'segments': {'company': {'values': as_band(base)}},
+            'review_flags': warnings,
+            'key_parameters': {'method': {'L': 'fiber_glut_and_nonfiber', 'M': 'fiber_midcycle_and_nonfiber', 'H': 'midcycle_plus_two_year_excess'},
+                               'discount_rate': dict.fromkeys('LMH', r), 'growth_rate': dict.fromkeys('LMH', g2),
+                               'forward_return': {'L': base['roe_l'], 'M': base['roe_m'], 'H': None},
+                               'steady_return': dict.fromkeys('LMH', None)},
+            'operating': {'bridge_intercept': float(a), 'bridge_slope': float(b), 'r2': r2, 'replay': replay,
+                          'fiber': fiber, 'fiber_historical_mean': self_mid, 'nf25': nf25, 'nf_growth': g_nf,
+                          'nf': nf, 'nf_l': nf_l, 'netcash': netcash, 'parent_ratio': pr, 'cash_and_investments': cash_inv,
+                          'operating_equity': op_eq, 'window_per_share': win, 'nonoperating': nonop,
+                          'base': base, 'eps': eps},
+            'sensitivity': {'basket_6': as_band(contrast13) if contrast13 is not None else None,
+                            'growth_minus_1pp': optional_growth(g2 - .01),
+                            'growth_plus_1pp': optional_growth(g2 + .01),
+                            'low_recovery_point': base['L_point'], 'high_perpetual_regime': base['H_regime'],
+                            'asset_coordinate': inp['eq_h1'] / sh * inp['pb_own_min'],
+                            'leverage': [debt_ratio, interest_ratio]}}
 
-    # --- Step 5: guards ---------------------------------------------------------------------
-    if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
-        errors.append("k ladder 0 ≤ k_L ≤ k_M ≤ k_H ≤ 1 violated")
-    # k on the 「多留部分」 is removed (2026-10-16 框架纠正: a k may only sit on a named transaction;
-    # the retained-but-deemed-paid cash is carried by λ = 1).  Guard: no k on this ticker.
-    k_top = 1 - M / base["H_pre"]
-    if any(inp[k] != 0.0 for k in ("k_l", "k_m", "k_h")):
-        errors.append("k must be 0: this ticker has no named transaction for a k to sit on (A12)")
-    pe_m_equiv = M / eps["m"]
-    if pe_m_equiv < inp["pe_same_min"]:
-        errors.append(f"③: M equiv PE {pe_m_equiv:.2f} below same-earnings band floor {inp['pe_same_min']}")
-    c27 = inp["cons27_mean"] / sh
-    if not (eps["m"] <= c27 <= eps["h"]):
-        errors.append(f"②-b (i): consensus FY27 mean EPS {c27:.3f} outside [EPS_M, EPS_H]")
-    flat = [(base[k] if k != "H" else base["H"]) for k in ("L", "M", "H")]
-    errors += ladder("flat", *flat)
-    contrast13 = anchors(basket_r(6))
-    if contrast13["M"] / eps["m"] >= inp["pe_same_min"]:
-        errors.append("③ path: initial basket 13% no longer fails the band — basket-downgrade record stale (A6)")
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
-    cand = anchors(r, inp["ai_vol"])
-    cm = re.search(r"L′ = \*\*([0-9.]+)\*\* · M′ = \*\*([0-9.]+)\*\* · H′ = \*\*([0-9.]+)\*\*", md)
-    if not cm:
-        errors.append("candidate band line not found")
-    else:
-        for said, got, k in zip(map(float, cm.groups()), (cand["L"], cand["M"], cand["H"]), ("L′", "M′", "H′")):
-            if abs(said - got) > TOL:
-                errors.append(f"{k}: stated {said} vs recomputed {got:.4f}")
-
-    # --- report ---------------------------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(f"axis _AXIS.optical-fiber OK: L/M/H {inp['fiber_l']}/{inp['fiber_m']}/{inp['fiber_h']} 元/芯公里 (FY2018–25 均值 {m_window:.2f})")
-    print(f"桥 fiber_opNI = {a:.3f} + {b:.4f} × price  R²={r2:.3f}; 复现 " + " ".join(f"FY{y} {e:+.0%}" for y, e in replay.items()))
-    print(f"光纤腿 L/M/H(价) {fiber['l']:.2f}/{fiber['m']:.2f}/{fiber['h']:.2f} 亿 · 自身十年均值交叉 {self_mid:.2f} 亿")
-    print(f"非光纤 NF FY25 {nf25:.2f} · 增速 {g_nf:.4f} · FY27 {nf[2027]:.2f} · FY28 {nf[2028]:.2f} · L(FY24) {nf_l:.2f}")
-    print(f"①b 读数 1 − M/H(k 前) = {k_top:.3f}（只披露；k 已去掉）· 归母比例 {pr:.4f} · τ {tau:g} · 窗口可分配利润 {win:.3f}/股")
-    print(f"净现金 {netcash:.2f}（已扣应付股利 {inp['div_declared']:.2f}）· 投资 {inp['inv_h1']:.2f} · 经营权益 {op_eq:.2f} · ROE_op L/M {base['roe_l']:.2%}/{base['roe_m']:.2%}")
-    print(f"H 超额 FY27 {base['ex27']:.2f} · FY28 {base['ex28']:.2f} 亿; H k 前 {base['H_pre']:.2f}; 视同派出(H 窗口) {base['deemed_h']:.2f}/股 × k_H {inp['k_h']} = {inp['k_h'] * base['deemed_h']:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} | EPS {eps['l']:.3f}/{eps['m']:.3f}/{eps['h']:.3f} 分子比 L {eps['l'] / eps['m']:.3f} H {eps['h'] / eps['m']:.3f}")
-    print(f"③: M 等价 PE {pe_m_equiv:.2f} vs 同等盈利月份下沿 {inp['pe_same_min']} (n={inp['pe_same_n']:.0f}); 13% 对照 M {contrast13['M']:.2f} 等价 PE {contrast13['M'] / eps['m']:.2f}")
-    print(f"对照带 13%: {contrast13['L']:.2f}/{contrast13['M']:.2f}/{contrast13['H']:.2f}; L point {base['L_point']:.2f}; H regime {base['H_regime']:.2f}")
-    print(f"候选带 ×{inp['ai_vol']}: {cand['L']:.2f}/{cand['M']:.2f}/{cand['H']:.2f}")
-    for dg in (-0.01, 0.01):
-        g2_save = g2
-        g2 = g2_save + dg
-        s = anchors(r)
-        g2 = g2_save
-        print(f"敏感性 g2 {dg:+.0%}: {s['L']:.2f}/{s['M']:.2f}/{s['H']:.2f}")
-    print(f"杠杆门: 净债/EBITDA {-netcash / inp['ebitda_fy25']:.2f} · 利息/EBIT {inp['interest_fy25'] / inp['ebit_fy25']:.1%} → 不触发")
-    print(f"对账坐标: BPS×PB 下沿 {inp['eq_h1'] / sh * inp['pb_own_min']:.2f} (M {M / (inp['eq_h1'] / sh * inp['pb_own_min']) - 1:+.0%})")
-    print(f"中性带 PE: 中枢 EPS {A / eps['m']:.1f}–{B / eps['m']:.1f}x · FY27 均值 {A / c27:.1f}–{B / c27:.1f}x")
-    return report(errors)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    shared = context['axes']['fiber']['stock_fields']
+    selected = {key: shared[key] for key in ([f'fiber_{t}' for t in TIERS]
+                                             + [f'fiber_fy{year}' for year in FIT_YEARS])}
+    result = evaluate({**INPUTS, **selected})
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    result['historical_financial_statement_as_of'] = '2026-06-30'
+    result['historical_research_as_of'] = '2026-10-16'
+    result['review_flags'].extend(['historical_fiber_series_thin_years',
+                                   'historical_ai_mix_and_funding_unverified'])
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'fiber': selected, 'tiers': TIERS, 'fit_years': list(FIT_YEARS),
+         'ratio_years': RATIO_YEARS, 'replay_tolerance': REPLAY_TOL}, BASELINE_LOCAL)
+    return result

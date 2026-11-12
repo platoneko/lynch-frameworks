@@ -1,157 +1,129 @@
 #!/usr/bin/env python3
-"""000933.SZ (Shenhuo Coal & Power) valuation eval.
+"""Historical Shenhuo aluminium spread model, retained for migration review.
 
-frameworks/000933.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
-no current price or zone (the digest and the app zone on live quotes).
-
-formula_id: shenhuo_al_spread_gm_bridge_gordon_v5
-
-Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
-aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 151.9万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
-marginal conversion rate.  L/H only move the aluminium-spread term; coal /
-trade / processing are *not* scenario-modelled (no segment GM — there is no
-measured "coal@M" to freeze).  Whatever those legs contributed to
-consolidated NP_M stays inside NP_L/NP_H by omission (A6).  Each tier's
-multiple is Gordon on the axis g rows (all 0%: L rung 4,873 is an MS 2027
-supply-glut *level* that may persist; IAI 3.3% is sensitivity only) at the
-tier's own forward ROE, with r the basket the framework names for the single
-leg (篮 6 周期商品, 13% → flat 1/r = 7.69×; valuation-rules「§r 篮子」,
-gordon.BASKET_R).  The PB floor is disclosed, never max()'d into L.  The L
-numerator (59.9亿) sits above 2023H1 printed 54.8亿 and is the axis regime —
-g_L=0, not the 谷底档 recovery stage.  Open item: L may be optimistic vs a
-world where coal also troughs (A6/A14).
-
-Shenhuo carries a coal segment, and 2025H1 was a trough in *both* coal and
-aluminium, on top of a high-alumina half for a company that buys its alumina —
-its five-year H1 margin series runs 36.17 / 19.86 / 24.44 / 27.07 / 35.61, so
-2023H1 and 2022H1 both sit *above* 2025H1 despite lower aluminium prices.  The
-axis's L world moves only the smelting spread and freezes alumina low, so that
-half-year is *worse* than L and is read back as the deep_discount reference,
-not as the anchor.  The guard below asserts that ordering: if the k fitting
-point ever stops being the worse corner, A4's story has changed and the
-reference must be re-opened, not silently kept.
-
-Run:  python3 frameworks/eval/000933.SZ.py
+The old aluminium axis supplies three spreads, growth and a one-year high-price
+period; a separate copper axis limits aluminium's upside. The lower-tier
+profit still contains unseparated coal/trading earnings, not measured coal at
+the middle tier. The two-point gross-to-parent-profit bridge mixes aluminium,
+coal and alumina effects; the lower observed 2025H1 point remains its fit,
+not a standalone forecast. Current model dates are not independently certified.
 """
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import hashlib
+import json
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.al_bridge import (  # noqa: E402
-    REQUIRED, anchors, bridge, check_gordon, check_regression, flat_ladder,
-    multiples, pb_floor,
-)
-from lib.axes import check_al_mount  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.al_bridge import (REQUIRED, anchors, bridge, check_gordon,
+                           check_regression, flat_ladder, multiples, pb_floor)
+from lib.inputs import check_missing, ladder
+from lib.metal_axis_checks import axis_basis_snapshot, check_aluminium_price_upside
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000933.SZ.md"
-FORMULA_ID = "shenhuo_al_spread_gm_bridge_gordon_v5"
+DEPENDENCIES = {'libraries': ('al_bridge', 'axes', 'gordon', 'inputs', 'metal_axis_checks'),
+                'axes': {'aluminium': 'fed_path_aluminium', 'gold_copper': 'fed_path_gold_copper'}}
 
-GP_M_FILING = 179.3  # 亿 CNY, 2026H1 x2 at 36.17%
-NP_M_FILING = 95.6   # 亿 CNY, 2026H1 归母 47.81 x2
-SHARES_STATIC = 22.49  # 亿股, LB static total_shares 2,249,004,399 (A14)
-CONSENSUS_TP = 32.05  # 一致目标价 = 7.5x M EPS ≈ M anchor at 1/r (A8)
-NP_TROUGH_2023H1 = 54.78  # 亿 CNY, 2023H1 归母 27.39 x2 — deep_discount pressure coordinate only (A15)
+INPUTS = {
+    'shares': 22.49,  # 总股本（亿股）＝ LB static total_shares 2,249,004,399；与 `bps` 分母同源（旧值 22.1 由 H1 EPS 2.16 反推，已废，A14 (d)）；2026-09-14
+    'rev_m': 495.8,  # **M 档**年化营收 ＝ 2026H1 247.91 × 2；2026H1
+    'gm_m': 0.3617,  # **M 档**毛利率；Longbridge 财报；2026H1
+    'rev_ref': 408.6,  # **k 拟合点**年化营收 ＝ 2025H1 204.3 × 2（A3；不是 L）；2025H1
+    'gm_ref': 0.1986,  # **k 拟合点**毛利率；Longbridge 财报五年序列；2025H1
+    'np_m': 95.6,  # **M 档**年化归母 ＝ 2026H1 47.81 × 2；**回归护栏基准**；2026H1
+    'np_ref': 38.0,  # **k 拟合点**年化归母 ＝ 2025H1 19.0 × 2（A3，五年 H1 最低；作 `deep_discount` 参照）；2025H1
+    'vol_al': 151.9,  # 电解铝等效年化销量万吨 ＝ 电解铝事业部**绝对值**年化 366.8 亿（183.41 × 2）÷ 24,141 元/吨（A5）；三档冻结；2026H1
+    'equity': 276.79,  # 归母权益（亿 CNY）＝ 中报「普通股权益总计」27,679,232,677 元（LB 财报 BS）；三档前瞻 ROE 的分母（属性 G）；2026-06-30
+    'r_perp': 0.13,  # 永续贴现率 ＝ **篮 6 周期商品 / 小盘**（电解铝 + 煤，A16；真源 `eval/lib/gordon.py BASKET_R`）；零增长 → PE 1/r = 7.69×；2026-09-20
+    'pe_own_min': 4.03,  # 自身 5 年 TTM PE 月频实测低点（2023-05）；**护栏，不入主公式**（A13）；LB `valuation --history pe --range 5`；2026-09-11
+    'pe_own_max': 17.45,  # 自身 5 年 TTM PE 月频实测高点（2026-03）；**护栏，不入主公式**（A13）；2026-09-11
+    'bps': 12.307,  # 每股净资产 CNY ＝ 报表值（`equity` 276.79 亿 ÷ 22.49 亿股；LB static 12.3073）；仅用于地板（A10）与 A14 交叉，不入主公式；2026-06-30
+    'pb_low': 1.24,  # 5 年 PB 低点（2023-06-26）；地板 ＝ pb_low × bps（A10）；2026-09-07
+}
+
+# Independent filing cross-checks from the original 2026H1 study, in CNY 100m.
+# Update these observations together with the underlying inputs when researching
+# a later filing; they are not inferred from the model's target result.
+GROSS_PROFIT_FILING = 179.3
+NET_PROFIT_FILING = 95.6
+SHARES_STATIC = 22.49  # 2026-09-14 Longbridge static, 100m shares.
+NP_TROUGH_2023H1 = 54.78  # 2023H1 parent earnings annualised, disclosure only.
+# Historical 2025H1→2026H1 gross-profit bridge in CNY 100m: 98.2 increase
+# less 59.5 aluminium-price effect and 22.4 alumina-cost effect. The 16.3
+# residual also includes other costs; it is not measured coal-segment profit.
+COAL_AND_OTHER_GROSS_RESIDUAL = 16.3
+# Local input and axis snapshot only, not formula provenance or confirmation.
+BASELINE_FINGERPRINT = 'ac6b4e1d034cf19fc6b2789e377cacedc79b7383915047bd647a3919ceaf9337'
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    baskets = parse_baskets(md)
-    errors = check_missing(inp, REQUIRED + ["h_pass_years"])
+def calculate(context):
+    aluminium = context['axes']['aluminium']
+    copper = context['axes']['gold_copper']
+    # Shared tiers, growth and duration come from one bound axis snapshot.
+    # The old bridge fitted these inputs against 2025H1 and 2026H1 combined
+    # group profit, so it cannot be read as a measured standalone coal profit.
+    inp = dict(INPUTS)
+    for name in ('spread_l', 'spread_m', 'spread_h', 'g2_l', 'g2_m', 'g2_h', 'h_pass_years'):
+        inp[name] = aluminium[name]
+    errors = check_missing(inp, REQUIRED + ['h_pass_years'])
     if errors:
-        return report(errors)
-
-    errors += ladder("smelting spread", inp["spread_l"], inp["spread_m"], inp["spread_h"])
-    errors += check_al_mount((inp["spread_l"], inp["spread_m"], inp["spread_h"]))
-    errors += check_regression(inp, GP_M_FILING, NP_M_FILING)
-    # A16: r must be the basket the Inputs row names, not just any basket value.
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (AGENTS.md 篮子声明)")
-    errors += check_gordon(inp, baskets.get("r_perp"))
-    if abs(inp["shares"] - SHARES_STATIC) > 0.05:
-        errors.append(f"shares {inp['shares']} != LB static total_shares {SHARES_STATIC}亿 (A14)")
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in REQUIRED + ['h_pass_years']):
+        raise ValueError('all required inputs must be finite')
+    errors += ladder('smelting spread', inp['spread_l'], inp['spread_m'], inp['spread_h'])
+    # This compares full SHFE aluminium prices with LME copper prices; the
+    # dimensionless ratios are comparable, unlike spread vs price levels.
+    cross_axis_valid = check_aluminium_price_upside(aluminium_axis=aluminium, gold_copper_axis=copper)
+    errors += check_regression(inp, GROSS_PROFIT_FILING, NET_PROFIT_FILING)
+    errors += check_gordon(inp, 6, shared_growth={tier: aluminium[f'g2_{tier.lower()}'] for tier in 'LMH'})
+    if abs(inp['shares'] - SHARES_STATIC) > .05:
+        errors.append('shares differ from the historical source; recheck the current share count')
+    if aluminium['h_after'] != 'M' or aluminium['h_scope'] != 'aluminium_spread':
+        errors.append('the high-spread return path is incompatible with this model')
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
 
-    (L, M, H_regime), eps = anchors(inp)
+    (L, M, high_regime), eps = anchors(inp)
     pes, roes = multiples(inp)
     errors += flat_ladder(eps)
-    # H passes through (_AXIS.fed-path-aluminium「H 档是路过」; valuation-rules「经营价值与超额现金」②
-    # 商品腿豁免「每档 MUST 与该档的世界状态一致」): the H spread for `h_pass_years`, then the M world.
-    # g = 0 and the multiple is flat 1/r, so the H excess is an n-year annuity on top of M.
-    n_pass = inp["h_pass_years"]
-    if not n_pass > 0:
-        errors.append(f"h_pass_years {n_pass} must be > 0 (axis: H passes, MUST NOT be capitalised as a regime)")
-    H = M + (H_regime - M) * (1 - (1 + inp["r_perp"]) ** -n_pass)
-
+    n = inp['h_pass_years']
+    H = M + (high_regime - M) * (1 - (1 + inp['r_perp']) ** -n)
     br = bridge(inp)
-    np_l = br["np"][0]
-    # A4: the coal-and-alumina double trough must sit below the spread-only L
-    # world.  Read straight from the bridge so a rolled fitting point is caught.
-    if inp["np_ref"] >= np_l:
-        errors.append(
-            f"k fitting point {inp['np_ref']:.1f}亿 >= scenario L {np_l:.1f}亿 — "
-            "2025H1 (coal + aluminium trough, high alumina) must be the worse "
-            "corner; if it is not, A4's reference story must be re-opened"
-        )
-
-    # Floor is disclosed only (A10): scenario L must clear it, never max() with it.
+    if inp['np_ref'] >= br['np'][0]:
+        errors.append('fit year is no longer worse than the low scenario; reassess the fitting point')
     floor, floor_errors = pb_floor(inp, L)
     errors += floor_errors
-
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}
-    )
-
-    r = inp["r_perp"]
-    flat = [e * pes[1] for e in eps]
-    trough_perp = eps[0] / r
-    print(f"000933.SZ  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
-    print(f"  H 路过：H 价差 regime 值 {H_regime:.2f} 维持 {n_pass:g} 年后回到 M → H {H:.2f}（轴 H 档行）")
-    print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
-          f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
-          f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
-          f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
-    print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
-          f"L numerator {np_l:.1f}亿 = axis L rung (regime), above printed 2023H1 {NP_TROUGH_2023H1:.1f}亿 (A15)")
-    print(f"  L/M={L/M:.3f} = 分子比 {eps[0]/eps[1]:.3f} x 倍数比 {pes[0]/pes[1]:.3f} | "
-          f"H/M={H/M:.3f} = 分子比 {eps[2]/eps[1]:.3f} x 倍数比 {pes[2]/pes[1]:.3f} | "
-          f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
-    print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    # 表1b：合并残差底座 = NP_L（未拆；非「煤@M」测值）；铝增量 = NP_x − NP_L
-    base_np = np_l
-    al_np = (0.0, br["np"][1] - base_np, br["np"][2] - base_np)
-    base_px = tuple(base_np / inp["shares"] * pe for pe in pes)
-    al_px = tuple(al_np[i] / inp["shares"] * pes[i] for i in range(3))
-    print(f"  表1b 合并残差底座 {base_px[0]:.2f}/{base_px[1]:.2f}/{base_px[2]:.2f} + "
-          f"铝价差 {al_px[0]:.2f}/{al_px[1]:.2f}/{al_px[2]:.2f} "
-          f"(不对煤做情景; 底座≠煤@M测值)")
-    coal_delta_np = 16.3 * br["k"]  # A4③ trough→M residual lower bound
-    l_coal = (base_np - coal_delta_np) / inp["shares"] * pes[1]
-    print(f"  A14 示意: 若扣A4③残差 {coal_delta_np:.1f}亿(非煤分部利润) → L≈{l_coal:.2f} "
-          f"@PE_M (未升格; 无分部毛利)")
-    print(f"  deep_discount 压力坐标: 轴 L 谷底永续 x 1/r = {trough_perp:.2f}; 印过的 2023H1 谷底 x 1/r = "
-          f"{NP_TROUGH_2023H1 / inp['shares'] / r:.2f}; 2025H1 参照 归母 {inp['np_ref']:.1f}亿 → "
-          f"{inp['np_ref']/inp['shares']*pes[1]:.2f} @PE_M")
-    print(f"  地板（只披露）floor={floor:.2f} (5y low PB x 报表 bps) < L {L:.2f} (L 对应 PB {L/inp['bps']:.2f}); not max()'d")
-    print(f"  锚点 PB {L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}")
-    print(f"  M/TP={M/CONSENSUS_TP:.2f} — TP = 7.5x M EPS ≈ 1/r (A8)")
-    return report(errors)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    if not L < M < H:
+        errors.append('L/M/H anchors are not strictly ordered')
+    if errors:
+        raise ValueError('; '.join(errors))
+    tiers = lambda values: dict(zip('LMH', values))
+    # These constants are historical source observations: the filing guards
+    # influence validity and the trough is returned as a pressure coordinate.
+    historical_checks = {'gross_profit_filing': GROSS_PROFIT_FILING, 'net_profit_filing': NET_PROFIT_FILING,
+                         'shares_static': SHARES_STATIC, 'np_trough_2023h1': NP_TROUGH_2023H1,
+                         'coal_and_other_gross_residual': COAL_AND_OTHER_GROSS_RESIDUAL}
+    fingerprint = hashlib.sha256(json.dumps({'inputs': INPUTS, 'axis': axis_basis_snapshot(aluminium), 'copper': axis_basis_snapshot(copper),
+                                             'historical_checks': historical_checks},
+                                            sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    return {
+        'ticker': '000933.SZ', 'currency': 'CNY', 'valuation_as_of': None, 'framework_as_of': None,
+        'historical_financial_statement_as_of': '2026-06-30',
+        'historical_research_as_of': '2026-10-16',
+        'anchors': tiers((L,M,H)), 'candidate': None, 'option': None,
+        'units': {'price': 'CNY_PER_SHARE'},
+        'segments': {'company': {'unit': 'CNY_PER_SHARE', 'values': tiers((L,M,H))}},
+        'key_parameters': {'discount_rate': {'unit': 'RATIO', 'values': tiers((inp['r_perp'],)*3)},
+                           'growth_rate': {'unit': 'RATIO', 'values': tiers(inp[f'g2_{t}'] for t in 'lmh')},
+                           'forward_return': {'unit': 'RATIO', 'values': tiers(roes)},
+                           'steady_return': {'unit': 'RATIO', 'values': tiers((None,None,None))}},
+        'basis_changed': None, 'partial_basis_changed': fingerprint != BASELINE_FINGERPRINT,
+        'review_flags': (['aluminium_low_macro_path_conflict']
+                         + ([] if cross_axis_valid else ['aluminium_copper_price_upside_not_met'])),
+        'operating': {'net_profit': tiers(br['np']), 'gross_profit': tiers(br['gp']),
+                      'roe': tiers(roes), 'multiple': tiers(pes), 'eps': tiers(eps),
+                      'conversion': br['k'], 'high_regime_value': high_regime, 'high_spread_years': n,
+                      'floor': floor, 'fit_profit': inp['np_ref']},
+        'sensitivity': {'coal_alumina_reference': inp['np_ref']/inp['shares']*pes[1],
+                        'coal_residual_illustration': (br['np'][0]-COAL_AND_OTHER_GROSS_RESIDUAL*br['k'])/inp['shares']*pes[1],
+                        'historical_trough': NP_TROUGH_2023H1/inp['shares']/inp['r_perp'],
+                        'flat_regime': tiers(e*pes[1] for e in eps)},
+    }

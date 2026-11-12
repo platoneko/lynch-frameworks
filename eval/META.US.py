@@ -1,180 +1,127 @@
-#!/usr/bin/env python3
-"""META.US (Meta Platforms) valuation eval — recompute anchors from frameworks/META.US.md.
+"""META historical valuation migration; no fresh research or model execution.
 
-frameworks/META.US.md is the source of truth; this script re-derives
-L/M/H / A/B from the §3 Inputs table and exits 1 on any mismatch.  The doc
-carries no current META price (AGENTS.md「现价 — 禁写契约」): which zone a quote
-falls in is derived live by the daily digest and the app, so nothing here reads
-it.  amd_price is another company's market price (the warrant's unit economics).
-
-formula_id: meta_fwd_numerator_gordon_foa_rl_icpath_v1
-
-Main ruler: two legs summed per tier k in {L, M, H} (one estimation date, FY2027 = t=1).
-
-  FoA leg   NOPAT_k = eps_k + rl_addback(1-tax)/shares + interest(1-tax)/shares
-            ROIC_k  = NOPAT_k * shares / ic_fy27        (invested-capital PATH, not equity)
-            PE_k    = perpetual_pe(g2, ROIC_k, r_foa)  (Gordon, generated not borrowed)
-  RL leg    -rl_loss_k(1-tax) / (shares * r_rl)        (loss capitalised, g = 0)
-
-The RL add-back is the loss the consensus EPS already carries (one value for
-all tiers); the RL leg runs the loss path (A7).  Wiring one number into both
-made a smaller RL loss lower the value (the add-back is multiplied by the FoA
-multiple, the leg only by 1/r) -- split 2026-10-28.
-  closing   -(net_debt + settlement_npv + nm_penalty) / shares
-  gap       growth-period funding gap (valuation-rules「经营价值与超额现金」①):
-            Q4'26 capex + SBC - Q4'26 OCF (window EPS x shares x OCF/NI), per share,
-            deducted as a debt-like item (no excess-cash row; parent share 1.0)
-  V_k       = (NOPAT_k * PE_k + RL_k) / (1 + r)^tau + closing - gap
-  equity    V_k' = (V_k * shares + offering_proceeds - pref_div_pv) / (shares + new_shares)
-            (Oct-2026 offering: 40M forward-sale shares + mandatory convertible
-            preferred at its maximum 20M conversion shares; EPS stays on the
-            pre-offering share basis, so dilution is applied once, here)
-
-Time alignment (③): the Gordon value sits at the FY27 opening (2027-01-01);
-discounted tau = 0.25 years to the 2026-09-30 balance sheet.  With a funding gap
-the window's distributable profit is booked as 0 (OCF already carries it).
-Stable-return path (②): the FoA leg's forward ROIC (22.3 / 25.2 / 29.8%) sits
-below the stable return ronic_ss (41.9%: own trough-to-trough cycle 2019-2022 on
-invested capital, taken first under the 2026-10-19 order), so the path is flat and the
-multiple is the plain perpetual_pe; the eval asserts ROIC <= ronic_ss.
-
-The numerator is the FY2027E GAAP consensus at its low / mean / high (A3); the
-tiers differ ONLY in that layer plus the RL loss path (A7).  The multiple is
-told apart by tier ROIC, whose denominator is the FY27 invested-capital path
-$421.1B (A6): capex is half debt-funded, so equity alone cannot see it.
-
-Option (meta_amd_warrant_option_v1, A14) -- table 3 only, never the deck:
-  V_opt = amd_warrant_shares * (amd_price - amd_warrant_strike) * (1-tax) / shares
-The AMD performance warrant is a one-off asset (a purchase rebate paid in AMD
-stock), not an earnings stream, so it is taken at after-tax face value like a
-closing item -- no multiple, no discount; outcome risk sits in p_k = 0 / 1/6 / 1
-(first 1 GW tranche of 6 GW for M, full vesting at AMD >= $600 for H).
-
-r is not a per-ticker dial: every `r*` Inputs row names its basket (`篮 N`) and
-the value must equal gordon.BASKET_R for that basket.  Both legs sit in basket 4
-龙头制造 (10%, A2) -- the RL loss stream is paid out of group cash flow, and a
-higher r on a negative stream would systematically raise the value.
-`check_r(r, where, basket)` enforces the match; `check_g_cap(g2, r_foa, "g2")`
-caps the perpetual g at g_cap(r) = min(6%, r - 4%).
-
-Sanity checks beyond the anchor comparison:
-  * numerator ladder NOPAT_L < NOPAT_M < NOPAT_H and the loss path
-    rl_loss_l >= rl_loss_m >= rl_loss_h (L is the wider-loss world)
-  * flat-multiple ladder: with every tier on the M multiple the band still orders
-  * Gordon branch (check_branch on the observed dividend + buyback payout) and
-    payout_gap printed as a disclosure
-  * guardrail ③: M / reported TTM EPS inside the own 5-year band
-    [pe_own_min, pe_own_max] (within M_BAND_TOL below the floor: disclosed --
-    a trailing band against a forward numerator, user 2026-10-29);
-    H / clean TTM EPS at or below the band top
-    (within H_BAND_TOL: an overshoot up to 1% is printed as a disclosure,
-    user 2026-10-22)
-  * constituent mount on _AXIS.ai-capex (share of the 2026 base is sane)
-  * no p-class fields in Inputs; L < M < H; stated anchors / cut points
-
-Disclosures printed (never fed back into the anchors; L/M/H only):
-  r_f readings from _AXIS.rates (rf_report.rf_block), g2 +-1pp,
-  IC frozen / 2027 capex at $249B, RL leg = 0, contingent settlement 30%, tax 21%.
-
-Run:  python3 frameworks/eval/META.US.py
+Two legs and a financing adjustment preserve the original 2026-10-29 study.
+The capital-path snapshot preserves the historical adopted approximation,
+not a user confirmation or a guarantee that future investment earns that ROIC.
 """
-
 from __future__ import annotations
+import math
+from lib.gordon import check_branch, check_g_cap, check_r, payout_gap, perpetual_pe
+from lib.inputs import ladder
+from lib.partial_basis import local_basis_changed
+from lib.historical_precision import historical_meta_invested_capital, preserve_reference_residual, replace_capex_reference
+from lib.valuation_guards import nonnegative_option_value
 
-import re
-import sys
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.axes import capex_constituent_share, check_capex_constituent  # noqa: E402
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.gordon import (  # noqa: E402
-    check_branch,
-    check_g_cap,
-    check_r,
-    g_cap,
-    payout_gap,
-    perpetual_pe,
-)
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    parse_baskets,
-    parse_inputs,
-    report,
-)
-from eval.lib.rf_report import rf_block  # noqa: E402
-from eval.lib.zones import cut_points  # noqa: E402
-
-FRAMEWORK = REPO_ROOT / "frameworks" / "META.US.md"
-FORMULA_ID = "meta_fwd_numerator_gordon_foa_rl_icpath_v1"
-LISTING_CCY = "USD"
-MIN_R_MINUS_G = 0.02  # AGENTS.md: below this the multiple sits at the pole
-# Observed payout for check_branch, 9M26: dividends 4.06B + tax paid on net share
-# settlement 12.77B over NI 52.48B; no buybacks in 2026 (framework §3 step 3).
-# With ROIC >= r + 3pp the branch test is sign-only.
-PAYOUT_OBSERVED = 0.32
-# Contingent 30% of the state settlement (A8), pressure row only.
-SETTLEMENT_CONTINGENT_B = 5.3
-# A9 upper IC stress: 2027 capex at Wedbush $249B instead of GS $223.4B (same path otherwise).
-IC_HIGH_CAPEX_DELTA = 249.0 - 223.4
-# A14: per-tier credit on the AMD warrant -- M = first 1 GW tranche of 6 GW
-# (tranche sizes undisclosed, linear in GW), H = full vesting.
+DEPENDENCIES = {"libraries": ("gordon", "inputs", "historical_precision", "valuation_guards", "partial_basis"),
+                "axes": {"capex": "ai_capex"}}
+TIERS = ("l", "m", "h")
 P_TIERS = (0.0, 1.0 / 6.0, 1.0)
-V_OPT_TOL = 0.05
-# Guardrail ③ H side: overshoot of the band top up to this share is disclosed,
-# not failed (user 2026-10-22: strict clean TTM 30.61, H 28.7x vs top 28.7x).
-H_BAND_TOL = 0.01
-# Guardrail ③ M side: the realised band is trailing reported PE, the numerator is
-# FY27 forward, and no month has carried TTM EPS near the M numerator, so the
-# band test does not bind (out-of-band rule step 1); a shortfall up to this share
-# is disclosed (user 2026-10-29 accepted the revision with the L-tier band breach).
-M_BAND_TOL = 0.02
+PAYOUT_OBSERVED = 0.32
+M_BAND_TOL, H_BAND_TOL = 0.02, 0.01
+INPUTS = {
+    # 稀释股本（B）= Q3 2026 加权稀释股数（8-K 附件 99.1）；2027-01-19 C 类股送股生效后按 ×2 换口径（A17）; source/as-of: 2026-09-30
+    'shares': 2.573,
+    # FY2027E 共识 GAAP EPS 低端（56 家，yfinance earnings_estimate）；A3; source/as-of: 2026-10-28
+    'eps_l': 29.32,
+    # FY2027E 共识 GAAP EPS 均值（同源）；A3; source/as-of: 2026-10-28
+    'eps_m': 33.94,
+    # FY2027E 共识 GAAP EPS 高端（同源）；A3; source/as-of: 2026-10-28
+    'eps_h': 41.5,
+    # RL 年化经营亏损 L 档（B）= 2027 不收窄、停在 FY26 指引 $180–190 亿中点；只进 RL 腿；A18; source/as-of: 2026-10-21
+    'rl_loss_l': 18.5,
+    # RL 年化经营亏损 M 档（B）= 管理层 2027 指引「around $15 billion」（Q3 新闻稿 / call 2026-10-21）；只进 RL 腿；A18; source/as-of: 2026-10-21
+    'rl_loss_m': 15.0,
+    # RL 年化经营亏损 H 档（B）= 同 M；「trending towards profitability」无量值，不另设更窄档；只进 RL 腿；A18; source/as-of: 2026-10-21
+    'rl_loss_h': 15.0,
+    # 共识 EPS 里已扣的 RL 亏损（B），三档同值，只用于加回 FoA 腿：卖方已按 2027 指引 ~$150 亿改模型，且把 RL 少亏的钱等额改记为 AI 投入（大摩 2026-10-22：RL 2027/28 下调约 $40 / 30 亿、AI 投入相应上调、EPS 持平；管理层「不假设总运营支出下降」），FY27 共识均值 33.87 → 33.94 近不变；A18; source/as-of: 2026-10-29
+    'rl_addback': 15.0,
+    # 年化利息费用（B）。**维持**：Q2 10-Q 利息费用 0.783 → 3.1 年化；4 月 30 日 $250 亿六期票据 4.55–6.45%（加权 ≈5.7%，+$14 亿/年）Q2 只计 2 个月 → 满季 run-rate ≈ 3.6；Q2 后至 2026-09-18 无新公司债（9-17 的 Meta 关联数据中心高收益债为项目层 SPV，不上表）；总债 $837 亿 × ≈4.9% ≈ 4.1 为上限。FY27 明显 >5 需再发 ≥$250 亿，届时改此行；A6; source/as-of: 2026-09-18
+    'interest': 4.0,
+    # 有效税率 = Q2'26 16.0% 与 FY23 17.6% 中点；Q3'26 剔除和解后 17%、Q4 指引 15–17% 印证（FY25 29.6% 含 Q3'25 一次性 $189.5 亿、Q1'26 −23% 回冲，均剔除）; source/as-of: 2026-10-21
+    'tax': 0.17,
+    # 归母权益（B），Q3 2026 资产负债表（8-K 附件 99.1）; source/as-of: 2026-09-30
+    'equity': 272.4,
+    # 净负债（B）= 公司债 83.7（call 口径，含一年内到期）+ **融资租赁 28.7**（沿用 Q2 10-Q，Q3 10-Q 出后更新）− 现金与有价证券 82.45；数据中心租赁是债务性资本，计入 IC 与闭合项与属性 B 口径一致；受限现金 $125 亿（其他资产）用途未披露，不计入现金; source/as-of: 2026-09-30
+    'net_debt': 29.95,
+    # 和解 NPV（B）= Q3 实际计提 $98.9 亿（固定部分约 70% 分 10 年付；或有 30% 不进）；A8; source/as-of: 2026-09-30
+    'settlement_npv': 9.89,
+    # 新墨西哥州隐私案民事罚款（B），2026-10-21 州法院判决全额（另 15% 判决后年息未计）；Meta 10-Q「accrued an amount」未披露金额、将上诉，庭上主张 ≤ $15.3 亿；严格口径全额作类债项扣；A19; source/as-of: 2026-10-21
+    'nm_penalty': 25.0,
+    # 2026-10 股权发行新增股数（B 股）= 远期出售 A 股 0.040（$625，2027-11-19 前交割）+ 强制可转优先股按最高转换率 1.6 × 1,250 万股 = 0.020（2029-08 转换，区间 0.017–0.020，取严）；超额配售未计；A17; source/as-of: 2026-10-26
+    'new_shares': 0.06,
+    # 2026-10 股权发行净募资（B）= 远期 24.9（初始远期价 $622.92）+ 优先股 12.5；视同已到账（远期最晚 13 个月内交割，不折）；A17; source/as-of: 2026-10-26
+    'offering_proceeds': 37.4,
+    # 优先股股息至转换日的现值（B）：首期 $19.14 + 其后每季 $16.25 / 股 × 1,250 万股，约 $22.7 亿到 2029-08，按 10% 折现；A17; source/as-of: 2026-10-26
+    'pref_div_pv': 2.0,
+    # FoA 腿折现率 = **篮 4 龙头制造** 10%：常规经营现金流、可见度高的行业龙头，与 GOOG Services 腿同篮（A2）；值 = `gordon.BASKET_R[4]`，`check_r()` 按篮子强制; source/as-of: 2026-09-20
+    'r_foa': 0.1,
+    # RL 腿折现率 = **篮 4** 与 FoA 同 r：负值流由集团现金流稳定支付，更高 r 会系统性抬高估值，不归篮 7（A2）；值 = `gordon.BASKET_R[4]`，`check_r()` 按篮子强制; source/as-of: 2026-09-20
+    'r_rl': 0.1,
+    # FoA 永续增长 = 同业簇按「今天的经营价值」同口径重解（折 τ、回报路径）的剔除自身中位 6.36%（GOOG 7.39 / RDDT 6.36 / TTD 4.04），截到 \(G_{cap}\) 6%；A5; source/as-of: 2026-10-16
+    'g2': 0.06,
+    # 时点对齐：估值基准日 2026-09-30（Q3 资产负债表日）→ 分子年 FY2027 年初 2027-01-01 的年数；A15; source/as-of: 2026-09-30
+    'tau': 0.25,
+    # 稳态回报 = 自身周期（按序取第一层）：最近一轮完整谷到谷 2019–2022（经营利润谷 2019 / 2022）投入资本口径均值 41.9%（10-K XBRL；公司合并 GAAP 经营利润含 RL 亏损，读法更严）；同业 TTD 20.6%、兜底 30% 只作对照；三档前瞻 ROIC 都低于它，回报路径不起作用；A16; source/as-of: 2026-10-19
+    'ronic_ss': 0.419,
+    # FY2026E 共识 GAAP EPS 均值（yfinance，已含 Q3 实际）；只用来推 Q4 窗口利润与经营现金流；A15; source/as-of: 2026-10-28
+    'eps_fy26': 29.16,
+    # 2026 前 9 月实际 GAAP 稀释 EPS（8-K 附件 99.1）；A15; source/as-of: 2026-09-30
+    'eps_9m_26': 20.44,
+    # 经营现金流 ÷ 净利，近 3 年实测；A15; source/as-of: 2025-12-31
+    'ocf_ni': 1.73,
+    # 2026 Q4 资本开支（B）= 全年指引中值 140（$1,350–1,450 亿）− 前 9 月实际 85.8（购置 PP&E 83.06 + 融资租赁本金 2.77）；A15; source/as-of: 2026-10-21
+    'capex_q4_26': 54.2,
+    # 2026 Q4 股权激励（B，非现金加回，不是可用现金）= Q3 实际 7.36；A15; source/as-of: 2026-09-30
+    'sbc_q4_26': 7.4,
+    # reported TTM GAAP EPS（Q4'25–Q3'26）= FY25 23.49 − 9M25 14.62 + 9M26 20.44，③ 护栏分母; source/as-of: 2026-09-30
+    'eps_ttm_reported': 29.31,
+    # 干净 TTM EPS（严格口径，用户 2026-10-22）= Q4'25 8.87 + Q1'26 7.00（扣一次性税收回冲 ≈ $88 亿，按 17% 重算）+ Q2'26 7.34（加回法律与遣散 $36 亿税后）+ Q3'26 7.40（公司口径剔和解）; source/as-of: 2026-09-30
+    'eps_ttm_clean': 30.61,
+    # 自身 5 年 reported PE 带下沿，③ 护栏; source/as-of: 2026-09-18
+    'pe_own_min': 21.0,
+    # 自身 5 年 reported PE 带上沿，③ 护栏; source/as-of: 2026-09-18
+    'pe_own_max': 28.7,
+    # FY26 capex 指引下沿 USD（Q3 自 1,300 收窄）；**不进分子**，轴构成方份额校验；A11; source/as-of: 2026-10-21
+    'capex_guide_low': 135000000000.0,
+    # FY26 capex 指引上沿 USD（中值 140B）；同上; source/as-of: 2026-10-21
+    'capex_guide_high': 145000000000.0,
+    # AMD 绩效认股权证股数上限（B 股），AMD IR 2026-02-24 公告；**只进 \(V_{opt}\) / 表3，不进底牌**；A14; source/as-of: 2026-02-24
+    'amd_warrant_shares': 0.16,
+    # 权证行权价 USD/股（Yahoo Finance / MarketBeat 报道，AMD 公告未列数字）；A14; source/as-of: 2026-02-24
+    'amd_warrant_strike': 0.01,
+    # AMD.US 收盘 USD（Longbridge；他股市价，非本票价格），权证单位经济；低于末批门槛 $600，A14 weakened; source/as-of: 2026-10-21
+    'amd_price': 552.72,
+    # GS FY2027 capital expenditure forecast (not company guidance); original capital-path description, 2026-10-26; USD billion.
+    "capex_fy27": 223.4,
+    # Wedbush FY2027 249bn comparison from original A11; independent scenario, not adopted guidance; Q3 2026, USD billion.
+    "capex_fy27_reference": 249.0,
+}
 
-REQUIRED = [
-    "shares",
-    "eps_l",
-    "eps_m",
-    "eps_h",
-    "rl_loss_l",
-    "rl_loss_m",
-    "rl_loss_h",
-    "rl_addback",
-    "interest",
-    "tax",
-    "equity",
-    "net_debt",
-    "ic_fy27",
-    "settlement_npv",
-    "r_foa",
-    "r_rl",
-    "g2",
-    "eps_ttm_reported",
-    "eps_ttm_clean",
-    "pe_own_min",
-    "pe_own_max",
-    "capex_guide_low",
-    "capex_guide_high",
-    "amd_warrant_shares",
-    "amd_warrant_strike",
-    "amd_price",
-    "tau",
-    "ronic_ss",
-    "eps_fy26",
-    "eps_9m_26",
-    "ocf_ni",
-    "capex_q4_26",
-    "sbc_q4_26",
-    "nm_penalty",
-    "new_shares",
-    "offering_proceeds",
-    "pref_div_pv",
-]
-
+# The old path rounded the adopted capital to $499.8bn. Keep the 2026-10-29
+# reference input snapshot and adoption as historical precision evidence; the
+# original path and historical 223.4 capex forecast are frozen in the separate
+# source-bound reference helper. Current model inputs and formula remain distinct.
+HISTORICAL_REFERENCE = {
+    # Frozen 2026-10-29 reference, not a current input: 稀释股本（B）= Q3 2026 加权稀释股数（8-K 附件 99.1）；2027-01-19 C 类股送股生效后按 ×2 换口径（A17）; as-of 2026-09-30
+    'shares': 2.573,
+    # Frozen 2026-10-29 reference, not a current input: FY2027E 共识 GAAP EPS 均值（同源）；A3; as-of 2026-10-28
+    'eps_m': 33.94,
+    # Frozen 2026-10-29 reference, not a current input: 归母权益（B），Q3 2026 资产负债表（8-K 附件 99.1）; as-of 2026-09-30
+    'equity': 272.4,
+    # Frozen 2026-10-29 reference, not a current input: 净负债（B）= 公司债 83.7（call 口径，含一年内到期）+ **融资租赁 28.7**（沿用 Q2 10-Q，Q3 10-Q 出后更新）− 现金与有价证券 82.45；数据中心租赁是债务性资本，计入 IC 与闭合项与属性 B 口径一致；受限现金 $125 亿（其他资产）用途未披露，不计入现金; as-of 2026-09-30
+    'net_debt': 29.95,
+    # Frozen 2026-10-29 reference, not a current input: FY2026E 共识 GAAP EPS 均值（yfinance，已含 Q3 实际）；只用来推 Q4 窗口利润与经营现金流；A15; as-of 2026-10-28
+    'eps_fy26': 29.16,
+    # Frozen 2026-10-29 reference, not a current input: 2026 前 9 月实际 GAAP 稀释 EPS（8-K 附件 99.1）；A15; as-of 2026-09-30
+    'eps_9m_26': 20.44,
+    # Frozen 2026-10-29 reference, not a current input: 经营现金流 ÷ 净利，近 3 年实测；A15; as-of 2025-12-31
+    'ocf_ni': 1.73,
+    # Frozen 2026-10-29 reference, not a current input: 2026 Q4 资本开支（B）= 全年指引中值 140（$1,350–1,450 亿）− 前 9 月实际 85.8（购置 PP&E 83.06 + 融资租赁本金 2.77）；A15; as-of 2026-10-21
+    'capex_q4_26': 54.2,
+    "capex_fy27": 223.4,
+}
+HISTORICAL_IC_ADOPTED = 499.8
+HISTORICAL_PARTIAL_FINGERPRINT = '17107bd9f2f171892fa7308dab387f388637e82dd683a2d363e5e43cc8080775'
 
 def to_equity(v: float, inp: dict[str, float]) -> float:
     """Spread the per-share deck over the post-offering count, cash in, preferred dividends out."""
@@ -188,17 +135,6 @@ def funding_gap(inp: dict[str, float]) -> float:
     return max(inp["capex_q4_26"] + inp["sbc_q4_26"] - ocf, 0.0) / inp["shares"]
 
 TIERS = ("l", "m", "h")
-
-
-def stated_v_opt(md: str) -> float | None:
-    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
-    return float(m.group(1)) if m else None
-
-
-def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
-    m = re.search(r"p_L/p_M/p_H\\\)\s*=\s*\*\*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)\*\*", md)
-    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
 
 def warrant_value(inp: dict[str, float], amd_price: float | None = None) -> float:
     """A14: after-tax face value per META share of the AMD warrant at full vesting."""
@@ -243,164 +179,139 @@ def lmh(b: dict[str, dict[str, float]]) -> tuple[float, float, float]:
     return b["l"]["v"], b["m"]["v"], b["h"]["v"]
 
 
-def fmt(b: dict[str, dict[str, float]]) -> str:
-    return " / ".join(f"{v:.1f}" for v in lmh(b))
+def invested_capital_path(inp):
+    """Current capital = starting capital plus two net-investment bridges."""
+    current = inp["equity"] + inp["net_debt"]
+    q4_earnings = (inp["eps_fy26"] - inp["eps_9m_26"]) * inp["shares"]
+    fy27_earnings = inp["eps_m"] * inp["shares"]
+    return (current + q4_earnings + inp["capex_q4_26"] - q4_earnings * inp["ocf_ni"]
+            + fy27_earnings + inp["capex_fy27"] - fy27_earnings * inp["ocf_ni"])
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        return report([f"formula_id {FORMULA_ID} missing from framework"])
-    inp = parse_inputs(md)
-    if missing := check_missing(inp, REQUIRED):
-        return report(missing)
-
-    errors: list[str] = []
-    shares, g2 = inp["shares"], inp["g2"]
-
-    # --- Step 1: r by basket, g2 under the cap, perpetuity away from the pole ---
-    baskets = parse_baskets(md)
-    for where in ("r_foa", "r_rl"):
-        if where not in baskets:
-            errors.append(f"{where}: Inputs source cell names no 篮 N (valuation-rules「§r 篮子」)")
-        errors += check_r(inp[where], where, baskets.get(where))
-    r = inp["r_foa"]
-    errors += check_g_cap(g2, r, "g2")
-    if r - g2 < MIN_R_MINUS_G:
-        errors.append(f"r - g2 = {r - g2:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
-    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
-    if leaked:
-        errors.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
-
-    # --- Step 2: the two-leg deck ---
+def calculate(context):
+    inp = dict(INPUTS)
+    capex = context["axes"]["capex"]
+    if capex["role"] != "constituent":
+        raise ValueError("META is an AI capital-spending pool constituent")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in inp.values()):
+        raise ValueError("inputs must be finite numbers")
+    if inp["shares"] <= 0 or inp["shares"] + inp["new_shares"] <= 0:
+        raise ValueError("pre- and post-offering shares must be positive")
+    if min(inp["r_foa"], inp["r_rl"]) <= 0 or inp["r_foa"] <= inp["g2"]:
+        raise ValueError("discount or perpetual-growth rate is mathematically invalid")
+    raw_ic = invested_capital_path(inp)
+    historical_raw_ic = historical_meta_invested_capital(HISTORICAL_REFERENCE)
+    inp["ic_fy27"] = preserve_reference_residual(raw_ic, historical_raw_ic, HISTORICAL_IC_ADOPTED)
+    if inp["ic_fy27"] == 0:
+        raise ValueError("invested capital cannot be zero")
+    review_flags = ["historical_low_multiple_user_decision_2026_10_29",
+                    "historical_capital_path_rounding_residual_carried",
+                    "investment_return_rebound_and_new_business_capex_rules_pending",
+                    "amd_warrant_market_price_historical_and_vesting_conditional"]
+    if check_r(inp["r_foa"], "r_foa", 4):
+        review_flags.append("foa_discount_basket_mismatch")
+    if check_r(inp["r_rl"], "r_rl", 4):
+        review_flags.append("reality_labs_discount_basket_mismatch")
+    if check_g_cap(inp["g2"], inp["r_foa"], "g2"):
+        review_flags.append("growth_above_cap")
+    if inp["r_foa"] - inp["g2"] < 0.02:
+        review_flags.append("growth_close_to_discount_rate")
+    if any(k == "p" or k.startswith("p_") for k in inp):
+        review_flags.append("option_probability_inside_base_inputs")
+    if not 0 < inp["capex_guide_low"] <= inp["capex_guide_high"] < capex["base_2026_usd"]:
+        review_flags.append("capex_constituent_guidance_outside_pool")
     base = band(inp)
     L, M, H = lmh(base)
-    A, Bcut = cut_points(L, M, H)
-    errors += ladder("L<M<H", L, M, H)
-    errors += ladder("NOPAT", *(base[k]["nopat"] for k in TIERS))
-    if not (inp["rl_loss_l"] >= inp["rl_loss_m"] >= inp["rl_loss_h"]):
-        errors.append("RL loss path must be L >= M >= H (L is the wider-loss world, A7)")
-    # Flat ladder: the numerator alone must separate the tiers.
-    pe_m = base["m"]["pe"]
-    gap_ps = funding_gap(inp)
-    closing = -(inp["net_debt"] + inp["settlement_npv"] + inp["nm_penalty"]) / shares - gap_ps
-    disc = base["m"]["disc"]
-    flat = [to_equity((base[k]["nopat"] * pe_m + base[k]["rl"]) / disc + closing, inp) for k in TIERS]
-    errors += ladder("flat-multiple", *flat)
-    # ② stable-return path: flat only while every tier's forward ROIC <= ronic_ss.
-    for k in TIERS:
-        if base[k]["roic"] > inp["ronic_ss"] + 1e-12:
-            errors.append(f"{k.upper()} ROIC {base[k]['roic']:.1%} > ronic_ss {inp['ronic_ss']:.0%}: "
-                          "the return path bites -- implement the three-stage multiple")
-    # Gordon branch on the M-tier ROIC; the payout gap is a disclosure.
-    errors += check_branch(g2, base["m"]["roic"], r, PAYOUT_OBSERVED, "M")
-    payout_modelled, gap = payout_gap(g2, base["m"]["roic"], PAYOUT_OBSERVED)
-
-    # --- Step 3: guardrail ③ on the own realised band (reported TTM basis) ---
-    pe_m_ttm = M / inp["eps_ttm_reported"]
-    pe_h_clean = H / inp["eps_ttm_clean"]
-    m_short = 1.0 - pe_m_ttm / inp["pe_own_min"]
-    if pe_m_ttm > inp["pe_own_max"] or m_short > M_BAND_TOL:
-        errors.append(
-            f"M / reported TTM = {pe_m_ttm:.1f}x outside own band "
-            f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}] (③ 出带)"
-        )
-    h_over = pe_h_clean / inp["pe_own_max"] - 1.0
-    if h_over > H_BAND_TOL:
-        errors.append(f"H / clean TTM = {pe_h_clean:.1f}x above band top {inp['pe_own_max']:g} by {h_over:.1%}")
-
-    # --- Step 4: current invested capital, the base of the IC-path disclosures ---
-    ic_now = inp["equity"] + inp["net_debt"]
-
-    # --- Step 5: constituent mount on _AXIS.ai-capex (A11) ---
-    errors += check_capex_constituent(inp["capex_guide_low"], inp["capex_guide_high"])
-
-    # --- Step 6: compare with the stated Outputs block ---
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": Bcut})
-
-    # --- Step 7: option leg (A14) -- table 3 only; the deck above never sees it ---
+    if ladder("base", L, M, H):
+        review_flags.append("base_anchors_not_increasing")
+    if ladder("nopat", *(base[t]["nopat"] for t in TIERS)):
+        review_flags.append("foa_profit_not_increasing")
+    if not inp["rl_loss_l"] >= inp["rl_loss_m"] >= inp["rl_loss_h"]:
+        review_flags.append("reality_labs_loss_order_invalid")
+    # Original main formula is flat-return Gordon only; a future input that
+    # requires a return-fade path is a technical limitation, not a valid band.
+    if any(base[t]["roic"] > inp["ronic_ss"] + 1e-12 for t in TIERS):
+        raise ValueError("forward ROIC exceeds historical steady return; rebuild the return path")
+    if check_branch(inp["g2"], base["m"]["roic"], inp["r_foa"], PAYOUT_OBSERVED, "M"):
+        review_flags.append("foa_retention_branch_requires_review")
+    pe_m_ttm, pe_h_clean = M / inp["eps_ttm_reported"], H / inp["eps_ttm_clean"]
+    if pe_m_ttm > inp["pe_own_max"] or 1 - pe_m_ttm / inp["pe_own_min"] > M_BAND_TOL:
+        review_flags.append("middle_multiple_outside_historical_reference_band")
+    if pe_h_clean / inp["pe_own_max"] - 1 > H_BAND_TOL:
+        review_flags.append("high_multiple_above_historical_reference_band")
+    # Original low-tier comparable-earnings floor and the 2026-10-29 decision
+    # are historical evidence, not a blanket approval for later changed data.
+    if L / inp["eps_l"] < 20.5:
+        review_flags.append("low_multiple_below_historical_comparable_floor")
     v_opt = warrant_value(inp)
-    said_v = stated_v_opt(md)
-    if said_v is None or abs(said_v - v_opt) > V_OPT_TOL:
-        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
-    said_p = stated_p_tiers(md)
-    if said_p is None or any(abs(a - b) > 0.01 for a, b in zip(said_p, P_TIERS)):
-        errors.append(f"p_L/p_M/p_H: stated {said_p} vs expected {tuple(round(p, 3) for p in P_TIERS)}")
-    adj = tuple(v + p * v_opt for v, p in zip((L, M, H), P_TIERS))
-    if abs(adj[0] - L) > 1e-9:
-        errors.append("table 3 L row must equal base L (p_L = 0, check_no_p_leak)")
-    a_adj, b_adj = cut_points(*adj)
-
-    print(f"formula_id={FORMULA_ID}")
-    print(
-        f"r={r:g} (r_foa 篮 {baskets.get('r_foa')}, r_rl 篮 {baskets.get('r_rl')})  "
-        f"g2={g2:g}  g_cap={g_cap(r):.3f}  ic_fy27={inp['ic_fy27']:g}B (now {ic_now:.1f}B, x{inp['ic_fy27'] / ic_now:.2f})"
-    )
-    for k in TIERS:
-        t = base[k]
-        print(
-            f"  {k.upper()}: NOPAT {t['nopat']:.2f} x PE {t['pe']:.2f} (ROIC {t['roic']:.1%}) "
-            f"= {t['nopat'] * t['pe']:.1f}  RL {t['rl']:.1f}  / 1.1^tau {disc:.4f}  closing {closing:.1f}  -> {t['v']:.1f}"
-        )
-    print(f"tau {inp['tau']} (2026-09-30 -> FY27 opening); window profit 0 (funding gap present); "
-          f"gap {gap_ps:.2f}/sh = (Q4'26 capex {inp['capex_q4_26']:g}B + SBC {inp['sbc_q4_26']:g}B - OCF "
-          f"{(inp['eps_fy26'] - inp['eps_9m_26']) * shares * inp['ocf_ni']:.2f}B) / {shares}B; "
-          f"stable return {inp['ronic_ss']:.0%} >= every tier ROIC -> path flat")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={Bcut:.2f}")
-    print(f"flat (all {pe_m:.2f}x): " + " / ".join(f"{x:.1f}" for x in flat))
-    print(f"L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / 2 / M:.3f}  V_opt/M {v_opt / M:.1%}")
-    print(
-        f"V_opt (A14 AMD warrant) = {inp['amd_warrant_shares']:g}B sh x (AMD {inp['amd_price']:g} - {inp['amd_warrant_strike']:g}) "
-        f"x (1-{inp['tax']:g}) / {shares + inp['new_shares']:.3f}B = {v_opt:.2f}/sh  p_k {P_TIERS[0]:g}/{P_TIERS[1]:.3f}/{P_TIERS[2]:g}"
-    )
-    print(f"表3: {adj[0]:.1f} / {adj[1]:.1f} / {adj[2]:.1f}  A'={a_adj:.1f} B'={b_adj:.1f}")
-    print(
-        "AMD $400/$600/$800 -> V_opt "
-        + " / ".join(f"{warrant_value(inp, x):.1f}" for x in (400.0, 600.0, 800.0))
-        + f"; p_M 0.5 -> M' {M + 0.5 * v_opt:.1f}"
-    )
-    print(
-        f"payout: modelled {payout_modelled:.0%} at M ROIC vs observed {PAYOUT_OBSERVED:.0%} "
-        f"(gap {gap:+.0%}; ROIC >= r + 3pp so sign test only — disclosure)"
-    )
-    print(
-        f"guardrail ③: M / reported TTM {inp['eps_ttm_reported']:g} = {pe_m_ttm:.2f}x vs "
-        f"[{inp['pe_own_min']:g}, {inp['pe_own_max']:g}]"
-        + (f" — below the floor by {m_short:.1%}, disclosed (M_BAND_TOL {M_BAND_TOL:.0%}, user 2026-10-29)" if m_short > 0 else "")
-        + f"; H / clean TTM {inp['eps_ttm_clean']:g} = {pe_h_clean:.2f}x"
-        + (f" — above band top by {h_over:.1%}, disclosed (H_BAND_TOL {H_BAND_TOL:.0%}, user 2026-10-22)" if h_over > 0 else "")
-    )
-    lo, hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
-    print(f"axis _AXIS.ai-capex constituent: FY26 capex guide share of 2026 base {lo:.1%}–{hi:.1%}")
-
-    # Disclosures: g2 +-1pp, IC, RL, settlement, tax; r_f readings below.
-    for g in (g2 - 0.01, g2 + 0.01):
-        b = band(inp, g2=g)
-        over_cap = " (above g_cap, reference only)" if g > g_cap(r) + 1e-9 else ""
-        print(f"g2 {g:.1%}: {fmt(b)}{over_cap}")
-    for label, b in (
-        ("IC frozen", band(inp, ic=ic_now)),
-        ("IC at 2027 capex $249B", band(inp, ic=inp["ic_fy27"] + IC_HIGH_CAPEX_DELTA)),
-        ("RL = 0 (bull, not adopted)", band(inp, rl_scale=0.0)),
-    ):
-        print(f"{label}: {fmt(b)}")
-    m_contingent = band(inp, settlement_npv=inp["settlement_npv"] + SETTLEMENT_CONTINGENT_B)["m"]["v"]
-    m_tax21 = band(inp, tax=0.21)["m"]["v"]
-    print(f"settlement contingent 30% (+{SETTLEMENT_CONTINGENT_B}B): M {m_contingent - M:+.1f} | tax 21%: M {m_tax21 / M - 1:+.1%}")
-
-    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves both
-    # priced r 1:1 — r_foa (Gordon multiple) and r_rl (RL loss capitalisation) — via
-    # band()'s r_shift; numerator, g2, IC path, closing items stay put.  Disclosure only.
-    def band_rf(dr: float) -> tuple[float, float, float]:
-        return lmh(band(inp, r_shift=dr))
-
-    rf = rf_block(LISTING_CCY, {"r_foa": inp["r_foa"], "r_rl": inp["r_rl"]}, band_rf)
-
-    # Only a clean run writes, so a FAIL never feeds the daily digest.
-    if not errors:
-        write_rf_readings("META.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    return report(errors)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    available_option = nonnegative_option_value(v_opt)
+    if available_option is None:
+        review_flags.append("amd_warrant_underwater")
+    weights = dict(zip(("L", "M", "H"), P_TIERS))
+    option_band = (None if available_option is None else
+                   dict(zip(("L", "M", "H"), (v + p * available_option for v, p in zip((L, M, H), P_TIERS)))))
+    option_result = (None if available_option is None else
+                     {"value": available_option, "value_unit": "USD_PER_SHARE", "weights": weights,
+                      "anchors": option_band, "status": "requires_reconciliation"})
+    shares, factor = inp["shares"], inp["shares"] / (inp["shares"] + inp["new_shares"])
+    gap = funding_gap(inp)
+    closing = -(inp["net_debt"] + inp["settlement_npv"] + inp["nm_penalty"]) / shares - gap
+    issuance = (inp["offering_proceeds"] - inp["pref_div_pv"]) / (shares + inp["new_shares"])
+    middle_multiple = base["m"]["pe"]
+    flat = [to_equity((base[t]["nopat"] * middle_multiple + base[t]["rl"]) / base["m"]["disc"] + closing, inp)
+            for t in TIERS]
+    if ladder("flat-multiple", *flat):
+        review_flags.append("flat_multiple_ladder_invalid")
+    segments = {
+        "foa": {"unit": "USD_PER_SHARE", "values": {t.upper(): base[t]["nopat"] * base[t]["pe"] / base[t]["disc"] * factor for t in TIERS}},
+        "reality_labs": {"unit": "USD_PER_SHARE", "values": {t.upper(): base[t]["rl"] / base[t]["disc"] * factor for t in TIERS}},
+        "debt_settlement_and_funding": {"unit": "USD_PER_SHARE", "values": dict.fromkeys(("L", "M", "H"), closing * factor)},
+        "equity_offering": {"unit": "USD_PER_SHARE", "values": dict.fromkeys(("L", "M", "H"), issuance)},
+    }
+    def as_band(values):
+        return dict(zip(("L", "M", "H"), lmh(values)))
+    payout_modelled, payout_difference = payout_gap(inp["g2"], base["m"]["roic"], PAYOUT_OBSERVED)
+    return {
+        "ticker": "META.US", "currency": "USD", "valuation_as_of": None, "framework_as_of": None,
+        "historical_valuation_as_of": "2026-09-30", "historical_framework_as_of": "2026-10-29",
+        "basis_changed": None, "partial_basis_changed": local_basis_changed(
+            {"inputs": INPUTS, "historical_reference": HISTORICAL_REFERENCE,
+             "historical_ic_adopted": HISTORICAL_IC_ADOPTED,
+             "capex": {"role": capex["role"], "base_2026_usd": capex["base_2026_usd"]},
+             "option_weights": P_TIERS, "payout_observed": PAYOUT_OBSERVED,
+             "band_tolerances": [M_BAND_TOL, H_BAND_TOL]}, HISTORICAL_PARTIAL_FINGERPRINT),
+        "units": {"price": "USD_PER_SHARE"},
+        "anchors": dict(zip(("L", "M", "H"), (L, M, H))), "candidate": None,
+        "option": option_result,
+        "option_unavailable_reason": "amd_warrant_underwater" if option_result is None else None,
+        "segments": segments,
+        "key_parameters": {
+            "foa": {"discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), inp["r_foa"])},
+                    "growth_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), inp["g2"])},
+                    "forward_return": {"unit": "RATIO", "values": {t.upper(): base[t]["roic"] for t in TIERS}},
+                    "steady_return": {"unit": "RATIO", "values": {t.upper(): min(base[t]["roic"], inp["ronic_ss"]) for t in TIERS},
+                                      "reference_value": inp["ronic_ss"]}},
+            "reality_labs": {"discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), inp["r_rl"])},
+                             "growth_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), 0.0)}}},
+        "diagnostics": {"foa_nopat_per_share": {t.upper(): base[t]["nopat"] for t in TIERS},
+                        "foa_multiples": {t.upper(): base[t]["pe"] for t in TIERS},
+                        "invested_capital_usd_bn": inp["ic_fy27"], "invested_capital_unrounded_usd_bn": raw_ic,
+                        "historical_capital_rounding_residual_usd_bn": HISTORICAL_IC_ADOPTED - historical_raw_ic,
+                        "funding_gap_per_old_share": gap, "flat_multiple_ladder": dict(zip(("L", "M", "H"), flat)),
+                        "payout_modelled": payout_modelled,
+                        "payout_gap": payout_difference,
+                        "capex_guide_share_low": inp["capex_guide_low"] / capex["base_2026_usd"],
+                        "capex_guide_share_high": inp["capex_guide_high"] / capex["base_2026_usd"]},
+        "sensitivity": {"growth_minus_1pp": as_band(band(inp, g2=inp["g2"] - .01)),
+                        "growth_plus_1pp_reference": as_band(band(inp, g2=inp["g2"] + .01)),
+                        "capital_frozen": as_band(band(inp, ic=inp["equity"] + inp["net_debt"])),
+                        "capital_high_capex": as_band(band(inp, ic=replace_capex_reference(
+                            inp["ic_fy27"], inp["capex_fy27"], inp["capex_fy27_reference"]))),
+                        "reality_labs_zero": as_band(band(inp, rl_scale=0.0)),
+                        "settlement_contingent_middle": band(inp, settlement_npv=inp["settlement_npv"] + 5.3)["m"]["v"],
+                        "tax_21pct_middle": band(inp, tax=.21)["m"]["v"],
+                        "amd_warrant_prices": {"400": warrant_value(inp, 400), "600": warrant_value(inp, 600), "800": warrant_value(inp, 800)},
+                        "option_middle_50pct_weight": None if available_option is None else M + 0.5 * available_option},
+        "review_flags": review_flags,
+    }

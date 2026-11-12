@@ -1,229 +1,223 @@
 #!/usr/bin/env python3
-"""000582.SZ (Beibu Gulf Port / 北部湾港) valuation eval.
+"""Beibu Gulf Port's historical 2028 consensus model; not a new forecast.
 
-frameworks/000582.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B, V_opt and the disclosure coordinates from its §3 Inputs table
-and exits 1 on mismatch.  The doc carries no current price (AGENTS.md「现价 —
-禁写契约」), so nothing here computes a zone or a market-implied reading.
+Financial amounts are CNY 100 million except shares_total, which is shares;
+outputs are CNY/share. Company reports, project notices and forecast sources
+are retained in the original document and input comments.
 
-formula_id: bbgport_cons2028_utility_gordon_v1
-
-Main ruler: one company-wide leg, Gordon full form on the 2028 consensus.
-
-    W     = (np_cons_2026 - np_h1_2026) + np_cons_2027      window profit
-    B0    = equity_parent / (1 - W * g2 / E_M)               2028 opening equity
-    RONIC = E_x / B0,  b = g2 / RONIC
-    V_x   = E_x (1 - b) / (r - g2)                           L, M (RONIC < r: held)
-    V_H   = three-stage: RONIC_H fades linearly 2028 -> 2034 to ret_ss
-    D     = sum capex (1 - irr / r) / (1+r)^1.5              named low-return berths
-    x     = V_x / sh / (1+r)^1.5 + W (1 - b) / sh / (1+r)^0.75 - D / sh
-
-r is basket 2 by the user's ruling (A1); basket 4 is printed as a contrast.
-
-Run:  python3 frameworks/eval/000582.SZ.py
+The user selected basket 2 and 3.5% growth on 2026-10-29 after reviewing the
+disclosed concern that most handling fees are market-priced, as well as the
+basket-4 out-of-band issue. The median forecast is used for M; H is a single
+analyst's canal case, not a statistically verified upper bound. Only H fades
+to the historical return; L/M remain at their sub-discount-rate forward proxy.
+Low-return projects reduce all scenarios. The Shawei project option is separate
+and must not double count the canal growth already inside forecasts.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
+from lib.gordon import basket_r, check_branch, check_g_cap, check_r
+from lib.inputs import check_missing, ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import basket_r, check_branch, check_g_cap, check_r  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, outputs_section, parse_baskets,
-    parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'zones', 'partial_basis'), 'axes': {}}
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from eval.lib.frameworks import load_framework  # noqa: E402
+# 研究意图与限制（截至 2026-10-29；并非新的经营预测）：
+# - 2026H1 收入约 94% 为装卸堆存，港区未披露可独立估值的分部利润；
+#   整公司用同一经营模型。2019—2025 投入资本回报约由 10.3% 降至 5.0%，
+#   因此增长需要结合新增投资回报，不直接按吞吐量增速增加股东价值。
+# - 用户依据区域平台、需求与利润稳定裁定 7.5% 折现率和 3.5% 长期增长；
+#   主要装卸收费实行市场调节价、并非全部受监管，属于保留的反向证据。
+#   连续两年 ROE <5%、扣非净利连降两年或收费出现明显竞争时重审归类。
+# - 同花顺 2026-10-28 的六家 2028 年预测：低 13.19、中位 14.93、均值
+#   17.52、高 27.54 亿元；最高为天风 2026-06-25 单家运河情景。为避免
+#   这家预测抬高中枢采用中位；均值仅作对照，不是额外一套正式预测。
+# - 高档前瞻回报向 2019—2025 年平均 ROE 8.8% 回落至 2034；低/中档
+#   前瞻回报低于折现率，原研究保留各自前瞻值而不人为上调。2019—2025
+#   公司的投入与资本回报历史见各年报，2026 中报提供权益、股本与债务。
+# - 防城港三牙 30 万吨级码头与钦州大榄坪 6—8 号泊位的公司测算回报率
+#   分别为 6.28% 与 4.58%，低于 7.5%；原模型把总投资视为尚未投入而
+#   按总额扣减，实际已投入金额待核。项目公告分别为 2026-01-14、
+#   2026-04-28，不能把项目投资再重复扣。
+# - 北海沙尾 4—5 号泊位公司测算回报率 8.07%（2026-01-14 公告），
+#   同样把总投资视为尚未投入，实际已投入金额待核；各档 0/0.5/1 是
+#   情景计入比例，0.5 没有统计概率依据。
+#   平陆运河在预测期外的额外增长未另计：预测已含部分运河吞吐，
+#   配套钦州 6—8 号泊位回报低于要求回报；新增项目不能与共识双计。
+# - 2026-09-16 平陆运河通航；首月约 95 万吨（新华社、21 财经 2026-10），
+#   天风转述的 2029/2035 增量为单一研究路径，非已实现货量。若 2027 年
+#   公司受益吞吐低于 3000 万吨或公司总吞吐增速低于 10%，原研究要求
+#   重审乐观预测，可参考财通次高预测 20.86 亿元，而非自动改写锚点。
+# - 2026-10-11 恒港码头收购预案的估值与作价未定，尚未并入正式预测；
+#   在获得作价、股本与标的利润之前不能直接追加价值。缺少卖方现金流
+#   预测时，原研究将 FY2025 经营现金流 30.63 亿按一年半推为约 46 亿，
+#   与窗口期项目余款约 25 亿及维护开支约 15 亿比较，估算资金缺口约零；
+#   现金流或投资进度偏离时需重审，该历史外推不是未来资金保证。
+# - 历史同等盈利月份 PE 带 10.9—19.4 倍仅作中档护栏；带内包含当时已
+#   开工运河的预期，不能当成本模型以外已确定的新增价值。
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000582.SZ.md"
-FORMULA_ID = "bbgport_cons2028_utility_gordon_v1"
+HISTORICAL_PARTIAL_FINGERPRINT = '1548fbbe333dff408256c85f6c310fbcf2200c6223a69c8fd902047964d9588b'
+
+INPUTS = {
+    'shares_total': 2517084480,  # 总股本（转债已全部转股 / 赎回，A13）；2026 中报; as-of 2026-06-30
+    'equity_parent': 205.52,  # 归母权益；2026 中报; as-of 2026-06-30
+    'np_h1_2026': 5.58,  # 2026H1 已实现归母；窗口只取下半年; as-of 2026-06-30
+    'np_cons_2026': 11.70,  # 2026 归母一致预期均值（6 家，同花顺）；窗口用; as-of 2026-10-28
+    'np_cons_2027': 14.47,  # 2027 归母一致预期均值（6 家）；窗口用; as-of 2026-10-28
+    'np_2028_l': 13.19,  # **L** 2028 归母一致预期最低（6 家，A2）; as-of 2026-10-28
+    'np_2028_m': 14.93,  # **M** 2028 归母一致预期中位（6 家，A2）; as-of 2026-10-28
+    'np_2028_h': 27.54,  # **H** 2028 归母一致预期最高（天风 2026-06-25，A2 / A9）; as-of 2026-10-28
+    'np_2028_mean': 17.52,  # 2028 均值；只进披露坐标，**不进锚点**（A2）; as-of 2026-10-28
+    'np_2028_h2': 20.86,  # 2028 次高家（财通 2026-08-18）；只进披露坐标（A2 / A9）; as-of 2026-10-28
+    'r_perp': 0.075,  # 篮 2 管制公用事业：区域独家港口平台、需求刚性、利润稳定（用户裁定 2026-10-29；助手保留意见与篮 4 初判留痕见 A1）; as-of 2026-10-29
+    'g2': 0.035,  # 永续 g：用户裁定（碰篮 2 上限 3.5%，A4）; as-of 2026-10-29
+    'ret_ss': 0.088,  # H 档稳态回报 = 自身 FY2019–25 平均 ROE（A5）; as-of FY2025
+    'ronic_roic_m': 0.056,  # M 档 2028 投入资本口径回报（杠杆门口径）；只进披露坐标，**不进锚点**（A3）; as-of 2026-10-29
+    'payout_obs': 0.34,  # 经营口径派息率 = FY2023–25 分红率均值（无超额现金，c = 0；A6）; as-of FY2025
+    'dps_fy25': 0.161,  # FY2025 每股现金分红（中期 0.081 + 年度 0.080）；DDM 对照用（A15）; as-of FY2025
+    'capex_sanya': 114.03,  # 防城港 30 万吨级码头总投资（A7）; as-of 2026-01-14
+    'irr_sanya': 0.0628,  # 同上，公司测项目投资税后 IRR; as-of 2026-01-14
+    'capex_qz68': 30.95,  # 钦州大榄坪 6–8 号泊位总投资（A7）; as-of 2026-04-28
+    'irr_qz68': 0.0458,  # 同上，公司测项目投资税后 IRR; as-of 2026-04-28
+    'capex_shawei': 42.12,  # 北海沙尾 4–5 号泊位总投资（\(V_{opt}\)，A8）; as-of 2026-01-14
+    'irr_shawei': 0.0807,  # 同上，公司测项目投资税后 IRR; as-of 2026-01-14
+    'pe_band_min': 10.9,  # 同等盈利带下沿（M 档每股 ±12%，2022-09，A10）；护栏，**不进公式**; as-of 2026-10-28
+    'pe_band_median': 13.0,  # 58 个同等盈利月份中位；护栏，**不进公式**; as-of 2026-10-28
+    'pe_band_max': 19.4,  # 同等盈利带上沿；护栏，**不进公式**; as-of 2026-10-28
+}
+
+# Judgment, not measured probabilities: the 0.5 middle case reflects thin
+# project IRR spread, and 0 / 1 are the existing conservative / full cases.
+OPTION_WEIGHTS = {'L': 0.0, 'M': 0.5, 'H': 1.0}
+TAU = 1.5  # 2026-06-30 balance sheet to 2028-01-01.
+FADE_YEARS = 6  # 2028–2034, original high-barrier return fade.
 YI = 1e8
-TOL = 0.05
-
-# Valuation date 2026-06-30 -> numerator-year start 2028-01-01 (A3), and the H-tier
-# fade 2028 -> 2034 (high entry barrier, 6 years, A5).  Changing them is a framework
-# correction, so they live here rather than in Inputs.
-TAU = 1.5
-FADE_YEARS = 6
-BASKET = 2
-CONTRAST_BASKET = 4
-
-REQUIRED = [
-    "shares_total", "equity_parent", "np_h1_2026", "np_cons_2026", "np_cons_2027",
-    "np_2028_l", "np_2028_m", "np_2028_h", "np_2028_mean", "np_2028_h2",
-    "r_perp", "g2", "ret_ss", "ronic_roic_m", "payout_obs", "dps_fy25",
-    "capex_sanya", "irr_sanya", "capex_qz68", "irr_qz68", "capex_shawei", "irr_shawei",
-    "pe_band_min", "pe_band_median", "pe_band_max",
-]
 
 
-def stated_triple(md: str, label: str) -> tuple[float, float, float] | None:
-    """`<label> x / y / z` on one Outputs line (contrast and sensitivity rows)."""
-    num = r"(-?[0-9]+(?:\.[0-9]+)?)"
-    m = re.search(re.escape(label) + r"[^\n0-9]*?" + num + r"\s*/\s*" + num + r"\s*/\s*" + num,
-                  outputs_section(md))
-    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
-
-def check_triple(md: str, label: str, computed: tuple[float, float, float]) -> list[str]:
-    said = stated_triple(md, label)
-    if said is None:
-        return [f"stated triple '{label}' not found in Outputs"]
-    bad = [f"{s} vs {c:.4f}" for s, c in zip(said, computed) if abs(s - c) > TOL]
-    return [f"'{label}': {', '.join(bad)}"] if bad else []
-
-
-def stated_value(md: str, label: str) -> float | None:
-    m = re.search(re.escape(label) + r"[^\n0-9]*?(-?[0-9]+(?:\.[0-9]+)?)", outputs_section(md))
-    return float(m.group(1)) if m else None
-
-
-def check_value(md: str, label: str, computed: float) -> list[str]:
-    said = stated_value(md, label)
-    if said is None:
-        return [f"stated value '{label}' not found in Outputs"]
-    return [f"'{label}': {said} vs {computed:.4f}"] if abs(said - computed) > TOL else []
-
-
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp, weights=None):
+    if weights is None:
+        weights = OPTION_WEIGHTS
+    errors = check_missing(inp, list(INPUTS))
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    if (not isinstance(weights, dict) or set(weights) != set('LMH')
+            or any(type(weights[t]) not in (int, float) or not math.isfinite(weights[t])
+                   or not 0 <= weights[t] <= 1 for t in 'LMH')):
+        raise ValueError('invalid project option weights')
+    r, g2 = inp['r_perp'], inp['g2']
+    errors += check_r(r, 'r_perp', 2)
+    errors += check_g_cap(g2, r, 'g2')
+    if inp['shares_total'] <= 0 or inp['equity_parent'] <= 0 or inp['np_2028_m'] <= 0:
+        errors.append('invalid shares, equity or median earnings')
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    # --- basket, g guards -----------------------------------------------------------------
-    baskets = parse_baskets(md)
-    r = inp["r_perp"]
-    if baskets.get("r_perp") != BASKET:
-        errors.append(f"r_perp: Inputs source cell must name 篮 {BASKET} first, got {baskets.get('r_perp')} (A1)")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    extra = sorted(k for k in baskets if k != "r_perp")
-    if extra:
-        errors.append(f"only r_perp may carry a 篮 N tag; also found {extra} (AGENTS.md 篮子声明)")
-    g2 = inp["g2"]
-    errors += check_g_cap(g2, r, "g2")
+    sh = inp['shares_total'] / YI
+    E = {'L': inp['np_2028_l'], 'M': inp['np_2028_m'], 'H': inp['np_2028_h']}
+    win = inp['np_cons_2026'] - inp['np_h1_2026'] + inp['np_cons_2027']
 
-    sh = inp["shares_total"] / YI
-    E = {"L": inp["np_2028_l"], "M": inp["np_2028_m"], "H": inp["np_2028_h"]}
-    win = inp["np_cons_2026"] - inp["np_h1_2026"] + inp["np_cons_2027"]
-
-    def band(r_: float = r, g: float = g2, e: dict[str, float] = E, deduct: bool = True,
-             ronic_m: float | None = None) -> dict[str, float]:
-        """Per-tier value today; also returns PE / RONIC under 'pe_*' / 'ron_*' keys."""
-        b0 = inp["equity_parent"] / (1 - win * g / e["M"])
-        ded = (inp["capex_sanya"] * max(0.0, 1 - inp["irr_sanya"] / r_)
-               + inp["capex_qz68"] * max(0.0, 1 - inp["irr_qz68"] / r_)) / sh / (1 + r_) ** TAU
-        out: dict[str, float] = {"b0": b0, "ded": ded}
+    def band(r_=r, g=g2, e=E, deduct=True, ronic_m=None):
+        b0 = inp['equity_parent'] / (1 - win * g / e['M'])
+        ded = (inp['capex_sanya'] * max(0.0, 1 - inp['irr_sanya'] / r_) +
+               inp['capex_qz68'] * max(0.0, 1 - inp['irr_qz68'] / r_)) / sh / (1 + r_) ** TAU
+        out = {'b0': b0, 'ded': ded}
         for k, ek in e.items():
-            ron = ronic_m if (ronic_m is not None and k == "M") else ek / b0
+            ron = ronic_m if ronic_m is not None and k == 'M' else ek / b0
             b = g / ron
-            if k == "H" and ron > r_:
-                def rt(t: int) -> float:
+            if k == 'H' and ron > r_:
+                def rt(t):
                     if t <= 1:
                         return ron
                     if t <= 1 + FADE_YEARS:
-                        return ron + (inp["ret_ss"] - ron) * (t - 1) / FADE_YEARS
-                    return inp["ret_ss"]
+                        return ron + (inp['ret_ss'] - ron) * (t - 1) / FADE_YEARS
+                    return inp['ret_ss']
                 n = 1 + FADE_YEARS
-                v = sum(ek * (1 + g) ** (t - 1) * (1 - g / rt(t)) / (1 + r_) ** t for t in range(1, n + 1))
-                v += ek * (1 + g) ** n * (1 - g / inp["ret_ss"]) / ((r_ - g) * (1 + r_) ** n)
+                v = sum(ek * (1 + g) ** (t - 1) * (1 - g / rt(t)) / (1 + r_) ** t
+                        for t in range(1, n + 1))
+                v += ek * (1 + g) ** n * (1 - g / inp['ret_ss']) / ((r_ - g) * (1 + r_) ** n)
             else:
                 v = ek * (1 - b) / (r_ - g)
             out[k] = (v / sh / (1 + r_) ** TAU + win * (1 - b) / sh / (1 + r_) ** (TAU / 2)
                       - (ded if deduct else 0.0))
-            out[f"pe_{k}"] = v / ek
-            out[f"ron_{k}"] = ron
+            out[f'pe_{k}'] = v / ek
+            out[f'ron_{k}'] = ron
         return out
 
     base = band()
-    L, M, H = base["L"], base["M"], base["H"]
-    if not (L < M < H):
-        return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
+    L, M, H = (base[t] for t in 'LMH')
+    errors += ladder('anchors', L, M, H)
+    ron_m = base['ron_M']
+    errors += check_branch(g2, ron_m, r, inp['payout_obs'], 'M')
+    if g2 / ron_m > 1 - inp['payout_obs']:
+        errors.append('M reinvestment exceeds retained earnings')
+    if base['ron_L'] >= r or ron_m >= r:
+        errors.append('L / M RONIC no longer below r — persistent failure hold no longer applies')
+    if not (r <= inp['ret_ss'] <= base['ron_H']):
+        errors.append('steady return must sit between r and H forward return')
+    errors += ladder('2028 numerator', E['L'], E['M'], E['H'])
+    mean = inp['np_2028_mean']
+    if not (E['M'] <= mean <= E['H']):
+        errors.append('consensus mean outside M to H')
+    if abs(E['M'] / mean - 1) > .20:
+        errors.append('median deviates from mean by more than 20%')
+    if not (inp['pe_band_min'] <= base['pe_M'] <= inp['pe_band_max']):
+        errors.append('M PE outside equal-earnings band')
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    # --- branch / retention constraints (A4 / A6) -------------------------------------------
-    ron_m = base["ron_M"]
-    errors += check_branch(g2, ron_m, r, inp["payout_obs"], "M")
-    if g2 / ron_m > 1 - inp["payout_obs"]:
-        errors.append(f"b_M {g2 / ron_m:.1%} > 1 - payout {1 - inp['payout_obs']:.1%} (retention constraint 1)")
-    if base["ron_L"] >= r or ron_m >= r:
-        errors.append("L / M RONIC no longer below r — 'persistent failure' hold no longer applies (A5)")
-    if not (r <= inp["ret_ss"] <= base["ron_H"]):
-        errors.append(f"ret_ss {inp['ret_ss']} must sit in [r, RONIC_H {base['ron_H']:.4f}] (A5)")
-
-    # 2c flat ladder and ②-b (A2).
-    errors += ladder("2028 numerator", E["L"], E["M"], E["H"])
-    mean = inp["np_2028_mean"]
-    if not (E["M"] <= mean <= E["H"]):
-        errors.append(f"②-b: consensus mean {mean} outside [E_M, E_H]")
-    if abs(E["M"] / mean - 1) > 0.20:
-        errors.append(f"②-b: E_M deviates {E['M'] / mean - 1:+.1%} from the mean (> 20%)")
-
-    # ③ band (A10).
-    pe_m = base["pe_M"]
-    if not (inp["pe_band_min"] <= pe_m <= inp["pe_band_max"]):
-        errors.append(f"③: M PE {pe_m:.2f} outside the equal-earnings band "
-                      f"[{inp['pe_band_min']}, {inp['pe_band_max']}] (A10)")
-
-    # --- V_opt (A8) ---------------------------------------------------------------------------
-    v_opt = inp["capex_shawei"] * (inp["irr_shawei"] / r - 1) / sh / (1 + r) ** TAU
-    meta = load_framework(FRAMEWORK)
-    if meta.v_opt is None or abs(meta.v_opt - v_opt) > TOL:
-        errors.append(f"V_opt stated {meta.v_opt} vs recomputed {v_opt:.4f}")
-    p = meta.p_tiers or (0.0, 0.0, 0.0)
-    plus = (L + p[0] * v_opt, M + p[1] * v_opt, H + p[2] * v_opt)
-    a2, b2 = cut_points(*plus)
-    errors += check_value(md, "修正带切点 A' =", a2)
-    errors += check_value(md, "B' =", b2)
-
-    # --- disclosure coordinates -----------------------------------------------------------------
-    c4 = band(r_=basket_r(CONTRAST_BASKET))
-    c4t = (c4["L"], c4["M"], c4["H"])
-    errors += check_triple(md, "篮 4 值（10%）同式对照 →", c4t)
-    gdn = band(g=g2 - 0.01)
-    gdn_t = (gdn["L"], gdn["M"], gdn["H"])
-    errors += check_triple(md, "g2 −1pp（2.5%）→", gdn_t)
-    m_mean = band(e={**E, "M": mean})["M"]
-    errors += check_value(md, "2028 均值分子 M =", m_mean)
-    h2 = band(e={**E, "H": inp["np_2028_h2"]})["H"]
-    errors += check_value(md, "次高家路径 H =", h2)
-    h_nod = band(deduct=False)["H"]
-    errors += check_value(md, "H 不扣具名项目 =", h_nod)
-    m_roic = band(ronic_m=inp["ronic_roic_m"])["M"]
-    errors += check_value(md, "ROIC 口径 M 档回报 5.6% 时 M =", m_roic)
-    ddm = inp["dps_fy25"] * (1 + g2) / (r - g2)
-    errors += check_value(md, "DDM（\\(g_d = g\\)）=", ddm)
-
-    # --- report ----------------------------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(f"shares {sh:.4f}亿; window W {win:.2f}; B0 {base['b0']:.2f}; project deduction "
-          f"{base['ded']:.3f}/sh")
-    print(f"basket: r_perp 篮 {baskets.get('r_perp')} r={r:g}; g2={g2:g}")
-    print("RONIC " + " / ".join(f"{base['ron_' + k]:.2%}" for k in "LMH")
-          + " | PE " + " / ".join(f"{base['pe_' + k]:.2f}" for k in "LMH"))
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"V_opt {v_opt:.3f} p {p} -> +V " + " / ".join(f"{v:.2f}" for v in plus)
-          + f"  A'={a2:.2f} B'={b2:.2f}")
-    print(f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} V_opt/M={v_opt / M:.4f}")
-    print(f"③: M PE {pe_m:.2f} in [{inp['pe_band_min']}, {inp['pe_band_max']}] (median {inp['pe_band_median']})")
-    print("contrast 篮 4 10%: " + " / ".join(f"{v:.2f}" for v in c4t))
-    print("g2 -1pp: " + " / ".join(f"{v:.2f}" for v in gdn_t))
-    print(f"mean-numerator M {m_mean:.2f}; second-highest H {h2:.2f}; H no deduction {h_nod:.2f}; "
-          f"ROIC-basis M {m_roic:.2f}; DDM {ddm:.2f}")
-    print("rf block: CNY segment of _AXIS.rates is [待建] — no rates readings")
-    return report(errors)
+    option = inp['capex_shawei'] * (inp['irr_shawei'] / r - 1) / sh / (1 + r) ** TAU
+    plus = {tier: base[tier] + weights[tier] * option for tier in 'LMH'}
+    option_errors = ladder('option-adjusted anchors', *(plus[t] for t in 'LMH'))
+    if option >= 0 and option_errors:
+        raise ValueError('; '.join(option_errors))
+    a, b = cut_points(L, M, H)
+    ao, bo = cut_points(*(plus[t] for t in 'LMH'))
+    contrast = band(r_=basket_r(4))
+    gdn = band(g=g2 - .01)
+    # The option is 北海沙尾 4–5 号泊位; all three tiers use 集团 Gordon 完整式.
+    return {'ticker': '000582.SZ', 'currency': 'CNY',
+            'valuation_as_of': None, 'historical_valuation_as_of': '2026-06-30',
+            'framework_as_of': None, 'historical_research_as_of': '2026-10-29', 'historical_framework_as_of': '2026-10-29',
+            'anchors': {tier: base[tier] for tier in 'LMH'}, 'cut_points': {'A': a, 'B': b},
+            'candidate': None,
+            'option': {'label': 'beihai_shawei_berths_4_5', 'value': option, 'weights': dict(weights),
+                       'anchors': plus, 'cut_points': {'A': ao, 'B': bo}},
+            'segments': {'company': {'values': {tier: base[tier] for tier in 'LMH'}}},
+            'key_parameters': {'method': dict.fromkeys('LMH', 'gordon_full'),
+                               'discount_rate': dict.fromkeys('LMH', r), 'growth_rate': dict.fromkeys('LMH', g2),
+                               'forward_return': {tier: base['ron_' + tier] for tier in 'LMH'},
+                               'steady_return': {'L': base['ron_L'], 'M': base['ron_M'], 'H': inp['ret_ss']},
+                               'multiple': {tier: base['pe_' + tier] for tier in 'LMH'}},
+            'operating': {'window': win, 'opening_equity': base['b0'], 'project_deduction_per_share': base['ded'],
+                          'profit': E},
+            'sensitivity': {'basket_4': {tier: contrast[tier] for tier in 'LMH'},
+                            'growth_minus_1pp': {tier: gdn[tier] for tier in 'LMH'},
+                            'mean_numerator_M': band(e={**E, 'M': mean})['M'],
+                            'second_highest_H': band(e={**E, 'H': inp['np_2028_h2']})['H'],
+                            'high_no_deduction': band(deduct=False)['H'],
+                            'roic_basis_M': band(ronic_m=inp['ronic_roic_m'])['M'],
+                            'dividend_model': inp['dps_fy25'] * (1 + g2) / (r - g2)}}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    result = evaluate(INPUTS)
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'option_weights': OPTION_WEIGHTS, 'tau': TAU,
+         'fade_years': FADE_YEARS, 'units_100m': YI}, HISTORICAL_PARTIAL_FINGERPRINT)
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    if result['option']['value'] >= 0:
+        result['option']['value_unit'] = 'CNY_PER_SHARE'
+    else:
+        result['option'] = {'status': 'unavailable', 'label': '沙尾泊位', 'anchors': None}
+        result['option_unavailable_reason'] = 'project_return_below_required_return'
+    result['review_flags'] = ['historical_project_capital_already_spent_unverified',
+                              'historical_tariff_classification_and_cashflow_unverified',
+                              'historical_optimistic_earnings_single_forecast']
+    return result

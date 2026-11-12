@@ -1,83 +1,194 @@
 #!/usr/bin/env python3
-"""0148.HK (Kingboard Holdings) valuation eval — recompute anchors from frameworks/0148.HK.md.
+"""Kingboard's historical multi-leg valuation and two capacity options.
 
-frameworks/0148.HK.md is the source of truth; this script re-parses its §3 Inputs
-table, recomputes L/M/H / A/B and the candidate band, and exits 1 on mismatch.
-The framework carries no current price (AGENTS.md「现价 — 禁写契约」): this
-script neither reads a price nor derives a zone.
-
-formula_id: kingboard_holdco_sotp_point_v2
-
-Main ruler: holding-company SOTP, legs added one by one (no blended r):
-
-  1. KLHL (1888.HK) x stake -- KLHL equity = laminate operating value
-     (NOPAT on the FY2025 segment net assets x a segment return, basket 6)
-     + KLHL's own securities / investment property at a discount
-     - KLHL net debt - KLHL dividend payable.  Valued on fundamentals, never on
-     1888's market cap (0189.HK precedent: the sub's earnings are already in
-     the consolidated accounts; a listed quote would move the anchors daily).
-  2. PCB (basket 4), 3. chemicals (basket 6), 4. rental property (basket 6):
-     after-tax earnings x Gordon multiple; all three sit in the peak-shaped
-     domain (ROIC < r - 3pp) so the multiple is 1/r (valuation-rules 峰形区).
-  5. properties under development, holdco securities, JV / associate:
-     book or fair value x (1 - d).
-  6. minus holdco net debt (group less KLHL), the declared-unpaid FY2025
-     final+special dividend, and capitalised holdco overhead.
-
-Cycle semantics (A1, point): the M tier is the laminate segment's 2017-2025 mean
-return on opening segment net assets applied to today's base (asset base has
-changed, valuation-rules「中枢…资产基数变动」).  L = the FY2023 trough return
-plus the measured 2-year recovery (recovery_two_stage_pe).  H = the FY2026
-consensus + FY2027 point estimates, then a linear 2-year fade to mid (the
-decay_two_stage_pe mirror, implemented locally until the library has it).
-The regime reading (peak / trough held forever at the steady multiple) is
-printed as the comparison band and pressure coordinates, not the main band.
-
-Candidate band (A10, AI shortage extended): same formula, the H path gains
-Citi's single-source FY2028; L' = L, M' = M.
-
-V_opt (A9, valuation-rules「未建模期权」2026-10-05): AI special glass fabric on
-_AXIS.ai-glass-fabric and HVLP / RTF copper foil on _AXIS.hvlp-copper-foil; the
-axis rows are checked value by value against the axis files.  See option_values().
-V_opt = V_H; p_k = V_k / V_H.  Never enters L/M/H.
-
-Sanity checks beyond the anchor comparison:
-  * every r row names its basket and equals it (parse_baskets + check_r);
-    g2 under g_cap; the laminate M multiple is the Gordon multiple of its
-    named g2 at the mid ROIC; the other legs' ROIC really is < r - 3pp
-  * SAME-SOURCE: the laminate / PCB / chemical returns equal the figures
-    recomputed from the segment tables in HIST below (mean, trough, peak)
-  * flat-multiple ladder (A2e-2c): the laminate numerators step L < M < H
-  * k (視同派出, A12): k_l <= k_m <= k_h and k_h = 1 - V_M/V_H (pre-k)
-  * L < M < H, candidate L' < M' < H'
-
-Run:  python3 frameworks/eval/0148.HK.py
+The 2026 sources, cash and asset bridge, separate business axes and conditional
+candidate are preserved. Values are HKD/share; this is not a new forecast.
 """
-
 from __future__ import annotations
+import math
+from lib.gordon import check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe
+from lib.inputs import check_missing, require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.rf_report import calculate_rf_readings, result_rate_sensitivity
 
-import sys
-from pathlib import Path
+DEPENDENCIES = {'libraries':('gordon','inputs','partial_basis','rf_report'),
+                'axes':{'glass':'ai_glass_fabric','copper':'hvlp_copper_foil'}}
+HISTORICAL_PARTIAL_FINGERPRINT = 'c95a7c53786435e7de7f1e261438d4621f8d7bc686c13a9cc6944f1dd7ec03a4'
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.frameworks import load_framework  # noqa: E402
-from eval.lib.gordon import (  # noqa: E402
-    check_g_cap,
-    check_r,
-    perpetual_pe,
-    recovery_two_stage_pe,
-)
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    parse_baskets,
-    parse_inputs,
-)
-from eval.lib.rf_report import rf_block  # noqa: E402
+# Original inputs with sources, purpose and as-of.
+INPUTS = {
+    # 已发行股数（十亿股）：中报股本 112,178 千港元 ÷ 0.10 | as-of 2026-06-30
+    'shares': 1.12178,
+    # 持有 1888 比例：中报「重大收购及出售」 | as-of 2026-06-30
+    'stake_kl': 0.6169,
+    # 经营腿税率：内地 25% / 高新 15% 混合 + 股息预提 5–10%（1888 中报附注 8：2026H1 实际 17.9%） | as-of 2026-06-30
+    'tax': 0.20,
+    # 物业腿税率：内地企业所得税 | as-of 2026-06-30
+    'tax_prop': 0.25,
+    # 覆铜板分部净资产（十亿港元）：年报分部附注 (b)：分部资产 21,297 − 分部负债 3,408 百万 | as-of 2025-12-31
+    'na_lam': 17.889,
+    # 线路板分部净资产：同上 17,738 − 2,668 | as-of 2025-12-31
+    'na_pcb': 15.070,
+    # 化工分部净资产：同上 10,201 − 455 | as-of 2025-12-31
+    'na_chem': 9.746,
+    # 母公司层投资物业（仅用于域判定）：中报 26,981 − 1888 中报 1,230 | as-of 2026-06-30
+    'ip_hold': 25.751,
+    # 覆铜板中枢回报（分部业绩 / 年初分部净资产）：FY2017–2025 九年均值（eval `HIST_*` 复算） | as-of 2025-12-31
+    # 覆铜板谷底回报：FY2023 1,572 / 2022 年末 16,026 | as-of 2023-12-31
+    # 谷底实测回升年增速：FY2023 1,572 → FY2025 2,837 两年 CAGR | as-of 2025-12-31
+    # 实测回升年数：覆铜板 2023→2025、化工 2016→2018 | as-of 2025-12-31
+    'n_rec': 2,
+    # H 路径 FY2026 覆铜板税后利润（十亿港元）：1888 卖方 FY2026E EPS 均值 2.626（Longbridge，区间 2.17–3.155）× 31.5145 亿股；以净利近似 NOPAT（利息与投资损益方向相反、量级 < 3%） | as-of 2026-09-23
+    'e_lam_26': 8.28,
+    # H 路径 FY2027：摩根大通 3.55（目标价 65 ÷ 1.41 ÷ 13×）与花旗 4.14（目标价 120 ÷ 29×）EPS 均值 × 股数；两家点估计进 \(g_1\) 路径 | as-of 2026-09-23
+    'e_lam_27': 12.12,
+    # 花旗单家 FY2027 净利（十亿港元）：EPS 4.14（目标价 120 ÷ 29×）× 31.5145 亿股；只用来把花旗的 FY2028 换成花旗自己的 FY27→FY28 增速（候选带，A10） | as-of 2026-07-04
+    'e_lam_27c': 13.047,
+    # 候选带 FY2028（单家）：花旗「至 2028 年三年盈利 CAGR 92%」× FY2025 净利 2.44（Longbridge）；候选带只取它对 `e_lam_27c` 的增速（增长型，A10），A9 特种布量仍用此水平 | as-of 2026-07-04
+    'e_lam_28c': 17.27,
+    # 高点回落到中枢年数：实测：覆铜板回报 2017 28.2% → 2019 15.0%；2021 50.1% → 2022 11.8% | as-of 2025-12-31
+    'n_fade': 2,
+    # 覆铜板腿 H 档回落后新投资的稳态回报 = 自身最近一轮谷到谷 FY2019–23 税后 17.81%（同 `rs_gf`；M / L 档受各自前瞻 = 九年中枢 16.94% 封顶，不变；A2） | as-of 2026-10-19
+    # 线路板回报低点：FY2019 487 / 2018 年末 10,395 | as-of 2019-12-31
+    # 线路板回报均值：FY2017–2025 | as-of 2025-12-31
+    # 线路板回报高点：FY2024 1,360 / 2023 年末 12,949 | as-of 2024-12-31
+    # 化工分部业绩低点（十亿港元）：FY2016 | as-of 2016-12-31
+    # 化工分部业绩均值：FY2016–2025 | as-of 2025-12-31
+    # 化工分部业绩高点：FY2021 | as-of 2021-12-31
+    # 年租金 L：M −10%（A5 转弱线） | as-of 2026-06-30
+    'rent_l': 1.224,
+    # 年租金 M：2026H1 679.8 百万 × 2 | as-of 2026-06-30
+    'rent_m': 1.360,
+    # 年租金 H：M +2% | as-of 2026-06-30
+    'rent_h': 1.387,
+    # 租金 NOI 率：假设，待补核实（A5） | as-of 2026-06-30
+    'noi_margin': 0.80,
+    # 覆铜板腿 r：篮 6 周期商品：盈利是玻纤布 / 铜箔 / 覆铜板价格的函数（A11） | as-of 2026-09-28
+    'r_lam': 0.13,
+    # 线路板腿 r：篮 4 龙头制造：加工费生意，原料涨价可转嫁、客户分散（A11） | as-of 2026-09-28
+    'r_pcb': 0.10,
+    # 化工腿 r：篮 6 周期商品：烧碱等大宗化工（A11） | as-of 2026-09-28
+    'r_chem': 0.13,
+    # 出租物业腿 r：篮 6 小盘不明朗：内地商业物业，免租期与减值未止（A11） | as-of 2026-09-28
+    'r_prop': 0.13,
+    # 总部费用资本化 r：篮 4：与集团经营同级（A11） | as-of 2026-09-28
+    'r_hq': 0.10,
+    # 覆铜板腿永续增长：具名宏观上限：商品腿按通胀；≤ \(G_{cap}\) 6%；无同业锚（台光 / 生益 / 南亚同尺反解待补） | as-of 2026-09-28
+    'g2_lam': 0.02,
+    # 覆铜板腿 M 倍数：Gordon：r 13%、g 2%、ROIC 16.94%（= 21.17% × 0.8） | as-of 2026-09-28
+    # 1888 自持证券 + 债券（十亿港元）：1888 中报：流动 2,407 + 非流动 547 + 债券 256 百万 | as-of 2026-06-30
+    'kl_sec': 3.210,
+    # 1888 投资物业：1888 中报 | as-of 2026-06-30
+    'kl_ip': 1.230,
+    # 1888 净借款：1888 中报：借款 6,486 + 1,228 − 现金 2,196 百万 | as-of 2026-06-30
+    'kl_netdebt': 5.518,
+    # 1888 应付股息：1888 中报 | as-of 2026-06-30
+    'kl_divpay': 1.671,
+    # 母公司层待开发物业：中报 11,030 − 1888 110 百万 | as-of 2026-06-30
+    'pud': 10.920,
+    # 母公司层证券 + 债券：中报 18,861 + 2,089 + 1,773 − 1888 3,211 百万 | as-of 2026-06-30
+    'sec_hold': 19.511,
+    # 合营 + 联营账面：中报 2,426 + 456 百万 | as-of 2026-06-30
+    'jv': 2.882,
+    # 母公司层净借款：中报借款 30,854 − 1888 7,714；现金 11,334 − 1888 2,196（百万） | as-of 2026-06-30
+    'hold_netdebt': 14.002,
+    # 母公司已宣派未付 FY2025 末期 + 特别息：中报应付股息 2,313 − 1888 应付 1,671 × 38.31% 少数股东份额（百万）；2026-07-08 支付 | as-of 2026-06-30
+    'divpay': 1.673,
+    # 母公司层年度总部费用：中报未分配企业费用 226.7 − 1888 51.2 百万，× 2 | as-of 2026-06-30
+    'hq_cost': 0.351,
+    # 证券 / 合营联营折价 L：A7 | as-of 2026-09-28
+    'd_sec_l': 0.40,
+    # 同上 M：A7 | as-of 2026-09-28
+    'd_sec_m': 0.30,
+    # 同上 H：A7 | as-of 2026-09-28
+    'd_sec_h': 0.20,
+    # 待开发物业 / 1888 投资物业折价 L：A7 | as-of 2026-09-28
+    'd_prop_l': 0.50,
+    # 同上 M：A7 | as-of 2026-09-28
+    'd_prop_m': 0.40,
+    # 同上 H：A7 | as-of 2026-09-28
+    'd_prop_h': 0.30,
+    # 实付派息率：FY2025 每股派息 2.20 / 报告每股收益 3.971 | as-of 2025-12-31
+    'payout_obs': 0.554,
+    # D 桶窗口年数：2026Q4–FY2028（A12） | as-of 2026-09-28
+    'window': 2.25,
+    # 视同派出打折 L：D 桶去向具名（来源层级 ②） | as-of 2026-09-28
+    'k_l': 0,
+    # 视同派出打折 M：同上 | as-of 2026-09-28
+    'k_m': 0,
+    # 视同派出打折 H：已去掉——原 ①b \(1-V_M/V_H\) = 0.3073 乘的是多留部分，不是具名交易（A12） | as-of 2026-10-16
+    'k_h': 0,
+    # 1888 AI 布毛利占比 FY2028E（花旗 2026-07-04，Wisburg 94820；单家卖方量，A9） | as-of 2026-07-04
+    'gf_citi_share': 0.174,
+    # 1888 净利 ÷ 毛利（2026H1 实测：净利 28.9 亿 ÷ 毛利 45.8 亿 = 收入 149.0 亿 × 30.73%；Longbridge 中报）；用于把花旗 FY2028 净利折回毛利 | as-of 2026-06-30
+    'np_gp_kl': 0.631,
+    # 特种纱窑炉总数（现有 5 座 + 清远在建 8 座；1888 中报「展望」） | as-of 2026-06-30
+    'gf_kilns_total': 13,
+    # 不在底牌里的窑炉：13 − 2025 年底前已投产的 2 座（2026H1 新增 3 座各 500 吨，1888 中报） | as-of 2026-06-30
+    'gf_kilns_new': 11,
+    # 清远在建 8 座（2 座 2026H2、其余 2027 投产）：资本按全部未投计（保守，A9） | as-of 2026-06-30
+    'gf_kilns_unspent': 8,
+    # 每座特种纱窑年产能（吨）：2026H1 新增三座「年产各 500 吨」（1888 中报） | as-of 2026-06-30
+    'gf_t_per_kiln': 500,
+    # 满产折扣：新窑良率爬坡 + 英伟达认证（花旗预期 2027 年中）未落地，−20%（拍值；±10pp 敏感） | as-of 2026-10-05
+    'gf_yield': 0.80,
+    # 兑现年 FY2028（花旗量的年份；清远 8 座 2027H1 前投产）− 分子年 FY2026 | as-of 2026-10-05
+    'gf_years': 2,
+    # 清远 RTF / HVLP 铜箔年产能（吨），「筹建中」、2027Q3 投产（1888 中报「展望」）；资本按全部未投计 | as-of 2026-06-30
+    'cu_tons': 21000,
+    # 满产折扣 = HVLP3 良率：`_AXIS.hvlp-copper-foil` | as-of 2026-06-10
+    # 兑现年 FY2029（2027Q3 投产 + 约 1.5 年爬坡与逐代认证；无具名满产年·拍值）− 分子年 FY2026 | as-of 2026-10-05
+    'cu_years': 3,
+    # 特种布腿高回报期（短缺利润率与回报）开始回落年 = 兑现年 FY2028 = 特种布短缺可见止点（花旗量与宏和卖方利润率都到 2028；日东纺 T 玻纤 3 倍扩产到 FY2029），不继承母腿普通电子布 2027→2029（A9） | as-of 2026-10-19
+    'gf_y1': 2028,
+    # 特种布腿回落到常态年 = Y1 + 6（进入门槛「高」：供应商少、客户认证长、石英 / 低介电布扩产周期长，A9） | as-of 2026-10-16
+    'gf_y2': 2034,
+    # 特种布腿稳态回报 = 按序取第一层自身周期：覆铜板分部最近一轮完整谷到谷 FY2019（15.0%）→ FY2023（9.8%）分部业绩 ÷ 年初分部净资产均值 22.26% × (1 − 20%) = 17.81%（2026-10-19 改，取代「max(兜底 15%, 日东纺 9.4%, 九年中枢 16.94%)」；同业与兜底只作对照）；同一公司内部一致：玻纤布在覆铜板分部里，与主业 H 档回落到同一个常态；用户 2026-10-19 认可（A9） | as-of 2026-10-19
+    # HVLP 铜箔腿高回报期开始回落年 = 第三代 HVLP 短缺可见止点 2028（东吴 2026-06-10「2027–28 年仍有缺口」）；建滔 2029 满产时已在回落路径上（第 1 / 4 年），不取兑现年 2029；用户 2026-10-19 认可（A9） | as-of 2026-10-19
+    'cu_y1': 2028,
+    # HVLP 铜箔腿回落到常态年 = Y1 + 4（进入门槛「中」，A9） | as-of 2026-10-19
+    'cu_y2': 2032,
+    # HVLP 铜箔腿稳态回报 = 同 `rs_gf`：覆铜板分部 FY2019–23 谷到谷 17.81%（铜箔在覆铜板分部里，产品升级、生意模式没变；金居 14.5% 与兜底 15% 只作对照）；eval 校验三者（`rs_gf` / `rs_cu` / `rs_lam_h`）= 分部表复算；用户 2026-10-19 认可（A9） | as-of 2026-10-19
+    # HVLP 每吨净利 L（万元）：`_AXIS.hvlp-copper-foil` | as-of 2026-06-10
+    # HVLP 每吨净利 M：`_AXIS.hvlp-copper-foil` | as-of 2026-06-10
+    # HVLP 每吨净利 H：`_AXIS.hvlp-copper-foil` | as-of 2026-06-10
+    # 每吨年产能投资（万元）：`_AXIS.hvlp-copper-foil` | as-of 2026-06-10
+    # CNY→HKD 市场交叉汇率（USDHKD 7.8400 ÷ USDCNY 6.7190，yfinance 2026-09-04；与 `0189.HK` 同源） | as-of 2026-09-04
+    'fx_cny_hkd': 1.1668,
+    # 特种布单价 L（元 / 米）：`_AXIS.ai-glass-fabric` | as-of 2026-08-14
+    # 特种布单价 M：`_AXIS.ai-glass-fabric` | as-of 2026-08-14
+    # 特种布单价 H：`_AXIS.ai-glass-fabric` | as-of 2026-08-14
+    # 特种布净利率 L：`_AXIS.ai-glass-fabric` | as-of 2026-03-27
+    # 特种布净利率 M：`_AXIS.ai-glass-fabric` | as-of 2026-08-21
+    # 特种布净利率 H：`_AXIS.ai-glass-fabric` | as-of 2026-08-21
+    # 毛利 → 收入换算毛利率：`_AXIS.ai-glass-fabric` | as-of 2026-08-21
+    # 每吨特种纱织布米数：`_AXIS.ai-glass-fabric` | as-of 2026-10-05
+    # 每年米特种布产能投资（元）：`_AXIS.ai-glass-fabric` | as-of 2026-09-21
+}
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "0148.HK.md"
-FORMULA_ID = "kingboard_holdco_sotp_point_v2"
+# Original historical financial rationale and evidence.
+# - **业务地图摘要**：分部附注六块，覆铜板 / 线路板 / 化工三块收入各占 20% 以上，驱动完全不同（玻纤布短缺 / 加工费 / 烧碱周期 / 内地租金 / 港股行情），且三块经营腿落不同篮子（valuation-rules「归篮触发分腿」），故拆腿。证券投资分部的公允值变动（2025 +30.2 亿、2026H1 −5.5 亿）使合并 EPS 失真，证券单独按公允值 × (1 − d) 计价、不进任何腿的分子。
+# - **属性 A · 全链自产与自身扩产**：玻纤纱 → 玻纤布 → 覆铜板，外加铜箔、环氧树脂、漂白木浆纸全部自产。2026H1 同业因缺布停产时建滔近满产，覆铜板出货 +14%（1888 中报）。但建滔自己在大幅扩产：织机 2025 年 3,333 台 → 2028 年 5,833 台，玻纤布总产能 10.5 亿米；7 万吨玻纤纱（2026-06 投产）、8 座特种纱窑（2026–2027）、韶关 9,500 万米 / 南沙 1.5 亿米 / 清远 7,800 万米玻纤布、清远 2.1 万吨 RTF / HVLP 铜箔（2027Q3）、萍乡覆铜板（2027 年中）。短缺会不会结束，建滔自己就是变量之一（A1）。
+# - **属性 B · 集团内利润转移**：1888 卖给母公司全资线路板厂的覆铜板 2026H1 达 25.9 亿港元（1888 中报分部附注，成本加成定价）。覆铜板涨价时利润从 100% 持有的线路板挪到 61.69% 持有的 1888——2026H1 线路板 EBITDA 只 +1%，覆铜板 +172%；其中 38.31% 归 1888 少数股东。
+# - **属性 C · 资本配置**：Hallgain（张氏家族）持 0148 的 31.75%（2026-09-09 关联交易公告）。2026 年母公司两次配售 1888 股份套现约 145 亿港元，同期银行借款由 228 亿增至 309 亿，证券组合由 116 亿增至 227 亿（中报「投资」段）。这是控股折价的主要理由之一，折价只放在证券 / 待开发物业 / 合营联营三项的 d 上（A7），不另对 1888 腿打控股折扣（该腿已只计 61.69% 归母、且用篮 6）。
+# - **属性 D · 物业**：投资物业 269.8 亿（1888 持 12.3 亿），年租金约 13.6 亿（2026H1 679.8 百万 × 2）；待开发物业 110.3 亿（1888 持 1.1 亿），2025 年撇减 13.2 亿、投资物业公允值亏损 6.6 亿（年报分部附注 (c)）。
+# - **属性 E · 派息**：常规股息 + 历年特别息；FY2025 每股 2.20（含特别 0.40）/ 报告每股收益 3.971 = 55.4%。
+# - **\(V_{opt}\) 的理由（A9）**：AI 特种玻纤（低介电一代 / 二代、低 CTE、石英纱布）与 HVLP / RTF 铜箔没有可单独拆出的收入或利润（分部附注只有「覆铜板」一块；管理层只披露「玻纤纱及布业务 2026H1 利润约 10 亿、同比 +280%」，含传统品），算不出底牌分子 → 走 \(V_{opt}\)。按 2026-10-05「未建模期权」规则（未投产 / 不披露收入不得因此记 0）：份数取本票具名的量——特种布有花旗单家卖方量（AI 布毛利占比 2026 6.9% → 2028 17.4%）进 L / M，满产（11 座不在底牌的特种纱窑 × 500 吨 × 纱→布换算 × 轴单价 × 良率折扣）进 H 并与卖方量取大；铜箔无本票卖方量，只有清远 2.1 万吨产能进 H。单价与利润率取两条新建同业尺轴（`_AXIS.ai-glass-fabric`、`_AXIS.hvlp-copper-foil`）上的同业卖方读数，估值用本票覆铜板腿的尺（篮 6 13%、\(g_2\) 2%、ROE 分母只放本腿新增投资），扣未投资本。
+# | A1 | **短缺是周期高点（point），不是新常态**。三档语义：L = 实测谷底 + 实测回升（point）；H = 共识路径后两年线性回落到中枢（point，回落年数锚 = 2017→2019 与 2021→2022 两次实测）；regime 读法（峰 / 谷按稳态倍数持续）只作对照价带与压力坐标。**证伪**：2027–2028 年行业新产能（含建滔织机 +75%）投产后，电子玻纤布价格仍在 2026H2 均价的 80% 以上且 1888 单月利润 ≥ 8 亿港元 → 主副互换（对照带升为主价带）。**转弱**：布价自高点回落 ≥ 20% 前均视为 active | active | 1888 中报「Prospects」段；0148 中报扩产表；历年分部附注 | `e_lam_26` `e_lam_27` `n_fade`；对照价带 |
+# | A2 | **覆铜板中枢 = 2017–2025 分部回报均值 21.17% × 今日分部净资产**。资产基数已变（2016 年 140 亿 → 2025 年 178.9 亿），按 valuation-rules「中枢…资产基数变动时取 ROE 中枢」不取实测年份绝对值。取样窗口供给状态：2016–2017 铜箔短缺、2020–2021 全面短缺、2019 / 2022–2024 过剩，两种状态都在窗口内，无单向偏差；窗口内几乎无 AI 年份（仅 2025），见 A10 | active | 0148 年报 2016–2025 分部附注 (b) 分部资产 − 分部负债；年度业绩公告分部业绩 | `ret_lam_m` `na_lam` |
+# | A3 | **线路板是加工费生意**：回报 2017–2025 在 4.7%–10.5%（均值 8.49%），税后 ROIC 3.7%–8.4% < r 10% − 3pp（M、L）或贴近（H）→ 倍数封顶 \(1/r\)；越南 / 泰国 / 开平扩产在历史回报下不增值。**转弱**：连续两个半年分部业绩 < 5 亿港元 | active | 分部附注；中报扩产表 | `ret_pcb_*` |
+# | A4 | **化工跟烧碱周期**：分部业绩 2016–2025 取最低（2016 3.13 亿）/ 均值（12.66 亿）/ 最高（2021 39.76 亿）三点同源；中枢税后 ROIC 10.4% < 13% − 3pp → \(1/r\)；L 按 2016→2018 实测两年回升、H 按 2021→2023 实测两年回落 | active | 分部附注 | `chem_*` |
+# | A5 | **出租物业租金约 13.6 亿 / 年**，NOI 率 80%（**假设，待补核实**：分部附注未拆租金成本），物业税 25%；税后 ROIC ≈ 3% < 13% → \(1/r\)、\(g=0\)。L = 租金 −10%，H = +2%。**转弱**：租金同比 −10% 或投资物业单年公允值亏损 > 5% | active | 中报「物业」段 | `rent_*` `noi_margin` |
+# | A6 | **资本配置不再恶化**。**转弱**：母公司层净债 > 200 亿，或证券组合 > 300 亿，或以低于本框架 1888 每股 H 的价格继续配售 1888 | active | 中报；配售公告 2026-03-18 / 2026-06-17 | `hold_netdebt` `sec_hold` |
+# | A7 | **折价**：证券与合营联营 d = 40% / 30% / 20%（口径同 `0700.HK` A4 投资组合 NAV 折价，对话设定）；待开发物业 d = 50% / 40% / 30%（2025 年已撇减 13.2 亿，住宅去化中，对话设定）；1888 自持证券 / 投资物业同档 d | active | `0700.HK` A4；年报分部附注 (c) | `d_sec_*` `d_prop_*` |
+# | A8 | **控股权**：母公司持 1888 超过 50%（现 61.69%），1888 继续并表。**证伪**：持股降至 50% 以下 → 口径重做 | active | 中报「重大收购及出售」 | `stake_kl` |
+# | A9 | **AI 特种玻纤布 + HVLP 铜箔 = 未建模期权，\(V_{opt}\) = 4.20，\(p\) = 0.617 / 0.840 / 1.0**（2026-10-05 按「未建模期权」未投产不记 0 条重做；2026-10-16 框架纠正按 valuation-rules「经营价值与超额现金」② 稳态回报三段改两条腿的倍数；2026-10-19 框架纠正改为利润率随回报一起回落到常态，见本条末「2026-10-19」段——下文 8.60 / 8.74 / 8.77×、8.83×、5.46 / 8.69 / 9.44、2.75、12.19 为 10-16 之前单段 Gordon 读数，8.13 / 8.20 / 8.21×、8.15×、5.06 / 8.03 / 11.20 为 10-16 读数）。**2026-10-16 稳态回报**（成熟同业判据：同一门生意、近 5 个完整财年即 5 个年度区间收入复合增速 ≤ 10% 且不为负、读数 ≥ 5 个完整财年；读数 = 期初权益口径的经营回报均值）：① **特种布腿——照常三段**。成熟同业：**日东纺**（3110.T，玻纤纱 / 电子级玻纤布，含低介电、低膨胀特种布，同一门生意）FY3/2021 → FY3/2026 收入 787 → 1,182 亿日元，复合 **+8.5%**，成熟；FY2017–26 十年 ROE 9.7 / 11.8 / 8.9 / 6.2 / 8.2 / 6.2 / 2.7 / 6.2 / 9.9 / 24.1%，均值约 **9.4%**（irbank 年度业绩，账面 ROE 口径；该公司净现金不大，扣超额现金后读数只略高）。宏和科技（603256.SH）按 5 个年度区间 FY2020 → 25 收入 6.21 → 11.71 亿，复合 +13.5%，**不成熟**（旧读法只用 4 个区间得 9.7%，按 valuation-rules 已撤）；中国巨石 5 个区间 +10.1%，不成熟。→ 前瞻 37–56% 持有到兑现年 2028，进入门槛「高」（供应商少、客户认证长、石英 / 低介电布扩产周期长）→ 6 年回落到 2034，稳态 = max(日东纺约 9.4%, 兜底「有壁垒重资产」15%, r 13%) = **15%** → 倍数 8.13 / 8.20 / 8.21×。② **HVLP 铜箔腿——不是叙事换代，照常三段**。叙事换代要两条同时成立，第 ② 条不成立：同一门生意有 ≥ 5 年读数的成熟同业——**金居**（8358.TWO，PCB 用电解铜箔，含 RTF / HVLP 高频高速铜箔）FY2020 → 25 收入约 60.4 → 78.8 亿新台币，复合 **+5.5%**，成熟（2020 全年 = 前 9 月累计 44.52 亿 + 4Q 15.85 亿，TechNews 月营收快讯 / Yahoo 股市季报；2025 = yfinance）；FY2019–25 七年 ROE 7.4 / 10.5 / 26.9 / 15.8 / 8.8 / 15.4 / 16.3%，均值约 **14.5%**（2019–22 取 stock.wearn.com 个股年度财报表的 ROE，第三方口径、待以公开资讯观测站年报核对；2023–25 = 归母净利 ÷ 期初权益，yfinance；净现金近 0，超额现金调整可忽略）。诺德、嘉元、铜冠铜箔 5 个区间复合 > 10%，不成熟；三井金属（铜箔只是其功能材料分部的一块）、古河电工不是同一门生意。→ 前瞻 70% 持有到兑现年 2029，进入门槛「中」（第 8 轮补充裁定）→ 4 年回落到 2033，稳态 = max(金居约 14.5%, 兜底「有壁垒重资产」15%, r 13%) = **15%** → 倍数 8.15×（叙事换代读法 8.48×、H 2.61 撤销）。若兜底改按「商品化重资产」11%，稳态取金居 14.5%，影响 < 0.05 / 股。（10-16 读法只改回报路径、单位经济长期持有，结果 5.06 / 8.03 / 11.20，已被 10-19 段取代。）**2026-10-19 框架纠正：利润率沿高回报期回落到常态（用户 2026-10-19 认可）**。原因：主业覆铜板的短缺利润 2027 年后两年回到中枢，期权却让特种布净利率 33 / 46.7 / 49.9%、HVLP 每吨净利 6 万元永续，只回落回报——在 \(g_2\) 2% 下回报回落几乎不动价格，价值实际落在「短缺利润永续」上；且期权稳态 15% 低于主业覆铜板自身周期 16.94%，新产品比老产品更悲观。改法：① **常态 = 同一公司内部一致**——稳态回报 15% → 16.94%（当日按 max(兜底, 同业, 九年中枢) 取）→ **17.81%**（同日稳态回报按序取：自身周期可用即取自身最近一轮完整谷到谷 FY2019（15.0%）→ FY2023（9.8%）分部业绩 ÷ 年初分部净资产均值 22.26% × (1 − 20%)；日东纺约 9.4% / 金居约 14.5% / 兜底 15% 只作对照；用户 2026-10-19 认可），即主业 H 档回落的终点（玻纤布、铜箔都在覆铜板分部里；主业 M / L 档受各自前瞻 = 九年中枢 16.94% 封顶）；常态利润 = 17.81% × 本项资本 → 特种布净利率约 **15.8%**（三档同）、HVLP 每吨净利约 **1.53 万元**。② **回落形状**：利润 × 线性因子（Y1 前 1，Y2 时 = 常态 ÷ 短缺读数），回报走同一条路径（valuation-rules「未建模期权」单位经济不阶跃）。③ **Y1 / Y2 按各自产品阶段**，不继承母腿普通电子布的 2027 → 2029：特种布 2028 → **2034**（不变；建滔 8 座特种纱窑 2026–2027 投产，花旗量与宏和卖方利润率都到 2028，日东纺 T 玻纤 3 倍扩产到 FY2029——短缺可见到 2028；门槛「高」回落 6 年；与主业 2 年回落的差别：普通电子布门槛低，历史两次实测 2 年回落）；HVLP 铜箔 2029 → 2033 改 **2028 → 2032**（东吴 2026-06-10「2027–28 年仍有缺口」是第三代 HVLP 短缺的可见止点；建滔清远 2027Q3 投产、2029 满产时第三代已过短缺期，前沿转向 HVLP4、建滔尚在争取认证 → Y1 取 HVLP3 环节止点 2028，不取建滔兑现年 2029；兑现年 2029 已在回落路径第 1 / 4 年，不是阶跃；门槛「中」回落 4 年）。**常态交叉（只披露，不进数）**：特种布常态 15.8% vs 日东纺营业利润率 FY3/23–26 5.6 / 9.0 / 15.1 / 17.6%（均约 **11.8%**；FY3/26 净利率 35.3% 含一次性收益不用）、宏和科技净利率 FY2022–25 8.6 / −9.5 / 2.7 / 17.2%（yfinance）——自身中枢高于同业实测，偏乐观方向，不是悲观；铜箔常态每吨 1.53 万元落在轴 §3「过剩时回落到 RTF 级约 0.5–2 万」与 HVLP1 1–2 万之内，金居净利率 FY2022–25 13.1 / 8.6 / 13.5 / 13.5%（无吨数，不能换算每吨）。**结果**每股 L / M / H 特种布 2.59 / 3.53 / 3.75（兑现年倍数 5.25 / 4.48 / 4.36×，对短缺年利润）+ 铜箔 0 / 0 / 0.45（2.98×）= **2.59 / 3.53 / 4.20**；倍数低于 \(1/r\) 7.69× 是因为分子是短缺年利润、常态只有其 1/3–1/4。底牌 L / M / H 不变（期权不进底牌）。**敏感**（\(V_H\)）：铜箔保留 2029 → 2033 → 4.42；稳态取九年中枢 16.94% → 4.03；稳态 15% → 3.66；特种布门槛改「中」2028 → 2032 → 3.64；两项都按主业 2 年回落 2028 → 2030 → 2.77；按 ai-capex 默认 2030 → 2035 → 5.55。**价值靠什么撑**：短缺读数仍是单家卖方（花旗量、宏和 / 菲利华利润率、东吴每吨利润），常态取自身中枢（本票 9 年分部数据），高于同业实测、方向偏宽。**① 特种布**——份数：L / M = 花旗单家（2026-07-04）FY2028E AI 布毛利占比 17.4% × 花旗 FY2028 1888 净利 172.7 亿 ÷ 1888 实测净利 / 毛利 0.631 = AI 布毛利 47.6 亿 → ÷ 轴毛利率 67% = 收入 71.1 亿港元 → × 11 / 13（扣掉 2025 年底前已投产、已在覆铜板分部净资产里的 2 座窑）= **60.1 亿**；H = 满产与卖方量取大：11 座窑 × 500 吨 × 16,700 米 / 吨 × 良率折扣 0.80 × 轴单价 H 40 元 / 米 × 1.1668 = 34.3 亿 < 60.1 亿 → H 仍取花旗量（花旗的量隐含新产能平均约 70 元 / 米，即以二代 / 低膨胀 / 石英为主的产品结构；轴单价是一代口径，**待核**）。单位经济：轴净利率 L 33.0%（菲利华 FY2027E）/ M 46.7%（宏和 FY2028E 两家均值）/ H 49.9%（宏和最高家）→ 净利 19.8 / 28.1 / 30.0 亿。资本：11 座窑对应 9,185 万米 × 49.9 元 / 米 × 1.1668 = 53.5 亿（ROE 37% / 53% / 56%，Gordon r 13%、g 2% → 8.60 / 8.74 / 8.77×）；清远 8 座按全部未投计（保守），折一年扣 34.4 亿。兑现 FY2028，折回两年。1888 层 99.3 / 157.9 / 171.6 亿 × 61.69% ÷ 11.2178 亿股 = **5.46 / 8.69 / 9.44**。**② HVLP 铜箔**——无本票卖方吨数（摩根大通只说量产 HVLP1–3、争取 HVLP4；花旗只给全部铜箔每月约 9,000 吨与 2.3–2.5 亿港元净利）→ L / M = 0；H = 2.1 万吨 × 良率 70% × HVLP3 每吨净利 6 万元 × 1.1668 = 10.3 亿港元，资本 2.1 万吨 × 6 万元 = 14.7 亿港元（ROE 70%，8.83×），兑现 FY2029（2027Q3 投产 + 爬坡认证，拍值）折回三年、扣全部未投资本（折一年 13.0 亿）→ 1888 层 50.0 亿 → **2.75**。**合计** 5.46 / 8.69 / 12.19；\(p_k=V_k/V_H\)。**重叠**：底牌 H 的 2026–27 共识路径已含特种布利润，期权从 FY2028 起算、不重叠；FY2028–29 回落年里若有特种布超额，偏高方向。**双计防线**：清远窑与铜箔是 A12 的 D 桶资本开支，未投部分在期权里全额扣减。**敏感**：特种布良率折扣 ±10pp 不改 H（卖方量胜）；HVLP 每吨净利取 HVLP2 3.5 万 → 铜箔 H 2.75 → 1.26，\(V_{opt}\) 12.19 → 10.70。**升级 / 证伪**：公司或 ≥2 家卖方披露特种布或 HVLP 收入 / 吨数 → 改用多家路径；第二家卖方给出二代 / 石英布单价预测 → 轴分代际单价、H 按产品结构重算；1888 获英伟达认证（花旗预期 2027 年中）落空，或一代低介电布价跌回 25 元 / 米以下 → 期权 M 改按 L 利润率复核 | active | 花旗 2026-07-04（Wisburg 94820）；摩根大通 2026-09-23（Wisburg 106700）；1888 2026 中报「展望」（13 座特种纱窑、每座 500 吨、清远 2.1 万吨铜箔 2027Q3）；`_AXIS.ai-glass-fabric`；`_AXIS.hvlp-copper-foil` | \(V_{opt}\)；`gf_*` `cu_*` 与两条轴的行 |
+# | A10 | **候选带「AI 短缺延长」**：短缺持续到建滔织机 2028 年扩至 5,833 台，H 路径加花旗单家 FY2028（三年利润 CAGR 92% → 1888 净利约 172.7 亿），其后两年回落；L′ = L、M′ = M。花旗原文「预计截至 2028 年的三年盈利 CAGR 为 92%」是卖方对整体盈利的**基准**预测，不由产能 / 合同折算，判为**增长型**（construction §7h）→ 换成花旗自己的 FY27→FY28 增速 172.7 ÷ 130.5 − 1 = **+32.4%**（花旗 FY2027 = EPS 4.14 × 股数），乘在 H 路径的 FY2027 121.2 亿上 → H′ 的 FY2028 = 160.4 亿，不直接用 172.7 亿这个水平（H 路径的 FY2027 是摩根大通 / 花旗均值，比花旗自己低约 9 亿，直接接 172.7 亿等于把两家的口径差算成一年增长）。基年核对：三年 = FY2025 → FY2028，FY2025 1888 净利 24.42 亿（yfinance / Longbridge）× 1.92³ = 172.7 亿；花旗的 PEG 0.3 = 29× ÷ 92 也对得上。CAGR 只定两端、不要求逐年等速——花旗 FY2027 130.5 亿与 FY2028 172.7 亿同一路径自洽（前高后低：FY26 共识约 83 亿、FY27 +57%、FY28 +32%），按等速倒推的 FY2027 约 90 亿、FY2026 约 47 亿反而低于 2026H1 实测 28.9 亿的年化，不是花旗的路径。**升级门槛**（任一）：① 韶关 9,500 万米（2026Q3）与南沙 1.5 亿米（2027Q3）两项玻纤布投产后的两个季度，电子玻纤布均价 ≥ 2026H2 均价的 90%；② FY2027 覆铜板分部业绩 / 年初分部净资产 ≥ 40%。**删除**：玻纤布价格自高点回落 ≥ 20%（同时 A1 → confirmed） | active | 花旗 2026-07-04（Wisburg 94820） | `e_lam_28c`；候选带 |
+# | A11 | **归篮**：覆铜板腿 → 篮 6（盈利是玻纤布 / 铜箔 / 覆铜板价格的函数：母公司 EPS 2021 年 9.73、2023 年 1.86）；线路板 → 篮 4（加工费、原料涨价可转嫁、客户分散，不是商品价函数）；化工 → 篮 6（烧碱等大宗化工）；出租物业 → 篮 6（内地商业物业，免租期与减值未止，不明朗）；总部费用资本化 → 篮 4（与集团经营同级）。CAPM 粗筛：0148 对恒指 5 年周 β 0.77（2025 年前 1.00），\(r_f\) 4.0% + β × 5.5% + 港股 1% = 9.2%–10.5%，比篮 6 低 2.5–3.8pp；扣 HKD 段中位偏移约 −3pp 后残差 ≤ 1pp，不进篮子质疑清单 | active | 篮子归属决策（本日对话）；Longbridge 周线 2021-09 至 2026-09 | `r_lam` `r_pcb` `r_chem` `r_prop` `r_hq` |
+# | A12 | **留存去向审计 = D 桶（增长窗口）**：FY2025 资本增添 41.8 亿 vs 折旧 23.2 亿；物业厂房设备 2021 年 174 亿 → 2025 年 248 亿 → 2026-06 245 亿（中报口径）；扩产项目有名称有投产日，窗口终点 FY2028。三条经营腿按全派出（\(g=0\)）计，实付派息 55.4%，超额留存按「视同派出」行处理：\(k_L=k_M=k_H=0\)。**2026-10-16 框架纠正去掉 \(k_H\)**：原 \(k_H\) = ①b 顶部折价 \(1-V_M/V_H\)（k 前）= 0.3073 乘在 H 档「视同派出」9.04 元/股上（扣 2.78），乘的是多留部分，不是具名交易；按 valuation-rules「经营价值与超额现金」④，多留部分由超额现金 × λ 承担（λ = 1），k 只剩具名交易（D 桶项目已在期权里扣未投资本）→ 去掉，H 回到 k 前 52.04（2026-10-19 H 档尾段稳态改 17.81% 后 52.10）。窗口 2.25 年（2026Q4–FY2028）。**经营价值与超额现金其余读数**：母公司层与 1888 层都是净债，超额现金 0、不单列，归母份额不涉及；时点对齐不适用——M 是跨周期中枢、L 是实测谷底 + 回升，H 的共识路径从 FY2026 起（分子年已开始，τ 取 0，窗口为空）；覆铜板腿稳态（2026-10-19 按序取）= 自身最近一轮完整谷到谷 FY2019–23 税后 **17.81%**（同业层为空：台光、生益、联茂、揖斐电近年高增长不成熟）；M / L 档的前瞻就是九年中枢 16.94%（A2 定稿取法），封顶后不动；H 档短缺两年回落到中枢后，新投资回报取 17.81%（倍数尾段 8.017 → 8.070×，H 52.04 → 52.10）；三档各取各的稳态（retention）：高档的卖方路径本身在 2027 年后两年回落到中枢（A1「短缺是周期高点」），去周期后的高档前瞻就是中枢利润 × 自身周期回报，预测里没有超出中枢的竞争力提升，取按序值；其余腿回报 < r 封顶 1/r | active | 年报分部附注 (c) 资本增添 / 折旧；中报；valuation-rules「经营价值与超额现金」 | `k_*` `payout_obs` `window` |
+# | A13 | **杠杆门未触发**：FY2025 净债（借款 227.8 亿 − 现金 34.7 亿）/ EBITDA 95.5 亿 = 2.0；利息 8.03 亿 / EBIT 71.7 亿 = 11% | active | 年度业绩公告 | — |
+# | A14 | **③ 自身实测带：不可判定**。与 M 档每股中枢收益（约 3.9）± 12% 同量级的 TTM 月份只有 2021-04 至 2021-08（5 个月，< 6），且当时市场看到 FY2021 暴增（带失真）；2026 年的同量级月份处在狂热期（2026-05 月内 57.8–151.8），同样失真。尺子留在初分篮，披露 | active | Longbridge 月线；历年年报每股收益 | Outputs 披露行 |
+
 LISTING_CCY = "HKD"
 TOL = 0.05
 RET_TOL = 0.0005  # returns are stated to 4 decimals
@@ -113,7 +224,6 @@ REQUIRED = [
 ]
 
 
-AXES = Path(__file__).resolve().parents[1] / "axes"
 # Rows the framework copies from its peer-ruler axes (contracts.md「同业尺轴」): one source per field.
 AXIS_ROWS = {
     "ai-glass-fabric": ["px_ai_gf_l", "px_ai_gf_m", "px_ai_gf_h", "nm_ai_gf_l", "nm_ai_gf_m", "nm_ai_gf_h",
@@ -225,21 +335,42 @@ def seg_returns(i: int) -> list[float]:
     return [HIST_RESULT[y][i] / HIST_NET_ASSETS[y - 1][i] for y in RET_YEARS]
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
+def derived_history(inp):
+    lam, pcb = seg_returns(0), seg_returns(1)
+    chem = [HIST_RESULT[y][2] / 1000 for y in range(2016,2026)]
+    data = {'ret_lam_m':round(sum(lam)/len(lam),4),
+            'ret_lam_l':round(HIST_RESULT[2023][0]/HIST_NET_ASSETS[2022][0],4),
+            'ret_pcb_l':round(min(pcb),4), 'ret_pcb_m':round(sum(pcb)/len(pcb),4),
+            'ret_pcb_h':round(max(pcb),4),
+            'g1_lam_rec':round((HIST_RESULT[2025][0]/HIST_RESULT[2023][0])**.5-1,4),
+            'chem_l':round(min(chem),4),'chem_m':round(sum(chem)/len(chem),4),'chem_h':round(max(chem),4)}
+    steady = round(sum(HIST_RESULT[y][0]/HIST_NET_ASSETS[y-1][0] for y in range(2019,2024))/5*(1-inp['tax']),4)
+    data.update(rs_lam_h=steady,rs_gf=steady,rs_cu=steady)
+    data['pe_lam_m'] = round(perpetual_pe(inp['g2_lam'],data['ret_lam_m']*(1-inp['tax']),inp['r_lam']),3)
+    return data
+
+
+def finite_data(value):
+    if value is None or isinstance(value,str):
+        return True
+    if isinstance(value,dict):
+        return all(finite_data(v) for v in value.values())
+    if isinstance(value,(tuple,list)):
+        return all(finite_data(v) for v in value)
+    return isinstance(value,(int,float)) and math.isfinite(value)
+
+
+def evaluate(inp: dict[str, float], rate_inputs=None) -> dict:
+    inp = dict(inp)  # sensitivity readings must not mutate caller's inputs
     errors = check_missing(inp, REQUIRED + OPT_REQUIRED)
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+        raise ValueError('; '.join(errors))
+    require_whole_years(inp, ('n_rec','n_fade'))
 
     t, tp = inp["tax"], inp["tax_prop"]
 
     # --- baskets and g caps -------------------------------------------------
-    baskets = parse_baskets(md)
+    baskets = {"r_lam": 6, "r_pcb": 4, "r_chem": 6, "r_prop": 6, "r_hq": 4}
     r_keys = ("r_lam", "r_pcb", "r_chem", "r_prop", "r_hq")
     for k in r_keys:
         if k not in baskets:
@@ -376,29 +507,19 @@ def main() -> int:
     # --- candidate band (A10): FY2028 single-source added to the H path ------
     # Citi's FY2028 is an ordinary base forecast (growth type, construction §7h): convert it to
     # Citi's own FY27 -> FY28 growth and apply that to the H path's FY2027, not the level itself.
-    g1_cand = inp["e_lam_28c"] / inp["e_lam_27c"] - 1
-    e_lam_28h = inp["e_lam_27"] * (1 + g1_cand)
-    cand = anchors(0.0, [inp["e_lam_26"], inp["e_lam_27"], e_lam_28h])
-    cand = (L, M, cand[2])
-    meta = load_framework(FRAMEWORK)
-    if meta.candidate is None:
-        errors.append("候选带 line missing from Outputs (A10)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), meta.candidate, cand):
-            if abs(said - got) > TOL:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
-    # --- V_opt (A9): AI glass fabric + HVLP copper foil, peer-ruler axes ------
-    for axis, keys in AXIS_ROWS.items():
-        path = AXES / f"{axis}.md"
-        if not path.is_file():
-            errors.append(f"frameworks/axes/{axis}.md missing — the leg ruler is unchecked")
-            continue
-        peer = parse_inputs(path.read_text(encoding="utf-8"))
-        for k in keys:
-            if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
-                errors.append(f"{k} {inp[k]:g} != _AXIS.{axis} {peer.get(k)} — the leg ruler drifted")
-        if axis == "hvlp-copper-foil" and abs(peer.get("yield_hvlp3", -1) - inp["cu_yield"]) > 1e-9:
-            errors.append(f"cu_yield {inp['cu_yield']:g} != _AXIS.hvlp-copper-foil yield_hvlp3 {peer.get('yield_hvlp3')}")
+    candidate = {'status':'unavailable','label':'花旗FY2028覆铜板预测','anchors':None}
+    g1_cand = e_lam_28h = cand = None
+    try:
+        g1_cand = inp["e_lam_28c"] / inp["e_lam_27c"] - 1
+        e_lam_28h = inp["e_lam_27"] * (1 + g1_cand)
+        cand = anchors(0.0, [inp["e_lam_26"], inp["e_lam_27"], e_lam_28h])
+        cand = (L, M, cand[2])
+        if all(math.isfinite(v) for v in cand) and 0 <= cand[0] < cand[1] < cand[2]:
+            candidate = {'label':'花旗FY2028覆铜板预测','anchors':dict(zip('LMH',cand))}
+    except (ValueError,ZeroDivisionError,OverflowError):
+        pass  # A missing or invalid candidate must not suppress the base.
+    if candidate.get('status') == 'unavailable':
+        g1_cand = e_lam_28h = cand = None
     # Same company, same normal (A9, user 2026-10-19): both options and the main leg's H tail fade to
     # the laminate leg's own cycle -- the latest full trough-to-trough FY2019 -> FY2023, after tax
     # (ordered pick, 2026-10-19; replaces max(floor, peers, nine-year mean)).
@@ -406,16 +527,27 @@ def main() -> int:
     for k in ("rs_gf", "rs_cu", "rs_lam_h"):
         if abs(inp[k] - own_steady) > 5e-4:
             errors.append(f"{k} {inp[k]} != laminate own cycle FY2019-23 after tax {own_steady:.4f} (A2 / A9)")
-    opt = option_values(inp)
-    v_l, v_m, v_h = (opt[x]["total"] for x in "lmh")
-    if not 0 <= v_l <= v_m <= v_h:
-        errors.append(f"V_opt tiers not ordered: {v_l:.2f}/{v_m:.2f}/{v_h:.2f}")
-    p_rule = (v_l / v_h, v_m / v_h, 1.0)
-    if meta.v_opt is None or abs(meta.v_opt - v_h) > TOL:
-        errors.append(f"V_opt stated {meta.v_opt} vs recomputed V_H {v_h:.4f}")
-    if meta.p_tiers is None or any(abs(a - b) > 0.005 for a, b in zip(meta.p_tiers, p_rule)):
-        errors.append(f"p_L/p_M/p_H stated {meta.p_tiers} vs V_k/V_H {tuple(round(p, 3) for p in p_rule)}")
-
+    option = {'status':'unavailable','label':'玻纤布及铜箔','anchors':None}
+    opt = v_l = v_m = v_h = p_rule = None
+    try:
+        if not all(math.isfinite(inp[k]) for k in (*OPT_REQUIRED,'e_lam_28c')):
+            raise ValueError('option inputs must be finite')
+        require_whole_years(inp,('gf_years','cu_years','gf_y1','gf_y2','cu_y1','cu_y2'))
+        opt = option_values(inp)
+        if not finite_data(opt):
+            raise ValueError('option data must be finite')
+        v_l,v_m,v_h = (opt[x]['total'] for x in 'lmh')
+        option_band = (L+v_l,M+v_m,H+v_h)
+        if (all(math.isfinite(v) for v in (v_l,v_m,v_h,*option_band))
+                and 0 <= v_l <= v_m <= v_h and v_h > 0
+                and 0 <= option_band[0] < option_band[1] < option_band[2]):
+            p_rule = (v_l/v_h,v_m/v_h,1.0)
+            option = {'value':v_h,'weights':dict(zip('LMH',p_rule)),
+                      'anchors':dict(zip('LMH',option_band))}
+    except (ValueError,ZeroDivisionError,OverflowError):
+        opt = None  # Option-only calculations cannot invalidate base anchors.
+    if option.get('status') == 'unavailable':
+        opt = v_l = v_m = v_h = p_rule = None
     # --- regime comparison band (A1) -----------------------------------------
     r0 = inp["r_lam"]
     reg_l_lam = e_lam[0] * pe(inp["g2_lam"], e_lam[0] / inp["na_lam"], r0)
@@ -424,85 +556,83 @@ def main() -> int:
            M,
            tier("h", 0.0, reg_h_lam)["pre_k"] - inp["k_h"] * excess("h", tiers["h"]["eps"]))
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-
-    # --- report ---------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print("baskets: " + " ".join(f"{k}={inp[k]} 篮 {baskets.get(k)}" for k in r_keys))
-    print(f"laminate returns FY2017-25: " + " ".join(f"{v:.1%}" for v in lam_ret)
-          + f"  mean {same['ret_lam_m']:.4f}  ROIC_mid {roe_lam:.4f}  PE_M {pe_lam:.3f}x (g2 {inp['g2_lam']})")
-    print(f"PCB returns FY2017-25: " + " ".join(f"{v:.1%}" for v in pcb_ret)
-          + f"  -> L/M/H {inp['ret_pcb_l']}/{inp['ret_pcb_m']}/{inp['ret_pcb_h']}, all x 1/r")
-    print(f"chemicals FY2016-25 (bn): " + " ".join(f"{v:.2f}" for v in chem_res)
-          + f"  ROIC_mid {roe_chem:.4f} -> 1/r")
-    for x in "lmh":
-        tv = tiers[x]
-        print(f"表1 {x.upper()}: 1888×{inp['stake_kl']}={tv['klhl']:.2f} 线路板={tv['pcb']:.2f} 化工={tv['chem']:.2f}"
-              f" 出租物业={tv['rent']:.2f} 待开发={tv['pud']:.2f} 证券={tv['sec']:.2f} 合营联营={tv['jv']:.2f}"
-              f" 净债等={tv['debt']:.2f} | k前={tv['pre_k']:.2f} 視同派出={excess(x, tv['eps']):.2f}"
-              f" ×k {inp[f'k_{x}']} -> {tv['pre_k'] - inp[f'k_{x}'] * excess(x, tv['eps']):.2f}"
-              f" | KLHL eq {tv['klhl_eq']:.2f}bn EPS {tv['eps']:.2f}")
-    print(f"k_h ①b = 1 - {tiers['m']['pre_k']:.2f}/{tiers['h']['pre_k']:.2f} = {k_h_rule:.4f}")
-    print(f"flat-multiple ladder (PE_M on E_L/E_M/E_H): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"ratios: L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%}")
-    print(f"regime comparison band (A1): L={reg[0]:.2f} M={reg[1]:.2f} H={reg[2]:.2f}")
-    print(f"candidate (A10, Citi FY27->FY28 g1 {g1_cand:+.2%} on H path -> FY28 {e_lam_28h:.2f}bn):"
-          f" L'={cand[0]:.2f} M'={cand[1]:.2f} H'={cand[2]:.2f}"
-          f" A'={(cand[0] + cand[1]) / 2:.2f} B'={(cand[1] + cand[2]) / 2:.2f}")
-    for x in "lmh":
-        o = opt[x]
-        for leg in ("gf", "cu"):
-            d = o[leg]
-            print(f"V_opt {x.upper()} {leg}: rev {d['rev']:.2f}bn NP {d['np']:.2f}bn K {d['k']:.2f}bn ROE {d['roe']:.1%}"
-                  f" PE {d['pe']:.2f}x value@t {d['value']:.2f} /(1+r)^{d['years']:g} - unspent {d['unspent']:.2f}"
-                  f" = {d['v1888']:.2f}bn -> {d['ps']:.2f}/sh")
-        print(f"V_opt {x.upper()} total {o['total']:.2f}/sh")
-    if "cap_rev_h" in opt:
-        print(f"glass fabric H: capacity rev {opt['cap_rev_h']:.2f}bn vs Citi-path rev {opt['citi_rev']:.2f}bn"
-              f" -> Citi implies {opt['citi_px']:.1f} CNY/m on the new capacity")
-    rs_gf_eff, rs_cu_eff = max(inp["rs_gf"], inp["r_lam"]), max(inp["rs_cu"], inp["r_lam"])
-    gf_norm = "/".join(f"{rs_gf_eff * opt[x]['gf']['k'] / opt[x]['gf']['rev']:.1%}" for x in "lmh")
-    gf_short = "/".join(f"{inp[f'nm_ai_gf_{x}']:.1%}" for x in "lmh")
-    cu_tons_out = inp["cu_tons"] * inp["cu_yield"]
-    cu_norm_pt = rs_cu_eff * opt["h"]["cu"]["k"] * 1e9 / inp["fx_cny_hkd"] / cu_tons_out / 1e4  # 万 CNY / t
-    print(f"normal after fade (A9): glass fabric net margin {gf_norm} by {int(inp['gf_y2'])} (shortage {gf_short});"
-          f" HVLP profit {cu_norm_pt:.2f} 万 CNY/t by {int(inp['cu_y2'])} (shortage {inp['pt_hvlp_h']:g})")
-    print(f"V_opt={v_h:.2f} p_L/p_M/p_H={p_rule[0]:.3f}/{p_rule[1]:.3f}/1.0 V_opt/M={v_h / M:.2f}")
-    print(f"zone+V: {L + p_rule[0] * v_h:.2f}/{M + p_rule[1] * v_h:.2f}/{H + v_h:.2f}")
-    for g in (inp["g2_lam"] - 0.01, inp["g2_lam"] + 0.01):
-        saved = inp["g2_lam"]
-        inp["g2_lam"] = g
-        s = anchors()
-        inp["g2_lam"] = saved
-        print(f"  sens g2_lam {g:.2%}: L/M/H {s[0]:.2f}/{s[1]:.2f}/{s[2]:.2f}")
-    for lab, key, alt in (("d_sec +10pp", "d_sec", 0.10), ("rent NOI 60%", "noi_margin", None)):
-        if key == "noi_margin":
-            saved = inp[key]
-            inp[key] = 0.60
-            s = anchors()
-            inp[key] = saved
-        else:
-            saved = {x: inp[f"{key}_{x}"] for x in "lmh"}
-            for x in "lmh":
-                inp[f"{key}_{x}"] += alt
-            s = anchors()
-            for x in "lmh":
-                inp[f"{key}_{x}"] = saved[x]
-        print(f"  sens {lab}: L/M/H {s[0]:.2f}/{s[1]:.2f}/{s[2]:.2f}")
-
-    # r_f readings (_AXIS.rates): every basket r moves 1:1; disclosure only.
-    rf = rf_block(LISTING_CCY, {k: inp[k] for k in r_keys}, lambda dr: anchors(dr))
-    if any(abs(x - y) > TOL for x, y in zip(anchors(0.0), (L, M, H))):
-        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
-    write_rf_readings("0148.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    print("OK")
-    return 0
+        raise ValueError('; '.join(errors))
+    axis_data = {axis:{k:inp[k] for k in keys} for axis,keys in AXIS_ROWS.items()}
+    rs_gf_eff, rs_cu_eff = max(inp['rs_gf'], inp['r_lam']), max(inp['rs_cu'], inp['r_lam'])
+    cu_tons_out = inp['cu_tons'] * inp['cu_yield']
+    cu_norm_pt = (rs_cu_eff * opt['h']['cu']['k'] * 1e9 / inp['fx_cny_hkd'] / cu_tons_out / 1e4
+                  if opt is not None and cu_tons_out > 0 else None)
+    sensitivity = {}
+    for g in (inp['g2_lam']-.01, inp['g2_lam']+.01):
+        saved, inp['g2_lam'] = inp['g2_lam'], g
+        sensitivity[f'g_{g}'] = anchors()
+        inp['g2_lam'] = saved
+    saved = {x: inp[f'd_sec_{x}'] for x in 'lmh'}
+    for x in 'lmh':
+        inp[f'd_sec_{x}'] += .10
+    sensitivity['d_sec_plus_10pp'] = anchors()
+    for x in 'lmh':
+        inp[f'd_sec_{x}'] = saved[x]
+    saved, inp['noi_margin'] = inp['noi_margin'], .60
+    sensitivity['noi_60'] = anchors()
+    inp['noi_margin'] = saved
+    def band_rf(dr):
+        return anchors(dr)
+    if any(abs(x-y) > TOL for x,y in zip(band_rf(0), (L,M,H))):
+        raise ValueError('rate sensitivity base differs from anchors')
+    result = {'ticker': '0148.HK', 'currency': 'HKD', 'valuation_as_of': None,
+            'framework_as_of': None, 'historical_research_as_of': '2026-10-19', 'historical_framework_as_of':'2026-10-19',
+            'anchors': dict(zip('LMH', (L,M,H))),
+            'candidate': candidate, 'option': option,
+            'review_flags':['historical_cash_and_segment_allocation_unverified',
+                            'historical_glass_and_copper_capacity_unverified',
+                            'historical_single_house_candidate'],
+            'lam_ret': lam_ret, 'pcb_ret': pcb_ret, 'chem_res': chem_res, 'same': same,
+            'lam_mid': lam_mid, 'roe_lam': roe_lam, 'chem_mid': chem_mid, 'roe_chem': roe_chem,
+            'pe_lam': pe_lam, 'tiers': tiers, 'L': L, 'M': M, 'H': H, 'A': A, 'B': B,
+            'k_h_rule': k_h_rule, 'e_lam': e_lam, 'flat': flat, 'g1_cand': g1_cand,
+            'e_lam_28h': e_lam_28h, 'cand': cand, 'own_steady': own_steady, 'opt': opt,
+            'v_l': v_l, 'v_m': v_m, 'v_h': v_h, 'p_rule': p_rule, 'r0': r0,
+            'reg_l_lam': reg_l_lam, 'reg_h_lam': reg_h_lam, 'reg': reg,
+            'rs_gf_eff': rs_gf_eff, 'rs_cu_eff': rs_cu_eff, 'cu_tons_out': cu_tons_out,
+            'cu_norm_pt': cu_norm_pt, 'axis_data': axis_data, 'sensitivity': sensitivity}
+    if rate_inputs is not None:
+        result['rate_sensitivity'] = result_rate_sensitivity(calculate_rf_readings(
+            rate_currency='HKD',price_currency='HKD',price_unit='per_share',
+            priced_r={k:inp[k] for k in r_keys},band_at=band_rf,
+            rates_loader=lambda _currency:rate_inputs,base_anchors=(L,M,H)))
+    return result
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    glass,copper=context['axes']['glass'],context['axes']['copper']
+    selected={key:glass[key] for key in AXIS_ROWS['ai-glass-fabric']}
+    selected.update({key:copper[key] for key in AXIS_ROWS['hvlp-copper-foil']})
+    selected['cu_yield']=copper['yield_hvlp3']
+    derived=derived_history(INPUTS)
+    result=evaluate({**INPUTS,**selected,**derived},context.get('rate_inputs'))
+    result['basis_changed']=None
+    optional=set(OPT_REQUIRED)|{'e_lam_27c','e_lam_28c'}
+    if any(not math.isfinite(INPUTS[k]) for k in optional if k in INPUTS):
+        result['partial_basis_changed']=True
+    else:
+        result['partial_basis_changed']=local_basis_changed(
+            {'inputs':INPUTS,'axes':selected,'history_result':HIST_RESULT,
+             'history_assets':HIST_NET_ASSETS,'return_years':list(RET_YEARS)},HISTORICAL_PARTIAL_FINGERPRINT)
+    result['units']={'price':'HKD_PER_SHARE'}
+    # The adopted 2026-09-24 peer-forecast and three-broker target-price
+    # comparison placed the direction above H; this only restores its display metadata.
+    result['own_consensus']={'tier':'>H','as_of':'2026-09-24','kind':'historical'}
+    result['option']['value_unit']='HKD_PER_SHARE'
+    names=('klhl','pcb','chem','rent','pud','sec','jv','debt')
+    result['segments']={name:{'unit':'HKD_PER_SHARE','values':{
+        t.upper():result['tiers'][t][name] for t in 'lmh'}} for name in names}
+    result['key_parameters']={
+        'laminate':{'discount_rate':INPUTS['r_lam'],'growth_rate':INPUTS['g2_lam'],
+                    'mid_forward_return':derived['ret_lam_m']*(1-INPUTS['tax']),
+                    'steady_return':derived['rs_lam_h']},
+        'pcb':{'discount_rate':INPUTS['r_pcb'],'growth_rate':0},
+        'chemicals':{'discount_rate':INPUTS['r_chem'],'growth_rate':0},
+        'property':{'discount_rate':INPUTS['r_prop'],'growth_rate':0}}
+    return result

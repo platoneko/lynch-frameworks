@@ -1,249 +1,233 @@
 #!/usr/bin/env python3
-"""601975.SH (China Merchants Nanjing Tanker / 招商南油) valuation eval.
+"""Historical Nanjing Tanker cycle model, not updated research.
 
-frameworks/601975.SH.md is the source of truth; this script re-derives
-L/M/H / A/B and the candidate band from its §3 Inputs table and exits 1 on
-mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
-nothing here computes a zone or a market-implied reading.
+Amounts CNY 100 million except shares_total; outputs CNY/share. Source dates,
+reports and existing financial judgments remain in the framework and input
+comments. M is the 2018–2025 observed cycle return, L is a one-year measured
+trough followed by recovery, and H is the old consensus path before returning
+to M. Newbuilding/ownership costs and a post-quarter acquisition have not been
+fully bridged; quarter-end cash recognition is a condition, not proof that
+the amount remains distributable after the acquisition.
 
-formula_id: cmsn_roic_center_point_gordon_v1
-
-Main ruler: one company-wide leg, operating basis with excess cash split out
-(valuation-rules「经营价值与超额现金」).
-
-    IC    = parent equity + NCI + net debt + operating-cash anchor (0)
-    E_M   = ROIC_center x IC x 归母转化                cycle-center operating profit
-    PE    = (1 - g2/RONIC) / (r - g2),  RONIC = max(ronic_hist, r) = r  -> 1/r
-    M     = (E_M x PE + C_ex) / shares
-    L     = ((E_L + E_M x PE)/(1+r) + C_ex) / shares    worst measured 12 months,
-                                                        then back to the center
-    H     = (sum_t E_t/(1+r)^t + E_M x PE/(1+r)^2.5 + C_ex) / shares
-            t = 0.5 / 1.5 / 2.5: consensus 2026H2 / 2027 / 2028, then the center
-
-Point semantics at both ends (valuation-rules「周期票 regime / point 双口径」):
-the measured troughs (2018, 2021) each lasted one year; H is the consensus
-path because the consensus mean sits above the measured best year (②-b).
-r is the basket-6 start stepped down to 11% by a clean equal-earnings band
-(③, A4 / A5).
-
-Run:  python3 frameworks/eval/601975.SH.py
+The user accepted 11% after the clean historical earnings band ruled out the
+initial 13%; this is a rate value borrowed from basket 5, not a bank label.
+Candidate 19.1% cycle profitability represents 2022–2025 tight conditions,
+not a statistical probability or already adopted sustainable center.
 """
-
+# Historical context retained from the document: FY2018–2025 operating
+# returns were 6.4, 14.8, 15.6, 5.1, 19.2, 20.0, 21.3 and 15.8 percent;
+# the eight-year 14.8% average spans weak and tight supply but not the size
+# of the then-current orderbook. The 2018 and 2021 troughs each recovered in
+# about a year; that observation does not establish the next trough's length.
+# The 2022–2025 average 19.1% is a conditional alternative center. Promotion
+# requires 2027 and 2028 net tanker fleet growth at most 2%, sanctions not
+# easing or vessels materially returning, and company ROIC at least 18% for
+# two consecutive half-years from 2028; no statistical probability is used.
+# A 2026-10-30 cash acquisition occurred after the 2026-09-30 cash basis.
+# Its liabilities, assets, profits and cash require a single consolidated
+# bridge; neither subtracting consideration alone nor treating quarter-end cash
+# as confirmed distributable proceeds is justified. The original zero funding
+# gap is unverified while newbuild payment schedules remain incomplete.
+# Sources include 2026Q3 report, 2026-026 board and 2026-028 completion
+# announcements, 2018–2025 reports, and the 2026-10-29 dated forecast cache.
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
+from lib.gordon import basket_r, check_g_cap, check_r
+from lib.inputs import check_missing, ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import basket_r, check_g_cap, check_r  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, outputs_section, parse_baskets,
-    parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'zones', 'partial_basis'), 'axes': {}}
+BASELINE_LOCAL = 'b76038f65f2b8595a69f2f9737040e7e1ef99088881b6d76655b02bf27127502'
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from eval.lib.frameworks import load_framework  # noqa: E402
+INPUTS = {
+    'shares_total': 4680344678,  # 总股本，无库存股（A18）；2026 三季报第 8 页; as-of 2026-09-30
+    'equity_parent': 124.6645262443,  # 归母权益；2026 三季报第 8 页; as-of 2026-09-30
+    'nci': 1.6234017734,  # 少数股东权益；2026 三季报第 8 页; as-of 2026-09-30
+    'cash': 48.4212127959,  # 货币资金；现金等价物差额 0.1642 亿用途待补（A6）；季报第 6、13 页; as-of 2026-09-30
+    'debt_cur': 2.1933171335,  # 一年内到期非流动负债，含当期租赁/借款部分，整体计债，不重复另加当期租赁；季报第 8 页; as-of 2026-09-30
+    'debt_lt': 3.9391299112,  # 长期借款；不含单列非流动租赁负债，季报第 8 页; as-of 2026-09-30
+    'debt_lease': 2.0292441345,  # 非流动租赁负债，季报第 8 页；一年内到期部分已含 debt_cur; as-of 2026-09-30
+    'op_cash_anchor': 0,  # 经营所需现金锚 = max(0, min(FY2018–25「净现金 ÷ 收入」最低值, 2 个月收入)) × 收入；最低值为负（2018 −0.86）→ 0（A6）; as-of FY2025
+    'np_parent_fy25': 13.11,  # FY2025 归母净利；归母转化分子; as-of FY2025
+    'np_total_fy25': 13.23,  # FY2025 全口径净利；归母转化分母 → 0.991; as-of FY2025
+    'tax_rate': 0.16,  # 有效税率：所得税 ÷ 利润总额 FY2023 / 2024 / 2025 = 15.6% / 16.0% / 16.0%; as-of FY2025
+    'cash_yield': 0.0208,  # 超额现金税前收益率 = FY2025 利息收入 0.93 ÷ 平均货币资金（A6）; as-of FY2025
+    'roic_center': 0.148,  # **M** 中枢 ROIC = FY2018–25 八年实测平均（年末经营资本口径，A1）; as-of FY2025
+    'roic_center_soft': 0.105,  # FY2018–21 宽松期四年平均；只进多年低谷压力坐标（A13），**不进锚点**; as-of FY2021
+    'roic_center_tight': 0.191,  # FY2022–25 紧平衡四年平均；只进 A16 候选带; as-of FY2025
+    'kf_l_4q': 2.57,  # **L** 最差连续 4 季扣非合计 2020Q4–2021Q3：0.08 + 1.06 + 1.01 + 0.42（季报，A2）; as-of 2021-09-30
+    'intexp_l_4q': 0.95,  # 该 12 个月利息费用代理（FY2021 年报利息费用）; as-of FY2021
+    'ic_l_avg': 68.45,  # 该 12 个月平均经营资本 = (FY2020 66.2 + FY2021 70.7)/2; as-of FY2021
+    'ronic_hist': 0.105,  # 自身谷到谷（2018–21）平均 ROIC；RONIC = max(本值, r)（A7）; as-of FY2021
+    'r_perp': 0.11,  # 篮 5（值 11%）← 初分篮 6 周期商品：盈利是运价函数；同等盈利干净带 [8.71, 10.38] 下沿高于 13% 的 7.69×，③ 逐档降一档入带即停（市场证据，A4 / A5）; as-of 2026-10-26
+    'g2': 0.025,  # 永续 g：宏观下限（具名理由：国内成品油需求萎缩，A7 / A15）；≤ cap min(6%, r − 4%) = 6%; as-of 2026-10-26
+    'np_cons_2026': 18.23,  # 2026 归母共识，10 家，同花顺日期快照；共识待更新，非全体财报后刷新，本轮实时页 403（A3）; as-of 2026-10-29
+    'np_cons_2027': 20.10,  # 2027 归母共识，9 家；同上，共识待更新; as-of 2026-10-29
+    'np_cons_2028': 21.50,  # 2028 归母共识，8 家；同上，共识待更新; as-of 2026-10-29
+    'np_ytd_2026': 11.3786984042,  # 前三季度已实现归母；H 只取 Q4 余量，2026 三季报第 1 页; as-of 2026-09-30
+    'np_gh_2026': 19.07,  # 国海证券 2026 归母（2026-09-04）；只进披露坐标，**不进锚点**（A17）; as-of 2026-09-04
+    'np_gh_2027': 26.87,  # 国海证券 2027 归母；同上; as-of 2026-09-04
+    'np_gh_2028': 30.10,  # 国海证券 2028 归母；同上; as-of 2026-09-04
+    'roic_best_fy': 0.213,  # 实测最好年份 ROIC（FY2024）；②-b 检验用，**不进公式**; as-of FY2024
+    'pe_band_min': 8.71,  # 干净同等盈利带下沿（经营口径，2021-01，A5）; as-of 2026-10-26
+    'pe_band_max': 10.38,  # 干净同等盈利带上沿（2020-09）; as-of 2026-10-26
+    'pe_band_median': 9.94,  # 15 个同等盈利月份中位；对账坐标用，**不进公式**; as-of 2026-10-26
+    'pb_low_5y': 1.18,  # 自身 5 年 PB 低点（2025-04，Longbridge 估值历史）；对账坐标用，**不进公式**; as-of 2026-10-26
+    'newbuild_remaining': 56,  # 仅中报旧合同剩余款估计，Q3 未重报，不冒充季末实际；只进披露坐标，分年付款待补（A8）; as-of 2026-06-30
+    'gp_dom_fy25': 7.72,  # FY2025 内贸毛利（24.06 − 16.33）；只进分腿交叉（A10）; as-of FY2025
+    'gp_for_fy25': 9.06,  # FY2025 外贸毛利（34.08 − 25.02）；同上; as-of FY2025
+}
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601975.SH.md"
-FORMULA_ID = "cmsn_roic_center_point_gordon_v1"
 YI = 1e8
-TOL = 0.05
-
-# Measured trough length (2018, 2021: one year each, A2) and the consensus path
-# timing from the 2026-06-30 valuation date (A3).  Changing them is a framework
-# correction, so they live here rather than in Inputs.
 N_RECOVERY_L = 1
-T_PATH = (0.5, 1.5, 2.5)
-FROM_BASKET = 6  # initial basket before the ③ step-down (A4)
+T_PATH = (.25, 1.25, 2.25)
+FROM_BASKET = 6
 TO_BASKET = 5
 
-REQUIRED = [
-    "shares_total", "equity_parent", "nci", "cash", "debt_cur", "debt_lt", "op_cash_anchor",
-    "np_parent_fy25", "np_total_fy25", "tax_rate", "cash_yield",
-    "roic_center", "roic_center_soft", "roic_center_tight",
-    "kf_l_4q", "intexp_l_4q", "ic_l_avg",
-    "ronic_hist", "r_perp", "g2",
-    "np_cons_2026", "np_cons_2027", "np_cons_2028", "np_h1_2026",
-    "np_gh_2026", "np_gh_2027", "np_gh_2028",
-    "roic_best_fy", "pe_band_min", "pe_band_max", "pe_band_median", "pb_low_5y",
-    "newbuild_remaining", "gp_dom_fy25", "gp_for_fy25",
-]
 
-
-def stated_triple(md: str, label: str) -> tuple[float, float, float] | None:
-    """`<label> x / y / z` on one Outputs line (contrast and sensitivity rows)."""
-    num = r"(-?[0-9]+(?:\.[0-9]+)?)"
-    m = re.search(re.escape(label) + r"[^\n0-9]*?" + num + r"\s*/\s*" + num + r"\s*/\s*" + num,
-                  outputs_section(md))
-    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
-
-def check_triple(md: str, label: str, computed: tuple[float, float, float]) -> list[str]:
-    said = stated_triple(md, label)
-    if said is None:
-        return [f"stated triple '{label}' not found in Outputs"]
-    bad = [f"{s} vs {c:.4f}" for s, c in zip(said, computed) if abs(s - c) > TOL]
-    return [f"'{label}': {', '.join(bad)}"] if bad else []
-
-
-def stated_value(md: str, label: str) -> float | None:
-    m = re.search(re.escape(label) + r"[^\n0-9]*?(-?[0-9]+(?:\.[0-9]+)?)", outputs_section(md))
-    return float(m.group(1)) if m else None
-
-
-def check_value(md: str, label: str, computed: float) -> list[str]:
-    said = stated_value(md, label)
-    if said is None:
-        return [f"stated value '{label}' not found in Outputs"]
-    return [f"'{label}': {said} vs {computed:.4f}"] if abs(said - computed) > TOL else []
-
-
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp):
+    errors = check_missing(inp, list(INPUTS))
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    r, g2 = inp['r_perp'], inp['g2']
+    if r <= 0 or r <= g2:
+        raise ValueError('invalid discount or perpetual-growth domain')
+    warnings = []
+    errors += check_r(r, 'r_perp', TO_BASKET)
+    errors += check_g_cap(g2, r, 'g2')
+    if min(inp['shares_total'], inp['equity_parent'] + inp['nci'], inp['np_total_fy25'], inp['ic_l_avg']) <= 0:
+        raise ValueError('invalid model denominator')
+    if errors:
+        warnings.append('historical_input_guards_require_review')
+        errors = []
 
-    # --- basket, g guards -----------------------------------------------------------------
-    baskets = parse_baskets(md)
-    r = inp["r_perp"]
-    if baskets.get("r_perp") != TO_BASKET:
-        errors.append(f"r_perp: Inputs source cell must name 篮 {TO_BASKET} first, got {baskets.get('r_perp')} (A4)")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    extra = sorted(k for k in baskets if k != "r_perp")
-    if extra:
-        errors.append(f"only r_perp may carry a 篮 N tag; also found {extra} (AGENTS.md 篮子声明)")
-    g2 = inp["g2"]
-    errors += check_g_cap(g2, r, "g2")
-
-    # --- operating capital and excess cash (A6) ----------------------------------------------
-    shares = inp["shares_total"] / YI
-    t = inp["tax_rate"]
-    nc = inp["cash"] - inp["debt_cur"] - inp["debt_lt"]
-    par = inp["equity_parent"] / (inp["equity_parent"] + inp["nci"])
-    cex = max(nc - inp["op_cash_anchor"], 0.0) * par
-    ic = inp["equity_parent"] + inp["nci"] - nc + inp["op_cash_anchor"]
-    conv = inp["np_parent_fy25"] / inp["np_total_fy25"]
-    cinc = cex * inp["cash_yield"] * (1 - t)  # after-tax income on C_ex, stripped from consensus
-
-    # --- numerators ----------------------------------------------------------------------------
-    roic_l = (inp["kf_l_4q"] + inp["intexp_l_4q"] * (1 - t)) / inp["ic_l_avg"]
+    shares = inp['shares_total'] / YI
+    tax = inp['tax_rate']
+    nc = inp['cash'] - inp['debt_cur'] - inp['debt_lt'] - inp['debt_lease']
+    par = inp['equity_parent'] / (inp['equity_parent'] + inp['nci'])
+    cex = max(nc - inp['op_cash_anchor'], 0) * par
+    ic = inp['equity_parent'] + inp['nci'] - nc + inp['op_cash_anchor']
+    if ic == 0:
+        raise ValueError('operating capital must not be zero')
+    conv = inp['np_parent_fy25'] / inp['np_total_fy25']
+    cinc = cex * inp['cash_yield'] * (1 - tax)
+    roic_l = (inp['kf_l_4q'] + inp['intexp_l_4q'] * (1 - tax)) / inp['ic_l_avg']
     e_l = roic_l * ic * conv
-    e_m = inp["roic_center"] * ic * conv
+    e_m = inp['roic_center'] * ic * conv
 
-    def path(c26: float, c27: float, c28: float) -> list[tuple[float, float]]:
-        return list(zip(T_PATH, (c26 - inp["np_h1_2026"] - cinc / 2, c27 - cinc, c28 - cinc)))
+    def path(c26, c27, c28):
+        return list(zip(T_PATH, (c26 - inp['np_ytd_2026'] - cinc * T_PATH[0], c27 - cinc, c28 - cinc)))
 
-    cons = path(inp["np_cons_2026"], inp["np_cons_2027"], inp["np_cons_2028"])
-    gh = path(inp["np_gh_2026"], inp["np_gh_2027"], inp["np_gh_2028"])
+    cons = path(inp['np_cons_2026'], inp['np_cons_2027'], inp['np_cons_2028'])
+    gh = path(inp['np_gh_2026'], inp['np_gh_2027'], inp['np_gh_2028'])
 
-    def band(r_: float, em: float = e_m, p: list[tuple[float, float]] = cons,
-             g: float = g2) -> tuple[float, float, float, float]:
-        """(L, M, H, PE) — the one formula every band here uses."""
-        ronic = max(inp["ronic_hist"], r_)
+    def band(r_, em=e_m, p=cons, g=g2):
+        ronic = max(inp['ronic_hist'], r_)
         pe = (1 - g / ronic) / (r_ - g)
         vm = em * pe
         m = (vm + cex) / shares
         ell = ((e_l + vm) / (1 + r_) ** N_RECOVERY_L + cex) / shares
-        h = (sum(e / (1 + r_) ** tt for tt, e in p) + vm / (1 + r_) ** T_PATH[-1] + cex) / shares
+        h = (sum(e / (1 + r_) ** t for t, e in p) + vm / (1 + r_) ** T_PATH[-1] + cex) / shares
         return ell, m, h, pe
 
     L, M, H, pe = band(r)
-    if not (L < M < H):
-        return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-
-    # RONIC = r puts the domain on the pathological edge: PE = 1/r for any g (A7).
+    if not all(math.isfinite(value) for value in (L, M, H)) or not L < M < H:
+        raise ValueError('base valuation tiers must be finite and ordered')
     if abs(pe - 1 / r) > 1e-9:
-        errors.append(f"PE {pe:.4f} != 1/r {1 / r:.4f} — RONIC no longer equals r; rewrite A7")
-
-    # 2c flat-multiple ladder: operating EPS L < M < H (H = consensus 2028).
+        errors.append('RONIC no longer equals r; 1/r disclosure needs review')
     eps_flat = (e_l / shares, e_m / shares, cons[-1][1] / shares)
-    errors += ladder("operating EPS", *eps_flat)
-
-    # ②-b: the consensus world sits above the measured best year -> H is the consensus path.
-    roic_cons28 = cons[-1][1] / conv / ic
-    if roic_cons28 <= inp["roic_best_fy"]:
-        errors.append(f"②-b: consensus 2028 ROIC {roic_cons28:.1%} no longer above measured best "
-                      f"{inp['roic_best_fy']:.1%} — H must be rebuilt (A3)")
-
-    # --- ③: clean equal-earnings band (A5) -----------------------------------------------------
-    if not (inp["pe_band_min"] <= pe <= inp["pe_band_max"]):
-        errors.append(f"PE {pe:.2f} outside the clean band [{inp['pe_band_min']}, {inp['pe_band_max']}] — "
-                      "re-run ③ (A5)")
+    errors += ladder('operating EPS', *eps_flat)
+    roic_cons28 = cons[-1][1] / conv / ic if conv else None
+    if roic_cons28 is None:
+        warnings.append('historical_consensus_return_unavailable')
+    elif roic_cons28 <= inp['roic_best_fy']:
+        errors.append('2028 consensus no longer above historical best; H must be rebuilt')
+    if not (inp['pe_band_min'] <= pe <= inp['pe_band_max']):
+        errors.append('PE outside clean equal-earnings band')
     pe_from = 1 / basket_r(FROM_BASKET)
-    if pe_from >= inp["pe_band_min"]:
-        errors.append(f"basket {FROM_BASKET} PE {pe_from:.2f} back inside the band — step-down stale (A4)")
-    b6 = band(basket_r(FROM_BASKET))[:3]
-    b4 = band(basket_r(4))[:3]
-    errors += check_triple(md, f"初分篮 {FROM_BASKET}（13%）→", b6)
+    if pe_from >= inp['pe_band_min']:
+        errors.append('initial basket PE back inside band; step-down record needs review')
+    if errors:
+        warnings.append('historical_economic_guards_require_review')
+        errors = []
+    def optional_band(rate, **kwargs):
+        try:
+            if rate <= 0 or rate <= kwargs.get('g', g2):
+                raise ValueError('invalid sensitivity discount or perpetual growth')
+            values = band(rate, **kwargs)[:3]
+            if all(math.isfinite(value) for value in values):
+                return values
+        except (ArithmeticError, TypeError, ValueError):
+            pass
+        warnings.append('historical_sensitivity_unavailable')
+        return None
 
-    # --- candidate band (A16): the 2022-25 tight-market center, same formula -------------------
-    cand = band(r, em=inp["roic_center_tight"] * ic * conv)[:3]
-    stated_cand = load_framework(FRAMEWORK).candidate
-    if stated_cand is None:
-        errors.append("候选带 line missing from Outputs (A16)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
-            if abs(said - got) > TOL:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
-
-    # --- disclosure coordinates -----------------------------------------------------------------
-    g_up = band(r, g=g2 + 0.01)[:3]
-    g_dn = band(r, g=g2 - 0.01)[:3]
-    errors += check_triple(md, "g2 +1pp →", g_up)
-    errors += check_triple(md, "g2 −1pp →", g_dn)
-    gh_h = band(r, p=gh)[2]
-    errors += check_value(md, "国海单家路径 H =", gh_h)
-    soft_m = band(r, em=inp["roic_center_soft"] * ic * conv)[1]
-    errors += check_value(md, "多年低谷压力坐标 M =", soft_m)
+    b6, b4 = optional_band(basket_r(FROM_BASKET)), optional_band(basket_r(4))
+    cand = optional_band(r, em=inp['roic_center_tight'] * ic * conv)
+    if cand is None or ladder('candidate anchors', *cand):
+        warnings.append('historical_candidate_unavailable')
+        cand = None
+    g_up, g_dn = optional_band(r, g=g2 + .01), optional_band(r, g=g2 - .01)
+    gh_band = optional_band(r, p=gh)
+    soft_band = optional_band(r, em=inp['roic_center_soft'] * ic * conv)
+    gh_h = gh_band[2] if gh_band is not None else None
+    soft_m = soft_band[1] if soft_band is not None else None
     regime_l = (e_l / r + cex) / shares
     regime_h = (cons[-1][1] / r + cex) / shares
-    errors += check_value(md, "regime L =", regime_l)
-    errors += check_value(md, "regime H =", regime_h)
-    w_dom = inp["gp_dom_fy25"] / (inp["gp_dom_fy25"] + inp["gp_for_fy25"])
-    split_m = (e_m * w_dom / basket_r(4) + e_m * (1 - w_dom) / r + cex) / shares
-    errors += check_value(md, "内外贸分腿 M =", split_m)
-    nb_pen = inp["newbuild_remaining"] * (1 - inp["ronic_hist"] / r) * par / shares
-    coord_min = inp["pe_band_min"] * e_m / shares + cex / shares
-    coord_med = inp["pe_band_median"] * e_m / shares + cex / shares
-    coord_pb = inp["pb_low_5y"] * inp["equity_parent"] / shares
+    gross_total = inp['gp_dom_fy25'] + inp['gp_for_fy25']
+    w_dom = inp['gp_dom_fy25'] / gross_total if gross_total else None
+    split_m = (e_m * w_dom / basket_r(4) + e_m * (1 - w_dom) / r + cex) / shares if w_dom is not None else None
+    if split_m is None:
+        warnings.append('historical_split_comparison_unavailable')
+    nb_pen = inp['newbuild_remaining'] * (1 - inp['ronic_hist'] / r) * par / shares
+    coord_min = inp['pe_band_min'] * e_m / shares + cex / shares
+    coord_med = inp['pe_band_median'] * e_m / shares + cex / shares
+    coord_pb = inp['pb_low_5y'] * inp['equity_parent'] / shares
+    a, b = cut_points(L, M, H)
+    ca, cb = cut_points(*cand) if cand is not None else (None, None)
+    as_band = lambda xs: dict(zip('LMH', xs))
+    maybe_band = lambda xs: as_band(xs) if xs is not None else None
+    # L 一年低谷后回归；M 周期中枢 Gordon；H 预测窗口后回中枢。
+    return {'ticker': '601975.SH', 'currency': 'CNY',
+            'valuation_as_of': None, 'historical_valuation_as_of': '2026-09-30',
+            'framework_as_of': None, 'historical_research_as_of': '2026-11-02',
+            'anchors': as_band((L, M, H)), 'cut_points': {'A': a, 'B': b},
+            'candidate': ({'label': '出清紧平衡', 'anchors': as_band(cand), 'cut_points': {'A': ca, 'B': cb}}
+                          if cand is not None else {'label': '出清紧平衡', 'status': 'unavailable', 'anchors': None}),
+            'option': None, 'segments': {'company': {'values': as_band((L, M, H))}},
+            'review_flags': warnings,
+            'key_parameters': {'method': {'L': 'one_year_trough_recovery', 'M': 'gordon_cyclical_midpoint', 'H': 'forecast_window_then_midpoint'},
+                               'discount_rate': dict.fromkeys('LMH', r),
+                               'growth_rate': {'L': None, 'M': g2, 'H': g2},
+                               'forward_return': dict.fromkeys('LMH', None),
+                               'steady_return': dict.fromkeys('LMH', max(inp['ronic_hist'], r)),
+                               'multiple_m': pe},
+            'operating': {'shares_yi': shares, 'netcash': nc, 'parent_ratio': par, 'excess_cash': cex,
+                          'capital': ic, 'parent_conversion': conv, 'cash_income': cinc,
+                          'roic_low': roic_l, 'earnings_low': e_l, 'earnings_middle': e_m,
+                          'consensus_path': cons, 'guohai_path': gh, 'consensus_2028_roic': roic_cons28},
+            'sensitivity': {'basket_6': maybe_band(b6), 'basket_4': maybe_band(b4),
+                            'growth_plus_1pp': maybe_band(g_up), 'growth_minus_1pp': maybe_band(g_dn),
+                            'guohai_high': gh_h, 'multi_year_trough_middle': soft_m,
+                            'regime_low': regime_l, 'regime_high': regime_h, 'domestic_foreign_middle': split_m,
+                            'newbuild_penalty': nb_pen, 'equal_earnings_coordinates': [coord_min, coord_med],
+                            'pb_coordinate': coord_pb}}
 
-    # --- report ----------------------------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(f"shares {shares:.4f}亿; net cash {nc:.2f}; parent share {par:.4f}; C_ex {cex:.2f} "
-          f"({cex / shares:.4f}/sh); IC {ic:.2f}; 归母转化 {conv:.4f}; C_ex income {cinc:.3f}/yr")
-    print(f"basket: r_perp 篮 {baskets.get('r_perp')} r={r:g} (from 篮 {FROM_BASKET}); g2={g2:g}; "
-          f"RONIC max({inp['ronic_hist']:g}, r) -> PE {pe:.3f}x (= 1/r)")
-    print(f"ROIC L {roic_l:.2%} / M {inp['roic_center']:.1%}; E_L {e_l:.3f} E_M {e_m:.3f}; "
-          f"consensus path " + " / ".join(f"t{tt}:{e:.2f}" for tt, e in cons))
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} V_opt/M 0 | "
-          f"C_ex share of M {cex / shares / M:.1%}")
-    print("operating EPS ladder: " + " / ".join(f"{v:.4f}" for v in eps_flat) + " (2c OK)")
-    print(f"②-b: consensus 2028 ROIC {roic_cons28:.1%} > measured best {inp['roic_best_fy']:.1%}")
-    print(f"③: band [{inp['pe_band_min']}, {inp['pe_band_max']}] clean; 篮 6 {pe_from:.2f}x out, "
-          f"篮 5 {pe:.2f}x in; contrast 13%: " + " / ".join(f"{v:.2f}" for v in b6)
-          + " | 10%: " + " / ".join(f"{v:.2f}" for v in b4))
-    print("候选带 出清·紧平衡: " + " / ".join(f"{v:.2f}" for v in cand)
-          + "  A′={:.2f} B′={:.2f}".format(*cut_points(*cand)))
-    print("g2 +1pp: " + " / ".join(f"{v:.2f}" for v in g_up) + " | g2 -1pp: " + " / ".join(f"{v:.2f}" for v in g_dn))
-    print(f"国海 path H {gh_h:.2f}; multi-year trough M {soft_m:.2f}; regime L {regime_l:.2f} / H {regime_h:.2f}")
-    print(f"domestic/foreign split M {split_m:.2f} (domestic GP weight {w_dom:.3f}); newbuild penalty at "
-          f"RONIC {inp['ronic_hist']:g}: -{nb_pen:.3f}/sh")
-    print(f"coordinates: equal-earnings min {coord_min:.2f} / median {coord_med:.2f}; "
-          f"5y PB low x BPS {coord_pb:.2f}")
-    print("rf block: CNY segment of _AXIS.rates is [待建] — no rates readings")
-    return report(errors)
 
-
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    result = evaluate(dict(INPUTS))
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    result['review_flags'].extend(['historical_newbuild_funding_unverified',
+                                   'historical_post_quarter_acquisition_cash_bridge_unverified'])
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'unit_scale': YI, 'recovery_years': N_RECOVERY_L,
+         'cashflow_path': T_PATH, 'original_basket': FROM_BASKET, 'adopted_basket': TO_BASKET}, BASELINE_LOCAL)
+    return result

@@ -1,171 +1,131 @@
 #!/usr/bin/env python3
-"""COIN.US (Coinbase Global) valuation eval — recompute anchors from frameworks/COIN.US.md.
+"""Historical Coinbase mid-cycle operating value plus assets, not a publication.
 
-frameworks/COIN.US.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries no
-current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
-derived live by the daily digest and the app, so nothing here reads a price.
-
-formula_id: coin_midcycle_gordon_plus_assets_v1
-
-Main ruler: whole-company Gordon on *mid-cycle* earnings, plus a non-operating
-asset leg.  Earnings flipped sign four times in six years (§1 属性 C), so no
-single year's profit may be multiplied; the three tiers are bridged from the
-shared axis's 2028 steady-state EBITDA rungs instead.
-
-  NI_x   = (EBITDA_x * 100 - addback_x - interest) * (1 - tax)
-  PE_M,H = (1 - g2/ROE_x) / (r - g2);   PE_L = 1/r   (g = 0, growth switched off)
-  asset  = crypto held for investment + strategic investments, hair-cut per tier
-  anchor = EPS_x * PE_x + asset_x
-
-The asset leg deliberately excludes net cash: the interest that cash earns is
-already inside the axis EBITDA and therefore inside the numerator, so adding
-the principal back would double-count it (A10).
-
-r is the leg's basket value read from the Inputs row and checked against
-gordon.BASKET_R via the 篮 N tag.  A2 records that no basket's written
-criterion holds positively and that 篮 4 is the user's ruling, not a derivation.
-
-Axis: full mount on _AXIS.crypto-cycle — all three numerators are the axis's
-own rungs, so editing either side alone turns this eval red.
-
-Run:  python3 frameworks/eval/COIN.US.py
+Formula: coin_midcycle_gordon_plus_assets_v1. Amounts USD millions, shares millions,
+EBITDA rungs USD 100 million, values USD/share, rates ratios.
 """
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import math
+from lib.gordon import check_branch, check_g_cap, check_r, perpetual_pe, recovery_two_stage_pe
+from lib.inputs import ladder
+from lib.partial_basis import local_basis_changed
+from lib.rf_report import calculate_rf_readings, result_rate_sensitivity
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+DEPENDENCIES={'libraries':('gordon','inputs','partial_basis','rf_report'),'axes':{'crypto':'crypto_cycle'}}
 
-from lib.axes import check_crypto_mount  # noqa: E402
-from lib.gordon import (  # noqa: E402
-    check_branch, check_g_cap, check_r, payout_gap, perpetual_pe,
-    recovery_two_stage_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
-# rf_report imports `eval.lib.*`, so the repo root must be importable too.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.rf_report import rf_block  # noqa: E402
-
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "COIN.US.md"
-FORMULA_ID = "coin_midcycle_gordon_plus_assets_v1"
-
-# Axis rungs are stated in 亿 USD to match the axis file; the bridge works in $M.
-EBITDA_UNIT = 100.0
-# A16: point-basis comparison for the bear tier — n is the years the axis's own
-# deck takes to normalise; the decay side (H) is a repo-level [待建].
-POINT_N = 2
-# _AXIS.rates segment: a US listing reads the USD r_f (valuation-rules「按上市货币取段」).
-LISTING_CCY = "USD"
-
-REQUIRED = [
-    "shares", "equity",
-    "ebitda_l", "ebitda_m", "ebitda_h",
-    "addback_l", "addback_m", "addback_h",
-    "interest", "tax",
-    "crypto_inv", "strat_inv",
-    "crypto_hair_l", "strat_hair_l", "crypto_up_h", "strat_up_h",
-    "r_op", "g2", "g2_l", "net_cash", "payout_obs",
-    "seller_tp_mean", "seller_tp_lo", "seller_tp_hi",
-]
+# 10-Q 2026-06-30: ordinary shares, parent equity, investments, net cash;
+# 2026Q2 interest 22.5M annualized. Net cash is disclosure only: interest earned
+# is already inside EBITDA; adding principal again would double count.
+# The 2028 EBITDA scenarios are Morgan Stanley 2026-09-10, Wisburg 105136,
+# and must remain synchronized with _AXIS.crypto-cycle. They are regime values,
+# not point-year estimates; the historical framework does not discount by year.
+# EBITDA adjustments: L 188 D&A + 630 SBC + 200 other; M FY2025 actual
+# calibration 188.4 + 839.4 + 315.7; H compensation rises with activity.
+# FY2025 tax rate 261.7/1522.1 and observed repurchases 790.2/1260.3, 10-K.
+# Asset discounts/uplifts and zero-growth L are historical scenarios 2026-09-23.
+# Basket 4 at 10% was explicitly selected by the user; its written high-cash-
+# visibility criterion does not positively hold for this volatile business.
+# 4% perpetual growth follows the axis base case's 2025–28 revenue CAGR 4.09%.
+# Seller targets: 35 analysts, Longbridge 2026-09-22, disclosure only.
+INPUTS = {
+    'shares': 263.8, 'equity': 13080.,
+    'addback_l': 1018., 'addback_m': 1343., 'addback_h': 1500., 'interest': 90., 'tax': .172,
+    'crypto_inv': 1468.4, 'strat_inv': 840.3, 'crypto_hair_l': .4, 'strat_hair_l': .25,
+    'crypto_up_h': .6, 'strat_up_h': .4, 'r_op': .1, 'g2': .04, 'g2_l': 0.,
+    'net_cash': 2121., 'payout_obs': .627, 'seller_tp_mean': 202.,
+    'seller_tp_lo': 95., 'seller_tp_hi': 330.,
+}
+TIERS = ('l', 'm', 'h')
+HISTORICAL_PARTIAL_FINGERPRINT = '0acefbefbb78f9a2fbc8ea0b6a43e61e8ba1be9de55a2bb6ea220f5b1edb8875'
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp: dict[str, float], rate_inputs=None) -> dict:
+    missing = (INPUTS.keys() | {f'ebitda_{t}' for t in TIERS}) - inp.keys()
+    if missing:
+        raise ValueError(f'missing inputs: {sorted(missing)}')
+    if any(not math.isfinite(value) for value in inp.values()):
+        raise ValueError('all inputs must be finite')
+    if inp['shares'] <= 0 or inp['equity'] <= 0:
+        raise ValueError('shares and equity must be positive')
+    r, g2 = inp['r_op'], inp['g2']
+    errors = check_r(r, 'r_op', 4) + check_g_cap(g2, r, 'g2')
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    ni = {t: (inp[f'ebitda_{t}'] * 100 - inp[f'addback_{t}'] - inp['interest']) * (1 - inp['tax']) for t in TIERS}
+    eps = {t: ni[t] / inp['shares'] for t in TIERS}
+    roe = {t: ni[t] / inp['equity'] for t in TIERS}
 
-    r, g2, g2_l = inp["r_op"], inp["g2"], inp["g2_l"]
-    shares, equity, tax = inp["shares"], inp["equity"], inp["tax"]
+    def multiples(rate, growth=g2):
+        low = 1 / rate if inp['g2_l'] == 0 else perpetual_pe(inp['g2_l'], roe['l'], rate)
+        return low, perpetual_pe(growth, roe['m'], rate), perpetual_pe(growth, roe['h'], rate)
 
-    # --- guards that are about the ruler, not the arithmetic -----------------
-    baskets = parse_baskets(md)
-    errors += check_r(r, "r_op", baskets.get("r_op"))
-    errors += check_g_cap(g2, r, "g2")
-    errors += check_crypto_mount((inp["ebitda_l"], inp["ebitda_m"], inp["ebitda_h"]))
+    pe = dict(zip(TIERS, multiples(r)))
+    core = {t: eps[t] * pe[t] for t in TIERS}
+    crypto, strategic, shares = inp['crypto_inv'], inp['strat_inv'], inp['shares']
+    asset = dict(zip(TIERS, ((crypto * (1 - inp['crypto_hair_l']) + strategic * (1 - inp['strat_hair_l'])) / shares,
+                             (crypto + strategic) / shares,
+                             (crypto * (1 + inp['crypto_up_h']) + strategic * (1 + inp['strat_up_h'])) / shares)))
+    anchors = tuple(core[t] + asset[t] for t in TIERS)
+    errors += check_branch(g2, roe['m'], r, inp['payout_obs'], 'M')
+    errors += ladder('eps', *(eps[t] for t in TIERS))
+    errors += ladder('anchor', *anchors)
+    errors += ladder('flat-multiple', *(eps[t] * pe['m'] + asset[t] for t in TIERS))
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    # --- 1) bridge: axis EBITDA -> attributable net income (A6) --------------
-    def bridge(ebitda: float, addback: float) -> float:
-        return (ebitda * EBITDA_UNIT - addback - inp["interest"]) * (1 - tax)
+    def band_rate(dr):
+        mult = multiples(r + dr)
+        return tuple(eps[t] * mult[i] + asset[t] for i, t in enumerate(TIERS))
 
-    ni_l = bridge(inp["ebitda_l"], inp["addback_l"])
-    ni_m = bridge(inp["ebitda_m"], inp["addback_m"])
-    ni_h = bridge(inp["ebitda_h"], inp["addback_h"])
-    eps_l, eps_m, eps_h = ni_l / shares, ni_m / shares, ni_h / shares
-
-    # --- 2) forward ROE per tier, on the one `equity` field ------------------
-    roe_l, roe_m, roe_h = ni_l / equity, ni_m / equity, ni_h / equity
-
-    # --- 3) operating-leg multiples ------------------------------------------
-    # L runs g = 0 as a *scenario*, not a payout policy, so check_branch is not
-    # the right test for it; M is the tier whose g has to be funded out of
-    # retention, and it is the one the branch test applies to.
-    def multiples(r_: float) -> tuple[float, float, float]:
-        pe_l_ = 1.0 / r_ if g2_l == 0 else perpetual_pe(g2_l, roe_l, r_)
-        return pe_l_, perpetual_pe(g2, roe_m, r_), perpetual_pe(g2, roe_h, r_)
-
-    pe_l, pe_m, pe_h = multiples(r)
-    errors += check_branch(g2, roe_m, r, inp["payout_obs"], "M")
-
-    core_l, core_m, core_h = eps_l * pe_l, eps_m * pe_m, eps_h * pe_h
-
-    # --- 4) non-operating asset leg (A10; net cash deliberately excluded) ----
-    crypto, strat = inp["crypto_inv"], inp["strat_inv"]
-    asset_l = (crypto * (1 - inp["crypto_hair_l"]) + strat * (1 - inp["strat_hair_l"])) / shares
-    asset_m = (crypto + strat) / shares
-    asset_h = (crypto * (1 + inp["crypto_up_h"]) + strat * (1 + inp["strat_up_h"])) / shares
-
-    # --- 5) anchors ----------------------------------------------------------
-    L, M, H = core_l + asset_l, core_m + asset_m, core_h + asset_h
-    errors += ladder("eps", eps_l, eps_m, eps_h)
-    errors += ladder("anchor", L, M, H)
-    # A2e-2c: the ladder must already hold with the multiple held flat at pe_m.
-    errors += ladder(
-        "flat-multiple", eps_l * pe_m + asset_l, core_m + asset_m, eps_h * pe_m + asset_h
-    )
-
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-
-    # --- disclosure ----------------------------------------------------------
-    modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_obs"])
-    ev = M * shares - inp["net_cash"]
-    ev_ebitda = ev / (inp["ebitda_m"] * EBITDA_UNIT)
-    g1_point = (eps_m / eps_l) ** (1 / POINT_N) - 1
-    point_l = eps_l * recovery_two_stage_pe(g1_point, POINT_N, g2, roe_m, r) + asset_l
-
-    print(f"formula_id {FORMULA_ID}")
-    print(f"  NI    {ni_l:.1f} / {ni_m:.1f} / {ni_h:.1f}   EPS {eps_l:.4f} / {eps_m:.4f} / {eps_h:.4f}")
-    print(f"  ROE   {roe_l:.2%} / {roe_m:.2%} / {roe_h:.2%}   (r {r:.0%}, g2 {g2:.0%})")
-    print(f"  PE    {pe_l:.2f}x / {pe_m:.2f}x / {pe_h:.2f}x")
-    print(f"  core  {core_l:.2f} / {core_m:.2f} / {core_h:.2f}   asset {asset_l:.2f} / {asset_m:.2f} / {asset_h:.2f}")
-    print(f"  L/M/H {L:.2f} / {M:.2f} / {H:.2f}   A {A:.2f}  B {B:.2f}")
-    print(f"  ratios L/M {L / M:.3f}  H/M {H / M:.3f}  (H-L)/2M {(H - L) / (2 * M):.1%}")
-    print(f"  EV/EBITDA at M {ev_ebitda:.2f}x   (MS 21.0x on the same 2028 rung)")
-    print(f"  payout modelled {modelled_payout:.1%} vs observed {inp['payout_obs']:.1%} gap {gap:+.1%}")
-    print(f"  A16 point-basis L {point_l:.2f} (g1 {g1_point:.1%}, n={POINT_N}) vs regime L {L:.2f}")
-
-    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # r_op 1:1 in all three multiples; numerators, ROE, g and the asset leg stay
-    # put.  Disclosure only — the anchors above are the 中枢 column.
-    def band_at(dr: float) -> tuple[float, float, float]:
-        pl, pm, ph = multiples(r + dr)
-        return eps_l * pl + asset_l, eps_m * pm + asset_m, eps_h * ph + asset_h
-
-    rf = rf_block(LISTING_CCY, {"r_op": r}, band_at)
-    # Only a clean run feeds the daily digest.
-    if not errors:
-        write_rf_readings("COIN.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    return report(errors)
+    as_band = lambda values: dict(zip(('L', 'M', 'H'), values))
+    point_g = (eps['m'] / eps['l']) ** .5 - 1
+    point_l = eps['l'] * recovery_two_stage_pe(point_g, 2, g2, roe['m'], r) + asset['l']
+    growth_low = tuple(eps[t] * p + asset[t] for t, p in zip(TIERS, multiples(r, g2 - .01)))
+    growth_high = tuple(eps[t] * p + asset[t] for t, p in zip(TIERS, multiples(r, g2 + .01)))
+    def mid_adjusted(factor):
+        value = (inp['ebitda_m'] * 100 - inp['addback_m'] * factor - inp['interest']) * (1 - inp['tax'])
+        return value / shares * pe['m'] + asset['m']
+    result = {
+        'ticker': 'COIN.US', 'currency': 'USD', 'valuation_as_of': None, 'historical_valuation_as_of': '2026-06-30',
+        'framework_as_of': None, 'historical_research_as_of': '2026-10-16', 'historical_framework_as_of':'2026-10-16',
+        'basis_changed': None,
+        'anchors': as_band(anchors), 'candidate': None, 'option': None,
+        'segments': {'operating': {'values': as_band(core[t] for t in TIERS)},
+                     'assets': {'values': as_band(asset[t] for t in TIERS)}},
+        'key_parameters': {'discount_rate': as_band((r,) * 3),
+                           'perpetual_growth': as_band((inp['g2_l'], g2, g2)),
+                           'forward_return': as_band(roe[t] for t in TIERS),
+                           'steady_return_used': as_band((None, roe['m'], roe['h'])),
+                           'steady_return_reference_h': .30,
+                           'net_income': as_band(ni[t] for t in TIERS),
+                           'eps': as_band(eps[t] for t in TIERS),
+                           'multiples': as_band(pe[t] for t in TIERS)},
+        'sensitivity': {'point_l': point_l, 'point_growth': point_g,
+                        'growth_low': as_band(growth_low), 'growth_high': as_band(growth_high),
+                        'addback_mid_low': mid_adjusted(.9), 'addback_mid_high': mid_adjusted(1.1)},
+    }
+    if rate_inputs is not None:
+        result['rate_sensitivity']=result_rate_sensitivity(calculate_rf_readings(
+            rate_currency='USD',price_currency='USD',price_unit='per_share',priced_r={'r_op':r},
+            band_at=band_rate,rates_loader=lambda _currency:rate_inputs,base_anchors=anchors))
+    return result
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def calculate(context):
+    rungs=context['axes']['crypto']['rungs']
+    selected={f'ebitda_{t}':rungs[t.upper()] for t in TIERS}
+    result=evaluate({**INPUTS,**selected},context.get('rate_inputs'))
+    result['partial_basis_changed']=local_basis_changed(
+        {'inputs':INPUTS,'ebitda':selected},HISTORICAL_PARTIAL_FINGERPRINT)
+    result['units']={'price':'USD_PER_SHARE'}
+    for segment in result['segments'].values():
+        segment['unit']='USD_PER_SHARE'
+    params = result['key_parameters']
+    for name in ('discount_rate', 'perpetual_growth', 'forward_return'):
+        params[name] = {'unit': 'RATIO', 'values': params[name]}
+    params['steady_return'] = {'unit': 'RATIO', 'values': params['steady_return_used']}
+    result['review_flags']=['historical_single_house_crypto_scenarios',
+                            'historical_cash_visibility_basket_override',
+                            'historical_ebitda_to_earnings_bridge_unverified']
+    return result

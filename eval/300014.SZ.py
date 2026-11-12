@@ -1,84 +1,83 @@
 #!/usr/bin/env python3
-"""300014.SZ (EVE Energy) valuation eval.
+"""Historical EVE Energy core and listed-stake model, not updated research.
 
-frameworks/300014.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
+Amounts CNY 100 million, shares individual, outputs CNY/share. Historical
+Smoore market value is a dated source for the stake, not this stock's quote.
+Core earnings exclude Smoore investment income; the stake is valued separately
+to prevent double counting. Core M/H and funding-gap assumptions remain the
+original historical forecasts, not independently verified future cash flows.
 
-formula_id: eve_core_excl_smoore_perpetual_g_plus_listed_stake_v2
-
-Main ruler: an asymmetric SOTP.
-
-  A leg   core net profit (扣非 minus Smoore equity income, so the stake is not
-          counted twice) x Gordon:  PE = min(1, 1 - g/ROE) / (r - g), r from the
-          leg's basket (篮 4 龙头制造, 10%; B17).  L reads FY2025 realised core
-          profit on the 2026-06-30 core equity; M/H read the FY2027E consensus
-          mean / top (裁决顺序 ②) on core equity rolled to end-2027
-          (`equity_core_fwd`), so ROE and numerator sit on the same date.
-  B leg   30.25% of Smoore International (6969.HK) at market, discounted:
-          L = EVE's own carrying value, M = 70% of market, H = 90%
-  anchor  (V_A + V_B) * 1e8 / shares          <- the base band
-  V_opt   power-cell unit gross margin converging on CATL's — NOT in the base
-
-The other half of the turnaround does not fit in H.  H's ROE of 15.87% buys
-"the most optimistic FY2027E house is right" — the unit economics do not
-improve by a single fen.  Whether EVE's power cells ever earn what CATL's earn
-is not computable today (B6: the gap is pricing power and cost structure, and
-no second-tier cell maker has closed it), but its CEILING is measured and
-sitting right there: CATL booked 139.5 CNY/kWh of gross profit per power cell
-in FY2025 against EVE's 80.0, on products one comparison table away from
-identical (ASP differs by 12%).  So it goes to V_opt per A2e-7b, priced tier by
-tier in 表3, and never touches a zone boundary.
-
-  V_opt = anchor(nic_h + after-tax convergence delta) - H   (same Gordon ruler,
-          so it carries the multiple re-rating that the higher ROE earns)
-
-p_M = 0.10 is anchored, and the anchor points the wrong way: 2026H1 power unit
-gross margin came in at 78.24 CNY/kWh, BELOW FY2025's 80.0.  Storage is left
-out entirely — CATL sells cabinets and system integration there, EVE sells
-cells, and B6 never split that gap into 口径 vs pricing power.
-
-Why the B leg gets a price and not a growth rate: Smoore is listed, so its value
-is quoted every day.  Keda's Lanke Lithium (600499.SH) had to be folded into a
-leg's g because it publishes no standalone accounts and its value could only be
-reverse-engineered from Keda's own investment income — the same data twice.
-Smoore has no such problem, and its driver (vaping / HNB regulation) has nothing
-to do with batteries, so blending it into a composite g would be wrong.
-
-Why ROE carries this framework: EVE's group net income sat at 40.50 / 40.76 /
-41.34亿 for three straight years while revenue grew 26%, and ROE slid 14.52% ->
-10.35% — landing on the basket r.  At ROE = r the Gordon multiple is 1/r for
-ANY g, which is the whole explanation for those three years of flat valuation.
-So `turnaround` here is computable and does not mean "returning from a loss"
-(EVE never lost money); it means ROE climbing back above r.  The three tiers'
-core ROE — 6.43% / 13.68% / 15.87% — straddle r deliberately.
-
-The realised trailing PE bands (own-year low 15.0x, 5y monthly TTM low 16.26x)
-are printed on a shrunken trailing EPS and the numerator is FY2027E; the two
-are not on the same basis, so 裁决顺序 ③ does not apply (B16).  They are
-disclosed, not enforced.  r is the basket value and MUST NOT be tuned per
-ticker; re-basketing goes through the ③ 出带 process with a paper trail.
-
-Run:  python3 frameworks/eval/300014.SZ.py
+The power-cell convergence option is outside the main band and values the
+incremental earnings and corresponding change in the core multiple. The 10%
+middle-tier weight is the original judgment with negative current evidence,
+not a measured statistical probability; energy-storage economics are excluded.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
+from lib.gordon import check_g_cap, check_r, g_cap, payout, perpetual_pe
+from lib.inputs import check_missing, ladder
+from lib.tiers import flat_multiple_ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import check_g_cap, check_r, g_cap, payout, perpetual_pe  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report, outputs_section,
-)
-from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'tiers', 'zones', 'partial_basis'), 'axes': {}}
+BASELINE_LOCAL = 'a7e0fd09c84059089a3d172358a1bd114a0b373f4a27df8af7ef26a5946386a0'
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "300014.SZ.md"
-FORMULA_ID = "eve_core_excl_smoore_perpetual_g_plus_listed_stake_v2"
+INPUTS = {
+    'shares': 2173296935,  # 总股本（转债已全部转股，B9；激励价外不计稀释，B13）；中报; as-of 2026-06-30
+    'bps': 23.08,  # 每股净资产 CNY；Longbridge static; as-of 2026-06-30
+    'equity_core': 433.96,  # 核心权益 = 归母权益 501.67 − 思摩尔账面 67.71（B3）；**L 档 ROE 分母**（起点，实测）; as-of 2026-06-30
+    'equity_core_fwd': 500.94,  # **M/H 档 ROE 分母** = 2027 末核心权益推演：433.96 − 2026 中期股息 0.23 × 股本（2026-09-17 支付，5.0 亿）+ 0.75 × (FY2026H2 核心扣非 27.43 + FY2027E 核心扣非 68.55)；留存 75% = 1 − 近 3 年实付分红率均值 ≈ 25%（FY2023 0.50 / FY2024 0.50+0.245 / FY2025 0.234，yfinance）；不含转股 / 激励稀释; as-of 2026-09-19
+    'r_perp': 0.10,  # 篮 4 龙头制造（B17，纠正归篮：初分篮 6 不符合判据——「商品价函数或小盘」对非小盘、盈利 = 出货 × 单位毛利的亿纬不成立；篮 4「常规经营 + 可见度高的行业龙头」成立：17 家 TP 覆盖、FY2027E n=7 带区间、行业排名 `待补`）；不经带（同基带无同等盈利月份，1b 无可比）；零增长 → 1/r 10×；`check_r` → 篮号与值一致；13% / 11% 只作 Outputs 对照带; as-of 2026-09-19
+    'nic_l': 27.91,  # **L** 核心扣非 = FY2025 实测扣非 30.96 − 思摩尔权益法 3.05（B1，思摩尔分项 `待补`）; as-of FY2025
+    'nic_m': 68.55,  # **M** 核心扣非 = FY2027E 共识均值 EPS 4.571 × 股本 × 26H1 实测核心扣非率 69.0%（裁决顺序 ②，B16）; as-of FY2027E
+    'nic_h': 79.48,  # **H** 核心扣非 = FY2027E 共识上沿 EPS 5.30 × 股本 × 69.0%（与 M 三点同源）; as-of FY2027E
+    'g2_l': 0.00,  # **L** 永续增长（turnaround 未兑现，回到三年停滞）；g2 来源层级：**无同业锚**·自定；10% 下 ROE_L 6.43% 峰形区，全派息 g=0 = 1/r；cap = 6%; as-of 2026-09-19
+    'g2_m': 0.02,  # **M** 永续增长；g2 来源层级：**无同业锚**·自定；10% 下 ROE_M 13.68%（FY2027E ÷ 2027 末权益）单调区 +3.7pp，留存 15% 换 2%；新投资回报走稳态回报三段（B18）→ 倍数 10.12×; as-of 2026-09-19
+    'g2_h': 0.035,  # **H** 永续增长；g2 来源层级：**无同业锚**·自定；10% 下 ROE_H 15.87% 单调区 +5.9pp；新投资回报走稳态回报三段（B18）→ 倍数 10.31×; as-of 2026-09-19
+    'smoore_book': 67.71,  # 思摩尔 30.25% 长期股权投资账面（6,770,845,832.27 元）；**L 档 \(V^B\)**（B4）; as-of 2026-06-30
+    'smoore_mv': 154.72,  # 思摩尔 30.25% 市值口径 = 9.65 HKD × 6,196,185,950 股 × 0.8554 × 30.25%（B4）; as-of 2026-09-08
+    'disc_m': 0.70,  # **M** 档思摩尔折价率（非控股 / 减持受限与税负 / 6969.HK 流动性）（B4）; as-of —
+    'disc_h': 0.90,  # **H** 档思摩尔折价率（B4）; as-of —
+    'pe_own_hi': 63.5,  # own-year PE 实测上沿（2022）；**护栏，不入主公式**（B10）; as-of 2022
+    'pe_own_lo': 15.0,  # own-year PE 实测下沿（2026 年内）；**不入主公式**，见 B16（不同基、只披露）; as-of 2026
+    'pe_own_ttm_lo': 16.26,  # 自身 5 年月频 TTM PE 实测下沿（2024-01）；Longbridge `valuation --history`；裁决顺序 ③ 参照（B16，与 FY2027E 分子不同基、只披露），**不入主公式**; as-of 2026-09-14
+    'pe_own_ttm_hi': 92.78,  # 自身 5 年月频 TTM PE 实测上沿（2021-11）；**不入主公式**; as-of 2026-09-14
+    'eps_fy2027e': 4.571,  # FY2027E 归母 EPS 共识均值（yfinance n=7，3.33–5.30）；裁决顺序 ② 的最远带区间年，`nic_m` / `nic_h` 的来源；本行只作同基 PE 参照，锚点路径读 `nic_*`，**不入主公式**; as-of 2026-09-11
+    'ni_group_fy2025': 41.34,  # FY2025 归母；三年停滞的实证坐标，**不入主公式**; as-of FY2025
+    'ni_excl_fy2025': 30.96,  # FY2025 扣非；`nic_l` 的原始口径，**不入主公式**; as-of FY2025
+    'smoore_equity_fy2025': 3.05,  # FY2025 思摩尔权益法收益**估算**（思摩尔 FY2025 净利 ≈10.07 亿 CNY × 30.25%）；`待补` 精确值，**不入主公式**; as-of FY2025
+    'smoore_equity_h1': 1.74,  # 2026H1 思摩尔权益法收益（173,757,004.03 元）；**不入主公式**; as-of 2026H1
+    'eps_fy2026e': 3.348,  # FY2026E 归母 EPS 共识（H1 实测 1.55 + Q3E 0.8787 + Q4E 0.9190）；**不入主公式**; as-of FY2026E
+    'tp_street': 82.74,  # Longbridge 一致目标价 CNY（17 家，49–109）；仅作交叉校验（B11），**不入主公式**; as-of 2026-09-01
+    'net_debt': 176.49,  # 净债务（正值 = 净负债）；**不入主公式**; as-of 2026-06-30
+    'ocf_h1': -3.88,  # 2026H1 经营现金流（亿元，去年 +23.73）；B8 的观察项，**不入主公式**; as-of 2026H1
+    'opt_outstanding': 150000000,  # 股权激励在外份数（期权 147,079,000 + 限制性股票 2,921,000 = 总股本的 6.902%）；B13，**不入主公式**; as-of 2026-06-30
+    'opt_strike': 64.86,  # 第七期期权行权价 CNY/份（限制性股票授予价 62.95）；B13，**不入主公式**; as-of 2026-03-03
+    'sbc_h1': 4.35,  # 2026H1 计提股权激励成本（434,678,225.76 元 = H1 归母的 13.2%）；已含在扣非分子内（B14），**不入主公式**; as-of 2026H1
+    'px_low_2025': 38.42,  # 2025 年内最低收盘（前复权）；L 档实证坐标，**不入主公式**; as-of 2025-04-06
+    'px_low_2024': 30.35,  # 2024 年内最低收盘（前复权）；**不入主公式**; as-of 2024-02-04
+    'vol_power_fy2025': 50.15,  # 亿纬动力 FY2025 出货 GWh（与收入同源）；**\(V_{opt}\) 输入，不进底牌**（B15）; as-of FY2025
+    'ugm_catl_power': 139.5,  # **宁德**动力单位毛利 元/kWh（FY2025 实测）；\(V_{opt}\) 的**上限锚**（B15）; as-of FY2025
+    'ugm_eve_power': 80.0,  # 亿纬动力单位毛利 元/kWh（FY2025 实测 = 258.58 × 15.50% ÷ 50.15）；**\(V_{opt}\) 输入**（B15）; as-of FY2025
+    'tax_conv': 0.15,  # \(V_{opt}\) 增量毛利适用税率（实际税率 9.68% 不可外推，取常规档）；**\(V_{opt}\) 输入**（B15）; as-of —
+    'tau_yr': 0.5,  # 时点对齐年数 τ = 估值基准日 2026-06-30 → 分子年初 2027-01-01；M / H 的 A 腿按 r 折 τ（B18）; as-of 2026-06-30
+    'capex_2h26': 53.43,  # 2H26 窗口资本开支（亿）= 1H26 实测节奏（Q1 29.93 + Q2 23.50，yfinance；中报「购建固定资产、无形资产和其他长期资产支付的现金」53.43）；公司无资本开支指引；中报重要在建工程剩余预算约 133.8 亿（五个地区项目，无分年时间表）高于本值、不构成约束（B18）; as-of 2026-06-30
+    'ni_2h26_cons': 39.07,  # 2H26 共识归母利润（亿）= Q3E 0.8787 + Q4E 0.9190 EPS × 股本（`eps_fy2026e` 同源）；缺口的经营现金流估计用（B18）; as-of 2026-09-11
+    'ocf_ni_3y': 1.5795,  # 近 3 年实测经营现金流 ÷ 净利 = (86.76 + 44.34 + 74.92) ÷ (45.20 + 42.21 + 43.02)（FY2023–25，合并口径，yfinance）; as-of FY2025
+    'gap_online_share': 0.833,  # 缺口里产出落在分子年 FY2027 内的份额（电芯产线常规建设期 18 个月、支出均匀：2H26 支出在 2026.75–2028.25 内均匀完工，2027 年末前 1.25 / 1.5）；缺口为 0 时不起作用（B18）; as-of 2026-10-16
+    'core_2h26': 27.43,  # 2H26 尚未入账的核心扣非（亿，与分子同口径；`equity_core_fwd` 行同值）；窗口可分配利润 = 本值 × (1 − g2 ÷ 该档前瞻 ROE)，折 τ/2（B18）; as-of 2026-09-19
+    'equity_parent': 501.67,  # 归母权益（中报）；归母比例分子（B18）; as-of 2026-06-30
+    'nci_cny': 2.32,  # 少数股东权益（yfinance 季报）；归母比例 = 501.67 ÷ (501.67 + 2.32) = 0.9954（B18）; as-of 2026-06-30
+    'ss_return': 0.10,  # A 腿新投资**稳态回报**（按序取，2026-10-19）：自身周期不可用（2021 起转动力 / 储能、规模变了，之后还没走完一轮谷到谷）→ 成熟同业层：电芯同业里过成熟判据、≥ 5 年读数的只有三星 SDI（穿越周期 6.9% < r）→ 取 r 10%；兜底 11% 只是替补、不再托底（B18）; as-of 2026-10-19
+    't0_ret': 2027,  # 回报路径起点 = M / H 分子年 FY2027（B18）; as-of 2026-10-16
+    'y1_ret': 2027,  # 高回报期 Y1 = 可见年末（最远共识年 FY2027）；之后线性回落（B18）; as-of 2026-10-16
+    'y2_ret': 2031,  # 高回报期 Y2 = Y1 + 4 年（进入门槛「中」，依据见 B18）; as-of 2026-10-16
+    't_num': 2027,  # 分子年 = FY2027E（M/H 共识年）；\(V_{opt}\) 折现终点（B15）；**\(V_{opt}\) 输入**; as-of 2026-10-03
+    't_opt': 2029,  # 收敛兑现年 = 对齐年份（本票最远共识年 FY2027）+ 2，**无时点锚·拍值**（公司无单位毛利目标年）；**\(V_{opt}\) 输入**（B15）; as-of 2026-10-03
+    'ugm_eve_power_h1': 78.24,  # 2026H1 动力单位毛利 元/kWh（27.98 亿 ÷ 35.76 GWh），**低于 FY2025 的 80.0**；表3 \(p_M\) 的反向锚，**不入主公式、不入 \(V_{opt}\) 公式**（B15）; as-of 2026H1
+}
 
 TIERS = ("l", "m", "h")
 
@@ -240,204 +239,178 @@ def convergence_option(inp: dict[str, float], base_h: float) -> dict[str, float]
     }
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
+def safe_convergence_option(inp, base):
+    unavailable = {'status': 'unavailable', 'label': '动力电芯毛利收敛', 'anchors': None}
+    if inp['t_opt'] < inp['t_num']:
+        return unavailable, None
+    try:
+        details = convergence_option(inp, base['H'])
+        if any(not math.isfinite(value) for value in details.values()) or details['v_opt'] < 0:
+            raise ValueError('invalid convergence option')
+        prices = {tier: base[tier] + credit * details['v_opt'] for tier, credit in zip('LMH', P_K)}
+        if not all(math.isfinite(v) for v in prices.values()) or not prices['L'] < prices['M'] < prices['H']:
+            raise ValueError('invalid convergence option band')
+    except (ArithmeticError, TypeError, ValueError):
+        return unavailable, None
+    return {'label': '动力电芯毛利收敛', 'value': details['v_opt'], 'value_unit': 'CNY_PER_SHARE',
+            'weights': dict(zip('LMH', P_K)), 'anchors': prices, 'details': details}, details
 
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+
+def evaluate(inp):
+    errors = check_missing(inp, list(INPUTS))
     if errors:
-        return report(errors)
-
-    r = inp["r_perp"]
-    baskets = parse_baskets(md)
-
-    # --- Step 1: ladders and the basket -------------------------------------
-    errors += ladder("nic", inp["nic_l"], inp["nic_m"], inp["nic_h"])
-    errors += ladder("g2", inp["g2_l"], inp["g2_m"], inp["g2_h"])
-    if "r_perp" not in baskets:
-        errors.append("r_perp: source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    for k in ("equity_core", "equity_core_fwd"):
-        if inp[k] <= 0:
-            errors.append(f"{k}={inp[k]} must be positive")
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    # These fields name calendar years, unlike tau_yr, which is a duration.
+    for key in ('t0_ret', 'y1_ret', 'y2_ret', 't_num', 't_opt'):
+        if isinstance(inp[key], bool) or not float(inp[key]).is_integer():
+            raise ValueError(f'{key} must be a whole calendar year')
+    r = inp['r_perp']
+    if (r <= 0 or r <= max(inp[f'g2_{tier}'] for tier in TIERS)
+            or min(inp['equity_core'], inp['equity_core_fwd'], inp['shares']) <= 0
+            or inp['equity_parent'] + inp['nci_cny'] == 0):
+        raise ValueError('invalid base valuation discount or denominator')
+    warnings = []
+    errors += ladder('nic', inp['nic_l'], inp['nic_m'], inp['nic_h'])
+    errors += ladder('g2', inp['g2_l'], inp['g2_m'], inp['g2_h'])
+    errors += check_r(r, 'r_perp', 4)
     if errors:
-        return report(errors, "FAIL (inputs/ladders)")
-
+        warnings.append('historical_input_guards_require_review')
+        errors = []
     roe = {t: core_roe(inp, t) for t in TIERS}
-
-    # --- Step 2: convergence and retention (B5) -----------------------------
     for t in TIERS:
-        if roe[t] <= 0:
-            errors.append(f"ROE_core_{t}={roe[t]:.4f} must be positive")
-        g = inp[f"g2_{t}"]
-        errors += check_g_cap(g, r, f"g2_{t}")  # cap = min(6%, r - 4%)
+        if roe[t] == 0 and inp[f'g2_{t}'] != 0:
+            raise ValueError(f'{t}: nonzero growth needs a nonzero return')
+        g = inp[f'g2_{t}']
+        errors += check_g_cap(g, r, f'g2_{t}')
         if r - g <= 0:
-            errors.append(f"g2_{t}={g:.4f} >= r={r} — perpetuity diverges")
+            errors.append(f'{t}: perpetuity diverges')
         pay = payout(g, roe[t])
-        if not 0.0 < pay <= 1.0 + 1e-12:
-            errors.append(f"payout_{t}={pay:.3f} outside (0, 1]")
-        if g <= 0 and abs(pay - 1.0) > 1e-12:
-            errors.append(f"payout_{t}={pay:.3f} but g={g:.2%} <= 0 — cap not binding")
+        if not 0 < pay <= 1 + 1e-12:
+            errors.append(f'{t}: payout outside (0,1]')
+        if g <= 0 and abs(pay - 1) > 1e-12:
+            errors.append(f'{t}: zero growth does not pay out fully')
     if errors:
-        return report(errors, "FAIL (convergence/payout)")
-
-    # --- Step 3: the Smoore leg (B4) ---------------------------------------
+        warnings.append('historical_growth_and_return_guards_require_review')
+        errors = []
     vb = {t: leg_b(inp, t) for t in TIERS}
-    errors += ladder("V_B", vb["l"], vb["m"], vb["h"])
-    if not 0.0 < inp["disc_m"] < inp["disc_h"] <= 1.0:
-        errors.append(
-            f"discounts must satisfy 0 < disc_m={inp['disc_m']} < "
-            f"disc_h={inp['disc_h']} <= 1"
-        )
-    if inp["smoore_book"] >= inp["smoore_mv"]:
-        errors.append(
-            f"smoore_book={inp['smoore_book']} >= smoore_mv={inp['smoore_mv']} — "
-            f"the stake trades at or below EVE's carrying value; the B leg's "
-            f"tier construction (book as the floor) no longer holds"
-        )
-
+    errors += ladder('listed stake', vb['l'], vb['m'], vb['h'])
+    if not 0 < inp['disc_m'] < inp['disc_h'] <= 1:
+        errors.append('listed-stake discount ordering invalid')
+    if inp['smoore_book'] >= inp['smoore_mv']:
+        errors.append('listed stake no longer above carrying value')
     pe = {t: multiple(inp, t) for t in TIERS}
-    if pe["h"] > inp["pe_own_hi"] + 1e-9:
-        errors.append(
-            f"PE_H={pe['h']:.2f} above own-year measured high {inp['pe_own_hi']}"
-        )
-
-    # --- Step 4: the non-formula fields really are non-formula -------------
+    if pe['h'] > inp['pe_own_hi'] + 1e-9:
+        errors.append('H PE above own-year historical high')
     lean = {k: v for k, v in inp.items() if k in FORMULA_FIELDS}
     if any(abs(anchor(lean, t) - anchor(inp, t)) > 1e-9 for t in TIERS):
-        errors.append("anchor path touches a non-formula field")
+        errors.append('base anchor uses a non-formula field')
     if errors:
-        return report(errors, "FAIL (guards)")
-
-    # --- Step 5: anchors ----------------------------------------------------
+        warnings.append('historical_stake_and_pe_guards_require_review')
+        errors = []
     L, M, H = (anchor(inp, t) for t in TIERS)
-    if not (L < M < H):
-        print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
-        return 1
-    A, B = cut_points(L, M, H)
-
-    nic3 = (inp["nic_l"], inp["nic_m"], inp["nic_h"])
-    flat_errs, flat_va = flat_multiple_ladder(nic3, pe["m"])
-    errors += flat_errs
-    errors += ladder("flat V_A", *flat_va)
-    flat_anchor = tuple(anchor(inp, t, flat_pe=pe["m"]) for t in TIERS)
-    errors += ladder("flat anchor", *flat_anchor)
-
-    # B13: the incentive grant is out of the money across all three tiers.
-    if inp["opt_strike"] <= H:
-        errors.append(
-            f"opt_strike={inp['opt_strike']} <= H={H:.2f} — the 6.902% dilution "
-            f"switch is inside the band; `shares` MUST be reset (B13)"
-        )
-
-    # --- Step 6: V_opt, held outside the base band (A2e-7a) -----------------
+    if not all(math.isfinite(value) for value in (L, M, H)) or not L < M < H:
+        raise ValueError('base valuation tiers must be finite and ordered')
+    nic3 = (inp['nic_l'], inp['nic_m'], inp['nic_h'])
+    flat_errors, flat_va = flat_multiple_ladder(nic3, pe['m'])
+    errors += flat_errors + ladder('flat core', *flat_va)
+    flat_anchor = tuple(anchor(inp, t, flat_pe=pe['m']) for t in TIERS)
+    errors += ladder('flat anchor', *flat_anchor)
+    if inp['opt_strike'] <= H:
+        errors.append('incentive strike is inside the band; share dilution must be re-evaluated')
     if FORMULA_FIELDS & VOPT_FIELDS:
-        errors.append("V_opt inputs leaked into the base formula field set")
-    leaked_p = sorted(k for k in inp if k.startswith("p_"))
-    if leaked_p:
-        errors.append(f"probability fields present in §3 Inputs: {leaked_p} (A2e-7a)")
+        errors.append('option inputs leaked into base formula')
+    if any(k.startswith('p_') for k in inp):
+        errors.append('probability-style fields are not allowed in inputs')
+    option, opt = safe_convergence_option(inp, dict(zip('LMH', (L, M, H))))
+    if opt is None:
+        warnings.append('historical_convergence_option_unavailable')
+    if errors:
+        warnings.append('historical_economic_guards_require_review')
 
-    opt = convergence_option(inp, H)
-    if opt["v_opt"] < 0:
-        errors.append(f"V_opt={opt['v_opt']:.2f} must be >= 0")
-    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
-    if abs(band3[0] - L) > 1e-9:
-        errors.append(
-            f"p leaked into the base: 表3 L row {band3[0]:.4f} != base L {L:.4f}"
-        )
-
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-    if inp["t_opt"] < inp["t_num"]:
-        errors.append("t_opt must not precede the numerator year t_num")
-    out_sec = outputs_section(md)
-    vm = re.search(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
-    if vm is None or abs(float(vm.group(1)) - opt["v_opt"]) > 0.05:
-        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {opt['v_opt']:.4f}")
-    for k, v in zip("LMH", band3):
-        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
-        if m3 is None or abs(float(m3.group(1)) - v) > 0.05:
-            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
-
-    # --- report -------------------------------------------------------------
-    cap = g_cap(r)
-    print(f"formula_id={FORMULA_ID}  (r={r:.0%} 篮 {baskets['r_perp']}, 零增长={1 / r:.1f}x, g2 cap={cap:.1%})")
-    print(f"思摩尔 30.25%：账面 {inp['smoore_book']:.2f} 亿 / 市值口径 "
-          f"{inp['smoore_mv']:.2f} 亿（{inp['smoore_mv'] * 1e8 / inp['shares']:.2f} 元/股）")
-    print(f"{'档':<3}{'核心扣非':>10}{'权益':>9}{'ROEcore':>10}{'g':>7}{'派息':>8}{'PE':>8}"
-          f"{'V_A':>9}{'V_B':>9}{'合计':>10}{'锚点CNY':>10}")
-    for t in TIERS:
-        g = inp[f"g2_{t}"]
-        print(f"{t.upper():<3}{inp[f'nic_{t}']:10.2f}{core_equity(inp, t):9.2f}{roe[t]:10.2%}{g:7.1%}"
-              f"{payout(g, roe[t]):8.3f}{pe[t]:8.2f}{leg_a(inp, t):9.2f}"
-              f"{vb[t]:9.2f}{leg_a(inp, t) + vb[t]:10.2f}{anchor(inp, t):10.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%}")
-    print(f"分子比 L/M={inp['nic_l'] / inp['nic_m']:.3f} "
-          f"H/M={inp['nic_h'] / inp['nic_m']:.3f} | "
-          f"倍数比 L/M={pe['l'] / pe['m']:.3f} H/M={pe['h'] / pe['m']:.3f}"
-          f"  — 两端同质（都由分子主导）")
-    print(f"flat-multiple @PE_M={pe['m']:.2f}: V_A {flat_va[0]:.2f}/{flat_va[1]:.2f}/"
-          f"{flat_va[2]:.2f} → 锚点 {flat_anchor[0]:.2f}/{flat_anchor[1]:.2f}/"
-          f"{flat_anchor[2]:.2f} — 阶梯成立（A2e-2c）")
-    print(f"ROE 横跨 r：{roe['l']:.2%} / {roe['m']:.2%} / {roe['h']:.2%}，r={r:.0%}"
-          f" —— L 档 ROE 低于 r，增长毁灭价值，倍数就是 {1 / r:.0f}×")
-    print(f"倍数从 L 到 H 走 {pe['h'] / pe['l'] - 1:+.1%}，分子走 "
-          f"{inp['nic_h'] / inp['nic_l'] - 1:+.1%} —— 价带主要由分子决定")
-
-    # 表3 · zone+V（B15 / A2e-7d）——不参与任何判定
-    a3, b3 = cut_points(*band3)
-    print(f"表3 V_opt={opt['v_opt']:.2f}（V_opt/M={opt['v_opt'] / M:.1%}）"
-          f"  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}"
-          f"  → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}"
-          f"  A'={a3:.2f} B'={b3:.2f}")
-    print(f"  推导：动力 {inp['vol_power_fy2025']:.2f} GWh × 单位毛利差 "
-          f"{opt['gap']:.1f} 元/kWh（宁德 {inp['ugm_catl_power']:.1f} − 亿纬 "
-          f"{inp['ugm_eve_power']:.1f}）= {opt['delta_gp']:.2f} 亿，税后 "
-          f"{opt['delta_ni']:.2f} 亿")
-    print(f"      → nic_h {inp['nic_h']:.2f} + {opt['delta_ni']:.2f} = "
-          f"{opt['nic_conv']:.2f} 亿，ROEcore {opt['roe_conv']:.2%}、PE "
-          f"{opt['pe_conv']:.2f} → 兑现后锚点 {opt['anchor_conv']:.2f}"
-          f"（含 ROE 抬升带来的倍数重估）；− H = {opt['v_undisc']:.2f}，"
-          f"× (1+r)^-({inp['t_opt']:g}−{inp['t_num']:g}) = {opt['disc']:.4f} → V_opt {opt['v_opt']:.2f}"
-          f"（兑现年无时点锚·拍值）")
-    print(f"  p_M={P_K[1]:.2f} 的锚是**反向**的：2026H1 动力单位毛利 "
-          f"{inp['ugm_eve_power_h1']:.2f} vs FY2025 {inp['ugm_eve_power']:.1f} 元/kWh"
-          f"（{inp['ugm_eve_power_h1'] / inp['ugm_eve_power'] - 1:+.1%}）"
-          f" —— 收敛证据当前为负（B15）")
-    print(f"  储能腿未计入（B6 无口径拆分比例，A2e-7c-1）")
-
-    # 校验步骤 12 (B16): 裁决顺序 ③ 状态.  Printed, not enforced — the realised
-    # trailing bands sit on a shrunken trailing EPS while the numerator is
-    # FY2027E; they are not on the same basis, so ③ does not apply.
-    at_cap = {t: perpetual_pe(cap, roe[t], r) for t in ("m", "h")}
-    print(f"  裁决顺序 ③ (B16): trailing 带 own-year [{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}] / "
-          f"5y 月频 TTM [{inp['pe_own_ttm_lo']}, {inp['pe_own_ttm_hi']}] 与 FY2027E 分子不同基 → 只披露，不构成 ③；"
-          f"g=cap {cap:.0%} 时 PE M {at_cap['m']:.2f} / H {at_cap['h']:.2f}")
-    print(f"      同基前瞻带下沿落在序列最新月份（退化，不反推）；"
-          f"整公司 M {M / inp['eps_fy2027e']:.2f}× / H {H / inp['eps_fy2027e']:.2f}× ÷ FY2027E")
-    print(f"  卖方一致 TP {inp['tp_street']:.2f} 高于 H {inp['tp_street'] / H - 1:+.1%}"
-          f"、高于表3 H 行 {inp['tp_street'] / band3[2] - 1:+.1%}（B11）")
-    print(f"  稀释开关（B13，不进锚点）：激励 {inp['opt_outstanding'] / inp['shares']:.3%}"
-          f"，行权价 {inp['opt_strike']:.2f} > H {H:.2f} "
-          f"({inp['opt_strike'] / H - 1:+.1%}) → 三档内全部价外 ✓")
-    print(f"  SBC H1 {inp['sbc_h1']:.2f} 亿已含在扣非分子内，不重复扣（B14）；"
-          f"经营现金流 {inp['ocf_h1']:+.2f} 亿、净债务 {inp['net_debt']:.2f} 亿（B8）")
     raw, ocf, gap = funding_gap(inp)
-    print(f"  增长期资金缺口（B18）：2H26 资本开支 {inp['capex_2h26']:.2f} − 经营现金流估计 {ocf:.2f}"
-          f"（共识利润 {inp['ni_2h26_cons']:.2f} × 近 3 年经营现金流 ÷ 净利 {inp['ocf_ni_3y']:.4f}）"
-          f" = {raw:+.2f} → 缺口 {gap:.2f} 亿；窗口可分配利润 M {window_profit(inp, 'm'):.2f} / "
-          f"H {window_profit(inp, 'h'):.2f} 亿")
-    # Sensitivity: the superseded 1H26-OCF reading (gap 47.76 incl. the inventory build, window 0).
-    alt = dict(inp, ni_2h26_cons=inp["ocf_h1"] / inp["ocf_ni_3y"])
-    print(f"  敏感性：经营现金流按 1H26 实测 {inp['ocf_h1']:+.2f} 外推（含存货占用）→ 缺口 "
-          f"{funding_gap(alt)[2]:.2f}、窗口 0 → {anchor(alt, 'l'):.2f} / {anchor(alt, 'm'):.2f} / "
-          f"{anchor(alt, 'h'):.2f}")
+    alt = ({**inp, 'ni_2h26_cons': inp['ocf_h1'] / inp['ocf_ni_3y']}
+           if inp['ocf_ni_3y'] else None)
+    if alt is None:
+        warnings.append('historical_ocf_comparison_unavailable')
+    def optional_value(fn, *, nonnegative=False):
+        def finite(value):
+            if isinstance(value, dict):
+                return all(finite(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return all(finite(item) for item in value)
+            return not isinstance(value, (int, float)) or (math.isfinite(value) and (not nonnegative or value >= 0))
+        try:
+            value = fn()
+            if finite(value):
+                return value
+        except (ArithmeticError, TypeError, ValueError):
+            pass
+        warnings.append('historical_sensitivity_unavailable')
+        return None
+    # Original document comparisons, kept separate from the adopted model.
+    sensitivity = {
+        'historical_ocf_funding_gap': optional_value(lambda: funding_gap(alt)[2]) if alt is not None else None,
+        'historical_ocf': optional_value(lambda: dict(zip('LMH', (anchor(alt, t) for t in TIERS)))) if alt is not None else None,
+        'flat_multiple': dict(zip('LMH', flat_anchor)),
+        'middle_growth_minus_1pp': optional_value(lambda: anchor({**inp, 'g2_m': inp['g2_m'] - .01}, 'm')),
+        'middle_growth_plus_1pp': optional_value(lambda: anchor({**inp, 'g2_m': inp['g2_m'] + .01}, 'm')),
+        'rate_minus_05pp': optional_value(lambda: dict(zip('LMH', (anchor({**inp, 'r_perp': r - .005}, t) for t in TIERS)))),
+        'rate_plus_05pp': optional_value(lambda: dict(zip('LMH', (anchor({**inp, 'r_perp': r + .005}, t) for t in TIERS)))),
+        'basket_6': optional_value(lambda: dict(zip('LMH', (anchor({**inp, 'r_perp': .13}, t) for t in TIERS)))),
+        'basket_5': optional_value(lambda: dict(zip('LMH', (anchor({**inp, 'r_perp': .11}, t) for t in TIERS)))),
+        'steady_11pct_middle': optional_value(lambda: anchor({**inp, 'ss_return': .11}, 'm')),
+        'steady_12pct_middle': optional_value(lambda: anchor({**inp, 'ss_return': .12}, 'm')),
+        'steady_forward': optional_value(lambda: dict(zip('LMH', (anchor({**inp, 'ss_return': 1}, t) for t in TIERS)))),
+        'option_middle_weight_0': M,
+        'option_middle_weight_030': M + .30 * opt['v_opt'] if opt is not None else None,
+        'option_unit_margin_120': optional_value(lambda: convergence_option({**inp, 'ugm_catl_power': 120}, H)['v_opt']),
+        'option_unit_margin_150': optional_value(lambda: convergence_option({**inp, 'ugm_catl_power': 150}, H)['v_opt']),
+        'option_realization_2028': optional_value(lambda: convergence_option({**inp, 't_opt': 2028}, H)['v_opt']),
+        'option_realization_2030': optional_value(lambda: convergence_option({**inp, 't_opt': 2030}, H)['v_opt']),
+    }
+    a, b = cut_points(L, M, H)
+    as_band = lambda values: dict(zip('LMH', values))
+    # Historical sources include a 2026-06-30 balance-sheet date and a
+    # 2026-10-19 study date. They do not certify the current model basis.
+    return {'ticker': '300014.SZ', 'currency': 'CNY',
+            'valuation_as_of': None, 'framework_as_of': None,
+            'anchors': as_band((L, M, H)), 'cut_points': {'A': a, 'B': b}, 'candidate': None,
+            'option': option,
+            'review_flags': warnings,
+            'segments': {'core': {'values': as_band(leg_a(inp, t) * 1e8 / inp['shares'] for t in TIERS)},
+                         'smoore': {'values': as_band(leg_b(inp, t) * 1e8 / inp['shares'] for t in TIERS)}},
+            'key_parameters': {'core': {'discount_rate': dict.fromkeys('LMH', r),
+                                        'growth_rate': as_band(inp[f'g2_{t}'] for t in TIERS),
+                                        'forward_return': as_band(roe[t] for t in TIERS),
+                                        # At zero growth the low tier distributes all earnings;
+                                        # its multiple does not use any steady investment return.
+                                        'steady_return': as_band(None if inp[f'g2_{t}'] <= 0 else min(roe[t], max(inp['ss_return'], r)) for t in TIERS),
+                                        'multiple': as_band(pe[t] for t in TIERS)},
+                               'smoore': {'method': {'L': 'book_value', 'M': 'market_value', 'H': 'market_value'},
+                                          'market_value_weight': {'L': None, 'M': inp['disc_m'], 'H': inp['disc_h']}}},
+            'operating': {'raw_funding_gap': raw, 'forecast_ocf': ocf, 'funding_gap': gap,
+                          'window': as_band(window_profit(inp, t) if t != 'l' else 0 for t in TIERS),
+                          'parent_ratio': parent_ratio(inp), 'core_return': roe, 'listed_stake': vb},
+            'sensitivity': sensitivity}
 
-    return report(errors)
 
-
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    result = evaluate(dict(INPUTS))
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    for segment in result['segments'].values():
+        segment['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        values = result['key_parameters']['core'][name]
+        result['key_parameters']['core'][name] = {'unit': 'RATIO', 'values': values}
+    result['key_parameters']['core']['steady_return']['reference_value'] = INPUTS['ss_return']
+    result['historical_financial_statement_as_of'] = '2026-06-30'
+    result['historical_research_as_of'] = '2026-10-19'
+    result['review_flags'].extend(['historical_funding_and_stake_value_unverified',
+                                   'historical_power_margin_convergence_unverified'])
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'tiers': TIERS, 'option_weights': P_K,
+         'formula_fields': sorted(FORMULA_FIELDS), 'option_fields': sorted(VOPT_FIELDS)}, BASELINE_LOCAL)
+    return result

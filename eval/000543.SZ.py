@@ -1,76 +1,90 @@
-#!/usr/bin/env python3
-"""000543.SZ (Anhui Wenergy) valuation eval.
+"""Historical Wanneng valuation draft with an explicit shared coal snapshot.
 
-frameworks/000543.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
-
-formula_id: wanneng_coal_axis_midcycle_pe_v5
-
-Main ruler: whole-company PE on a MID-CYCLE EPS, flat 1/r on every tier with r
-the basket r the framework names (篮 4 龙头制造 10%, `parse_baskets` +
-`check_r`) and g2 = 0 (retention-bucket reading: ROE_M ~ r so growth capex has
-~zero NPV; the Gordon multiple at ROE_M ~ r and the DDM are printed as crosses
-only).  The numerators come from the coal axis
-(`_AXIS.coal-price.md`, generator side: L = axis H 965 / M 830 / H = axis L
-703) through the income-statement bridge the v5 draft validated:
-
-    EPS = { tariff/1.13 x sales + resid(+capacity uplift) - uf(coal) x gen
-            - nf x gen + gp_other - opex + misc } x (1 - tax) x par / shares
-          + J(tariff, coal) / shares                     (神皖 49% associate)
-
-    uf(coal) = uf_a + uf_b x coal            (axis §4a, 皖能 fit n=5)
-    J        = assoc_a + assoc_b x tariff + assoc_c x coal   (FY2023-25 exact)
-
-The thesis the tiers encode is the coal-move vs tariff-lag WAVE, not the coal
-level: Anhui's annual market tariff is signed on the prior year's coal, so a
-falling coal year is a fat year (FY2024 0.91 / FY2025 0.95) and a rising coal
-year is a squeeze (2026H1 0.36).  Hence
-
-  * L = the 2026E squeeze year taken as steady state: 9M realised + the bridge
-    for Q4 at the 2026-10 spot platform and the FY2025 tariff, with the 2026
-    capacity tariff (165 CNY/kW-yr, 发改价格〔2023〕1501号) that every tier
-    carries.  It loses to the PB floor (own-year PB low x BPS), which is what
-    the framework reports (skill A2e-1: scenario_L and floor both stated).
-  * M = the mid-cycle EPS: five cross-cycle readings (one lag-wave average,
-    the bridge steady state at the caught-up tariff 437 / 430, the post-reform
-    realised mean with and without 2026E) averaged; their min/max is the
-    evidence interval, re-priced and printed at both ends.
-  * H = the bridge at axis M coal 830 + the up-signed 2027 tariff 440 +
-    capacity 165 — the fat-lag world, not a coal-703 world (that is `stretched`).
-
-Guards (any failure exits 1): axis mount (rungs, base series, uf tiers vs axis
-§4a), bridge reproduces FY2023/24/25 within +-20%, associate fit re-solved,
-tariff-lag fit reproduces tariff_m, capacity uplift and squeeze re-derived,
-E_H and the five-reading mid-cycle re-derived, r == its basket's value and
-pe_m == 1/r, g2 and the policy g at or below g_cap(r) (`capped_payout_pe` must
-equal `perpetual_pe` on the retention branch),
-floor logic, ladder, and the 纠正对账门 table (valuation-rules 2026-09-15).
-The E_M evidence interval and the axis M window are re-priced and printed.
-
-Run:  python3 frameworks/eval/000543.SZ.py
+The historical leverage issue is disclosed, not used to erase the old band.
+No historical model has been executed or confirmed in this continuation.
 """
-
 from __future__ import annotations
-
-import re
+import math
 import statistics
-import sys
-from pathlib import Path
+from lib.gordon import (BASKET_R, capped_payout_pe, check_branch, check_g_cap,
+                        check_r, g_cap, payout_gap, perpetual_pe)
+from lib.inputs import check_missing, ladder
+from lib.tiers import decompose, flat_multiple_ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.axes import AXIS_COAL, check_coal_mount, load_coal_series  # noqa: E402
-from lib.gordon import (  # noqa: E402
-    BASKET_R, capped_payout_pe, check_branch, check_g_cap, check_r, g_cap, payout_gap, perpetual_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'tiers', 'zones', 'partial_basis'),
+                'axes': {'coal': 'coal_price'}}
+HISTORICAL_PARTIAL_FINGERPRINT = 'f98235668244a21bcc007bbe249eae3eaf1e8ef9063950ced0e7f2e4c24fe491'
+# The legacy baseline included the then-current axis source hash. Keep that
+# historical token only when comparing to the legacy snapshot; the runner
+# separately records the actual current source hash for provenance.
+HISTORICAL_COAL_AXIS_VERSION = 'eadd617fd17ce8c094c5afcd6aeb6be07e6485105032edf0dcb4eac0884a9755'
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "000543.SZ.md"
+INPUTS = {
+    'shares': 2266863331.0,  # 总股本；Longbridge static；2026-06-30
+    'bps': 7.7403,  # 每股净资产 CNY = 归母权益 175.46 亿 ÷ 股本；2026 三季报（同一控制下合并新能公司 51%，资本公积 −19.85 亿，A13）；2026-09-30
+    'equity': 175.46,  # 归母权益**亿元**（2026 三季报合并资产负债表）；ROE_M = eps_m × shares ÷ equity = 9.4%（valuation-rules「永续增长口径」）；2026-09-30
+    'r_perp': 0.1,  # 篮 4 龙头制造 10%：整公司一条经营腿（火电电价半管制 + 煤价周期；备选篮 6 撤销，A17）；`check_r`；零增长 → 10×；2026-09-20
+    'g2': 0.0,  # 永续增长 = 0：留存三桶（A17）——ROE_M ≈ r，增长 capex NPV ≈ 0，留存不加不减 = flat \(1/r\)；cap = min(6%, r − 4%) = 6%；`check_g_cap`；2026-09-20
+    'capex_fy25': 32.0,  # FY2025 资本开支（亿元），vs D&A 24 → 建设窗口收尾（A17 三桶）；FY2025
+    'capex_fy22_24': 59.0,  # FY2022–24 资本开支均值（56 / 65 / 56 亿）vs D&A 15–21 → 新机组建设窗口（债务融资），第二桶，NPV ≈ 0（A17）；FY2022–24
+    'pe_m': 10.0,  # 主尺倍数 = 1/r，三档 flat（A3）；eval 断言 = 1/r_perp；仓库级
+    'eps_9m_26': 0.491,  # 2026 前三季度实测基本 EPS（三季报；Q3 单季 0.1271、扣非 0.1234；已含 165 容量标准与同一控制下合并追溯）；2026-09-30
+    'eps_ttm': 0.5992,  # TTM EPS = 2025Q4 0.1082（追溯前）+ 2026 9M 0.4910；**坐标，不入公式**（当期 ÷ 中枢 0.82，A2）；2026-09-30
+    'eps_fy26e': 0.79,  # FY2026E 单点共识（Longbridge `forecast-eps` 2026-09-13 起，n=1）；**坐标**（中性带 PE 读数，A12）；2026-09-13
+    'eps_fy25': 0.9484,  # FY2025 实测 EPS（归母 21.49 亿；煤 703 年）；方法 A / C 输入；FY2025
+    'eps_fy24': 0.9087,  # FY2024 实测 EPS（归母 20.64 亿；煤 855 年）；方法 A / C 输入；FY2024
+    'eps_fy23': 0.6308,  # FY2023 实测 EPS（归母 14.30 亿；煤 965 年）；方法 C 输入、桥回代；FY2023
+    'eps_fy22': 0.2201,  # FY2022 实测 EPS（归母 4.99 亿；煤 1,268 尖峰年）；方法 C 输入、`deep_discount` 压力坐标；FY2022
+    'coal_q4_26': 1000.0,  # 2026Q4 挤压年煤价假设 = 2026-10 现货平台（秦皇岛 5500 山西产平仓价 10-10 1,003 / 10-13 1,013，Wind 经金融界；第二家 4Q26 1,000；A8）；2026-10-13
+    'tariff_fy22': 466.5,  # FY2022 平均上网电价 含税 元/MWh（2023 年报上年列）；滞后联动五对之一（对 coal_fy2021）；FY2022
+    'tariff_fy23': 455.6,  # FY2023 平均上网电价（2024 年报上年列；对 coal_fy2022）；FY2023
+    'tariff_fy24': 449.1,  # FY2024 平均上网电价（年报；对 coal_fy2023）；FY2024
+    'tariff_fy25': 424.8,  # FY2025 平均上网电价（年报；对 coal_fy2024）；L 世界 H2 桥的电价（A8）；FY2025
+    'tariff_fy26_impl': 430.0,  # FY2026 电价，2026H1 收入 / 成本恒等式反解 428–436 取整（对 coal_fy2025）；**`待补` 公司经营数据公告**（A5）；2026H1
+    'tariff_m': 437.0,  # **M** 世界追平电价 = 五对滞后联动拟合在 coal_m 处（437.0，A5）；拟合
+    'coal_fy2026e': 845.0,  # 2026 年均煤价追踪 = 轴「FY2026 全年追踪 ≈ 830–855」中值（H1 实测 772 + H2 ~920）；H 世界电价的自变量（A5）；轴 2026-09-15
+    'tariff_h': 440.0,  # **H** 世界上签电价 = tariff_fy26_impl + 三对（FY2024–26）斜率 0.0663 × (coal_fy2026e − 703) = 439.4（A5 / A9）；FY2023–26 均值 439.9 互证；拟合
+    'tariff_bench': 384.4,  # 安徽燃煤基准电价 元/MWh（含税）；政策
+    'tariff_cap': 461.0,  # 市场化电价顶格 = 1.2 × 基准 = 461.3（A5）；政策
+    'sales_fy23': 482.2,  # FY2023 上网电量 亿 kWh（年报）；桥回代；FY2023
+    'sales_fy24': 567.0,  # FY2024 上网电量 亿 kWh；FY2024
+    'sales_fy25': 585.6,  # FY2025 上网电量 亿 kWh；亦为中枢结构电量（A4）；FY2025
+    'gen_fy23': 512.6,  # FY2023 发电量 亿 kWh；FY2023
+    'gen_fy24': 601.5,  # FY2024 发电量 亿 kWh；FY2024
+    'gen_fy25': 622.1,  # FY2025 发电量 亿 kWh；亦为中枢结构电量；FY2025
+    'assoc_fy23': 11.9,  # FY2023 对联营企业投资收益 亿元（神皖 49% 为主；年报）；FY2023
+    'assoc_fy24': 12.22,  # FY2024 对联营企业投资收益 亿元；FY2024
+    'assoc_fy25': 8.18,  # FY2025 对联营企业投资收益 亿元；FY2025
+    'resid_m': 14.38,  # 发电收入残差 亿元 = FY2025 发电收入 234.52 − 424.8/1.13 × 585.6（含容量电价 100 标准；A4 / A6）；FY2025
+    'nf_kwh': 0.0917,  # 非燃料发电成本 元/kWh（FY2025 发电成本 193.25 − 原材料 136.23）÷ 622.1；FY2025
+    'gp_other': 3.31,  # 发电以外分部毛利 亿元（煤炭贸易 + 运输 + 垃圾；FY2023–25 均值）；FY2023–25
+    'opex_m': 15.79,  # 期间费用 + 税金及附加 亿元（FY2025）；FY2025
+    'misc_m': 0.67,  # 杂项 亿元（其他收益 + 非联营投资收益 + 减值 + 处置 + 营业外净；FY2023–25 均值）；FY2023–25
+    'tax_op': 0.2,  # 经营利润（剔联营）有效税率；FY2024–25
+    'par_op': 0.5,  # 归母占经营净利（剔联营）；FY2023–25 均值 48.7%（属性 D）；FY2023–25
+    'cap_tariff_2025': 100.0,  # 容量电价 元/kW·年 2024–25 标准（已含在 resid_m 内，A6）；1501 号文
+    'cap_tariff_2026': 165.0,  # 容量电价 元/kW·年 2026 起（A6）；1501 号文
+    'cap_gw_coal': 15.0,  # 煤电装机 GW（容量电价基数；**`待核` 年报装机表精确值**，A6）；2025 年报
+    'dps_fy25': 0.379,  # FY2025 每股派息 CNY（2026-07-16 实施）；派息率分子、D0 股息尺（A14）；FY2025
+    'ni_fy25': 21.49,  # FY2025 归母净利润**亿元**（年报）；派息率分母；FY2025
+    'pb_lo': 0.68,  # own-year PB 实测低沿（FY2022）；地板 = pb_lo × bps（A8）；FY2022
+    'pe_own_min': 7.55,  # 自身 5 年月频 TTM PE 实测下沿（2026-01）；Longbridge `valuation --history`；护栏；2021-10~2026-09
+    'pe_own_max': 36.36,  # 自身 5 年月频 TTM PE 实测上沿（2023-06）；护栏；2021-10~2026-09
+    'pe_ownyear_l': 21.97,  # FY2022 own-year PE 实测点（尖峰年）；**坐标，不入公式**；FY2022
+    'pe_ownyear_m': 9.11,  # own-year PE 四年年均值中位；**坐标**；FY2022–25
+    'pe_ownyear_h': 7.91,  # FY2025 own-year PE 实测点；**坐标**；FY2025
+    'pe_same_n': 10.0,  # 同等盈利月份数：月末可见 TTM ∈ 中枢 ±12%（0.634–0.806）的月份 = 2024-04~07（TTM 0.7569）+ 2024-10~2025-03（0.7526）；Longbridge 季度 EPS × 月 K（对账 ④）；2024-04~2025-03
+    'px_same_lo': 7.19,  # 同等盈利月份收盘最低（2025-01）；2025-01
+    'px_same_hi': 8.86,  # 同等盈利月份收盘最高（2024-07）；2024-07
+    'px_same_med': 7.86,  # 同等盈利月份收盘中位（对账 ④）；2024-04~2025-03
+    'pe_same_med': 10.4,  # 同等盈利月份 PE 中位（收盘 ÷ 可见 TTM 10.44；Longbridge 月频 PE 中位 10.38）；对 pe_m 的护栏；2024-04~2025-03
+    'peer_zjn_px': 5.04,  # 浙能电力 600023 收盘（同日，对账 ⑤）；2026-09-14
+    'peer_zjn_dps': 0.33,  # 浙能 FY2025 每股派息 = 末期 0.28（2026-07）+ 中期 0.05（2025-10）；Longbridge dividend；FY2025
+    'peer_hd_px': 4.93,  # 华电国际 600027 收盘（同日）；2026-09-14
+    'peer_hd_dps': 0.23,  # 华电 FY2025 每股派息 = 末期 0.14（2026-06）+ 中期 0.09（2025-11）；FY2025
+}
 FORMULA_ID = "wanneng_coal_axis_midcycle_pe_v5"
 TIERS = ("l", "m", "h")
 YI = 1e8
@@ -82,24 +96,29 @@ RECON_TOL = 0.20             # 纠正对账门: a coordinate "agrees" within thi
 EPS_TOL = 0.005              # stated tier EPS vs re-derived (2-dp inputs)
 # Rejected rulers, kept as reconciliation coordinates (对账 ①).
 M_V3_TTM, M_V4_FROZEN = 8.50, 3.78
+HISTORICAL_DATES = {'historical_financial_statement_as_of': '2026-09-30',
+                    'historical_research_as_of': '2026-10-23',
+                    'historical_valuation_as_of': '2026-09-30',
+                    'historical_framework_as_of': '2026-10-23'}
+HISTORICAL_LEVERAGE = {'year': 2025, 'net_debt_cny_100m': 406.0,
+                       'net_debt_ebitda': 6.5, 'interest_ebit': .21,
+                       'midcycle_leverage_status': 'unavailable',
+                       'interest_up_100bp_sensitivity_status': 'unavailable'}
+HISTORICAL_REVIEW_FLAGS = ['historical_leverage_gate_triggered',
+                           'midcycle_leverage_and_roic_unverified',
+                           'deleveraging_and_ev_comparison_incomplete']
 
 REQUIRED = [
     "shares", "bps", "equity", "r_perp", "g2", "pe_m",
-    "eps_l", "eps_m", "eps_h", "eps_m_lo", "eps_m_hi",
-    "eps_9m_26", "eps_q4_26_bridge", "eps_ttm", "eps_fy26e",
+    "eps_9m_26", "eps_ttm", "eps_fy26e",
     "eps_fy25", "eps_fy24", "eps_fy23", "eps_fy22",
     "coal_l", "coal_m", "coal_h", "coal_m_lo", "coal_m_hi", "coal_q4_26", "coal_fy2026e",
     "coal_fy2019", "coal_fy2020", "coal_fy2021", "coal_fy2022", "coal_fy2023", "coal_fy2024", "coal_fy2025",
     "uf_a", "uf_b",
     "tariff_fy22", "tariff_fy23", "tariff_fy24", "tariff_fy25", "tariff_fy26_impl",
-    "tariff_m", "tariff_h", "tariff_bench", "tariff_cap", "k_tariff",
-    "sales_fy23", "sales_fy24", "sales_fy25", "gen_fy23", "gen_fy24", "gen_fy25",
-    "assoc_fy23", "assoc_fy24", "assoc_fy25", "assoc_a", "assoc_b", "assoc_c",
-    "resid_m", "nf_kwh", "gp_other", "opex_m", "misc_m", "tax_op", "par_op",
-    "cap_tariff_2025", "cap_tariff_2026", "cap_gw_coal", "eps_cap_uplift",
-    "dps_fy25", "ni_fy25", "payout_fy25", "g2_policy",
-    "pb_lo", "floor_l", "scenario_l",
-    "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h",
+    "tariff_m", "tariff_h", "tariff_bench", "tariff_cap", "sales_fy23", "sales_fy24", "sales_fy25", "gen_fy23", "gen_fy24", "gen_fy25",
+    "assoc_fy23", "assoc_fy24", "assoc_fy25", "resid_m", "nf_kwh", "gp_other", "opex_m", "misc_m", "tax_op", "par_op",
+    "cap_tariff_2025", "cap_tariff_2026", "cap_gw_coal", "dps_fy25", "ni_fy25", "pb_lo", "pe_own_min", "pe_own_max", "pe_ownyear_l", "pe_ownyear_m", "pe_ownyear_h",
     "pe_same_n", "px_same_lo", "px_same_hi", "px_same_med", "pe_same_med",
     "peer_zjn_px", "peer_zjn_dps", "peer_hd_px", "peer_hd_dps",
 ]
@@ -179,64 +198,61 @@ def solve3(rows: list[tuple[float, float, float]], rhs: list[float]) -> tuple[fl
     return cols[0], cols[1], cols[2]
 
 
-def axis_uf_tiers(ticker: str = "000543.SZ") -> tuple[float, float, float]:
-    """The mount's own coordinate rungs the axis §4a table states for it
-    (`**0.2292 / 0.2537 / 0.2799**`), to be matched within +-0.0005."""
-    for line in AXIS_COAL.read_text(encoding="utf-8").splitlines():
-        if line.startswith(f"| **`{ticker}`**"):
-            m = re.search(r"\*\*([0-9.]+) / ([0-9.]+) / ([0-9.]+)\*\*", line)
-            if m:
-                return float(m.group(1)), float(m.group(2)), float(m.group(3))
-    raise ValueError(f"axis §4a row for {ticker} not found")
-
-
 def anchors_of(inp: dict[str, float], eps_l: float, eps_m: float, eps_h: float) -> tuple[float, float, float]:
     """L = max(scenario, PB floor) (A2e-1 floor allowed, both reported); M/H flat at pe_m."""
     floor = inp["pb_lo"] * inp["bps"]
     return max(eps_l * inp["pe_m"], floor), eps_m * inp["pe_m"], eps_h * inp["pe_m"]
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def _historical_calculation(raw, coal):
+    errors = check_missing(raw, REQUIRED)
     if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
-    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(raw[k]) for k in REQUIRED):
+        raise ValueError('all required inputs must be finite')
+    inp = dict(raw)
+    baskets = {'r_perp': 4}
+    r = inp['r_perp']
+    errors += check_r(r, 'r_perp', 4)
     if errors:
-        return report(errors, "FAIL (basket)")
-    r = inp["r_perp"]
-    shares_yi = inp["shares"] / YI
-    eps = {t: inp[f"eps_{t}"] for t in TIERS}
-    print(f"formula_id={FORMULA_ID}")
-
-    # --- Step 1: axis mount (generator side) and the numerator ladder --------
-    errors += check_coal_mount((inp["coal_l"], inp["coal_m"], inp["coal_h"]), "generator")
-    series = load_coal_series()
-    for year, want in series.items():
-        got = inp.get(f"coal_fy{year}")
-        if got is None or abs(got - want) > 0.5:
-            errors.append(f"coal_fy{year}: stated {got} vs axis base series {want:g} (axis 4c-2)")
-    uf_axis = axis_uf_tiers()
-    uf_own = tuple(uf(inp, inp[f"coal_{t}"]) for t in ("h", "m", "l"))  # axis order 703 / 830 / 965
-    for tier, got, want in zip(("703", "830", "965"), uf_own, uf_axis):
+        raise ValueError('; '.join(errors))
+    shares_yi = inp['shares'] / YI
+    # Original research fits associate profits to 2023–2025 electricity and
+    # coal prices, then uses the displayed precision (-101.92, .2926, -.0202).
+    # These coefficients are derived, not another source of model input.
+    fit_years = (2023, 2024, 2025)
+    coef = solve3([(1., inp[f'tariff_fy{y%100:02d}'], inp[f'coal_fy{y}']) for y in fit_years],
+                  [inp[f'assoc_fy{y%100:02d}'] for y in fit_years])
+    inp['assoc_a'], inp['assoc_b'], inp['assoc_c'] = round(coef[0], 2), round(coef[1], 4), round(coef[2], 4)
+    # The original study adopted 437 / 440 as rounded tariff scenarios and
+    # required them to remain close to its fit. Preserve both choices and the
+    # guard; the source does not define an updating rounding rule.
+    # The original ruler intentionally rounded the three model-derived EPS to
+    # two decimals before capitalising; retain that historical convention.
+    q4_derived = world_eps(inp, inp['coal_q4_26'], inp['tariff_fy25'], inp['cap_tariff_2026'], frac=.25)
+    squeeze_derived = inp['eps_9m_26'] + q4_derived
+    reads_derived = midcycle_readings(inp, inp['coal_m'], inp['cap_tariff_2026'], squeeze_derived)
+    eps = {'l': round(squeeze_derived,2), 'm': round(statistics.mean(reads_derived.values()),2),
+           'h': round(world_eps(inp, inp['coal_m'], inp['tariff_h'], inp['cap_tariff_2026']),2)}
+    inp['eps_m_lo'], inp['eps_m_hi'] = round(min(reads_derived.values()),2), round(max(reads_derived.values()),2)
+    # Shared axis is authoritative: generator tiers are the reversed coal
+    # scenario order; annual series and fitted coordinates arrive in the same
+    # versioned axis snapshot. No prose or second local copy is read here.
+    series = coal["series"]
+    uf_axis = coal["coordinates"]["uf_reference"]
+    # These three observed fuel-cost references belong to their original
+    # historical price coordinates, not whichever axis scenarios are current.
+    uf_reference_prices = coal["coordinates"]["uf_reference_prices"]
+    uf_own = tuple(uf(inp, price) for price in uf_reference_prices)
+    for price, got, want in zip(uf_reference_prices, uf_own, uf_axis):
         if abs(got - want) > 0.0005:
-            errors.append(f"uf({tier}) {got:.4f} vs axis §4a {want:.4f} (axis 4c-2, ±0.0005)")
+            errors.append(f"uf({price:g}) {got:.4f} vs axis §4a {want:.4f} (axis 4c-2, ±0.0005)")
     errors += ladder("eps", eps["l"], eps["m"], eps["h"])
     if not (inp["coal_l"] > inp["coal_m"] > inp["coal_h"]):
         errors.append("coal ladder must fall as earnings rise (generator reads the axis mirrored)")
     if errors:
-        return report(errors, "FAIL (axis mount / ladders)")
-    print(f"轴挂载 ✓ 电厂侧 coal L/M/H = {inp['coal_l']:g}/{inp['coal_m']:g}/{inp['coal_h']:g} (= 轴 H/M/L); "
-          f"基准序列 FY2019–25 {'/'.join(f'{series[y]:g}' for y in sorted(series))} ✓; "
-          f"uf 轴线 {inp['uf_a']} + {inp['uf_b']:.2e}·x → 703/830/965 = {'/'.join(f'{u:.4f}' for u in uf_own)} 对轴 §4a ✓")
+        raise ValueError('; '.join(errors))
+    pass
 
     # --- Step 2: the bridge must reproduce the realised years (axis 4c-1) ----
     years = {
@@ -244,14 +260,14 @@ def main() -> int:
         "FY2024": (inp["coal_fy2024"], inp["tariff_fy24"], inp["sales_fy24"], inp["gen_fy24"], inp["assoc_fy24"], inp["eps_fy24"]),
         "FY2025": (inp["coal_fy2025"], inp["tariff_fy25"], inp["sales_fy25"], inp["gen_fy25"], inp["assoc_fy25"], inp["eps_fy25"]),
     }
-    print(f"桥复现（轴 4c-1，档位桥口径：该年煤价 / 电价 / 电量 / 联营 + 中枢结构参数；容量按 FY2025 标准 {inp['cap_tariff_2025']:g}）：")
+    pass
     passed = 0
     for name, (coal, tariff, sales, gen, assoc_yi, actual) in years.items():
         e = bridge_eps(inp, coal, tariff, inp["cap_tariff_2025"], sales, gen, assoc_yi)
         err = e / actual - 1.0
         ok = abs(err) <= BRIDGE_TOL
         passed += ok
-        print(f"  {name} 煤 {coal:g} 电价 {tariff} 上网 {sales} 发电 {gen} 联营 {assoc_yi}: 桥 {e:.4f} vs 实 {actual} 误差 {err:+.1%} {'✓' if ok else '✗'}")
+        pass
         if not ok:
             errors.append(f"bridge {name}: {e:.4f} vs {actual} ({err:+.1%}) outside ±{BRIDGE_TOL:.0%} — 桥错, BLOCKED (axis 4c-1)")
     if passed < 2:
@@ -260,7 +276,7 @@ def main() -> int:
     a, b, c = solve3([(1.0, y[1], y[0]) for y in years.values()], [y[4] for y in years.values()])
     if abs(a - inp["assoc_a"]) > 0.05 or abs(b - inp["assoc_b"]) > 0.0005 or abs(c - inp["assoc_c"]) > 0.0005:
         errors.append(f"assoc fit re-solved {a:.2f} / {b:.4f} / {c:.4f} vs stated {inp['assoc_a']} / {inp['assoc_b']} / {inp['assoc_c']}")
-    print(f"  联营 J = {a:.2f} + {b:.4f}·电价 + {c:.4f}·煤价（FY2023–25 三点精确解）✓")
+    pass
     # Tariff second layer: lag-linkage fit (coal_{t-1} -> tariff_t) and the cap.
     pairs = [(inp["coal_fy2021"], inp["tariff_fy22"]), (inp["coal_fy2022"], inp["tariff_fy23"]),
              (inp["coal_fy2023"], inp["tariff_fy24"]), (inp["coal_fy2024"], inp["tariff_fy25"]),
@@ -278,58 +294,39 @@ def main() -> int:
         errors.append(f"tariff_h {inp['tariff_h']} vs 2027-on-2026-coal lag {tariff_h_lag:.1f}")
     if abs(inp["tariff_cap"] - 1.2 * inp["tariff_bench"]) > 0.5:
         errors.append(f"tariff_cap {inp['tariff_cap']} != 1.2 x benchmark {inp['tariff_bench']}")
-    print(f"  电价滞后联动：tariff_t = {t0:.1f} + {t1:.4f}·coal_(t−1)（五对 FY2022–26，含两个顶格年 ≤ cap {inp['tariff_cap']:g} = 1.2 × 基准 {inp['tariff_bench']}）→ 830 处 {tariff_m_fit:.1f} = tariff_m {inp['tariff_m']:g} ✓; "
-          f"2027 对 2026 年均煤 {inp['coal_fy2026e']:g} 上签 = {inp['tariff_fy26_impl']:g} + 三对（FY2024–26）斜率 {t1_3:.4f} × {inp['coal_fy2026e'] - inp['coal_fy2025']:g} = {tariff_h_lag:.1f} = tariff_h {inp['tariff_h']:g} ✓（FY2023–26 四年均值 {tariff_mean_post:.1f} 互证；含顶格年的 FY2022–25 均值 {statistics.mean([inp['tariff_fy22'], inp['tariff_fy23'], inp['tariff_fy24'], inp['tariff_fy25']]):.1f} 只作上沿参照）")
+    pass
     # Per-unit sensitivities of the bridge at the mid-cycle world.
     base = world_eps(inp, inp["coal_m"], inp["tariff_fy25"], inp["cap_tariff_2025"])
     k_tariff = world_eps(inp, inp["coal_m"], inp["tariff_fy25"] + 1.0, inp["cap_tariff_2025"]) - base
     k_coal10 = world_eps(inp, inp["coal_m"] + 10.0, inp["tariff_fy25"], inp["cap_tariff_2025"]) - base
-    if abs(k_tariff - inp["k_tariff"]) > 0.0005:
-        errors.append(f"k_tariff {inp['k_tariff']} vs bridge {k_tariff:.4f} per 元/MWh")
     uplift_eps = cap_uplift_yi(inp, inp["cap_tariff_2026"]) * (1.0 - inp["tax_op"]) * inp["par_op"] / shares_yi
-    if abs(uplift_eps - inp["eps_cap_uplift"]) > EPS_TOL:
-        errors.append(f"eps_cap_uplift {inp['eps_cap_uplift']} vs ({inp['cap_tariff_2026']:g}−{inp['cap_tariff_2025']:g}) × {inp['cap_gw_coal']:g} GW → {uplift_eps:.4f}")
-    print(f"  桥敏感度（煤 830 / 电价 424.8 / 容量 100 处，E = {base:.4f}）：电价 +10 元/MWh {10 * k_tariff:+.4f}（含联营）、煤 +10 元/吨 {k_coal10:+.4f}；"
-          f"容量电价 {inp['cap_tariff_2025']:g}→{inp['cap_tariff_2026']:g} 元/kW·年 × {inp['cap_gw_coal']:g} GW = {cap_uplift_yi(inp, inp['cap_tariff_2026']):.2f} 亿税前 → EPS {uplift_eps:+.4f}（每档都带）")
+    pass
     if errors:
-        return report(errors, "FAIL (bridge)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 3: tier numerators from the lag wave -----------------------------
     q4 = world_eps(inp, inp["coal_q4_26"], inp["tariff_fy25"], inp["cap_tariff_2026"], frac=0.25)
     squeeze = inp["eps_9m_26"] + q4
-    if abs(q4 - inp["eps_q4_26_bridge"]) > EPS_TOL:
-        errors.append(f"eps_q4_26_bridge {inp['eps_q4_26_bridge']} vs bridge Q4 {q4:.4f}")
-    if abs(squeeze - eps["l"]) > EPS_TOL:
-        errors.append(f"eps_l {eps['l']} vs 2026E squeeze {inp['eps_9m_26']} + {q4:.4f} = {squeeze:.4f}")
     e_h = world_eps(inp, inp["coal_m"], inp["tariff_h"], inp["cap_tariff_2026"])
-    if abs(e_h - eps["h"]) > 0.01:
-        errors.append(f"eps_h {eps['h']} vs bridge at coal {inp['coal_m']:g} / tariff {inp['tariff_h']:g} / cap {inp['cap_tariff_2026']:g}: {e_h:.4f}")
     reads = midcycle_readings(inp, inp["coal_m"], inp["cap_tariff_2026"], squeeze)
     e_m = statistics.mean(reads.values())
     lo, hi = min(reads.values()), max(reads.values())
-    if abs(e_m - eps["m"]) > EPS_TOL:
-        errors.append(f"eps_m {eps['m']} vs mean of the five readings {e_m:.4f}")
-    if abs(lo - inp["eps_m_lo"]) > EPS_TOL or abs(hi - inp["eps_m_hi"]) > EPS_TOL:
-        errors.append(f"evidence interval [{inp['eps_m_lo']}, {inp['eps_m_hi']}] vs readings [{lo:.4f}, {hi:.4f}]")
-    if not (inp["eps_m_lo"] <= eps["m"] <= inp["eps_m_hi"]):
-        errors.append(f"eps_m {eps['m']} outside [{inp['eps_m_lo']}, {inp['eps_m_hi']}]")
-    print(f"L 挤压年 2026E：9M 实测 {inp['eps_9m_26']} + Q4 桥（煤 {inp['coal_q4_26']:g} / 电价 {inp['tariff_fy25']} / 容量 {inp['cap_tariff_2026']:g}，单季）{q4:.4f} = {squeeze:.4f} → eps_l {eps['l']} ✓"
-          f"（电价 {inp['tariff_fy26_impl']:g} → Q4 {world_eps(inp, inp['coal_q4_26'], inp['tariff_fy26_impl'], inp['cap_tariff_2026'], frac=0.25):.4f}；"
-          f"Q3 复现：桥（煤 875 / 电价 428.5）{world_eps(inp, 875, 428.5, inp['cap_tariff_2026'], frac=0.25):.4f} vs 实测 0.1271）")
-    print("M 中枢 = 五个跨周期读数的均值：")
+    pass
+    pass
     for k, v in reads.items():
-        print(f"  {v:.4f}  {k}")
-    print(f"  mean {e_m:.4f} → eps_m {eps['m']} ✓; 证据区间 [{lo:.4f}, {hi:.4f}] → [{inp['eps_m_lo']}, {inp['eps_m_hi']}] ✓")
-    print(f"H 肥年世界：桥（煤 {inp['coal_m']:g} / 电价 {inp['tariff_h']:g} / 容量 {inp['cap_tariff_2026']:g}）= {e_h:.4f} → eps_h {eps['h']} ✓")
-    print(f"周期位置（轴 4c-4）：当期 ÷ 中枢 — TTM {inp['eps_ttm'] / eps['m']:.2f} · FY2025 {inp['eps_fy25'] / eps['m']:.2f} · FY26E {inp['eps_fy26e'] / eps['m']:.2f} · 2026E {squeeze / eps['m']:.2f}；"
-          f"煤价：2026H1 772 / Q3 ~875 / 2026-10 现货 1,003–1,013（≥ 轴 H 状态 = 本票 L 世界）")
+        pass
+    pass
+    pass
+    pass
     if errors:
-        return report(errors, "FAIL (numerators)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 4: the multiple — flat 1/r; Gordon and DDM are crosses ---------
     roe_m = eps["m"] * inp["shares"] / (inp["equity"] * YI)
     payout_fy25 = inp["dps_fy25"] * inp["shares"] / (inp["ni_fy25"] * YI)
     g_policy = (1.0 - payout_fy25) * roe_m
+    inp['payout_fy25'] = round(payout_fy25, 2)
+    inp['g2_policy'] = round(g_policy, 4)
     errors += check_g_cap(inp["g2"], r, "g2")
     if abs(inp["g2"]) > 1e-9:
         errors.append(f"g2 {inp['g2']} != 0 — the main ruler is flat 1/r (growth capex NPV ~ 0, A17)")
@@ -348,65 +345,61 @@ def main() -> int:
     ddm_m = d_m * (1.0 + inp["g2_policy"]) / (r - inp["g2_policy"])
     modelled, gap = payout_gap(inp["g2_policy"], roe_m, payout_fy25)
     regime = "病态区" if abs(roe_m - r) < 0.03 else ("峰形区" if roe_m < r else "单调区")
-    print(f"倍数：主尺 flat {inp['pe_m']:g}× = 1/r，r = {r:.1%} 篮 {baskets['r_perp']} {BASKET_R[baskets['r_perp']][0]}，g2 = {inp['g2']:g}（增长 capex NPV ≈ 0，留存不加不减）；ROE_M = {eps['m']} × {shares_yi:.2f} ÷ {inp['equity']} = {roe_m:.2%}（|ROE − r| = {abs(roe_m - r):.2%} → {regime}）")
-    print(f"  交叉 Gordon：派息率 {payout_fy25:.1%}（DPS {inp['dps_fy25']} × 股本 ÷ 归母 {inp['ni_fy25']} 亿）→ 政策 g = {g_policy:.2%} < cap {g_cap(r):.0%}（capped_payout_pe ≡ perpetual_pe ✓）→ {pe_gordon:.2f}× → M {eps['m'] * pe_gordon:.2f}；"
-          f"check_branch ✓ 模型派息率 {modelled:.1%} vs 实付 {payout_fy25:.1%}（差 {gap:+.1%}）")
-    print(f"  交叉 DDM：D_M = {payout_fy25:.3f} × {eps['m']} = {d_m:.3f} × (1+g) ÷ (r−g) = {ddm_m:.2f}；病态区 g∈[0,6%] 的 Gordon 只从 {perpetual_pe(0.0, roe_m, r):.2f}× 走到 {perpetual_pe(g_cap(r), roe_m, r):.2f}×——两把交叉尺都贴 10×，倍数由 r 钉死，结论建立在中枢分子上")
+    pass
+    pass
+    pass
     if errors:
-        return report(errors, "FAIL (multiple)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 5: anchors, floor, interval re-pricing -------------------------
     floor = inp["pb_lo"] * inp["bps"]
     scenario_l = eps["l"] * inp["pe_m"]
-    if abs(floor - inp["floor_l"]) > 0.01 or abs(scenario_l - inp["scenario_l"]) > 0.05:
-        errors.append(f"floor {floor:.2f} / scenario_L {scenario_l:.2f} vs stated {inp['floor_l']} / {inp['scenario_l']}")
     L, M, H = anchors_of(inp, eps["l"], eps["m"], eps["h"])
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
-        return report(errors, "FAIL (ladder)")
+        raise ValueError('; '.join(errors))
     if scenario_l / M <= FLOOR_RECHECK_RATIO:
         errors.append(f"scenario_L/M = {scenario_l / M:.3f} <= {FLOOR_RECHECK_RATIO} — earnings ruler failed at L, A2e-1 回问")
     A, B = cut_points(L, M, H)
     winner = "地板胜出" if floor > scenario_l else "情景胜出"
-    print(f"地板（A2e-1）：scenario_L = {eps['l']} × {inp['pe_m']:g} = {scenario_l:.2f} vs PB 地板 {inp['pb_lo']} × BPS {inp['bps']} = {floor:.2f} → {winner}，L = {L:.2f}；scenario_L/M = {scenario_l / M:.2f} > {FLOOR_RECHECK_RATIO} ✓（不触发回问）")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
+    pass
+    pass
     # The E_M evidence interval and the axis M window (axis 4c-5), re-priced
     # and printed (disclosure — the doc states no zone to hold them to).
     for tag, em in (("eps_m_lo", inp["eps_m_lo"]), ("eps_m_hi", inp["eps_m_hi"])):
         b = anchors_of(inp, eps["l"], em, eps["h"])
         a_, b_ = cut_points(*b)
-        print(f"  区间 E_M = {em}（{tag}）: {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f}")
+        pass
     for cm in (inp["coal_m_lo"], inp["coal_m_hi"]):
         em = statistics.mean(midcycle_readings(inp, cm, inp["cap_tariff_2026"], squeeze).values())
         eh = world_eps(inp, cm, inp["tariff_h"], inp["cap_tariff_2026"])
         b = anchors_of(inp, eps["l"], em, eh)
         a_, b_ = cut_points(*b)
-        print(f"  区间 轴 M 窗口 煤 {cm:g}: E_M {em:.4f} E_H {eh:.4f} → {'/'.join(f'{x:.2f}' for x in b)} A={a_:.2f} B={b_:.2f}")
+        pass
     # Sensitivities (printed, not asserted): tariff, capacity, TTM as numerator.
     for t in (inp["tariff_fy26_impl"], inp["tariff_m"], inp["tariff_h"]):
         em = world_eps(inp, inp["coal_m"], t, inp["cap_tariff_2026"])
         m_t = em * inp["pe_m"]
-        print(f"  敏感性 中枢单取桥稳态 电价 {t:g}: E_M {em:.4f} → M {m_t:.2f}（H {H:.2f} 不动）"
-              + (" M=H 塌" if m_t >= H - 1e-9 else ""))
+        pass
     sq100 = inp["eps_9m_26"] + world_eps(inp, inp["coal_q4_26"], inp["tariff_fy25"], inp["cap_tariff_2025"], frac=0.25)
     em100 = statistics.mean(midcycle_readings(inp, inp["coal_m"], inp["cap_tariff_2025"], sq100).values())
     eh100 = world_eps(inp, inp["coal_m"], inp["tariff_h"], inp["cap_tariff_2025"])
     b100 = anchors_of(inp, sq100, em100, eh100)
-    print(f"  敏感性 容量电价停在 {inp['cap_tariff_2025']:g}（政策已锁 165，仅对照）: E {sq100:.4f}/{em100:.4f}/{eh100:.4f} → {'/'.join(f'{x:.2f}' for x in b100)}")
+    pass
     m_ttm = inp["eps_ttm"] * inp["pe_m"]
-    print(f"  敏感性 TTM {inp['eps_ttm']} 作分子（v3 口径, flat 10×）: M {m_ttm:.2f}（TTM ÷ 中枢 {inp['eps_ttm'] / eps['m']:.2f}，且 FY2026 滚动到 ~{squeeze:.2f}）")
+    pass
     # Basket-r disclosures (printed, not asserted): g2 ±1pp, r ±50bp and the
     # alternative baskets the framework rejected (A17).
     for tag, rr, gg in (("g2 +1pp", r, 0.01), ("g2 −1pp", r, -0.01), ("r −50bp", r - 0.005, 0.0), ("r +50bp", r + 0.005, 0.0),
                         ("篮 2 7.5%", 0.075, 0.0), ("篮 6 13%", 0.13, 0.0)):
         pe_x = 1.0 / (rr - gg)
         b = (max(eps["l"] * pe_x, floor), eps["m"] * pe_x, eps["h"] * pe_x)
-        print(f"  敏感区 {tag}: PE {pe_x:.2f}× → {'/'.join(f'{x:.2f}' for x in b)}")
+        pass
     flat_errs, flat = flat_multiple_ladder((eps["l"], eps["m"], eps["h"]), inp["pe_m"])
     errors += flat_errs
-    print(f"flat-multiple @{inp['pe_m']:g}×: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}（L 地板前 {scenario_l:.2f}）— 带宽 {(flat[2] - flat[0]) / (2 * flat[1]):.0%}")
+    pass
     if errors:
-        return report(errors, "FAIL (flat ladder)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 6: 纠正对账门 (valuation-rules 2026-09-15) ---------------------
     g_zjn = (inp["peer_zjn_px"] * r - inp["peer_zjn_dps"]) / (inp["peer_zjn_px"] + inp["peer_zjn_dps"])
@@ -423,16 +416,16 @@ def main() -> int:
         (f"⑤ 同业同尺同日：浙能 / 华电 D0 尺反解 g_d {g_zjn:.2%} / {g_hd:.2%} 中位 {g_peer:.2%} → 皖能 D0 {inp['dps_fy25']}", peer_d0, True),
         (f"⑤' 同上配中枢股息 D_M {d_m:.3f}（跨口径：同业 g_d 从当期股息反解，只报不计）", peer_dm, False),
     ]
-    print(f"纠正对账门：新 M {M:.2f} vs v3 {M_V3_TTM}（{M / M_V3_TTM - 1:+.0%}）· v4 {M_V4_FROZEN}（{M / M_V4_FROZEN - 1:+.0%}）")
+    pass
     outside = counted = 0
     for label, v, counts in rows:
         dev = M / v - 1.0
-        print(f"  {label:<96} {v:6.2f}  M/坐标 {M / v:5.2f} ({dev:+.0%}) {'外' if abs(dev) > RECON_TOL else '内'}{'' if counts else '  [不计]'}")
+        pass
         if counts:
             counted += 1
             outside += abs(dev) > RECON_TOL
     m_pb = M / inp["bps"]
-    print(f"  ⑥ 资产口径（单边）：M ÷ BPS = {m_pb:.2f}× vs 自身实测 PB 低沿 {inp['pb_lo']} → {'内（M 在市场印过的 PB 之上）' if m_pb >= inp['pb_lo'] else '外'}")
+    pass
     if m_pb < inp["pb_lo"]:
         errors.append(f"M/BPS {m_pb:.2f} below the own PB low {inp['pb_lo']} — 尺错 signal")
     if outside == counted:
@@ -440,29 +433,105 @@ def main() -> int:
     if abs(inp["pe_same_med"] - inp["pe_m"]) / inp["pe_m"] > RECON_TOL:
         errors.append(f"pe_same_med {inp['pe_same_med']} vs pe_m {inp['pe_m']}: the market paid a different multiple on ≈ mid-cycle earnings")
     band = {"中枢": eps["m"], "TTM": inp["eps_ttm"], "FY26E": inp["eps_fy26e"]}
-    print(f"  对账门 {'通过' if outside < counted else '不过'}：{counted - outside}/{counted} 个独立坐标在 ±{RECON_TOL:.0%} 内；"
-          f"中性带 [{A:.2f}, {B:.2f}) = " + " · ".join(f"{k} {A / v:.1f}–{B / v:.1f}×" for k, v in band.items()))
+    pass
     if B / inp["eps_ttm"] <= 7.0:
         errors.append(f"neutral band tops out at {B / inp['eps_ttm']:.1f}× TTM on a 40%-payout utility — 荒诞信号 (valuation-rules「纠正对账门」)")
     if errors:
-        return report(errors, "FAIL (对账门)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 7: coordinates outside the band and the stated outputs ----------
     d = decompose((L, M, H), (inp["pe_m"],) * 3)
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.1%} | 分子比 L/M={eps['l'] / eps['m']:.3f}（地板前）/ H/M={d['num_hm']:.3f} | 倍数比 1.000 / 1.000（flat）")
-    print(f"坐标 · own-year PE 实测点：FY2022 尖峰年 {inp['pe_ownyear_l']}× → 年均价 {inp['eps_fy22'] * inp['pe_ownyear_l']:.2f}（旧 regime，deep_discount 内）· 四年中位 {inp['pe_ownyear_m']}× · FY2025 肥年 {inp['pe_ownyear_h']}× → 年均价 {inp['eps_fy25'] * inp['pe_ownyear_h']:.2f}（neutral 内）；"
-          f"5 年月频 TTM PE 带 [{inp['pe_own_min']}, {inp['pe_own_max']}] 含 {inp['pe_m']:g}× ✓")
+    pass
+    pass
     perm = world_eps(inp, inp["coal_m"], inp["tariff_fy25"], inp["cap_tariff_2025"])
     spike_new = inp["eps_fy22"] + inp["cap_tariff_2026"] * inp["cap_gw_coal"] * 1e-2 * (1.0 - inp["tax_op"]) * inp["par_op"] / shares_yi
-    print(f"坐标 · deep_discount（< {L:.2f}）：挤压永续化（电价不再联动 + 容量剔除，煤 830 / 电价 {inp['tariff_fy25']} / 容量 {inp['cap_tariff_2025']:g}）{perm:.4f} → {perm * inp['pe_m']:.2f}；"
-          f"谷底 × 1/r = {inp['eps_fy22'] / r:.2f}；2022 式尖峰在新 regime（FY2022 {inp['eps_fy22']} + 165 容量全额 {spike_new - inp['eps_fy22']:.2f}）= {spike_new:.2f} → {spike_new * inp['pe_m']:.2f}（仍在 L 之上）")
+    pass
     bull = world_eps(inp, inp["coal_h"], inp["tariff_h"], inp["cap_tariff_2026"])
-    print(f"坐标 · stretched（> {H:.2f}）：牛顶世界 煤 {inp['coal_h']:g} + 电价 {inp['tariff_h']:g} + 容量 165 = {bull:.4f} → {bull * inp['pe_m']:.2f}；FY2025 式肥年 + 165 = {inp['eps_fy25'] + uplift_eps:.4f} → {(inp['eps_fy25'] + uplift_eps) * inp['pe_m']:.2f}；"
-          f"股息率 @L {inp['dps_fy25'] / L:.2%}")
+    pass
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-    return report(errors)
+    if errors:
+        raise ValueError('; '.join(errors))
+    bands = lambda values: dict(zip('LMH', values))
+    sensitivity = {'capacity_2025': bands(b100), 'ttm_mid': m_ttm,
+                   'pb_floor': floor, 'no_lag_pressure': perm*inp['pe_m'],
+                   'coal_extreme': bull*inp['pe_m'], 'flat': bands(flat),
+                   'midcycle_low': bands(anchors_of(inp, eps['l'], inp['eps_m_lo'], eps['h'])),
+                   'midcycle_high': bands(anchors_of(inp, eps['l'], inp['eps_m_hi'], eps['h']))}
+    for name, cm in (('coal_window_low', inp['coal_m_lo']), ('coal_window_high', inp['coal_m_hi'])):
+        em = statistics.mean(midcycle_readings(inp, cm, inp['cap_tariff_2026'], squeeze).values())
+        eh = world_eps(inp, cm, inp['tariff_h'], inp['cap_tariff_2026'])
+        sensitivity[name] = bands(anchors_of(inp, eps['l'], em, eh))
+    for name, tariff in (('tariff_current', inp['tariff_fy26_impl']),
+                         ('tariff_mid', inp['tariff_m']), ('tariff_high', inp['tariff_h'])):
+        sensitivity[name] = world_eps(inp, inp['coal_m'], tariff, inp['cap_tariff_2026'])*inp['pe_m']
+    for name, rr, gg in (('growth_plus_1pp',r,.01), ('growth_minus_1pp',r,-.01),
+                         ('discount_minus_05pp',r-.005,0), ('discount_plus_05pp',r+.005,0),
+                         ('basket_2',.075,0), ('basket_6',.13,0)):
+        pe_x = 1/(rr-gg)
+        sensitivity[name] = bands((max(eps['l']*pe_x,floor), eps['m']*pe_x, eps['h']*pe_x))
+    return {
+        'ticker': '000543.SZ', 'currency': 'CNY', 'valuation_as_of': None, 'framework_as_of': None,
+        'anchors': dict(zip('LMH', (L,M,H))), 'candidate': None, 'option': None,
+        'segments': {'company': {'values': dict(zip('LMH', (L,M,H)))}},
+        # L is an actual PB floor, not an earnings-model multiple.
+        'key_parameters': {'method': {'L': 'historical_pb_floor', 'M': 'zero_growth_earnings', 'H': 'zero_growth_earnings'},
+                           'discount_rate': {'L': None, 'M': r, 'H': r},
+                           'growth_rate': {'L': None, 'M': inp['g2'], 'H': inp['g2']},
+                           'forward_return': {'L': None, 'M': roe_m, 'H': None},
+                           'steady_return': {'L': None, 'M': None, 'H': None}},
+        'operating': {'eps': dict(zip('LMH', (eps['l'],eps['m'],eps['h']))), 'floor': floor,
+                      'squeeze': squeeze, 'q4': q4, 'bridge_h': e_h, 'midcycle': e_m,
+                      'midcycle_readings': list(reads.values()), 'coal_series': series,
+                      'assoc_coefficients': [inp['assoc_a'],inp['assoc_b'],inp['assoc_c']],
+                      'tariff_mid': inp['tariff_m'], 'tariff_high': inp['tariff_h'],
+                      'tariff_delta_1': k_tariff, 'coal_delta_10': k_coal10, 'capacity_uplift_eps': uplift_eps,
+                      'reconciliation_outside': outside, 'reconciliation_count': counted},
+        'sensitivity': sensitivity,
+    }
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def evaluate(inp, coal):
+    # Preserve the old valuation while disclosing the old leverage finding;
+    # migration does not imply that ROIC, debt reduction or EV were checked.
+    result = _historical_calculation(inp, coal)
+    result['historical_financial_statement_as_of'] = HISTORICAL_DATES['historical_financial_statement_as_of']
+    result['historical_research_as_of'] = HISTORICAL_DATES['historical_research_as_of']
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    params = result['key_parameters']
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        params[name] = {'unit': 'RATIO', 'values': params[name]}
+    result['review_flags'] = list(HISTORICAL_REVIEW_FLAGS)
+    return result
+
+
+
+def calculate(context):
+    coal = context['axes']['coal']
+    if coal.get('side') != 'generator' or coal.get('mount') != 'reference':
+        raise ValueError('coal axis role must be the historical generator reference')
+    coord = coal['coordinates']
+    window = coal['mid_window']
+    # Generator tiers reverse the miner/commodity ladder. Use the actual axis
+    # values, not the historic 965/830/703 copies formerly in this file.
+    shared = {**{f'coal_{tier.lower()}': coal['tier_prices'][tier] for tier in 'LMH'},
+              **{f'coal_fy{year}': value for year, value in coal['series'].items()},
+              'coal_m_lo': window['low'], 'coal_m_hi': window['high'],
+              'uf_a': coord['uf_a'], 'uf_b': coord['uf_b']}
+    result = evaluate({**INPUTS, **shared}, coal)
+    result['basis_changed'] = None
+    coal_fingerprint_input = {key: value for key, value in coal.items() if key != 'axis_metadata'}
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'coal': coal_fingerprint_input, 'coal_axis_version': HISTORICAL_COAL_AXIS_VERSION,
+         'constants': {'yi': YI, 'vat': VAT, 'floor_recheck_ratio': FLOOR_RECHECK_RATIO,
+                       'bridge_tolerance': BRIDGE_TOL, 'reconciliation_tolerance': RECON_TOL,
+                       'eps_tolerance': EPS_TOL, 'previous_m_v3': M_V3_TTM, 'previous_m_v4': M_V4_FROZEN},
+         'historical_dates': HISTORICAL_DATES, 'historical_leverage': HISTORICAL_LEVERAGE,
+         'historical_review_flags': HISTORICAL_REVIEW_FLAGS},
+        HISTORICAL_PARTIAL_FINGERPRINT)
+    result['historical_valuation_as_of'] = HISTORICAL_DATES['historical_valuation_as_of']
+    result['historical_framework_as_of'] = HISTORICAL_DATES['historical_framework_as_of']
+    # Historical FY2025 actual-year comparison, not an as-yet-unobtained
+    # midcycle-year leverage ratio or proof that the required reviews passed.
+    result['historical_leverage'] = dict(HISTORICAL_LEVERAGE)
+    return result

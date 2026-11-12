@@ -1,83 +1,113 @@
-#!/usr/bin/env python3
-"""000725.SZ (BOE) valuation eval — recompute anchors from frameworks/000725.SZ.md.
-
-formula_id: boe_fy27_econdep_gordon_tail_v5
-
-Economic-depreciation Gordon + depreciation-tail annuity (construction.md §5b
-「经济折旧 Gordon」, 2026-10-05; this ticker is the rule's sample).  Panel lines
-are booked over ~7-8 years but run 15-20+ (B1 Beijing Gen-5 since 2005, the
-four Gen-8.5 lines since 2011-2017, all fully depreciated and still running),
-so book profit swings with the accounting schedule, not with the business.
-Two pieces, added:
-
-  perpetual  — numerator = book NI + (accounting D - economic D) x (1 - t) x s,
-               where accounting D is the SAME year's D as the book NI (so the
-               depreciation roll-off inside later-year consensus never enters),
-               economic D = gross cost by class / economic life; Gordon at
-               basket 6 r = 13% with the payout-policy g (unchanged machinery).
-  tail       — (economic D - maintenance capex) x (1 - t) x s for n years via
-               annuity_factor (n = years until the Gen-8.5 cohort needs
-               replacement); finite, never perpetuated.
-
-Numerator year = FY2027 (nearest-year rule for commodity-type mid-cycle,
-valuation-rules 2026-10-04: FY2026 carries ~39亿 of one-offs and is 3/4 gone).
-Time alignment (valuation-rules「经营价值与超额现金」③): the M / H perpetual segment and tail are
-values at the numerator-year start 2027-01-01 -> x (1+r)^-tau (tau = 0.5 from the 2026-06-30 balance
-sheet) plus the window distributable profit (2H26) x (1+r)^-(tau/2); L (measured-year construction)
-is not aligned.  The two options sit at FY2027 too and take the same tau.  M / H = FY2027E consensus mean /
-high (Eastmoney, 17 houses); L = FY2023 measured trough with its measured
-two-year recovery (recovery_two_stage_pe), all three on the same economic-D
-adjustment (each year with its own accounting D).
-
-Entry-condition exclusion (construction.md §5b, 2026-10-05): the capex / D test
-is run ex the two named expansion lines B16 / B20; their unspent capital is
-then deducted from every tier at each line's own BOE ownership (B16 52.6%,
-IR 2023-037; B20 79.31%, IR 2022-077), one year at r (spent over 2026H2-2027,
-end-of-year like the tail).
-
-V_opt = two items, summed at the H tier:
-  B16    full-capacity increment above consensus (panel-options reading ①; its
-         unspent capital is already in the deduction above, not deducted again)
-  glass  glass-core substrate (valuation-rules「未建模期权」2026-10-05, peer-ruler
-         axis _AXIS.glass-core-substrate): L / M quantity = Morgan Stanley
-         2026-06-30 2028E revenue (single house); H = relayed full capacity x
-         axis price; margins from the adjacent ABF layer; leg g2 from the axis;
-         unspent line capital deducted; p_k = V_k / V_H.
-
-The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
-here computes a zone or a market-implied r.
-
-Run:  python3 frameworks/eval/000725.SZ.py
-"""
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import json
+import hashlib
+import math
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.axes import axis_path  # noqa: E402
-from eval.lib.frameworks import load_framework  # noqa: E402
-from eval.lib.gordon import (  # noqa: E402
+from lib.gordon import (
     annuity_factor, capped_payout_pe, check_branch, check_g_cap, check_r, g_cap, perpetual_pe,
     recovery_two_stage_pe,
 )
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
+from lib.inputs import (
+    check_missing, ladder,
 )
-from eval.lib.zones import cut_points  # noqa: E402
+from lib.zones import cut_points
+from lib.glass_ruler_rules import check_glass_ruler
 
-FRAMEWORK = REPO_ROOT / "frameworks" / "000725.SZ.md"
-GCS_AXIS = axis_path("_AXIS.glass-core-substrate")
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'zones', 'glass_ruler_rules'),
+                'axes': {'panel': 'lcd_tv_panel', 'glass': 'glass_core_substrate'}}
+# Partial numerical-input comparison only: source identity, current validity,
+# and the user's actual confirmation are owned by the runner and review store.
+HISTORICAL_INPUT_FINGERPRINT = '7bda3f3e9bbd1f4746a08e57eecbfe5ae73b96c98f43ffe7b7eacdca4a18bd30'
+
+INPUTS = {
+    'shares': 37044328064.0,  # 总股本；Q1 三季报，数值与中报相同；2026-09-30
+    'bps': 3.594,  # 归母权益 1,331.36 亿 ÷ 370.44 亿股；2026H1 半年报；2026-06-30
+    'ni_2026h1': 5248000000.0,  # 2026H1 归母（已入账，BPS 滚动时扣除）；2026-06-30
+    'ni_ttm': 5506815563.0,  # 约数：FY2025 58.57 亿 − 2025年前三季 46.01497094 亿 + 2026年前三季 42.51312657 亿；Q1，只作对账门读数；2026-09-30
+    'ni26_m': 8427000000.0,  # 2026E 共识均值（东方财富 17 家），BPS 滚动用；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni26_h': 9716000000.0,  # 2026E 共识上沿（国盛），BPS 滚动用；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni27_m': 11892000000.0,  # 2027E 共识均值（B2）；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni27_h': 13833000000.0,  # 2027E 共识上沿（国海，B2）；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni27_lo': 10170000000.0,  # 2027E 共识下沿（长江）；只披露；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni28_m': 16052000000.0,  # 2028E 共识均值；只作对账门读数（含折旧回落，不进分子）；**共识待更新，未取得财报后可核验样本**；2026-09-09
+    'ni_l': 2547000000.0,  # FY2023 归母（实测谷底，B1）；FY2023
+    'ni_l_rec': 5857000000.0,  # FY2025 归母（实测回升终点，B1）；FY2025
+    'n_rec': 2.0,  # 实测回升年数 FY2023 → FY2025；FY2025
+    'payout': 0.479,  # FY2023–25 实付（现金 + 回购）÷ 归母（B4）；FY2025
+    # The panel axis provides the adopted and reference rates and lifetimes.
+    'da_2023': 34840000000.0,  # FY2023 折旧摊销（现金流量表补充资料，B1）；FY2023
+    'da_2025': 38670000000.0,  # FY2025 折旧摊销（峰值，B1 / B12）；FY2025
+    'da_27': 36740000000.0,  # FY2027E 会计折旧摊销（金元 2026-07-10，B15）；2026-07-10
+    'da_nonfa': 1862000000.0,  # 非固定资产折旧摊销（使用权 / 无形 / 长期待摊）= 2026H1 (179.9 − 170.59) × 2，按账面计入经济折旧；2026-06-30
+    'gross_equip': 359950000000.0,  # 设备原值（B13）；2026-06-30
+    'cip': 58925000000.0,  # 在建工程（B16 / B20 等，计入设备类，B13）；2026-06-30
+    'gross_bldg': 82481000000.0,  # 房屋及建筑物原值；2026-06-30
+    'gross_other': 21424000000.0,  # 其他固定资产原值；2026-06-30
+    'life_bldg': 40.0,  # 房屋经济寿命（年）；2026-10-05
+    'life_other': 8.0,  # 其他固定资产经济寿命（年）；2026-10-05
+    'tax': 0.15,  # 所得税率（高新技术企业，B15）；FY2025
+    'parent_share': 0.641,  # 归母份额 = 归母权益 ÷ 所有者权益（B15）；2026-06-30
+    'maint_l': 18420000000.0,  # L 档维护开支 = 2026H1 扣具名扩产后年化（B14）；2026-06-30
+    'maint_m': 16000000000.0,  # M 档维护开支 = FY2025 与 2026H1 年化均值（B14）；2026-06-30
+    'maint_h': 13560000000.0,  # H 档维护开支 = FY2025 扣具名扩产后（B14）；FY2025
+    'cohort_year': 2014.25,  # 四条 8.5 代线平均投产年（B13）；2026-10-05
+    'tail_start': 2027.0,  # 尾巴首年 = 资本开支大幅下降起点（IR 2025-10-31）；2025-10-31
+    'capex_ex_2025': 13560000000.0,  # FY2025 扣 B16 / B20 后资本开支（B12 进入条件）；FY2025
+    'capex_ex_2026h1': 9210000000.0,  # 2026H1 扣 B16 / B20 后资本开支（B12 进入条件）；2026-06-30
+    'da_2026h1': 17990000000.0,  # 2026H1 折旧摊销；2026-06-30
+    'b16_units': 21300000.0,  # B16 满产年产量（块，B5）；2026-10-04
+    'b16_asp_usd': 150.0,  # B16 单价（美元 / 块，待核，B5）；2026-10-04
+    'fx': 7.1,  # 美元兑人民币（panel-options 取值）；2026-10-04
+    'b16_margin_m': 0.065,  # B16 满产营业利润率 M 档（同业中点，B5）；2026-10-04
+    'b16_margin_h': 0.13,  # B16 满产营业利润率 H 档（三星显示 − 3pp，B5）；2026-10-04
+    'b16_interest': 750000000.0,  # B16 项目利息 = 250 亿 × 3%（待核）；2023-11-28
+    'b16_share': 0.526,  # 京东方持 B16 项目公司比例（IR 2023-037）；2023-11-28
+    'b16_years': 2.0,  # 兑现年 FY2029 − 分子年 FY2027（无时点锚·拍值）；2026-10-05
+    'b16_budget': 63000000000.0,  # B16 总投资（IR 2023-037）；2023-11-28
+    'b16_progress': 0.519,  # B16 投入进度（2026H1 半年报在建工程附注，B12）；2026-06-30
+    'b20_budget': 29000000000.0,  # B20 预算（「第 6 代新型半导体显示器件」，2026H1 在建工程附注）；2026-06-30
+    'b20_progress': 0.701,  # B20 投入进度（2026H1 半年报，B12）；2026-06-30
+    'b20_share': 0.7931,  # 京东方持 B20 项目公司（北京京东方创元科技）比例：注册资本 145 亿中京东方筹 115 亿、亦庄国投牵头 30 亿（公告 2022-077；股权结构「京东方持股 79.31%」）；2022-10-28
+    'unspent_years': 1.0,  # 未投资本折现年数：2026H2–2027 投入，按 2027 年末计（与尾巴同为年末）；2026-10-05
+    'gcs_rev_ms': 5000000000.0,  # 玻璃基载板 2028E 收入（摩根士丹利 2026-06-30，单家；L / M 份数，B5b）；2026-06-30
+    'gcs_wpm': 15000.0,  # 量产线月产能（510×515 片；摩根士丹利 2026-06-30 转述的公司计划，转述；H 份数）；2026-06-30
+    'gcs_capex': 5000000000.0,  # 量产线投资（摩根士丹利 2026-06-30 转述，2027 年投入；扣未投 + ROE 分母）；2026-06-30
+    'gcs_share': 1.0,  # 京东方占量产线比例（主体未定，按 100%，待核）；2026-10-05
+    'gcs_years': 1.0,  # 兑现年 2028（转述的量产目标）− 分子年 FY2027；2026-10-05
+    # Shared glass price, comparable margin and growth inputs come from the
+    # glass peer ruler; company volume, project capex and timing remain above.
+    'ocf_l': 44470000000.0,  # 经营现金流 FY2022–25 均值（所有者盈余交叉）；FY2025
+    'ocf_m': 48820000000.0,  # 经营现金流 FY2025（所有者盈余交叉）；FY2025
+    'ocf_h': 57500000000.0,  # 经营现金流 2026E（金元，所有者盈余交叉）；2026-07-10
+    'interest': 3290000000.0,  # FY2025 利息支出（所有者盈余交叉）；FY2025
+    'band_lo': 11.61,  # 同等盈利月份 TTM PE 带下沿（2022-10 收盘 3.34 ÷ TTM EPS 0.2865 = 11.66×，步 1c 扣华灿后），只作 ③ 对带；2026-10-04
+    'band_hi': 22.92,  # 同等盈利月份 TTM PE 带上沿（2021-04..07 段）；2026-10-04
+    'pb_floor': 0.976,  # 归母口径 PB 实测最低（2022-09），只披露（B6）；2022-09
+    'm_prev': 2.94,  # 上一版 M（`boe_fy27_econdep_gordon_tail_v4`，r 13%），对账门用；2026-10-16
+    'tau': 0.5,  # 时点对齐年数：估值基准日 2026-06-30（中报资产负债表日）→ 分子年初 2027-01-01（B7）；2026-06-30
+    'ni_2026ytd_actual': 4251312657.0,  # Q1 前三季度归母，待滚动采用；独立实际披露；2026-09-30
+    'ni_2026q3_actual': -996347420.0,  # Q1 Q3单季归母；独立实际披露；2026-09-30
+    'ni_core_ytd_actual': 3040311631.0,  # Q1 前三季度扣非归母；独立实际披露；2026-09-30
+    'ni_core_q3_actual': 32059775.0,  # Q1 Q3单季扣非归母；独立实际披露；2026-09-30
+    'revenue_ytd_actual': 151808907767.0,  # Q1 前三季度收入；独立实际披露；2026-09-30
+    'bps_q3_actual': 3.55224377744567,  # Q1 归母权益除总股本；不混换旧模型；独立实际披露；2026-09-30
+    'parent_share_q3_actual': 0.661555442106793,  # Q1 归母权益除全部权益；非实际利润分配比；独立实际披露；2026-09-30
+    'cip_q3_actual': 59943521290.0,  # Q1 在建工程；原值等附注未更新；独立实际披露；2026-09-30
+    'ocf_ytd_actual': 32211637855.0,  # Q1 前三季度经营现金流，不年化替换全年预测；独立实际披露；2026-09-30
+    'capex_ytd_actual': 21364790838.0,  # Q1 前三季度购建长期资产支出，非维护支出；独立实际披露；2026-09-30
+    'interest_ytd_actual': 2220736119.0,  # Q1 前三季度利息费用；独立实际披露；2026-09-30
+    'operating_profit_ytd_actual': 5559226688.0,  # Q1 报表营业利润，实测杠杆门分母；独立实际披露；2026-09-30
+    'pretax_ytd_actual': 5575480630.0,  # Q1 利润总额；独立实际披露；2026-09-30
+    'income_tax_ytd_actual': 2192279422.0,  # Q1 所得税费用，实际税负不直接永续化；独立实际披露；2026-09-30
+    'cash_growth_h': 0.06,  # 资金用途两端共同长期增长，沿用旧高档上限；不是新财报确认的增长指引（B17）；2026-11-05
+    'cash_tau_q3': 0.25,  # Q3 基准 2026-09-30 至分子年初 2027-01-01，仅用于研究区间；2026-09-30
+    'cash_release_years': 6.0,  # 2027–2032 释放、2033 起重新占用的期限敏感性；情景示意，不是公司指引；2026-11-05
+}
 GCS_SHARED = ("gcs_abs_rev_usd", "gcs_abs_cap_m2", "gcs_panel_m2", "gcs_price_h_usd",
               "gcs_opm_weak", "gcs_opm_strong", "gcs_yield_disc", "g2_gcs_src")
-PANEL_AXIS = axis_path("_AXIS.lcd-tv-panel")
-AXIS_SHARED = {"r_perp": "r_panel", "r_perp_ref": "r_panel_ref",  # framework row -> axis row
-               "life_l": "panel_life_l", "life_m": "panel_life_m", "life_h": "panel_life_h"}
 FORMULA_ID = "boe_fy27_econdep_gordon_tail_v5"
+NUMERATOR_YEAR = 2027
 TIERS = ("l", "m", "h")
 REQUIRED = [
     "shares", "bps", "ni_2026h1", "ni_ttm",
@@ -89,15 +119,17 @@ REQUIRED = [
     "maint_l", "maint_m", "maint_h", "cohort_year", "tail_start",
     "capex_ex_2025", "capex_ex_2026h1", "da_2026h1",
     "b16_units", "b16_asp_usd", "fx", "b16_margin_m", "b16_margin_h", "b16_interest", "b16_share",
-    "b16_years", "v_opt",
+    "b16_years",
     "b16_budget", "b16_progress", "b20_budget", "b20_progress", "b20_share", "unspent_years",
     "gcs_rev_ms", "gcs_wpm", "gcs_capex", "gcs_share", "gcs_years", *GCS_SHARED,
     "ocf_l", "ocf_m", "ocf_h", "interest", "band_lo", "band_hi", "pb_floor", "m_prev", "tau",
+    "bps_q3_actual", "parent_share_q3_actual", "cip_q3_actual", "ni_2026ytd_actual",
+    "cash_growth_h", "cash_tau_q3", "cash_release_years",
 ]
 
 
 def policy_pe(roe: float, r: float, po: float, dg: float = 0.0) -> tuple[float, float, float]:
-    """(PE, g used, g raw) at policy g = (1 - payout) x ROE (+ dg for the sensitivity row)."""
+    """Legacy formal deck only; cash ownership is explicit in the research range."""
     g_raw = (1 - po) * roe + dg
     cap = g_cap(r)
     if g_raw <= cap:
@@ -105,6 +137,22 @@ def policy_pe(roe: float, r: float, po: float, dg: float = 0.0) -> tuple[float, 
     if roe <= r + 0.03:
         return capped_payout_pe(g_raw, roe, r, po), cap, g_raw
     return perpetual_pe(cap, roe, r), cap, g_raw
+
+
+def cash_use_pe(roe: float, r: float, g: float, po: float, release: float,
+                years: int | None = None) -> float:
+    """Same cash expression at both endpoints; release is an amount share, not probability.
+
+    The upper endpoint assumes the return proxy really measures investment needs.
+    No domain threshold changes ownership. A finite release reverts to baseline.
+    """
+    if not (roe > 0 and 0 <= g < r and 0 <= po <= 1 and 0 <= release <= 1):
+        raise ValueError("invalid cash-use scenario")
+    if years is not None and (not isinstance(years, int) or years < 0):
+        raise ValueError("release years must be a nonnegative integer")
+    gap = max(0.0, 1 - g / roe - po)
+    duration = 1 / (r - g) if years is None else annuity_factor(g, r, years)
+    return po / (r - g) + release * gap * duration
 
 
 def econ_d(inp: dict[str, float], t: str) -> float:
@@ -153,12 +201,13 @@ def window_profit(x: dict[str, float], t: str, ed: float) -> float:
     2H26 unbooked consensus 归母 on the numerator basis (+ half a year of (accounting D - economic D)
     x (1 - t) x s, FY2025 D as the FY2026 proxy) x (1 - b), b = the book-roll retention 1 - payout.
     Floored at 0 (DECISIONS: b > 1 cases belong to the funding-gap line)."""
-    unb = x[f"ni26_{t}"] - x["ni_2026h1"] + 0.5 * (x["da_2025"] - ed) * (1 - x["tax"]) * x["parent_share"]
+    unb = x[f"ni26_{t}"] - x["ni_2026h1"] + x["tau"] * (x["da_2025"] - ed) * (1 - x["tax"]) * x["parent_share"]
     return max(0.0, unb * x["payout"] / x["shares"])
 
 
 def deck(inp: dict[str, float], dg: float = 0.0, r: float | None = None,
-         over: dict[str, float] | None = None) -> dict[str, dict[str, float]]:
+         over: dict[str, float] | None = None, *, h_release: float | None = None,
+         h_release_years: int | None = None) -> dict[str, dict[str, float]]:
     x = dict(inp, **(over or {}))
     sh, po = x["shares"], x["payout"]
     r = x["r_perp"] if r is None else r
@@ -171,6 +220,9 @@ def deck(inp: dict[str, float], dg: float = 0.0, r: float | None = None,
         bps = x["bps"] + (1 - po) * (x[f"ni26_{t}"] - x["ni_2026h1"]) / sh
         roe = eps / bps
         pe, g, g_raw = policy_pe(roe, r, po, dg)
+        if t == "h" and h_release is not None:
+            g = x["cash_growth_h"]
+            pe = cash_use_pe(roe, r, g, po, h_release, h_release_years)
         tl = tail(x, t, r)
         perp = eps * pe
         win = window_profit(x, t, ed)
@@ -187,6 +239,22 @@ def deck(inp: dict[str, float], dg: float = 0.0, r: float | None = None,
     out["l"] = dict(ed=ed, eps=eps_l, eps_rec=eps_rec, eps_book=x["ni_l"] / sh, g1=g1, pe=pe_l,
                     perp=eps_l * pe_l, tail=tl, ded=ded, a=eps_l * pe_l + tl["v"] - ded)
     return out
+
+
+def cash_use_candidates(inp: dict[str, float]) -> dict[str, dict[str, dict[str, float]]]:
+    """Q3 research only: no mutation of the formal deck, no App candidate band.
+
+    ni_2026h1 is the legacy slot for already-booked profit; here it receives YTD.
+    Missing project progress/payment timing and asset gross costs stay dated H1.
+    """
+    x = dict(inp, bps=inp["bps_q3_actual"], parent_share=inp["parent_share_q3_actual"],
+             cip=inp["cip_q3_actual"], ni_2026h1=inp["ni_2026ytd_actual"],
+             tau=inp["cash_tau_q3"])
+    return {
+        "occupied": deck(x, h_release=0),
+        "released": deck(x, h_release=1),
+        "six_years": deck(x, h_release=1, h_release_years=int(inp["cash_release_years"])),
+    }
 
 
 def book_deck(inp: dict[str, float]) -> tuple[float, float, float]:
@@ -238,31 +306,41 @@ def gcs_option(inp: dict[str, float], t: str, r: float, g2: float | None = None)
                 raw=raw, v=max(0.0, raw))
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
+def evaluate(inp, glass_rules):
     errors = check_missing(inp, REQUIRED)
     if errors:
-        return report(errors)
-
-    baskets = parse_baskets(md)
-    if "r_perp" not in baskets:
-        errors.append("r_perp: no 篮 N in the Inputs source cell (valuation-rules.md「§r 篮子」)")
-    r, po, sh = inp["r_perp"], inp["payout"], inp["shares"]
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    # shared scenario axis (_AXIS.lcd-tv-panel): the panel-leg r is the axis' (user ruling 2026-10-23)
-    if PANEL_AXIS.is_file():
-        ax = parse_inputs(PANEL_AXIS.read_text(encoding="utf-8"))
-        for k, ak in AXIS_SHARED.items():
-            if ak not in ax or abs(ax[ak] - inp[k]) > 1e-12:
-                errors.append(f"{k} {inp[k]:g} != _AXIS.lcd-tv-panel {ak} {ax.get(ak)} — the panel ruler drifted")
-    else:
-        errors.append("frameworks/axes/lcd-tv-panel.md missing — panel-leg r unchecked")
-
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[key]) for key in REQUIRED):
+        raise ValueError('all required inputs must be finite')
+    for key in ('n_rec', 'cash_release_years', 'tail_start'):
+        if isinstance(inp[key], bool) or not float(inp[key]).is_integer():
+            raise ValueError(f'{key} must be a whole number')
+    baskets = {'r_perp': 5}  # Borrowed axis value by the 2026-10-23 ruling.
+    r, po, sh = inp['r_perp'], inp['payout'], inp['shares']
+    errors += check_r(r, 'r_perp', baskets['r_perp'])
     d = deck(inp)
+    candidates = cash_use_candidates(inp)
+    cash_low = candidates["occupied"]["h"]["a"]
+    cash_high = candidates["released"]["h"]["a"]
+    cash_finite = candidates["six_years"]["h"]["a"]
+    if not cash_low < cash_finite < cash_high:
+        errors.append("finite cash release must lie strictly between occupied and perpetual release")
+    for t in ("l", "m"):
+        if candidates["occupied"][t] != candidates["released"][t]:
+            errors.append(f"cash ownership uncertainty leaked into tier {t}")
+    for release in (0, 0.5, 1):
+        near = [cash_use_pe(r + 0.03 + delta, r, inp["cash_growth_h"], po, release)
+                for delta in (-1e-6, 1e-6)]
+        if abs(near[1] - near[0]) > 0.001:
+            errors.append("cash ownership jumps at the legacy return boundary")
+    h_candidate = candidates["released"]["h"]
+    gap = max(0, 1 - inp["cash_growth_h"] / h_candidate["roe"] - po)
+    years = int(inp["cash_release_years"])
+    yearly_pv = sum(gap * (1 + inp["cash_growth_h"]) ** (t - 1) / (1 + r) ** t
+                    for t in range(1, years + 1))
+    expected_finite = cash_low + h_candidate["eps"] * yearly_pv * (1 + r) ** -inp["cash_tau_q3"]
+    if abs(cash_finite - expected_finite) > 1e-9:
+        errors.append("finite cash release differs from independently discounted annual cash")
     L, M, H = (d[t]["a"] for t in TIERS)
     A, B = cut_points(L, M, H)
     errors += ladder("NI27 consensus", inp["ni27_lo"], inp["ni27_m"], inp["ni27_h"])
@@ -270,7 +348,6 @@ def main() -> int:
     for t in ("m", "h"):
         errors += check_g_cap(d[t]["g"], r, f"g_{t}")
         errors += check_branch(d[t]["g"], d[t]["roe"], r, po, f"tier {t.upper()}") if d[t]["g"] == d[t]["g_raw"] else []
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- §5b guards --------------------------------------------------------------------------
     # Entry: capex (ex the two named expansion lines B16 / B20) / D&A < 0.6 for two periods.
@@ -309,14 +386,7 @@ def main() -> int:
     if not 3.5e10 < unspent(inp) < 4.5e10:
         errors.append(f"B16/B20 unspent {unspent(inp) / 1e8:.1f}亿 outside the 350–450亿 sanity band")
 
-    # --- peer-ruler axis (_AXIS.glass-core-substrate): shared rows must match the axis file --
-    if GCS_AXIS.is_file():
-        peer = parse_inputs(GCS_AXIS.read_text(encoding="utf-8"))
-        for k in GCS_SHARED:
-            if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
-                errors.append(f"{k} {inp[k]:g} != _AXIS.glass-core-substrate {peer.get(k)} — the leg ruler drifted")
-    else:
-        errors.append("frameworks/axes/glass-core-substrate.md missing — leg ruler unchecked")
+    # Shared glass inputs already come from the frozen peer-axis snapshot.
     price_h = inp["gcs_abs_rev_usd"] / inp["gcs_abs_cap_m2"] * inp["gcs_panel_m2"]
     if abs(price_h - inp["gcs_price_h_usd"]) > 1.0:
         errors.append(f"gcs_price_h_usd {inp['gcs_price_h_usd']} != Absolics target / capacity x panel {price_h:.0f}")
@@ -330,6 +400,12 @@ def main() -> int:
     v_m = b16_option(inp, inp["b16_margin_m"], r) * tf
     b16 = {"l": 0.0, "m": 0.5 * v_m, "h": v_h}          # p_M(B16) = 0.5 x V_M/V_H (B5)
     gcs = {t: gcs_option(inp, t, r) for t in TIERS}
+    # The historic formula has no return fade. Enforce the shared visible-year
+    # alignment and only retain that formula when every forward ROE is at or
+    # below the axis's steady cap; a higher-return case needs a model rebuild.
+    glass_adoption = check_glass_ruler(glass_rules, numerator_year=NUMERATOR_YEAR,
+                                       realization_offset=inp['gcs_years'],
+                                       projected_returns=tuple(gcs[t]['roe'] for t in TIERS))
     for t in TIERS:
         gcs[t]["v"] *= tf
     gcs_vh = gcs["h"]["v"]
@@ -337,112 +413,71 @@ def main() -> int:
     v_tot = v_h + gcs_vh
     contrib = {t: b16[t] + gcs_p[t] * gcs_vh for t in TIERS}
     p_tot = {t: contrib[t] / v_tot for t in TIERS}
-    if abs(v_tot - inp["v_opt"]) > 0.01:
-        errors.append(f"v_opt: stated {inp['v_opt']} vs recomputed {v_tot:.3f} (B16 {v_h:.3f} + glass {gcs_vh:.3f})")
-    fw = load_framework(FRAMEWORK)
-    if fw.v_opt is None or abs(fw.v_opt - v_tot) > 0.01:
-        errors.append(f"Outputs V_opt {fw.v_opt} vs recomputed {v_tot:.3f}")
-    if fw.p_tiers is None or any(abs(a - p_tot[t]) > 0.005 for a, t in zip(fw.p_tiers, TIERS)):
-        errors.append(f"Outputs p_L/p_M/p_H {fw.p_tiers} vs recomputed "
-                      f"{p_tot['l']:.3f}/{p_tot['m']:.3f}/{p_tot['h']:.3f}")
     if not (0 <= p_tot["l"] <= p_tot["m"] <= p_tot["h"] == 1.0):
         errors.append("p_k ladder 0 <= p_L <= p_M <= p_H = 1 violated")
 
-    # --- print -------------------------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    for t in TIERS:
-        x, tl = d[t], d[t]["tail"]
-        print(f"{t.upper()}: econ D {x['ed'] / 1e8:.1f}亿 (life {inp[f'life_{t}']}) "
-              f"tail gap {tl['gap']:.4f}/sh x AF(n={tl['n']}) {tl['af']:.3f} = {tl['v']:.2f}")
-    for t in ("m", "h"):
-        x = d[t]
-        note = f" (raw {x['g_raw']:.2%} capped → payout ruler)" if x["g"] != x["g_raw"] else ""
-        print(f"{t.upper()}: NI27 book {inp[f'ni27_{t}'] / 1e8:.2f} → adj {x['ni_adj'] / 1e8:.2f}亿 EPS {x['eps']:.4f} "
-              f"BPS(beg 2027) {x['bps']:.3f} ROE {x['roe']:.2%} g {x['g']:.2%}{note} PE {x['pe']:.2f} "
-              f"(perp {x['perp']:.2f} + tail {x['tail']['v']:.2f}) x (1+r)^-{inp['tau']:g} + window "
-              f"{x['win']:.4f} x (1+r)^-{inp['tau'] / 2:g} - ded {x['ded']:.2f} = {x['a']:.2f}")
-    x = d["l"]
-    print(f"L: FY2023 adj EPS {x['eps']:.4f} → FY2025 adj {x['eps_rec']:.4f} g1 {x['g1']:.1%} n {int(inp['n_rec'])} "
-          f"PE {x['pe']:.2f} perp {x['perp']:.2f} + tail {x['tail']['v']:.2f} = {x['a']:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    em, eh, el = d["m"]["eps"], d["h"]["eps"], d["l"]["eps"]
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} width={(H - L) / (2 * M):.2f} V_opt/M={inp['v_opt'] / M:.2f}")
-    print(f"  perpetual part: L/M {d['l']['perp'] / d['m']['perp']:.2f} (分子比 {el / em:.2f} x 倍数比 "
-          f"{d['l']['pe'] / d['m']['pe']:.2f}); H/M {d['h']['perp'] / d['m']['perp']:.2f} (分子比 {eh / em:.2f} x "
-          f"倍数比 {d['h']['pe'] / d['m']['pe']:.2f}); tail share of anchor L/M/H "
-          f"{d['l']['tail']['v'] / L:.0%}/{d['m']['tail']['v'] / M:.0%}/{d['h']['tail']['v'] / H:.0%}")
-    flat = [d[t]["eps"] * d["m"]["pe"] + d[t]["tail"]["v"] - d[t]["ded"] for t in TIERS]
-    errors += ladder("flat-multiple", *flat)
-    print(f"flat @ PE_M {d['m']['pe']:.2f} (+tails - deduction): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for dg in (-0.01, 0.01):
-        s = deck(inp, dg)
-        print(f"g ±1pp {dg:+.0%}: L {s['l']['a']:.2f} M {s['m']['a']:.2f} H {s['h']['a']:.2f}")
-    sens = {
-        "da_27 343 (draft line table)": {"da_27": 3.43e10},
-        "da_27 386.7 (2025 peak)": {"da_27": inp["da_2025"]},
-        "econ base ex CIP": {"cip": 0.0},
-        "parent share 0.55": {"parent_share": 0.55},
-        "life all 17.5": {"life_l": 17.5, "life_h": 17.5},
-        "tail n -2 (cohort 2012.25)": {"cohort_year": inp["cohort_year"] - 2},
+    flat = [d[t]['eps'] * d['m']['pe'] + d[t]['tail']['v'] - d[t]['ded'] for t in TIERS]
+    errors += ladder('flat-multiple', *flat)
+    if errors:
+        raise ValueError('; '.join(errors))
+    tiers = lambda values: dict(zip('LMH', values))
+    base = tiers(d[t]['a'] for t in TIERS)
+    option = tiers(d[t]['a'] + contrib[t] for t in TIERS)
+    sensitivity = {
+        'growth_minus_1pp': tiers(deck(inp, -.01)[t]['a'] for t in TIERS),
+        'growth_plus_1pp': tiers(deck(inp, .01)[t]['a'] for t in TIERS),
+        'da27_343': tiers(deck(inp, over={'da_27': 3.43e10})[t]['a'] for t in TIERS),
+        'da27_peak': tiers(deck(inp, over={'da_27': inp['da_2025']})[t]['a'] for t in TIERS),
+        'economic_ex_cip': tiers(deck(inp, over={'cip': 0.0})[t]['a'] for t in TIERS),
+        'parent_share_55': tiers(deck(inp, over={'parent_share': .55})[t]['a'] for t in TIERS),
+        'life_all_175': tiers(deck(inp, over={'life_l': 17.5, 'life_h': 17.5})[t]['a'] for t in TIERS),
+        'cohort_earlier_2y': tiers(deck(inp, over={'cohort_year': inp['cohort_year'] - 2})[t]['a'] for t in TIERS),
+        'deduction_undiscounted': tiers(deck(inp, over={'unspent_years': 0})[t]['a'] for t in TIERS),
+        'deduction_none': tiers(deck(inp, over={'b16_progress': 1., 'b20_progress': 1.})[t]['a'] for t in TIERS),
+        'r_reference': tiers(deck(inp, r=inp['r_perp_ref'])[t]['a'] for t in TIERS),
+        'book_deck': tiers(book_deck(inp)), 'cash_release': {
+            key: tiers(candidates[key][t]['a'] for t in TIERS) for key in ('occupied', 'six_years', 'released')},
     }
-    for name, over in sens.items():
-        s = deck(inp, over=over)
-        print(f"sens {name}: L {s['l']['a']:.2f} M {s['m']['a']:.2f} H {s['h']['a']:.2f}")
-    b16u = inp["b16_budget"] * (1 - inp["b16_progress"])
-    b20u = inp["b20_budget"] * (1 - inp["b20_progress"])
-    print(f"B16/B20 unspent {unspent(inp) / 1e8:.1f}亿 = B16 {b16u / 1e8:.2f} x {inp['b16_share']} + "
-          f"B20 {b20u / 1e8:.2f} x {inp['b20_share']} = {unspent_owned(inp) / 1e8:.2f}亿 / (1+r)^{inp['unspent_years']:g} "
-          f"= -{ded:.4f}/sh (all tiers)")
-    for name, over in {"deduction undiscounted": {"unspent_years": 0},
-                       "unspent 436亿 (B16 630-315.9 + B20 122)": {"b16_progress": 1 - 3.141e10 / 6.3e10,
-                                                                   "b20_progress": 1 - 1.22e10 / 2.9e10},
-                       "deduction at group parent share": {"b16_share": inp["parent_share"],
-                                                           "b20_share": inp["parent_share"]},
-                       "no deduction": {"b16_progress": 1.0, "b20_progress": 1.0}}.items():
-        s_ = deck(inp, over=over)
-        print(f"sens {name}: L {s_['l']['a']:.2f} M {s_['m']['a']:.2f} H {s_['h']['a']:.2f}")
-
-    # cross-checks and gate coordinates (disclosure only)
-    ref = deck(inp, r=inp["r_perp_ref"])
-    print(f"axis review base: same ruler at r {inp['r_perp_ref']:.0%} → L {ref['l']['a']:.2f} M {ref['m']['a']:.2f} "
-          f"H {ref['h']['a']:.2f} (_AXIS.lcd-tv-panel §2 trigger)")
-    bl, bm, bh = book_deck(inp)
-    print(f"cross book Gordon FY2027 (old ruler, no econ D, no tail): {bl:.2f}/{bm:.2f}/{bh:.2f}")
-    oe = [(inp[f"ocf_{t}"] - inp["interest"] - inp[f"maint_{t}"]) * inp["parent_share"] / sh / r - ded for t in TIERS]
-    print(f"cross owner earnings (b) /r - B16/B20 deduction: {oe[0]:.2f}/{oe[1]:.2f}/{oe[2]:.2f}")
-    eps27 = inp["ni27_m"] / sh
-    print(f"③ M / FY2027E book EPS {eps27:.4f} = {M / eps27:.2f}x vs same-earnings band {inp['band_lo']}–{inp['band_hi']}x "
-          f"({'inside' if inp['band_lo'] <= M / eps27 <= inp['band_hi'] else 'OUT'}; "
-          f"{M / eps27 / inp['band_lo'] - 1:+.1%} vs band low)")
-    print(f"③ M before deduction {M + ded:.2f} = {(M + ded) / eps27:.2f}x "
-          f"({(M + ded) / eps27 / inp['band_lo'] - 1:+.1%} vs band low)")
-    print(f"gate: M prev {inp['m_prev']} → {M:.2f} ({M / inp['m_prev'] - 1:+.1%}); book E_M/r {eps27 / r:.2f} "
-          f"({eps27 / r / M - 1:+.0%}); econ E_M/r - ded {em / r - ded:.2f} ({(em / r - ded) / M - 1:+.0%}); "
-          f"PB floor {inp['pb_floor'] * inp['bps']:.2f} ({inp['pb_floor'] * inp['bps'] / M - 1:+.0%}); "
-          f"(b) M {oe[1]:.2f} ({oe[1] / M - 1:+.0%})")
-    ttm, fy28 = inp["ni_ttm"] / sh, inp["ni28_m"] / sh
-    for name, e in (("TTM", ttm), ("FY2027E mid (book)", eps27), ("FY2028E", fy28), ("FY2026E FY+0", inp["ni26_m"] / sh)):
-        print(f"neutral band [A,B) on {name} EPS {e:.4f}: {A / e:.1f}x – {B / e:.1f}x")
-    print(f"V_opt B16 increment: H-margin {v_h:.3f} M-margin {v_m:.3f} (p_M(B16) = {0.5 * v_m / v_h:.3f}; "
-          f"credit L/M/H {b16['l']:.3f}/{b16['m']:.4f}/{b16['h']:.3f})")
-    for t in TIERS:
-        x = gcs[t]
-        print(f"glass {t.upper()}: rev {x['rev'] / 1e8:.2f}亿 opm {x['opm']:.1%} NI {x['ni'] / 1e8:.2f}亿 "
-              f"ROE {x['roe']:.1%} PE {x['pe']:.2f} (g {x['g2']:.1%}) value {x['gross']:.4f} - capital {x['cap']:.4f} "
-              f"= {x['raw']:+.4f} → V {x['v']:.4f} p {gcs_p[t]:.3f}")
-    print(f"glass H at g2 0: {gcs_option(inp, 'h', r, 0.0)['v']:.4f}; realisation 2029 (Citi): "
-          f"{gcs_option(dict(inp, gcs_years=2), 'h', r)['v']:.4f}; share 0.641: "
-          f"{gcs_option(dict(inp, gcs_share=inp['parent_share']), 'h', r)['v']:.4f}")
-    be = inp["gcs_capex"] * r / ((1 - inp["tax"]) * inp["gcs_rev_ms"]) * (1 + r) ** (inp["gcs_years"] - inp["unspent_years"])
-    print(f"glass break-even opm on MS 50亿 (ROE<=r branch): {be:.1%}")
-    print(f"V_opt = B16 {v_h:.4f} + glass {gcs_vh:.4f} = {v_tot:.4f}; p_L/p_M/p_H = "
-          f"{p_tot['l']:.4f}/{p_tot['m']:.4f}/{p_tot['h']:.4f}; corrected L/M/H "
-          f"{L + contrib['l']:.2f}/{M + contrib['m']:.2f}/{H + contrib['h']:.2f}")
-    print(f"PB floor {inp['pb_floor']}x BPS {inp['bps']} = {inp['pb_floor'] * inp['bps']:.2f} (disclosure only)")
-    print(f"regime coordinate L: FY2023 adj EPS / r = {el / r:.2f}")
-    print(f"§5b entry ratios: FY2025 {inp['capex_ex_2025'] / inp['da_2025']:.2f}, 2026H1 {inp['capex_ex_2026h1'] / inp['da_2026h1']:.2f}")
-    return report(errors)
+    # H uses actual policy payout because raw policy growth hits the cap;
+    # its uncapped economic return does not enter that multiple.
+    fingerprint_inputs = dict(inp)
+    for key in ('life_l', 'life_m', 'life_h'):
+        fingerprint_inputs[key] = float(fingerprint_inputs[key])
+    fingerprint_context = {'inputs': fingerprint_inputs,
+                           'glass_ruler': {key: glass_rules[key] for key in
+                                           ('t_align', 'ss_return_cap_gcs', 'fall_years_gcs')}}
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_context, sort_keys=True, separators=(',', ':'),
+                                            allow_nan=False).encode()).hexdigest()
+    ratio = lambda values: {'unit': 'RATIO', 'values': values}
+    return {'ticker': '000725.SZ', 'currency': 'CNY', 'valuation_as_of': None, 'framework_as_of': None,
+            'historical_financial_statement_as_of': '2026-06-30', 'historical_research_as_of': '2026-11-05',
+            'basis_changed': None, 'partial_basis_changed': fingerprint != HISTORICAL_INPUT_FINGERPRINT,
+            'units': {'price': 'CNY_PER_SHARE'},
+            'anchors': base, 'candidate': None,
+            'option': {'label': 'B16 与玻璃基板', 'value': v_tot, 'value_unit': 'CNY_PER_SHARE',
+                       'weights': tiers(p_tot[t] for t in TIERS),
+                       'anchors': option, 'components': {'b16': tiers(b16[t] for t in TIERS),
+                                                         'glass': tiers(gcs[t]['v'] for t in TIERS)}},
+            'segments': {'company': {'label': '整公司', 'unit': 'CNY_PER_SHARE', 'values': base}},
+            'key_parameters': {'company': {
+                'discount_rate': ratio(tiers((r, r, r))),
+                'growth_rate': ratio(tiers((d['m']['g'], d['m']['g'], d['h']['g']))),
+                'forward_return': ratio(tiers((None, d['m']['roe'], d['h']['roe']))),
+                'steady_return': ratio(tiers((d['m']['roe'], d['m']['roe'], None)))}},
+            'operating': {'deck': {t.upper(): d[t] for t in TIERS}, 'glass': {t.upper(): gcs[t] for t in TIERS},
+                          'glass_ruler_adoption': glass_adoption,
+                          'deduction': ded, 'unspent': unspent(inp), 'flat': tiers(flat),
+                          'economic_life': tiers(inp[f'life_{t}'] for t in TIERS),
+                          'recovery_growth': d['l']['g1'], 'recovery_years': inp['n_rec']},
+            'sensitivity': sensitivity}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context: dict) -> dict:
+    panel, glass = context['axes']['panel'], context['axes']['glass']
+    panel_fields, glass_fields = panel['stock_fields'], glass['stock_fields']
+    required_panel = {'r_perp', 'r_perp_ref', 'life_l', 'life_m', 'life_h'}
+    if (panel['scope'] != 'company' or set(panel_fields) != required_panel
+            or glass['axis_metadata']['role'] != 'reference' or set(glass_fields) != set(GCS_SHARED)
+            or (required_panel | set(GCS_SHARED)) & INPUTS.keys()):
+        raise ValueError('panel or glass axis scope and shared inputs are invalid')
+    return evaluate({**INPUTS, **panel_fields, **glass_fields}, glass)

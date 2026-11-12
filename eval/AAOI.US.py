@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""AAOI.US (应用光电 / Applied Optoelectronics) valuation eval — recompute
-anchors from frameworks/AAOI.US.md.
+"""AAOI.US valuation calculation using the dated inputs in this script.
 
-frameworks/AAOI.US.md is the source of truth; this script re-derives L/M/H,
-A/B, the ELSFP option and the candidate band from the §3 Inputs table and exits
-1 on mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」),
-so nothing here reads a quote.
+The historical reference anchors remain at the 2026-10-19 baseline. The
+separate Q3 funding cases are unadopted research conditions, not revised anchors.
+The human document is an explanation, not an input. Nothing here reads a quote.
 
 formula_id: aaoi_fy27_gordon_basket_pair_floor_elsfp_opt_v1
 
@@ -31,8 +29,8 @@ of the 2030 convertible (A20).
 Steady return three segments (valuation-rules「经营价值与超额现金」② 稳态回报三段,
 2026-10-16 框架纠正, A23): the whole company rides `_AXIS.pluggable-module`'s
 ss_return_plug / y1_plug / y2_plug (module assembly, medium barrier): forward
-ROE through Y1 2028, linear to min(forward, 18%) at Y2 2032, Gordon tail after
-(gordon.py's three-segment function is [待建], so `path_value` lives here).
+ROE through Y1 2028, linear to min(forward, 18%) at Y2 2032, Gordon tail after;
+the shared return path in gordon.py supplies the calculation.
 k 0.19 stays (user 2026-10-16: the basket-pair rule's mandatory "never arrives"
 discount on the whole operating value is a named rule object) and is re-derived
 on the path multiples.
@@ -61,21 +59,14 @@ ticker's ruler at H, discounted one year at the journey rate, less
 full-capacity capital, then tau to today.  p_L / p_M / p_H are constants,
 never Inputs.
 
-Run:  python3 frameworks/eval/AAOI.US.py
+Run through the shared valuation runner with explicitly selected roots.
 """
 
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.gordon import (  # noqa: E402
+from lib.gordon import (
     check_basket_pair,
     check_branch,
     check_g_cap,
@@ -83,19 +74,18 @@ from eval.lib.gordon import (  # noqa: E402
     check_transition_years,
     payout_gap,
     perpetual_pe,
+    return_path_pe,
 )
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
+from lib.inputs import (
     check_missing,
-    parse_baskets,
-    parse_inputs,
-    report,
 )
-from eval.lib.rf_report import rf_block  # noqa: E402
+from lib.rf_report import calculate_rf_readings, result_rate_sensitivity
+from lib.partial_basis import local_basis_changed
 
-FRAMEWORK = REPO_ROOT / "frameworks" / "AAOI.US.md"
-AXIS_PLUG = REPO_ROOT / "frameworks" / "axes" / "pluggable-module.md"
-AXIS_LASER = REPO_ROOT / "frameworks" / "axes" / "inp-laser.md"
+DEPENDENCIES = {"libraries": ("gordon", "inputs", "rf_report", "partial_basis"),
+                "axes": {"pluggable": "pluggable_module", "inp_laser": "inp_laser"}}
+BASELINE_LOCAL = "c7865e713de619d4afde32df68c84b023c989093fa47727dcdabecccb7423472"
+
 FORMULA_ID = "aaoi_fy27_gordon_basket_pair_floor_elsfp_opt_v1"
 LISTING_CCY = "USD"
 TOL = 0.05
@@ -107,6 +97,94 @@ K_TOL = 0.01
 P_TIERS = (0.0, 0.0, 1.0)  # A13: no sell-side volume -> option only in H
 MACRO_G = 0.04
 TIERS = ("L", "M", "H")
+
+# 2027 年调整后每股利润：yfinance，五家机构，2026-10-06；2026-11-06
+# 查询仍未反映新财报。低值只作参考，保守估值采用账面价值。
+EPS_ESTIMATES = {"low": 3.52, "mean": 4.60, "high": 8.08}
+# 外置光源月产能（百万只）：公司 2026Q1 电话会要点稿转述，2026-05-07；
+# 每只单价：Raymond James，经 Investing.com 转述的下沿，2026-06-10。
+CAPACITY_AND_PRICE = {"units_month": 0.4, "price": 500.0}
+# Raymond James 2026-06-10 单家产能年化估计，并非全年利润预测。
+CANDIDATE_ESTIMATE = {"mean": 11.5, "high": 12.0}
+
+# The historical reference is 2026-10-19; q3_* are separate unadopted
+# post-earnings conditions. Amounts USD millions, shares millions.
+INPUTS = {
+    'eps_fy27_l': EPS_ESTIMATES['low'],  # FY2027 non-GAAP EPS 下沿；L 为资产地板，不入正式锚点。
+    'eps_fy27_m': EPS_ESTIMATES['mean'],  # FY2027 non-GAAP EPS 均值，M 利润来源。
+    'eps_fy27_h': EPS_ESTIMATES['high'],  # FY2027 non-GAAP EPS 上沿，H 利润来源。
+    'rev_fy26_cons': 1038.4256,  # FY2026 收入共识均值（yfinance `0y`）= L 消化年的收入起点；A3 ；旧正式基准冻结，**共识待更新**；as-of 2026-10-06
+    'rev_fy27_m': 2663.3365,  # FY2027 收入共识均值（yfinance `+1y`，4 家）；只算 CATV 交叉占比 ；旧正式基准冻结，**共识待更新**；as-of 2026-10-06
+    'rev_fy27_h': 3526.3,  # FY2027 收入共识上沿；只算 CATV 交叉占比 ；旧正式基准冻结，**共识待更新**；as-of 2026-10-06
+    'nm_fy25': -0.03434,  # FY2025 non-GAAP 净利率 = −0.26 × 60.184 ÷ 455.715（新闻稿 2026-02-26 / 10-K 加权股本）；L 情景（A3）；as-of 2025-12-31
+    'rev_cut_l': 0.3,  # L 消化年收入回落 = FY18 实测 −30.04%（267.465 ÷ 382.329 − 1，10-K）；A3；as-of 2018-12-31
+    'sbc_q2': 4.863,  # 2026Q2 股权激励（10-Q 现金流量表），× 4 年化；A1；as-of 2026-06-30
+    'shares_dil': 92.8,  # 稀释股本（Q3 指引口径，含可转债 / 已归属认股权证）；A1；as-of 2026-08-06
+    'equity_h1': 1668.025,  # 股东权益（10-Q 资产负债表）；as-of 2026-06-30
+    'atm_post': 49.2,  # 6-30 后 ATM 增发毛额（332,428 股，424B5 Dilution 节）；as-of 2026-08-20
+    'atm_fee': 0.02,  # ATM 佣金上限 2%（估计，实数 `待补`）；as-of 2026-08-21
+    'warrant_vested': 1.324233,  # Amazon 认股权证已归属股数（百万股）；A20；as-of 2026-06-30
+    'warrant_strike': 23.6956,  # 认股权证行权价（USD/股）；A20；as-of 2025-03-13
+    'conv_carry': 129.1,  # 2030 可转债账面值（按股口径并入账面）；A20；as-of 2026-06-30
+    'conv_principal': 124.925,  # 可转债本金；A20；as-of 2026-06-30
+    'conv_rate': 23.0884,  # 转股比例（股 / $1,000 本金；转股价 $43.31）；A20；as-of 2026-06-30
+    'ni_h2_cons': 39.9,  # FY26 下半年 GAAP 净利共识 = 长桥 `consensus` Q3 0.85 + Q4 39.05；滚账面 ；旧正式基准冻结，**共识待更新**；as-of 2026-10-06
+    'r_journey': 0.15,  # 篮 7 单押：最近财年单一客户 Digicomm 53.1%、前两大 81.9%（10-K FY25）；今天的性质，决定 G_cap 与期权折现（A15）；as-of 2026-10-06
+    'r_terminal': 0.1,  # 篮 4 常规经营：稳态客户分散后的光模块器件生意，盈利非商品价函数；资本化稳态（A15）；as-of 2026-10-06
+    'r_catv_cross': 0.15,  # CATV 单列交叉读数用的 r（同 `r_journey`，不归篮；不进锚点）；as-of 2026-10-06
+    'g2': 0.02,  # `_AXIS.pluggable-module`·可插拔模块腿永续增速（轴值：用户拍板 2%，低于具名宏观 4%，规则偏离随轴；A9）；三档 flat（`cyclical`）；as-of 2026-09-30
+    'catv_rev_27': 325.0,  # CATV 年收入（公司口径「>$325M」，Q2'26 电话会）；只算交叉占比；as-of 2026-08-06
+    'k_l': 0.0,  # L 是地板，k 不适用；A17；as-of 2026-10-06
+    'k_m': 0.19,  # 篮子对「走不到稳态」= 0.5（拍值）× 38.5%；留存 k 为 0（D 桶）；A16 / A17；as-of 2026-10-06
+    'k_h': 0.19,  # 同 M（H 档 38.5%）；A17；as-of 2026-10-06
+    'payout_obs': 0.0,  # 实付派息率（从未分红）；只进分支校验与披露；as-of 2025-12-31
+    'elsfp_units_month': CAPACITY_AND_PRICE['units_month'],  # 百万只/月，来源与日期在 CAPACITY_AND_PRICE。
+    'elsfp_price': CAPACITY_AND_PRICE['price'],  # USD/只，来源与日期在 CAPACITY_AND_PRICE。
+    't_opt': 2028.0,  # ELSFP 兑现年 = 2027 年底产能的首个满年；A13；as-of 2026-05-07
+    'tax_opt': 0.21,  # 期权腿税率（美国联邦 21%，德州无州所得税）；A13；as-of 派生
+    'ebit_margin_inp_normal': 0.2732,  # `_AXIS.inp-laser` 常态营业利润率（兑现年 > 短缺期止点）；A13；as-of 2026-10-05
+    'g2_inp_laser_normal': 0.04,  # `_AXIS.inp-laser` 非瓶颈期永续增速；A13；as-of 2026-10-05
+    't_shortage_end': 2027.0,  # `_AXIS.inp-laser` 短缺期最后一年；A13；as-of 2026-10-05
+    'cap_intensity': 0.288,  # 满产所需资本 / 年收入（`_AXIS.inp-laser` §1b 表，`LITE.US` A22 实测）；A13；as-of 2026-10-05
+    'rj_eps_runrate': CANDIDATE_ESTIMATE['mean'],  # 单家 2027H2 产能年化中点，非全年预测。
+    'rj_eps_runrate_hi': CANDIDATE_ESTIMATE['high'],  # 同一来源的上沿，避免 H 档重复计算增长。
+    'ss_return': 0.18,  # 主尺稳态回报 = `_AXIS.pluggable-module` `ss_return_plug`（同一门生意成熟同业为空 → 兜底「轻资产组装」18%）；本票自身周期层不可用（FY18–FY25 连亏）；各档 min(ROE, 本值)；A23；as-of 2026-10-16
+    'y1': 2028.0,  # 主尺高回报期 Y1 = `_AXIS.pluggable-module` `y1_plug`（模块组装环节，中门槛）；A23；as-of 2026-10-16
+    'y2': 2032.0,  # 主尺高回报期 Y2 = `_AXIS.pluggable-module` `y2_plug`；Y1 → Y2 线性回落；A23；as-of 2026-10-16
+    'tau': 0.5,  # 时点对齐 τ = 资产负债表日 2026-06-30 → 分子年初 FY27 年初 2027-01-01；篮子对下 τ 段按过渡篮 `r_journey` 折；A24；as-of 2026-10-16
+    'cash_h1': 499.737,  # 现金及等价物，不含受限现金 $9.021M（10-Q 资产负债表；XBRL `CashAndCashEquivalentsAtCarryingValue`）；可动用现金起点，A25；as-of 2026-06-30
+    'bank_debt': 58.915,  # 银行借款 = 一年内到期 57.258 + 长期 1.657（10-Q Note 11）；A25；as-of 2026-06-30
+    'bank_accept': 33.9,  # 银行承兑汇票（10-Q Note 11；同 A18）；A25；as-of 2026-06-30
+    'lease_liab': 78.143,  # 经营租赁负债 = 流动 4.223 + 非流动 73.920（10-Q）；A25；as-of 2026-06-30
+    'cash_anchor': 0.0,  # 经营所需现金锚：FY2021–FY2025 扩展口径净现金 ÷ 收入的最低值为负（FY22–FY24 净负债）→ 下限 0；A25；as-of 2025-12-31
+    'capex_h1': 335.132,  # 2026 上半年购置固定资产（10-Q 现金流量表）= 下半年资本开支按同节奏；A25；as-of 2026-06-30
+    'prepay_h1': 289.744,  # 2026 上半年设备预付款（10-Q 现金流量表「Prepayment for equipment and others」，投资活动；Note 8：扩产项目的设备与厂房预付，将转入固定资产）；计一次、不外推；A25；as-of 2026-06-30
+    'da_h1': 19.729,  # 2026 上半年折旧摊销（10-Q 现金流量表）= 下半年折旧摊销读数；A25；as-of 2026-06-30
+    'ocf_h1': -73.781,  # 2026 上半年实测经营现金流（10-Q）；只进敏感性（另外读法），A25；as-of 2026-06-30
+    'fab4_contract': 94.1,  # Houston OMD 3（FAB4）洁净厂房设计施工合同总额（8-K 2026-07-01；按进度付款，报道称 2027-01-10 基本完工；产品未披露）；只进与期权资本重叠的敏感性，A25；as-of 2026-07-01
+    'ebit_margin_inp_peer': 0.4506,  # `_AXIS.inp-laser` 短缺期营业利润率：期权利润率路径的起点（`y1_opt` 前），`y1_opt` → `y2_opt` 线性回落到 `ebit_margin_inp_normal`；A13；as-of 2026-10-16
+    'ss_return_opt': 0.275,  # 期权腿稳态回报 = `_AXIS.inp-laser` `ss_return_inp`；新投资回报从 H 档 ROE 沿 `y1_opt` → `y2_opt` 落到本值；A13；as-of 2026-10-16
+    'y1_opt': 2029.0,  # 期权腿高回报期 Y1 = `_AXIS.inp-laser` `y1_inp`（磷化铟激光芯片环节，高门槛）；A13；as-of 2026-10-16
+    'y2_opt': 2035.0,  # 期权腿高回报期 Y2 = `_AXIS.inp-laser` `y2_inp`；A13；as-of 2026-10-16
+    'q3_equity': 2241.348,  # Q3 10-Q 归母权益；9 月增发已含，不重复加；as-of 2026-09-30
+    'q3_atm_post_net': 74.39,  # 第三轮 ATM 净额约588减9月净额513.610；近似季后增量，附注19 / MD&A增发表；不是再加588；as-of 2026-10-01
+    'q3_sbc': 5.684,  # Q3 股权激励，附注15；按季度年化扣减；as-of 2026-09-30
+    'q3_shares': 96.0,  # Q4指引稀释股本；不用Q3加权股数87.835替代前瞻口径；as-of 2026-11-05
+    'q3_conv_carry': 128.836,  # 2030可转债账面；本金124.925与转股比例不变，附注12；as-of 2026-09-30
+    'q3_cash': 605.413,  # 现金及等价物；另有受限现金16.044，不计可动用；as-of 2026-09-30
+    'q3_bank_debt': 96.576,  # 长短期借款总计，附注11；含表内融资安排；as-of 2026-09-30
+    'q3_bank_accept': 51.509,  # 银行承兑，附注11；as-of 2026-09-30
+    'q3_lease': 73.284,  # 经营租赁负债5.182+68.102；融资安排已在借款中，勿重扣；as-of 2026-09-30
+    'q3_capex_ytd': 702.149,  # 前三季购置固定资产现金流；Q3单季367.017；as-of 2026-09-30
+    'q3_prepay_ytd': 406.943,  # 前三季设备等预付款现金流；Q3单季117.199；转固不再付一次；as-of 2026-09-30
+    'q3_da_ytd': 34.45,  # 前三季折旧摊销；Q3差额14.721作Q4代理，非Q4实际；as-of 2026-09-30
+    'q3_ocf_ytd': -76.653,  # 前三季经营现金流；Q3差额-2.872，不能拿来冒充Q4预测；as-of 2026-09-30
+    'q3_commitments': 928.8,  # 设备及施工采购承诺总额，附注18；支付日、投产年、与期权资本重叠待补；非已确定的Q4支出；as-of 2026-09-30
+    'q4_raw_prepay': 20.0,  # 新原料合同2026年预付款；全约预付上限40，年度采购上限194.4，附注19；as-of 2026-11-02
+    'q4_ni_cons': 39.05,  # Q4 GAAP净利旧共识；**共识待更新**，不能把公司non-GAAP指引直接当GAAP；as-of 2026-11-06
+    'q3_eps_m': 4.602,  # FY27 non-GAAP EPS现查询均值（5家，3.52–8.08）；**共识待更新**；保留每股预测，不无依据再按股本摊薄；as-of 2026-11-06
+    'q3_tau': 0.25,  # 2026-09-30到2027-01-01约一季；条件试算，未替换旧正式tau；as-of 2026-09-30
+}
 
 REQUIRED = [
     "eps_fy27_l", "eps_fy27_m", "eps_fy27_h", "rev_fy26_cons", "rev_fy27_m", "rev_fy27_h",
@@ -133,44 +211,41 @@ def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
 
 def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: float,
                g1: float = 0.0, n: int = 0, m_from: float = 1.0, m_to: float = 1.0) -> float:
-    """Gordon multiple on next-period earnings with the three-segment RONIC path; t = 1 <->
-    year t0.  Optional n transition years at g1 (payout 1 - g1/ROE, uncapped).  For the option
-    leg the unit margin rides the same path (m_from through Y1, linear to m_to at Y2) and the
-    result is per unit of revenue x (1 - tax); the main ruler uses m_from = m_to = 1."""
-    if r - g <= 0:
-        raise ValueError(f"perpetuity diverges: g={g} >= r={r}")
-    rs = min(roe, r_s)
-    pv, e, t = 0.0, 1.0, 1
-    for _ in range(int(n)):
-        pv += e * (1.0 - g1 / roe) / (1 + r) ** t
-        e *= 1 + g1
-        t += 1
-    while True:
-        cal = t0 + t - 1
-        m = _lin(cal, y1, y2, m_from, m_to)
-        pay = min(1.0, 1.0 - g / _lin(cal, y1, y2, roe, rs))
-        if cal > y1 and cal >= y2:
-            return pv + e * m * pay / ((r - g) * (1 + r) ** (t - 1))
-        pv += e * m * pay / (1 + r) ** t
-        e *= 1 + g
-        t += 1
+    """Use the shared return path; the option also fades its unit margin."""
+    return return_path_pe(t0, y1, y2, r_s, g, roe, r,
+                          growth_first=g1, transition_years=int(n),
+                          margin_start=m_from, margin_end=m_to)
 
 
-def first_float(pattern: str, text: str) -> float | None:
-    m = re.search(pattern, text)
-    return float(m.group(1)) if m else None
 
-
-def axis_check(path: Path, pairs: dict[str, str], inp: dict[str, float], label: str) -> list[str]:
-    """Peer-ruler axis rows (contracts.md「同业尺轴」): single source = the axis file."""
-    if not path.is_file():
-        return [f"{path.name} missing — {label} unchecked"]
-    ax = parse_inputs(path.read_text(encoding="utf-8"))
-    errs = []
-    for mine, theirs in pairs.items():
-        if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
-            errs.append(f"{mine} {inp[mine]:g} != {label} {theirs} {ax.get(theirs)} — the ruler drifted")
-    return errs
+# 旧基准的建模意图，供后续研究对照；来源和日期另见各项输入。
+# A1/A2：2027 年每股利润用五家卖方的低/均/高值，扣股权激励；
+# 2028 年仅有单家产能年化估计，不冒充多家全年预测。
+# A3：消化年参照 2018 年收入下滑约 30%，盈利为负时采用账面参考；
+# 账面不是清算保证，可转债比较转股和偿债，取对现有股东较低的值。
+# A4/A6/A7/A11：产能、1.6T 交付、毛利及扩产回报在 2026Q3 后转弱；
+# 原复核线包括 2026Q4 的 1.6T 收入低于 3500 万美元或年底月产能低于
+# 40 万只、2027 年某季调整后毛利率低于 28%、产能利用率低于 60%。
+# A5：有线电视全年收入目标 3.25 亿美元；连续两季低于 6000 万复核。
+# A8/A9/A10：2027 是最远有区间共识的年份；长期增长率按用户确定的
+# 同业参考 2%，历史找不到同等盈利月份，历史倍数只可作旁证。
+# A12/A14：监管既可能限制中国同行、也可能影响自身原料进口；共封装
+# 可能替代可插拔产品，客户采用路径与公司是否进入供货名单仍待核实。
+# A13：外置光源按公司口径产能与单家售价估算；产能单位、销量、收入
+# 尚未验证。高回报和利润率按激光芯片环节逐步回落，并扣满产资本。
+# A15/A17：客户集中使现阶段要求回报为 15%，分散后的长期参考为 10%；
+# 未能分散的 50% 是基于 2018 年流失主力客户的判断，不是统计概率。
+# 2026 年报若最大客户低于 35% 且前两大低于 60%，复核该风险判断。
+# A16/A18：扩产窗口仍在进行，留存资金用途需区分投资和偿债；负债与
+# 现金按相同归母口径处理，银行授信额度不是已到账的现金。
+# A19：单家预测仅作候选；至少两家卖方给出 2028 年带区间预测后重议。
+# A20：可转债比较转股与按债务处理两种口径；已归属和未归属权证分开。
+# A21/A22：多年亏损使自身周期中枢不可用；未发现已交割的大额收购。
+# A23/A24：高回报持续到 2028 年，2032 年回落至成熟水平；从 2027 年初
+# 折回报表基准，期间利润不得与经营现金流重复计算。
+# A25：只扣本期扩产现金无法覆盖、且服务于分子年盈利的缺口；设备
+# 预付款转固定资产不能再扣，外置光源已计的投入也不能重复扣除。
+# A26：2026 年原料预付 2000 万美元；出口审批和退款条件需后续核实。
 
 
 def sanity(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
@@ -210,28 +285,119 @@ def sanity(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
     return e
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
+def q3_conditions(inp: dict[str, float], references: dict) -> tuple[list[str], dict]:
+    """Keep Q3 cash-use conditions separate from the frozen formal anchors."""
+    names = [
+        "q3_equity", "q3_atm_post_net", "q3_sbc", "q3_shares", "q3_conv_carry",
+        "q3_cash", "q3_bank_debt", "q3_bank_accept", "q3_lease",
+        "q3_capex_ytd", "q3_prepay_ytd", "q3_da_ytd", "q3_ocf_ytd",
+        "q3_commitments", "q4_raw_prepay", "q4_ni_cons", "q3_eps_m", "q3_tau",
+    ]
+    errors = check_missing(inp, names)
+    if errors:
+        return errors, {}
+    sh, g = inp["q3_shares"], inp["g2"]
+    sbc = 4 * inp["q3_sbc"] / sh
+    eq = (inp["q3_equity"] + inp["q3_atm_post_net"]
+          + inp["warrant_vested"] * inp["warrant_strike"] + inp["q3_conv_carry"])
+    conv_sh = inp["conv_principal"] * inp["conv_rate"] / 1000
+
+    def lower(v: float) -> float:
+        return min(v, (v * sh - inp["conv_principal"]) / (sh - conv_sh))
+
+    da_q3 = inp["q3_da_ytd"] - inp["da_h1"]
+    ocf = inp["q4_ni_cons"] + da_q3  # Q4 estimate, not observed Q4 cash flow.
+    cash = (inp["q3_cash"] + inp["q3_atm_post_net"] - inp["q3_bank_debt"]
+            - inp["q3_bank_accept"] - inp["q3_lease"] - inp["cash_anchor"])
+    limit = cash + ocf - inp["q4_raw_prepay"]
+    debt_like = max(0, inp["q3_commitments"] - limit)
+    floor = lower((eq + inp["q4_ni_cons"]) / sh)
+    discount = (1 + inp["r_journey"]) ** (-inp["q3_tau"])
+    values, cand, returns = {}, {}, {}
+    for t, key in (("M", "q3_eps_m"), ("H", "eps_fy27_h")):
+        eps = inp[key] - sbc
+        bps = (eq + inp["q4_ni_cons"]) / sh
+        for _ in range(200):
+            roe = eps / bps
+            nxt = (eq + inp["q4_ni_cons"] * min(1, g / roe)) / sh
+            if abs(nxt - bps) < 1e-12:
+                break
+            bps = nxt
+        roe = eps / bps
+        returns[t] = roe
+        pe = path_value(NUM_YEAR, int(inp["y1"]), int(inp["y2"]),
+                        inp["ss_return"], g, roe, inp["r_terminal"])
+        pe_j = path_value(NUM_YEAR, int(inp["y1"]), int(inp["y2"]),
+                          inp["ss_return"], g, roe, inp["r_journey"])
+        if roe - inp["r_terminal"] < 0.03:
+            errors.append(f"Q3 {t}: return leaves the monotone domain")
+        if abs(FAIL_SHARE * (1 - pe_j / pe) - inp[f"k_{t.lower()}"]) > K_TOL:
+            errors.append(f"Q3 {t}: basket-pair k no longer reconciles")
+        value = eps * pe * (1 - inp[f"k_{t.lower()}"]) * discount
+        values[t] = (lower(value - debt_like / sh), lower(value))
+        target = inp["rj_eps_runrate" if t == "M" else "rj_eps_runrate_hi"]
+        g1 = max(0, target / inp[key] - 1)
+        pe_c = path_value(NUM_YEAR, int(inp["y1"]), int(inp["y2"]),
+                          inp["ss_return"], g, roe, inp["r_terminal"], g1=g1, n=1)
+        cv = eps * pe_c * (1 - inp[f"k_{t.lower()}"]) * discount
+        cand[t] = (lower(cv - debt_like / sh), lower(cv))
+    rv = 12 * inp["elsfp_units_month"] * inp["elsfp_price"]
+    po = path_value(int(inp["t_opt"]), int(inp["y1_opt"]), int(inp["y2_opt"]),
+                    inp["ss_return_opt"], inp["g2_inp_laser_normal"], returns["H"],
+                    inp["r_terminal"], m_from=inp["ebit_margin_inp_peer"],
+                    m_to=inp["ebit_margin_inp_normal"])
+    option = (rv * (1 - inp["tax_opt"]) / sh * po * (1 - inp["k_h"])
+              / (1 + inp["r_journey"]) ** (inp["t_opt"] - NUM_YEAR)
+              - rv * inp["cap_intensity"] / sh) * discount
+    rows = {
+        "cash_fully_committed": (floor, values["M"][0], values["H"][0]),
+        "cash_no_extra_gap": (floor, values["M"][1], values["H"][1]),
+        "candidate_fully_committed": (floor, cand["M"][0], cand["H"][0]),
+        "candidate_no_extra_gap": (floor, cand["M"][1], cand["H"][1]),
+    }
+    for label, nums in rows.items():
+        if not nums[0] < nums[1] < nums[2]:
+            errors.append(f"{label}: tiers not ordered")
+    # Same cash expression across the release threshold: no branch-induced jump.
+    def unfunded(payment: float) -> float:
+        return max(0, payment + inp["q4_raw_prepay"] - ocf - cash)
+    if unfunded(limit) > 1e-8 or abs(unfunded(limit + 1) - 1) > 1e-8:
+        errors.append("Q3 cash-use threshold is not continuous")
+    return errors, {**{key: dict(zip(TIERS, vals)) for key, vals in rows.items()},
+                    "option_value": option, "valuation_as_of": "2026-09-30", "is_trial": True,
+                    "roe": returns,
+                    "steady_return": {"unit": "RATIO",
+                                      "values": {tier: min(roe, inp["ss_return"])
+                                                 for tier, roe in returns.items()},
+                                      "selected_value": inp["ss_return"],
+                                      "reference_value": references["ss_return"]},
+                    "funding": {"available_cash": cash, "ocf_proxy": ocf,
+                                "payment_without_gap": limit, "unfunded": debt_like,
+                                "unfunded_per_share": [unfunded(limit + fraction * debt_like) / sh
+                                                       for fraction in (0, .25, .5, .75, 1)]}}
+
+
+def _evaluate(inp: dict[str, float], references: dict, rate_inputs: dict | None) -> dict:
     errors = check_missing(inp, REQUIRED)
     if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
+        raise ValueError("; ".join(errors))
+    invalid = [key for key, value in inp.items()
+               if not isinstance(value, (int, float)) or not math.isfinite(value)]
+    if invalid:
+        raise ValueError(f"inputs must be finite numbers: {invalid}")
+    fractional_years = [key for key in ("y1", "y2", "y1_opt", "y2_opt", "t_opt")
+                        if isinstance(inp[key], bool) or not float(inp[key]).is_integer()]
+    if fractional_years:
+        raise ValueError(f"model years must be integers: {fractional_years}")
+    if (len(P_TIERS) != 3 or any(not isinstance(p, (int, float)) or not math.isfinite(p)
+                                 or not 0 <= p <= 1 for p in P_TIERS)
+            or not P_TIERS[0] <= P_TIERS[1] <= P_TIERS[2]):
+        raise ValueError("期权兑现比例必须为 0–1 的有限数字，且按情景递增")
+    # The two basket assignments describe the frozen 2026-10-19 baseline.
+    # Each company's own input values are authoritative; peer axis values are
+    # dated references, not a live dependency that overrides this calculation.
+    baskets = {"r_journey": 7, "r_terminal": 4}
     errors = sanity(inp, baskets)
-    errors += axis_check(AXIS_PLUG, {"g2": "g2_pluggable", "ss_return": "ss_return_plug",
-                                     "y1": "y1_plug", "y2": "y2_plug"}, inp, "_AXIS.pluggable-module")
-    errors += axis_check(AXIS_LASER, {
-        "ebit_margin_inp_normal": "ebit_margin_inp_normal",
-        "ebit_margin_inp_peer": "ebit_margin_inp_peer",
-        "g2_inp_laser_normal": "g2_inp_laser_normal",
-        "t_shortage_end": "t_shortage_end",
-        "ss_return_opt": "ss_return_inp",
-        "y1_opt": "y1_inp",
-        "y2_opt": "y2_inp",
-    }, inp, "_AXIS.inp-laser")
     y0, y1, y2, rs = NUM_YEAR, int(inp["y1"]), int(inp["y2"]), inp["ss_return"]
 
     def pp(g: float, roe: float, r: float) -> float:  # main-ruler path multiple (A23)
@@ -267,6 +433,10 @@ def main() -> int:
     # Extended net cash ex-convertible (the convertible is handled by lower_of); restricted cash out.
     cash_free = (inp["cash_h1"] + inp["atm_post"] * (1 - inp["atm_fee"]) - inp["bank_debt"]
                  - inp["bank_accept"] - inp["lease_liab"] - inp["cash_anchor"])
+    # 上半年经营现金流受到存货与应收增加拖累；增长所需营运资金已在
+    # 留存成本中考虑，直接重复扣除可能双计。2023–2025 净利均为负，
+    # 常用的经营现金流/净利历史比例不可用，因此旧基准暂用预测净利
+    # 加折旧作代理；直接外推上半年现金流保留为独立敏感性。
     ocf_h2 = inp["ni_h2_cons"] + inp["da_h1"]
     capex_h2 = inp["capex_h1"] + inp["prepay_h1"]  # H1 pace repeated + the prepayment once
 
@@ -318,7 +488,8 @@ def main() -> int:
         errors += check_branch(g2, roe, r_t, inp["payout_obs"], f"g2@{t}")
         k_derived = FAIL_SHARE * (1 - pe_j / pe)
         if abs(k_derived - k[t]) > K_TOL:
-            errors.append(f"k_{t.lower()} {k[t]} vs derived {k_derived:.3f} (A17)")
+            errors.append(f"k_{t.lower()} {k[t]} vs derived {k_derived:.3f}; "
+                          "采用新的增长或回报假设时须同步复核客户集中风险折扣 (A17)")
     if not eps["M"] * info["M"][2] < eps["H"] * info["M"][2]:
         errors.append("flat ladder: M >= H at the M multiple (A2e-2c)")
 
@@ -339,6 +510,8 @@ def main() -> int:
     capital = rev_opt * inp["cap_intensity"] / sh
     v_opt = (val_t / disc - capital) * (1 + r_j) ** (-tau)  # FY27 opening -> today (A24)
     plus_v = tuple(x + p * v_opt for x, p in zip((L, M, H), P_TIERS))
+    if not math.isfinite(v_opt) or v_opt < 0 or not plus_v[0] < plus_v[1] < plus_v[2]:
+        errors.append("期权价值及修正后的估值区间必须有效且按情景递增")
 
     def v_at(price: float) -> float:
         rv = 12 * inp["elsfp_units_month"] * price
@@ -358,114 +531,134 @@ def main() -> int:
     if not cand["L"] < cand["M"] < cand["H"]:
         errors.append("candidate band not ordered")
 
-    # ---- Reconcile stated Outputs ----
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-    out_sec = md.split("### Outputs", 1)[-1]
-    said_v = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
-    if said_v is None or abs(said_v - v_opt) > TOL:
-        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
-    gl = re.search(r"增长期资金缺口 G = \*\*([0-9.]+)\*\*.*?每股 \*\*([0-9.]+)\*\*", out_sec)
-    if gl is None:
-        errors.append("funding-gap line (增长期资金缺口 G = **…** … 每股 **…**) not found in Outputs")
-    elif abs(float(gl.group(1)) - gap) > 0.5 or abs(float(gl.group(2)) - gap_ps) > TOL:
-        errors.append(f"funding gap: stated {gl.groups()} vs recomputed G {gap:.1f} / {gap_ps:.3f}")
-    p_line = re.search(r"p_L/p_M/p_H\\\) = \*\*([0-9.]+) / ([0-9.]+) / ([0-9.]+)\*\*", out_sec)
-    if p_line is None or tuple(float(x) for x in p_line.groups()) != P_TIERS:
-        errors.append(f"Outputs p_L/p_M/p_H must state {P_TIERS}")
-    cl = re.search(r"L′ = \*\*([0-9.]+)\*\* · M′ = \*\*([0-9.]+)\*\* · H′ = \*\*([0-9.]+)\*\*", out_sec)
-    if cl is None:
-        errors.append("candidate band line not found")
-    else:
-        for t, said in zip(TIERS, (float(x) for x in cl.groups())):
-            if abs(said - cand[t]) > TOL:
-                errors.append(f"{t}′: stated {said} vs recomputed {cand[t]:.4f}")
-
-    # ---- Report ----
-    print(f"formula_id={FORMULA_ID}")
-    print(f"r pair: journey {r_j:g} (篮 {baskets.get('r_journey')}) -> terminal {r_t:g} (篮 {baskets.get('r_terminal')}); "
-          f"g2 {g2:.2%} (_AXIS.pluggable-module; named macro {MACRO_G:.0%}); n = {N_STAGE}")
-    print(f"FY27 opening equity {eq0 + inp['ni_h2_cons']:.1f} (eq0 {eq0:.1f} + H2 NI {inp['ni_h2_cons']}) / {sh} = floor {floor:.2f};"
-          f" SBC/share {sbc_ps:.3f}; convertible {conv_sh:.3f}M shares")
-    print(f"L: scenario EPS {eps_l_scn:.3f} (< 0) -> floor {floor:.2f} -> holder-optimal {L:.2f}")
-    for t in ("M", "H"):
-        bps, roe, pe, pe_j, pre = info[t]
-        mod, _ = payout_gap(g2, roe, inp["payout_obs"])
-        print(f"{t}: EPS {eps[t]:.4f} BPS {bps:.2f} ROE {roe:.3f} PE {pe:.2f} (PE@journey {pe_j:.2f}, "
-              f"k derived {FAIL_SHARE * (1 - pe_j / pe):.3f}) -> {pre:.2f} x (1-k {k[t]}) = {pre * (1 - k[t]):.2f}"
-              f" -> holder-optimal {anchors[t]:.2f}  [payout_gap: model {mod:.1%} vs paid {inp['payout_obs']:.0%}]")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat ladder @ M {info['M'][2]:.2f}x x (1-k_M): "
-          f"{eps['M'] * info['M'][2] * (1 - k['M']):.2f}/{eps['H'] * info['M'][2] * (1 - k['M']):.2f} (L floor, n/a)")
-    num_hm = eps["H"] / eps["M"]
-    print(f"L/M {L / M:.3f} (num n/a, floor) | H/M {H / M:.3f} = num {num_hm:.3f} x rest {H / M / num_hm:.3f}"
-          f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"ELSFP option: rev {rev_opt:.0f} x first-year margin {m0:.4f} (path {inp['ebit_margin_inp_peer']} through"
-          f" {int(inp['y1_opt'])} -> {inp['ebit_margin_inp_normal']} at {int(inp['y2_opt'])}) x (1-{inp['tax_opt']})"
-          f" = NI {ni_opt:.1f} -> EPS {eps_opt:.3f} x PE {pe_opt:.2f} (g {inp['g2_inp_laser_normal']:.0%},"
-          f" ROE_H {roe_h:.3f} -> {min(roe_h, inp['ss_return_opt']):.3f}) x (1-k_H) = {val_t:.2f} / {disc:.2f}"
-          f" = {val_t / disc:.2f} - capital {capital:.2f} = {val_t / disc - capital:.2f} (at FY27 opening)"
-          f" / {1 + r_j:.2f}^{tau:g} = V_opt {v_opt:.2f}")
-    print(f"  +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}  A' {(plus_v[0] + plus_v[1]) / 2:.2f}"
-          f" B' {(plus_v[1] + plus_v[2]) / 2:.2f}; price $750 -> {v_at(750):.2f}, $1000 -> {v_at(1000):.2f}")
-    print(f"candidate (RJ run-rate level: M -> {inp['rj_eps_runrate']} g1 {g1_by['M']:+.1%}, H capped at "
-          f"{inp['rj_eps_runrate_hi']} g1 {g1_by['H']:+.1%}; n=1; stage-1 payout M {1 - g1_by['M'] / info['M'][1]:+.2f}"
-          f" / H {1 - g1_by['H'] / info['H'][1]:+.2f}): {cand['L']:.2f}/{cand['M']:.2f}/{cand['H']:.2f}"
-          f"  A' {(cand['L'] + cand['M']) / 2:.2f} B' {(cand['M'] + cand['H']) / 2:.2f}")
+    # 同一模型的风险与资金用途敏感性；只输出数字，解释留给文档。
     single, _ = band(r_j, r_j, ks={"L": 0, "M": 0, "H": 0})
-    print(f"basket-pair reference (single journey basket {r_j:g}, k = 0): "
-          f"{single['L']:.2f}/{single['M']:.2f}/{single['H']:.2f}")
     t4, _ = band(r_t, r_t, ks={"L": 0, "M": 0, "H": 0})
-    print(f"  single terminal basket {r_t:g}, k = 0: {t4['L']:.2f}/{t4['M']:.2f}/{t4['H']:.2f}")
-    for g in (g2 - 0.01, g2 + 0.01, MACRO_G):
-        b_, _ = band(r_j, r_t, g)
-        print(f"  sens g2={g:.2%}: {b_['L']:.2f}/{b_['M']:.2f}/{b_['H']:.2f}")
-    print("视同派出、实际留存 (D 桶, 窗口 FY27 一年; k 前 / k 后 equal, retention k 0): "
-          + " ".join(f"{t} {(1 - inp['payout_obs'] - g2 / info[t][1]) * eps[t]:.2f}" for t in ("M", "H")))
-    for t, rev in (("M", inp["rev_fy27_m"]), ("H", inp["rev_fy27_h"])):
-        s = inp["catv_rev_27"] / rev
-        bps, roe, pe, _, _ = info[t]
-        sotp = (eps[t] * (1 - s) * pe * (1 - k[t])
-                + eps[t] * s * perpetual_pe(0.0, roe, inp["r_catv_cross"]))
-        v = lower_of(timed(sotp, g2, roe, r_j))
-        print(f"CATV split cross {t}: share {s:.3f} at r {inp['r_catv_cross']:g} g 0 -> {v:.2f} ({v / anchors[t] - 1:+.1%})")
-    # Third ATM fully drawn (A1): ~$600M at ~$120 -> +5.0M shares; consensus EPS diluted pro rata.
-    atm3, px = 600 * (1 - inp["atm_fee"]), 120.0
-    sh3 = sh + 600 / px
-    dil = {t: eps[t] * sh / sh3 for t in ("M", "H")}
-    vals = []
-    for t in ("M", "H"):
-        bps, roe, pe = tier(dil[t], g2, r_t, atm3, sh3)
-        vals.append(timed(pe * dil[t] * (1 - k[t]), g2, roe, r_j, short_ps(gap, cash_free + atm3, sh3)))
-    print(f"funding gap (A25): capex H2 {inp['capex_h1']} + prepayment {inp['prepay_h1']} = {capex_h2:.1f}"
-          f" - OCF H2 (NI {inp['ni_h2_cons']} + D&A {inp['da_h1']}) {ocf_h2:.1f} = G {gap:.1f};"
-          f" usable cash {cash_free:.1f} -> C_ex {c_ex:.1f}; unfunded {max(0.0, gap - cash_free):.1f}"
-          f" / {sh} = {gap_ps:.2f}/share; window profit 0")
 
-    def gap_sens(label: str, gps: float) -> None:
-        b_ = {t: lower_of(timed(eps[t] * info[t][2] * (1 - k[t]), g2, info[t][1], r_j, gps)) for t in ("M", "H")}
-        print(f"  sens gap {label}: deduct {gps:.2f}/share -> {L:.2f}/{b_['M']:.2f}/{b_['H']:.2f}")
+    def gap_band(gps: float) -> dict[str, float]:
+        return {"L": L, **{t: lower_of(timed(eps[t] * info[t][2] * (1 - k[t]),
+                                            g2, info[t][1], r_j, gps)) for t in ("M", "H")}}
 
     ocf_obs = inp["ocf_h1"]
-    gap_sens(f"H1 actual OCF {ocf_obs} repeated (G {capex_h2 - ocf_obs:.1f})", short_ps(capex_h2 - ocf_obs))
-    gap_sens(f"prepayment not counted (G {inp['capex_h1'] - ocf_h2:.1f})", short_ps(inp["capex_h1"] - ocf_h2))
-    gap_sens(f"full G {gap:.1f}, cash not netted", gap / sh)
-    gap_sens(f"Houston FAB4 {inp['fab4_contract']} moved to the option capital (G {gap - inp['fab4_contract']:.1f})",
-             short_ps(gap - inp["fab4_contract"]))
-    print(f"  sens 3rd ATM fully drawn (+{600 / px:.1f}M sh, +{atm3:.0f} equity): "
-          f"floor {(eq0 + atm3 + inp['ni_h2_cons']) / sh3:.2f} M {vals[0]:.2f} H {vals[1]:.2f} (pre-convertible)")
+    gap_sensitivity = {
+        "repeat_h1_ocf": gap_band(short_ps(capex_h2 - ocf_obs)),
+        "exclude_prepayment": gap_band(short_ps(inp["capex_h1"] - ocf_h2)),
+        "without_cash_offset": gap_band(gap / sh),
+        "factory_assigned_to_option": gap_band(short_ps(gap - inp["fab4_contract"])),
+    }
+    catv_cross = {}
+    for t, rev in (("M", inp["rev_fy27_m"]), ("H", inp["rev_fy27_h"])):
+        share = inp["catv_rev_27"] / rev
+        _, roe, pe, _, _ = info[t]
+        value = (eps[t] * (1 - share) * pe * (1 - k[t])
+                 + eps[t] * share * perpetual_pe(0.0, roe, inp["r_catv_cross"]))
+        catv_cross[t] = lower_of(timed(value, g2, roe, r_j))
+
+    # 第三轮增发用满的历史试算；这组数在可转债择优之前。
+    atm3, px = 600 * (1 - inp["atm_fee"]), 120.0
+    sh3 = sh + 600 / px
+    diluted = {t: eps[t] * sh / sh3 for t in ("M", "H")}
+    atm_values = {}
+    for t in ("M", "H"):
+        _, roe, pe = tier(diluted[t], g2, r_t, atm3, sh3)
+        atm_values[t] = timed(pe * diluted[t] * (1 - k[t]), g2, roe, r_j,
+                              short_ps(gap, cash_free + atm3, sh3))
+    atm_values["L"] = (eq0 + atm3 + inp["ni_h2_cons"]) / sh3
 
     # ---- r_f readings (_AXIS.rates USD): both rates of the pair move 1:1; the floor stays ----
     def band_rf(dr: float) -> tuple[float, float, float]:
         b_, _ = band(r_j + dr, r_t + dr)
         return b_["L"], b_["M"], b_["H"]
 
-    rf = rf_block(LISTING_CCY, {"r_journey": r_j, "r_terminal": r_t}, band_rf)
+    rf = None
+    if rate_inputs is not None:
+        rf = result_rate_sensitivity(calculate_rf_readings(
+            rate_currency=LISTING_CCY, price_currency=LISTING_CCY, price_unit="per_share",
+            priced_r={"r_journey": r_j, "r_terminal": r_t}, band_at=band_rf,
+            rates_loader=lambda currency: rate_inputs, base_anchors=(L, M, H)))
     if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
         errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    if not errors:
-        write_rf_readings("AAOI.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    return report(errors)
+    q3_errors, conditional = q3_conditions(inp, references)
+    errors += q3_errors
+    if errors:
+        raise ValueError("; ".join(errors))
+    base = dict(anchors)
+    return {
+        "ticker": "AAOI.US", "currency": "USD",
+        "valuation_as_of": None,
+        "framework_as_of": None,
+        "units": {"price": "USD_PER_SHARE", "amount": "USD_MILLION", "ratio": "RATIO"},
+        "anchors": base,
+        "candidate": {"label": "RJ 产能年化", "anchors": cand},
+        "option": {"value": v_opt, "value_unit": "USD_PER_SHARE", "credits": dict(zip(TIERS, P_TIERS)),
+                   "anchors": dict(zip(TIERS, plus_v)),
+                   "details": {"revenue": rev_opt, "margin": m0, "net_income": ni_opt,
+                               "eps": eps_opt, "multiple": pe_opt, "capital_per_share": capital},
+                   "parameters": {"r_terminal": r_t, "r_journey": r_j,
+                                  "growth": inp["g2_inp_laser_normal"],
+                                  "growth_reference": references["g2_inp_laser_normal"],
+                                  "roe_forward": roe_h,
+                                  "steady_return": min(roe_h, inp["ss_return_opt"]),
+                                  "steady_return_reference": references["ss_return_opt"],
+                                  "fade_from": int(inp["y1_opt"]), "fade_to": int(inp["y2_opt"])}},
+        "segments": {"company": {"values": base}},
+        "key_parameters": {
+            "eps_fy27": {"unit": "USD_PER_SHARE", "values": {"L": None, "M": inp["eps_fy27_m"], "H": inp["eps_fy27_h"]}},
+            "roe_forward": {"unit": "RATIO", "values": {"L": None, "M": info["M"][1], "H": info["H"][1]}},
+            "steady_return": {"unit": "RATIO", "values": {"L": None, "M": min(info["M"][1], rs),
+                                         "H": min(info["H"][1], rs)},
+                              "selected_value": rs, "reference_value": references["ss_return"]},
+            "growth_rate": {"unit": "RATIO", "values": {"L": None, "M": g2, "H": g2},
+                            "selected_value": g2, "reference_value": references["g2"]},
+            "terminal_discount_rate": {"unit": "RATIO", "values": {"L": None, "M": r_t, "H": r_t}},
+            "transition_discount_rate": {"unit": "RATIO", "values": {"L": None, "M": r_j, "H": r_j}},
+            "risk_discount": {"unit": "RATIO", "values": k},
+            "failure_share": {"unit": "RATIO", "selected_value": FAIL_SHARE},
+        },
+        "sensitivity": {
+            "growth": [{"value": g, "anchors": band(r_j, r_t, g)[0]}
+                       for g in (g2 - 0.01, g2, g2 + 0.01, MACRO_G)],
+            "option_price": [{"value": price, "unit": "USD_PER_UNIT", "option_value": v_at(price)}
+                             for price in (750, 1000)],
+            "funding": gap_sensitivity,
+            "atm_fully_drawn_pre_convertible": atm_values,
+        },
+        "risk_sensitivity": {"current_risk_persists": single, "diversified_without_discount": t4},
+        "cross_checks": {"catv_split": catv_cross},
+        "funding": {"capex": capex_h2, "ocf_proxy": ocf_h2, "gap": gap,
+                    "available_cash": cash_free, "unfunded": max(0.0, gap - cash_free),
+                    "unfunded_per_share": gap_ps},
+        "payout": {"actual": inp["payout_obs"],
+                   "model": {t: payout_gap(g2, info[t][1], inp["payout_obs"])[0] for t in ("M", "H")},
+                   "retained_per_share": {t: (1 - inp["payout_obs"] - g2 / info[t][1]) * eps[t]
+                                          for t in ("M", "H")}},
+        "rate_sensitivity": rf,
+        "conditional": conditional,
+    }
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    inp = dict(INPUTS)
+    plug, laser = context['axes']['pluggable'], context['axes']['inp_laser']
+    # Company-specific growth and returns are explicitly permitted; shared
+    # references are presented alongside the selected values, never imposed.
+    references = {'g2': plug['g2_pluggable'], 'ss_return': plug['ss_return_plug'],
+                  'g2_inp_laser_normal': laser['g2_inp_laser_normal'],
+                  'ss_return_opt': laser['ss_return_opt']}
+    inp.update({'y1': plug['y1_plug'], 'y2': plug['y2_plug'],
+                **{key: laser[key] for key in ('ebit_margin_inp_normal', 't_shortage_end',
+                   'cap_intensity', 'ebit_margin_inp_peer', 'y1_opt', 'y2_opt')}})
+    result = _evaluate(inp, references, context.get('rate_inputs'))
+    result['segments']['company']['unit'] = 'USD_PER_SHARE'
+    result['valuation_as_of'] = result['framework_as_of'] = None
+    result['historical_financial_statement_as_of'] = '2026-06-30'
+    result['historical_research_as_of'] = '2026-10-19'
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': inp, 'references': references, 'option_credits': P_TIERS,
+         'failure_share': FAIL_SHARE, 'numerator_year': NUM_YEAR,
+         'transition_years': N_STAGE, 'macro_g': MACRO_G}, BASELINE_LOCAL)
+    result['review_flags'] = ['historical_funding_unverified',
+                              'q3_funding_cases_not_adopted',
+                              'option_revenue_and_capital_overlap_unverified']
+    return result

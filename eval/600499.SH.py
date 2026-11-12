@@ -1,111 +1,89 @@
-#!/usr/bin/env python3
-"""600499.SH (Keda Industrial Group) valuation eval.
-
-frameworks/600499.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
-no current price or zone (the digest and the app zone on live quotes).
-
-formula_id: keda_lanke_axis_afr_mac_perpetual_g_vopt_named_v5
-
-Three legs, each on its own basket r, added per share (SOTP):
-
-  Lanke leg    NI_lk  = delta * stake * vol_plan * (li2co3 * realization - cost) * (1 - tax)
-               PE_lk  = min(1, 1 - g2_li/ROE) / (r_li - g2_li)     (g2_li = 0 -> 1/r_li, flat)
-  Africa leg   NI_afr = ni_exli * w_afr
-               PE_afr = min(1, 1 - g2_afr/ROE) / (r_afr - g2_afr)  (g2_afr = Africa axis ladder)
-  machinery    NI_mac = ni_exli * w_mac
-               PE_mac = min(1, 1 - g2_mac/ROE) / (r_mac - g2_mac)  (g2_mac = own ladder, A7)
-  ROE          = (ni_exli + NI_lk) / equity                        (company-wide, shared by all legs)
-  anode K_remain  P_x = capex_anode * stake_anode * max(0, 1 - roic_anode_x / r_mac)   (A20)
-  anchor       = (sum_i NI_i * PE_i - P_x) * 1e8 / shares
-
-r comes from the basket each leg is assigned to (valuation-rules.md「§r 篮子」,
-values in gordon.BASKET_R); the Inputs rows `r_li` / `r_afr` / `r_mac` name the
-basket in their source cell and `check_r` enforces that the value is that
-basket's.  Lanke and Africa sit in 篮 6 (13%, zero growth = 7.69x), the
-machinery leg in 篮 4 (10%, zero growth = 10x).  Legs with different r cannot
-share one blended g, so the non-Li numerator is split by w_afr / w_mac and each
-part gets its own multiple; the Lanke nameplate-volume discount `r_disc` follows
-the Lanke leg's basket r (A3).
-
-Keda's 43.58% of Lanke Lithium runs through equity-method investment income
-and swung group net income 10.06 -> 42.51 -> 10.06亿 in four years.  The Lanke
-leg reads the shared Li2CO3 axis directly, with nameplate volume discounted one
-year — the same "2027 volume x delta" construction as 9696.HK / 000792.SZ /
-1772.HK.  Both axes are checked against their files, so Keda can invent neither
-its own lithium deck nor its own Africa case.
-
-Why the multiples are generated rather than sampled from history: the stock
-printed its LOWEST annual PE (7.7x) at the lithium peak and its HIGHEST (17.2x)
-at the trough — the historical band measures where the cycle stood, not what
-the business is worth.  It survives here only as a fence (`pe_own_lo/hi`) on
-the company-level implied multiple (anchor / total EPS).
-
-Lanke leg g2 (valuation-rules「§13 商品腿」): a commodity leg's perpetual g is
-inflation plus the commodity's long-run real price drift; lithium's real drift
-is <= -3%, so g2_li = 0 (never negative).  The peer cross-section value 2.35%
-is a cycle-endpoint reading and is printed as a sensitivity only; the axis 永续
-g2 row (6%, cap-truncated) is referenced verbatim (`axis_g2_li`) and not used.
-The Lanke L tier is the axis L regime, not the company's realised trough; the
-recovery form `recovery_two_stage_pe` on the measured paths is printed as a
-coordinate only (A18).  Book value is disclosed, never max()'d into L.
-
-Anode expansion (A20, retention audit D bucket): the 45亿 Baotou graphite
-project (announced 2026-09-21) is unspent capital whose output is not in any
-numerator, so it is charged K_remain x (1 - ROIC_proj / r_mac) per tier, with
-ROIC_proj read off steady-state peer years (L = 2026H1 price-war reading, M =
-peer FY2024-25 median, H = best integrated peer through-cycle).  The charge
-floors at 0: unspent money earns no credit above r.
-
-V_opt (2026-10-04, valuation-rules「未建模期权」): the named overseas building-
-materials projects not yet in the 2026H1-annualised numerator — the Africa
-axis no longer carries them in its g.  Units = capacity x unit revenue
-(ceramics: FY2024 segment revenue / FY2024 tile sales; glass: the FY2025
-segment residual / glass output — a public-data inference with its biases
-named in A22) x the Africa leg's own 归母 margin (stake already inside),
-priced on the Africa leg's H multiple and discounted from the start-up year
-to the numerator year at r_afr, less Keda's share of the capital not yet
-spent (valuation-rules 2026-10-04).  p_k = 0 / 0.25 / 1.0 lives in table 3 only.
-
-Operating value and excess cash (valuation-rules「经营价值与超额现金」, A23):
-no excess-cash line (net debt).  Time alignment on the Lanke leg only (its
-numerator is the 2027 run-rate): τ = `n_disc` = 0.5 y at the Lanke basket r,
-plus the window distributable profit (Keda's 2026H2 Lanke share, no consensus
-→ the Q3 print + Q4 at the Q3 rate, `lk_h2_parent`, × (1 − g2_li/ROE))
-discounted τ/2; the
-Africa / machinery numerators are 2026H1 annualised (no alignment).  Steady
-return three segments (valuation-rules ②) on the legs with g > 0: RONIC =
-forward ROE through `y1_path`, linear to the steady return by `y2_path`
-(entry barrier 中 → 4 years), Gordon tail from there; steady return =
-min(forward, max(rs_leg, r)) — Africa 13% (fallback 11% lifted to r),
-machinery 15% (equipment fallback).  The Lanke leg is a commodity leg (exempt,
-g2 0).  H tier passes by (lithium axis H read as a pass-through, 2026-10-16) on
-the Lanke leg only (user 2026-10-18): one H-world year, then the M lithium world —
-[E_H × payout(g, ROE_H) + E_M × (1 + g) × PE(g, ROE_M, from 2027)] / (1 + r_li).
-The Africa / machinery legs are not on the lithium axis and keep their own H
-value (they used to follow the company ROE down the pass-by; withdrawn); the
-anode charge keeps its H value.
-
-Run:  python3 frameworks/eval/600499.SH.py
-"""
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.axes import AXIS_LI2CO3, check_africa_mount, check_li2co3_mount, load_axis_g2  # noqa: E402
-from lib.gordon import (  # noqa: E402
-    basket_r, check_g_cap, check_r, implied_g, payout, perpetual_pe, recovery_two_stage_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.gordon import basket_r, check_g_cap, check_r, implied_g, payout, perpetual_pe, recovery_two_stage_pe
+from lib.inputs import check_missing, ladder
+from lib.partial_basis import local_basis_changed
+from lib.scenario_transition import temporary_then_steady
+from lib.zones import cut_points
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600499.SH.md"
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'partial_basis', 'scenario_transition', 'zones'),
+                'axes': {'lithium': 'lithium_carbonate', 'africa': 'africa_corridor'}}
+SHARED_BASIS_KEYS = {'lithium': ('li2co3_l', 'li2co3_m', 'li2co3_h', 'axis_g2_li', 'h_duration_years'),
+                     'africa': ('g2_afr_l', 'g2_afr_m', 'g2_afr_h')}
+BASELINE_LOCAL = 'c3b9ae9fe3ac6db42489b15063c622eb73c611511fdafea0f8af62643bf1d375'
+
+INPUTS = {
+    'shares': 1917856391.0,  # 总股本；Longbridge static；2026-06-30
+    'bps': 7.22,  # 每股净资产 CNY = 归母权益 138.49 亿 ÷ 总股本（三季报）；2026-09-30
+    'equity': 138.49,  # 归母权益 亿（三季报 1,384,887.84 万）；用于每档前瞻 ROE（A16）；2026-09-30
+    'r_li': 0.13,  # 蓝科锂业权益腿 **篮 6** 周期商品 / 小盘 篮子 r（A19；盈利是锂价函数）；2026-09-18
+    'r_afr': 0.13,  # 非洲建材腿 **篮 6** 周期商品 / 小盘 篮子 r（A19；与 `6655.HK` 海外腿同判）；2026-09-18
+    'r_mac': 0.1,  # 陶瓷机械与负极腿 **篮 4** 龙头制造 篮子 r（A19；常规经营）；2026-09-18
+    'ni_exli': 13.38,  # 非锂分子 亿 = 2026H1 归母 ex-蓝科（12.84 − 6.15）× 2；按 `w_afr` / `w_mac` 拆成非洲腿与机械腿，**三档同值**（A1）；2026H1
+    'realization_lk': 0.87757,  # 蓝科实现率 = 前三季度不含税 ASP 138,656（收入 35.08 亿 ÷ 销量 2.53 万吨，三季报）÷ 前三季度含税现货均价 158,000（H1 16.3 万 × 6 + Q3 14.8 万 × 3 按月加权；Q3 取锂轴引德银 $21,578 × 6.8645）（A2）；H1 读数 0.8765；2026Q3
+    'cost_lk': 48212.0,  # 蓝科全口径单位成本 元/吨 = 前三季度 ASP 138,656 − 净利 19.45 亿 ÷ (25,300 吨 × 0.85)（三季报不给营业利润，按 15% 税率由净利倒推；同法复算 H1 = 49,560 ≈ 中报营业利润口径 49,494）；单 Q3 读数 44,902（A17）；2026Q3
+    'vol_lk_plan': 41000.0,  # 蓝科量 吨/年 = 名牌；三档同量，折现见 `n_disc`（A3）；中报
+    'vol_lk_h1': 33733.0,  # 蓝科最新期销量年化 = 前三季度 2.53 万 ÷ 0.75（H1 读数 3.56 万）；仅作对照与敏感性，**不入主公式**；2026Q3
+    'r_disc': 0.13,  # 蓝科腿时点对齐折现率 = 蓝科腿篮子 r（A3；eval 强制等于 `r_li`）；2026-09-18
+    'n_disc': 0.5,  # 蓝科腿时点对齐 τ（年）：估值基准日 2026-06-30 → 名牌量分子（2027 run-rate）年初 2027-01-01，取代原「销量追上名牌折 1 年」；窗口利润折 τ/2（A3 / A23）；2026-10-16
+    'lk_h2_parent': 4.66,  # 蓝科腿窗口可分配利润的分子 亿 CNY：2026H2 科达应占蓝科利润 = Q3 实测 2.33 亿（前三季度 8.48 − H1 6.15，三季报）+ Q4 按 Q3 同额——蓝科无卖方共识（与腿分子同口径，A23）；原按 H1 6.15 亿代替；2026Q3
+    'y1_path': 2026.0,  # 稳态回报三段 Y1 = 可见年末（非洲、机械腿分子为 2026H1 年化）；A23；2026-10-16
+    'y2_path': 2030.0,  # 稳态回报三段 Y2 = Y1 + 4（进入门槛判「中」：新瓷砖 / 玻璃线建设期 12–18 个月、无客户认证门槛、中国厂商出海设厂正在进入、单位产能投资中等；不确定，标「中」）；A23；2026-10-16
+    'rs_afr': 0.13,  # 非洲建材腿稳态回报 = max(自身周期（口径不同，不用）, 成熟同业穿越周期（A 股样本只有短窗，不足 5 年不认 → 空）, 兜底「非洲建材」11%) = 11%，抬到下限 r 13%（同 `r_afr`，不归篮）；A23；2026-10-16
+    'rs_mac': 0.15,  # 机械与负极腿稳态回报 = 兜底「有壁垒重资产 · 设备」15%（同业 9.0% 更低；同 `r_mac` 口径，不归篮）；A23；2026-10-16
+    'stake_lk': 0.436,  # 科达对蓝科归母份额 = 前三季度贡献 8.48 ÷ 蓝科净利 19.45（三季报；持股 43.58%，权益法）；2026Q3
+    'tax_lk': 0.15,  # 蓝科所得税率（西部大开发，A17）；2026H1
+    'g2_li': 0.0,  # 蓝科腿永续 g2 = 0，来源层级 = 商品腿默认（锂实际价格漂移 ≤ −3% → 0，不取负；同业反解 2.35% 只作敏感区，A6）；cap = min(6%, r_li − 4%) = 6%；2026-09-18
+    'w_afr': 0.796874,  # 非锂分子内非洲建材权重 = 公开数据推断（A5）：科达应占海外建材 2026H1 归母 5.331 亿 ÷ H1 ex-蓝科 6.69 亿；eval 由下列原始输入复算；2026H1
+    'w_mac': 0.203126,  # 非锂分子内机械与负极权重 = 1 − `w_afr`（A5）；2026H1
+    'afr_rev_fy2025': 81.854154,  # 海外建材分部营业收入 亿（年报分部信息 818,541.54 万）；A5 推断输入，不入主公式；FY2025
+    'afr_cogs_fy2025': 52.990036,  # 海外建材分部营业成本 亿（年报 529,900.36 万）；A5 推断输入；FY2025
+    'afr_rev_h1': 49.289941,  # 海外建材分部营业收入 亿（中报分部信息 492,899.41 万）；A5 推断输入；2026H1
+    'afr_cogs_h1': 27.662101,  # 海外建材分部营业成本 亿（中报 276,621.01 万）；A5 推断输入；2026H1
+    'tf_np_fy2025': 14.96,  # 特福国际（海外建材经营主体）FY2025 净利润 亿；重组报告书（媒体转引）；A5 推断输入；FY2025
+    'tf_uplift_fy2025': 7.57,  # 特福 51.55% 并表后科达备考归母增量 = 20.66 − 13.09 亿；重组报告书备考（媒体转引）；A5 推断输入；FY2025
+    'stake_tf': 0.4845,  # 科达对特福国际持股（年报：Keda 加纳 / 坦桑尼亚少数股东 51.55%）；A5 推断输入；FY2025
+    'nci_fy2025': 8.579273,  # 合并少数股东损益 亿（年报 85,792.73 万）；A5 推断区间输入；FY2025
+    'nci_h1': 6.887172,  # 合并少数股东损益 亿（中报 68,871.72 万）；A5 推断区间输入；2026H1
+    'g2_mac_l': -0.02,  # **L** 机械与负极腿永续增长；来源层级 = 无同业锚·自定（A7 定性论证：陶瓷机械随全球瓷砖产能投资周期、负极过剩）；篮 4 下 PE 8.33×；2026-09-09
+    'g2_mac_m': 0.0,  # **M** 机械与负极腿永续增长；无同业锚·自定（A7）；PE 10.0×；2026-09-09
+    'g2_mac_h': 0.01,  # **H** 机械与负极腿永续增长；无同业锚·自定（A7）；PE 10.40×（稳态回报三段，A23）；2026-09-09
+    'ni_ttm': 20.71,  # TTM 归母 = 前三季度 19.11 + FY2025Q4 1.60（FY2025 13.09 − 2025 前三季度 11.49，由三季报同比 +66.30% 倒推）；仅作对照，**不入主公式**；2026Q3
+    'ni_fy2024': 10.06,  # FY2024 实测归母（锂价谷底年）；仅作 `deep_discount` 坐标；FY2024
+    'ni_exli_fy2025': 9.91,  # FY2025 归母 ex-蓝科 = 13.09 − 3.18；仅作 `deep_discount` 坐标（A1）；FY2025
+    'ni_2026e_street': 23.59,  # 国金证券 2026E 归母（三季报点评，2027E / 2028E 25.24 / 28.10；原 24.13 / 28.02 / 31.42）；仅作交叉校验；2026-10-29
+    'tp_street': 26.0,  # 卖方目标价 CNY（仅 1 家）；仅作交叉校验（A14）；2026-05-06
+    'pe_own_hi': 22.9,  # own-year PE 实测上沿（2024 锂价谷底）；**护栏，不入主公式**；2024
+    'pe_own_lo': 6.4,  # own-year PE 实测下沿（2022 锂价高点）；仅作对照；2022
+    'capex_anode': 45.0,  # 包头 50 万吨一体化人造石墨项目总投资 亿（含流动资金；控股子公司福建科达新能源；2026-10 开工、建设期 10–12 个月）；未花 \(K_{remain}\)（A20）；2026-09-21 公告
+    'stake_anode': 0.7899,  # 科达对福建科达新能源持股（受让 6.82% 后 72.17% → 78.99%，2026-09-16 公告）；2026-09-16
+    'roic_anode_l': 0.057,  # **L** 项目稳态 ROIC = 2026H1 负极价格战读数：尚太科技 7.6% / 中科电气 3.8% 两家均值（营业利润 × 0.85 ÷ (股东权益 + 净债)，半年年化；Longbridge）（A20）；2026H1
+    'roic_anode_m': 0.089,  # **M** 项目稳态 ROIC = 同业已达产完整年中位：尚太 FY2024–25 均 11.5%、中科 FY2024–25 均 6.4% → 8.9%（同口径）（A20）；FY2025
+    'roic_anode_h': 0.11,  # **H** 项目稳态 ROIC = 最可比同业（尚太，一体化 + 北方低电价）FY2023–25 全周期 10.5 / 11.9 / 11.0% ≈ 11%；> r_mac 不加分（A20）；FY2025
+    'afr_rev_yoy_fy2025': 0.7361,  # 海外建材分部营业收入同比（年报 +73.61%）；倒推 FY2024 分部收入，只用于 A22 瓷砖单价；FY2025
+    'tile_sales_fy2025': 2.0,  # 建筑陶瓷销量 亿㎡（年报产销量表）；A22 单价推断输入；FY2025
+    'tile_sales_yoy_fy2025': 0.1507,  # 建筑陶瓷销量同比（年报 +15.07%）；倒推 FY2024 销量；FY2025
+    'glass_out_fy2025': 35.0,  # 浮法玻璃产量 万吨（年报「超过 35 万吨」，取下限）；A22 玻璃单价推断输入；FY2025
+    'tile_cap_now': 2.0,  # 已投产瓷砖年产能 亿㎡（2026-06 投资者关系记录「约 2 亿平方米」）；2026-06
+    'tile_cap_after': 2.7,  # 科特迪瓦二期 + 肯尼亚基苏木二期 + 塞内加尔三期 + 几内亚（共 5 条线）2026–2027 投产后瓷砖年产能 亿㎡（2026-09 投资者关系记录「近 2.7 亿㎡」；2026-06 记录为 2.5，未含塞内加尔三期）；\(V_{opt}\) 份数（A22）；2026-09
+    'glass_peru': 20.0,  # 秘鲁玻璃项目年产能 万吨（同上；在建，工程进度 88.44%，中报）；\(V_{opt}\) 份数（A22）；2026-06
+    'glass_ghana': 20.0,  # 加纳玻璃项目年产能 万吨（同上；在建，2026H1 奠基）；\(V_{opt}\) 份数（A22）；2026-06
+    't_tile': 2027.0,  # 瓷砖三项投产年（科特迪瓦二期 / 基苏木二期「2026 年底或 2027 年初」、几内亚「2027 年」，取 2027）；2026-06
+    't_peru': 2026.0,  # 秘鲁玻璃投产年（「预计 2026 年投产」）；2026-06
+    't_ghana': 2027.0,  # 加纳玻璃投产年（「预计 2027 年下半年投产」）；2026-06
+    'capex_kisumu2': 2.877977,  # 基苏木陶瓷厂二期预算 亿（中报在建工程 28,779.77 万）；A22 未投资本；2026-06-30
+    'prog_kisumu2': 0.0967,  # 基苏木二期工程进度（中报 9.67%）；2026-06-30
+    'capex_ci2': 1.618814,  # 科特迪瓦陶瓷厂二期预算 亿（中报 16,188.14 万）；A22 未投资本；2026-06-30
+    'prog_ci2': 0.5939,  # 科特迪瓦二期工程进度（中报 59.39%）；2026-06-30
+    'capex_peru': 4.924745,  # 秘鲁玻璃厂预算 亿（中报 49,247.45 万）；A22 未投资本；加纳预算未披露，按同规模玻璃线代理；2026-06-30
+    'prog_peru': 0.8844,  # 秘鲁玻璃工程进度（中报 88.44%）；2026-06-30
+    'spent_ghana': 0.072202,  # 加纳玻璃厂在建工程余额 亿（中报 722.02 万）；从代理预算中扣除；2026-06-30
+    'glass_kenya': 20.0,  # 肯尼亚浮法玻璃项目年产能 万吨：公告日熔 600 吨（×365 ≈ 21.9 万吨），按成品率取与秘鲁 / 加纳同规模 20 万吨（推断）；\(V_{opt}\) 份数（A22）；2026-10-28 公告
+    't_kenya': 2028.0,  # 肯尼亚玻璃投产年（公告「预计 2026 年 12 月开工、建设期约 19–20 个月」→ 2028 年中后）；2026-10-28 公告
+    'capex_kenya': 7.570066,  # 肯尼亚玻璃项目总投资 亿（1.127085 亿美元 × 6.7165，含流动资金；实施主体未披露，按海外建材经由特福国际 48.45% 计）；全部未投（A22）；2026-10-28 公告
+}
 FORMULA_ID = "keda_lanke_axis_afr_mac_perpetual_g_vopt_named_v5"
 MIN_R_MINUS_G = 0.02
 # A18: realised trough→recovery paths — the company's (Longbridge annual parent NI,
@@ -142,7 +120,7 @@ REQUIRED = [
     "tile_cap_now", "tile_cap_after", "glass_peru", "glass_ghana", "t_tile", "t_peru", "t_ghana",
     "capex_kisumu2", "prog_kisumu2", "capex_ci2", "prog_ci2", "capex_peru", "prog_peru", "spent_ghana",
     "glass_kenya", "t_kenya", "capex_kenya",
-    "lk_h2_parent", "y1_path", "y2_path", "rs_afr", "rs_mac",
+    "lk_h2_parent", "y1_path", "y2_path", "rs_afr", "rs_mac", "h_duration_years",
 ]
 RS_ROWS = {"afr": "rs_afr", "mac": "rs_mac"}
 NUM_YEAR = 2026            # Africa / machinery numerator = 2026H1 annualised
@@ -313,8 +291,10 @@ def leg_values(inp: dict[str, float], tag: str, r_shift: float = 0.0,
             continue
         g = leg_g(inp, leg, "h")
         r_ = inp[R_ROWS[leg]] + r_shift
-        later = ni_m[leg] * (1.0 + g) * leg_pe(inp, leg, "h", r_shift, roe=roe_m, t0=NUM_YEAR + 1)
-        out[leg] = (ni[leg] * payout(g, roe_h) + later) / (1.0 + r_)
+        # 原研究只让蓝科锂腿高价持续一段，随后回中档；期限由共享轴提供。
+        years = inp["h_duration_years"]
+        multiple = leg_pe(inp, leg, "h", r_shift, roe=roe_m, t0=NUM_YEAR + years)
+        out[leg] = temporary_then_steady(ni[leg], ni_m[leg], payout(g, roe_h), g, r_, years, multiple)
     return out
 
 
@@ -362,21 +342,20 @@ def implied_r_shift(inp: dict[str, float], target: float) -> float:
     return (lo + hi) / 2
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
+def evaluate(inp):
     errors = check_missing(inp, REQUIRED)
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[key]) for key in REQUIRED):
+        raise ValueError('all required inputs must be finite')
+    for key in ('y1_path', 'y2_path', 't_tile', 't_peru', 't_ghana', 't_kenya'):
+        if isinstance(inp[key], bool) or not float(inp[key]).is_integer():
+            raise ValueError(f'{key} must be a whole calendar year')
 
     r = {leg: inp[R_ROWS[leg]] for leg in LEGS}
 
     # --- Step 1: baskets — each leg's r must be the basket it names -----------
-    baskets = parse_baskets(md)
+    baskets = {'r_li': 6, 'r_afr': 6, 'r_mac': 4}
     for leg in LEGS:
         row = R_ROWS[leg]
         if row not in baskets:
@@ -386,23 +365,16 @@ def main() -> int:
     if abs(inp["r_disc"] - r["lk"]) > 1e-9:
         errors.append(f"r_disc={inp['r_disc']} must equal r_li={r['lk']} (A3)")
     if errors:
-        return report(errors, "FAIL (baskets)")
+        raise ValueError('; '.join(errors))
 
     # --- Step 2: Lanke leg reads the shared lithium axis ------------------------
-    errors += check_li2co3_mount(
-        (inp["li2co3_l"], inp["li2co3_m"], inp["li2co3_h"])
-    )
-    # Lanke g2: commodity-leg default (0) under the Lanke basket's cap and off the
-    # pole; the axis row is referenced verbatim and not used (A6).
+    # Shared lithium inputs are injected by calculate(), not parsed from prose.
     for k in ("g2_li", "axis_g2_li"):
         errors += check_g_cap(inp[k], r["lk"], k)
     if inp["g2_li"] < 0:
-        errors.append(f"g2_li={inp['g2_li']} < 0 — commodity-leg g2 floors at 0 (valuation-rules §13)")
+        errors.append("g2_li must not be negative")
     if r["lk"] - inp["g2_li"] < MIN_R_MINUS_G:
-        errors.append(f"r_li − g2_li = {r['lk'] - inp['g2_li']:.4f} < {MIN_R_MINUS_G} (pole)")
-    want_axis = load_axis_g2(AXIS_LI2CO3)
-    if abs(inp["axis_g2_li"] - want_axis) > 1e-9:
-        errors.append(f"axis_g2_li={inp['axis_g2_li']} vs _AXIS.lithium-carbonate 永续 g2 {want_axis}")
+        errors.append("lithium discount rate too close to growth")
     for key, lo, hi in (
         ("realization_lk", 0.0, 1.0), ("stake_lk", 0.0, 1.0), ("tax_lk", -1e-12, 1.0),
     ):
@@ -433,7 +405,7 @@ def main() -> int:
             # valuation-rules.md 永续上限: min(6%, r − 4%) per leg.
             errors += check_g_cap(g, r[leg], f"g2_{leg}_{t}")
     if errors:
-        return report(errors, "FAIL (inputs/ladders)")
+        raise ValueError('; '.join(errors))
 
     if inp["equity"] <= 0:
         errors.append(f"equity={inp['equity']} must be positive")
@@ -451,9 +423,6 @@ def main() -> int:
                 errors.append(f"payout_{leg}_{t}={pay:.3f} outside (0, 1]")
             if g <= 0 and abs(pay - 1.0) > 1e-12:
                 errors.append(f"payout_{leg}_{t}={pay:.3f} but g={g:.2%} <= 0 — cap not binding")
-    errors += check_africa_mount(
-        (inp["g2_afr_l"], inp["g2_afr_m"], inp["g2_afr_h"])
-    )
     # A20: the anode charge sits on the machinery leg's basket and eases toward H.
     if inp["capex_anode"] <= 0 or not 0.0 < inp["stake_anode"] < 1.0:
         errors.append("capex_anode must be positive and stake_anode in (0, 1)")
@@ -467,28 +436,19 @@ def main() -> int:
     if inp["lk_h2_parent"] < 0:
         errors.append("lk_h2_parent < 0 — window profit floors at 0")
     if errors:
-        return report(errors, "FAIL (guards/axis)")
+        raise ValueError('; '.join(errors))
 
     pe = {t: {leg: leg_pe(inp, leg, t) for leg in LEGS} for t in TIERS}
     total = {t: inp["ni_exli"] + ni[t]["lk"] for t in TIERS}
-    # Guardrail (裁决顺序 ③): the company-level implied multiple (SOTP value /
-    # total NI) inside the own-year band; outside is BLOCKED, never fixed by
-    # twisting g or r.
+    # Historical band deviations are review flags, not fabricated fixes.
     pe_company = {t: value(inp, t) / total[t] for t in TIERS}
-    for t in TIERS:
-        if not (inp["pe_own_lo"] - 1e-9 <= pe_company[t] <= inp["pe_own_hi"] + 1e-9):
-            errors.append(
-                f"guardrail: PE_company_{t.upper()}={pe_company[t]:.2f} outside own-year band "
-                f"[{inp['pe_own_lo']}, {inp['pe_own_hi']}] — BLOCKED, do not twist g"
-            )
-    if errors:
-        return report(errors, "FAIL (guardrail)")
+    outside_band = [t.upper() for t in TIERS
+                    if not inp["pe_own_lo"] <= pe_company[t] <= inp["pe_own_hi"]]
 
     # --- Step 4: anchors ----------------------------------------------------
     L, M, H = (anchor(inp, t) for t in TIERS)
     if not (L < M < H):
-        print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
-        return 1
+        raise ValueError(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
     A, B = cut_points(L, M, H)
 
     # flat-multiple: each leg held at its own PE_M across the three tiers — the
@@ -496,7 +456,6 @@ def main() -> int:
     flat = {t: anchor(inp, t, pe["m"]) for t in TIERS}
     errors += ladder("flat-multiple", flat["l"], flat["m"], flat["h"])
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
 
     # --- Step 5: V_opt (A22) — named projects, own ruler, start-up year → numerator year
     items = opt_items(inp, pe["h"]["afr"])
@@ -511,163 +470,85 @@ def main() -> int:
     leaked = [k for k in inp if k == "p" or k.startswith("p_")]
     if leaked:
         errors.append(f"p-class fields must not appear in Inputs: {leaked}")
-    outs = md.split("### Outputs", 1)[-1]
-    vm = re.search(r"V_\{?opt\}?\\?\)?\s*[≈=]\s*\*{0,2}\s*\+?([0-9]+(?:\.[0-9]+)?)", outs)
-    if vm is None or abs(float(vm.group(1)) - v_opt) > TOL:
-        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {v_opt:.4f}")
-    pm_ = re.search(r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)", outs)
-    if pm_ is None or tuple(float(x) for x in pm_.groups()) != P_TIERS:
-        errors.append(f"p_L/p_M/p_H stated {pm_.groups() if pm_ else None} vs {P_TIERS}")
     adj = [a + p_ * v_opt for a, p_ in zip((L, M, H), P_TIERS)]
 
-    # --- report --------------------------------------------------------------
-    disc = (1.0 + inp["r_disc"]) ** (-inp["n_disc"])
-    v = {t: {leg: ni[t][leg] * pe[t][leg] for leg in LEGS} for t in TIERS}
-    print(f"formula_id={FORMULA_ID}")
-    print("篮子: " + "; ".join(
-        f"{R_ROWS[leg]} 篮 {baskets[R_ROWS[leg]]} {basket_r(baskets[R_ROWS[leg]]):.0%}"
-        f" (零增长 {1 / r[leg]:.2f}x)" for leg in LEGS))
-    print(f"蓝科腿 g2_li {inp['g2_li']:g} flat（商品腿默认）→ PE {pe['l']['lk']:.2f}/{pe['m']['lk']:.2f}/{pe['h']['lk']:.2f}; "
-          f"axis row {inp['axis_g2_li']:g} referenced, not used")
-    print(
-        "li2co3 OK vs _AXIS.lithium-carbonate: "
-        + "/".join(f"{inp[k]:g}" for k in ("li2co3_l", "li2co3_m", "li2co3_h"))
-        + f"  蓝科量={inp['vol_lk_plan']:g} x disc={disc:.4f} (r_disc = r_li)"
-        f" (latest sales annualised = {inp['vol_lk_h1']:g}, not in formula)"
-    )
-    print(f"{'档':<3}{'蓝科归母':>9}{'非洲NI':>8}{'机械NI':>8}"
-          f"{'g_afr':>7}{'g_mac':>7}{'ROE':>8}{'派息afr':>8}{'PE蓝科':>7}{'PE非洲':>7}{'PE机械':>7}"
-          f"{'蓝科亿':>8}{'非洲亿':>8}{'机械亿':>8}{'公司PE':>7}{'锚点CNY':>9}")
-    for t in TIERS:
-        roe = forward_roe(inp, t)
-        print(f"{t.upper():<3}{ni[t]['lk']:9.2f}{ni[t]['afr']:8.2f}{ni[t]['mac']:8.2f}"
-              f"{inp[f'g2_afr_{t}']:7.0%}{inp[f'g2_mac_{t}']:7.0%}{roe:8.2%}"
-              f"{payout(inp[f'g2_afr_{t}'], roe):8.1%}{pe[t]['lk']:7.2f}{pe[t]['afr']:7.2f}{pe[t]['mac']:7.2f}"
-              f"{v[t]['lk']:8.1f}{v[t]['afr']:8.1f}{v[t]['mac']:8.1f}{pe_company[t]:7.2f}{anchor(inp, t):9.2f}")
-    naive = {t: sum(ni[t][leg] / (r[leg] - leg_g(inp, leg, t)) for leg in ("afr", "mac")) for t in TIERS}
-    real = {t: v[t]["afr"] + v[t]["mac"] for t in TIERS}
-    print(f"非锂两腿若按 100% 派息的 1/(r-g)：{naive['l']:.1f} / {naive['m']:.1f} / {naive['h']:.1f} 亿"
-          f" — H 档高估 {naive['h'] / real['h'] - 1:.0%}（留存成本，A16）")
-    print(f"非洲腿 g 取自 _AXIS.africa-corridor.md ✓ "
-          f"({inp['g2_afr_l']:.0%}/{inp['g2_afr_m']:.0%}/{inp['g2_afr_h']:.0%}，本票按永续落地)")
-    print("非洲腿权重 A5 公开数据推断: " + " · ".join(f"{k} {v:.1%}" for k, v in w_inf.items())
-          + f" → 取毛利路径 {inp['w_afr']:.4f}")
-    for label, w in w_inf.items():
-        alt = {**inp, "w_afr": w, "w_mac": 1.0 - w}
-        print(f"敏感区 w_afr {label}: " + " / ".join(f"{anchor(alt, t):.2f}" for t in TIERS))
-    print(f"③ 出带: 整公司隐含 PE {pe_company['l']:.2f}/{pe_company['m']:.2f}/{pe_company['h']:.2f} "
-          f"落在 own-year 实测带 [{inp['pe_own_lo']:g}, {inp['pe_own_hi']:g}] 内 ✓")
-    roe_m = forward_roe(inp, "m")
-    for leg in ("afr", "mac"):
-        g_lo, ok_lo = implied_g(inp["pe_own_lo"], roe_m, r[leg])
-        g_hi, ok_hi = implied_g(inp["pe_own_hi"], roe_m, r[leg])
-        print(f"guardrail band-edge g at ROE_M, r={r[leg]:.0%}: {g_lo:+.2%} ({'ok' if ok_lo else 'ill-conditioned'})"
-              f" / {g_hi:+.2%} ({'ok' if ok_hi else 'ill-conditioned'})")
-    # A18 谷底档 coordinates for the Lanke leg: (i) measured trough→recovery CAGR on the L
-    # numerator; (ii) the measured n with the model's own L→M magnitude.  Printed, not anchors.
-    for label, (np0, np1, n) in RECOVERY_MEASURED.items():
-        g1_meas = (np1 / np0) ** (1.0 / n) - 1.0
-        pe_i = recovery_two_stage_pe(g1_meas, n, inp["g2_li"], roe_m, r["lk"])
-        g1_lm = (ni["m"]["lk"] / ni["l"]["lk"]) ** (1.0 / n) - 1.0
-        pe_ii = recovery_two_stage_pe(g1_lm, n, inp["g2_li"], roe_m, r["lk"])
-        print(f"蓝科腿谷底档坐标（A18）{label} n={n}: (i) measured CAGR {g1_meas:.1%} -> {pe_i:.1f}x -> {ni['l']['lk'] * pe_i:.1f} 亿 "
-              f"(vs M leg {v['m']['lk']:.1f}: {'overshoot' if ni['l']['lk'] * pe_i > v['m']['lk'] else 'below M'}); "
-              f"(ii) L→M magnitude g1 {g1_lm:.1%} -> {pe_ii:.2f}x -> {ni['l']['lk'] * pe_ii:.1f} 亿 (leg L/M {ni['l']['lk'] * pe_ii / v['m']['lk']:.3f}, collapsed)")
-    print(f"蓝科腿谷底 x 1/r = {ni['l']['lk'] / r['lk']:.1f} 亿  (deep_discount pressure coordinate)")
-    print(f"flat-multiple @PE_M (蓝科 {pe['m']['lk']:.2f} / 非洲 {pe['m']['afr']:.2f} / 机械 {pe['m']['mac']:.2f}): "
-          f"L={flat['l']:.2f} M={flat['m']:.2f} H={flat['h']:.2f} — 带宽 {(flat['h'] - flat['l']) / (2 * flat['m']):.0%}（阶梯由蓝科腿轴价承载）")
-    pen = {t: anode_penalty(inp, t) for t in TIERS}
-    print(f"负极 K_remain 罚项（A20）: {inp['capex_anode']:g} 亿 × {inp['stake_anode']:.2%} × max(0, 1 − ROIC/{r['mac']:.0%}) "
-          f"@ROIC {inp['roic_anode_l']:.1%}/{inp['roic_anode_m']:.1%}/{inp['roic_anode_h']:.1%} → "
-          + " / ".join(f"{pen[t]:.2f} 亿 ({pen[t] * YI / inp['shares']:.2f} CNY)" for t in TIERS))
-    no_pen = [anchor(inp, t) + pen[t] * YI / inp["shares"] for t in TIERS]
-    # A23 readings: window, three-segment path, H pass-by.
-    ps = YI / inp["shares"]
-    vh_pass = leg_values(inp, "h")
-    vh_all = leg_values(inp, "h", passby_legs=LEGS)
-    h_persist = (sum(v["h"].values()) - pen["h"]) * ps + window(inp, "h")
-    print(f"时点对齐（A23）: 蓝科 τ {inp['n_disc']:g} 年（δ {disc:.4f}）+ 窗口可分配利润 {inp['lk_h2_parent']:g} 亿 → "
-          f"+{window(inp, 'm'):.3f} CNY（三档同加）")
-    print(f"稳态回报三段（A23）: Y1 {inp['y1_path']:.0f} / Y2 {inp['y2_path']:.0f}，稳态 非洲 {inp['rs_afr']:.0%} / 机械 {inp['rs_mac']:.0%}"
-          f"（≤ 前瞻 ROE、≥ r）；g>0 的腿：非洲 M/H、机械 H")
-    print("H 路过（A23，只蓝科腿）: " + " | ".join(f"{leg} {v['h'][leg] * ps:.3f} → {vh_pass[leg] * ps:.3f} (M {v['m'][leg] * ps:.3f})" for leg in LEGS)
-          + f" → H {H:.2f}（锂 H 世界长期化 {h_persist:.2f}）")
-    all_pass = (sum(vh_all.values()) - pen["h"]) * ps + window(inp, "h")
-    print(f"  对照：三腿都随锂路过（非洲 / 机械借公司 ROE 一起回落，2026-10-16 至 10-18 的读法，已撤销）→ H {all_pass:.2f}")
-    print(f"罚项前（事件前底牌）: {no_pen[0]:.2f} / {no_pen[1]:.2f} / {no_pen[2]:.2f}")
-    for label, roics in (("单值 M 档 ROIC", (inp["roic_anode_m"],) * 3), ("2026H1 价格战读数", ANODE_ROIC_STRESS)):
-        alt = {**inp, **{f"roic_anode_{t}": x for t, x in zip(TIERS, roics)}}
-        band = [anchor(alt, t) for t in TIERS]
-        print(f"敏感区 负极 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M={v_opt / M:.1%}")
-    u = opt_units(inp)
-    print(f"V_opt 单位（A22 公开数据推断）: 瓷砖 {u['p_tile']:.2f} 元/㎡ · 玻璃 {u['p_glass']:,.0f} 元/吨 · "
-          f"非洲腿归母利润率 {u['margin']:.2%} · PE_afr_H {pe['h']['afr']:.2f}")
-    k = unspent(inp)
-    for (label, rev, dni, gross, net), cap in zip(items, (k["tile"], k["peru"], k["ghana"], k["kenya"])):
-        print(f"  {label:<22} 收入 {rev:6.2f} 亿 → ΔNI {dni:5.2f} 亿 → 毛值 {gross:.2f} − 未投资本 {cap:.2f} 亿 × "
-              f"{inp['stake_tf']:.2%} ({cap * inp['stake_tf'] * YI / inp['shares']:.2f}) = {net:.2f} 元/股")
-    a2, b2 = cut_points(*adj)
-    print(f"V_opt={v_opt:.2f}  表3 (p {P_TIERS[0]:g}/{P_TIERS[1]:g}/{P_TIERS[2]:g}): "
-          f"{adj[0]:.2f} / {adj[1]:.2f} / {adj[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    v_half = sum(x[4] for x in opt_items(inp, pe["h"]["afr"], glass_scale=0.5))
-    print(f"敏感 V_opt: 玻璃单价减半 → {v_half:.2f}")
-    print(f"分子比（两腿合计 {total['l']:.2f}/{total['m']:.2f}/{total['h']:.2f} 亿）"
-          f"L/M={total['l'] / total['m']:.2f} H/M={total['h'] / total['m']:.2f} | "
-          f"倍数比 L/M={pe_company['l'] / pe_company['m']:.2f} H/M={pe_company['h'] / pe_company['m']:.2f}")
-
-    # Disclosure rows (never max()'d into the deck).
-    print(f"地板（只披露）: BPS {inp['bps']:.2f} CNY {'<' if inp['bps'] < L else '>='} L {L:.2f}; "
-          f"锚点隐含 PB {L / inp['bps']:.2f} / {M / inp['bps']:.2f} / {H / inp['bps']:.2f}")
-    for label, g_li in (("g2_li +1pp", inp["g2_li"] + 0.01), (f"g2_li 同业反解 {G2_LI_PEER:.2%}", G2_LI_PEER)):
-        band = [anchor({**inp, "g2_li": g_li}, t) for t in TIERS]
-        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-    # Basket-table shift: every r row moves, r_disc (= r_li) included.
-    for dr, label in ((-0.005, "−50bp"), (0.005, "+50bp")):
-        shifted = {**inp, **{k: inp[k] + dr for k in ("r_li", "r_afr", "r_mac", "r_disc")}}
-        band = [anchor(shifted, t) for t in TIERS]
-        print(f"敏感区 三腿 r {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-    for dg, label in ((0.01, "+1pp"), (-0.01, "−1pp")):
-        print(f"敏感区 g2_afr_m {label}: M={anchor({**inp, 'g2_afr_m': inp['g2_afr_m'] + dg}, 'm'):.2f}")
-    no_axis_inp = {**inp, "g2_afr_l": 0.0, "g2_afr_m": 0.0, "g2_afr_h": 0.0}
-    no_axis = [anchor(no_axis_inp, t) for t in TIERS]
-    print(f"非洲腿三档 g=0（不给轴 credit）: {no_axis[0]:.2f} / {no_axis[1]:.2f} / {no_axis[2]:.2f}")
-    for label, rs_a in (("非洲稳态 15%（有壁垒重资产）", 0.15),):
-        band = [anchor({**inp, "rs_afr": rs_a}, t) for t in TIERS]
-        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-    for label, y2 in (("门槛判「低」（Y2 2028）", 2028.0),):
-        band = [anchor({**inp, "y2_path": y2}, t) for t in TIERS]
-        print(f"敏感区 {label}: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-    no_align = {**inp, "n_disc": 0.0, "lk_h2_parent": 0.0}
-    band = [anchor(no_align, t) for t in TIERS]
-    print(f"敏感区 不做时点对齐（τ 0、无窗口）: {band[0]:.2f} / {band[1]:.2f} / {band[2]:.2f}")
-
-    # What the street and book value each require in r terms: a parallel shift δ
-    # of all three baskets that makes the M-tier SOTP equal the target, plus the
-    # single-segment g=0 approximation E_M / P.
-    eps_m = total["m"] * YI / inp["shares"]
-    for label, px in (("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
-        delta = implied_r_shift(inp, px)
-        print(f"  {label:<10} 隐含公司 PE={px / eps_m:5.2f} → δ={delta:+.2%} "
-              f"(蓝科/非洲 {r['lk'] + delta:.1%}, 机械 {r['mac'] + delta:.1%}) | g=0 近似 E_M/P={eps_m / px:.1%}")
-    # 属性 D: strip the M-tier Lanke and machinery legs, read the residual on the
-    # Africa numerator, invert for the Africa-leg g at its basket r.
-    for label, px in (("本框架 M", M), ("卖方 TP", inp["tp_street"]), ("账面 PB=1.0", inp["bps"])):
-        # The market cap is net of the anode charge, so the Africa residual adds it back.
-        resid = (px - window(inp, "m")) * inp["shares"] / YI - v["m"]["lk"] - v["m"]["mac"] + anode_penalty(inp, "m")
-        p = resid / ni["m"]["afr"]
-        gi, ok = implied_g(p, roe_m, r["afr"])
-        flag = "" if ok else "  ⚠ 反解只能当方向读"
-        print(f"  {label:<10} 扣 M 档蓝科腿 {v['m']['lk']:.1f} + 机械腿 {v['m']['mac']:.1f} 亿后 残差 {resid:6.1f} 亿 → "
-              f"隐含 PE非洲={p:6.2f} → g={gi:+.2%}{flag}")
-    print(f"  TTM 归母 {inp['ni_ttm']:.2f} 亿"
-          f" | FY2024 锂谷底归母 {inp['ni_fy2024']:.2f} 亿 | FY2025 ex-蓝科 {inp['ni_exli_fy2025']:.2f} 亿")
-    print(f"  国金 2026E 归母 {inp['ni_2026e_street']:.2f} 亿（2026-10-29 点评）"
-          f" vs 本框架 H 档两腿合计 {total['h']:.2f} 亿 — 仅交叉")
-
-    return report(errors)
+    if errors:
+        raise ValueError('; '.join(errors))
+    tiers = lambda values: dict(zip('LMH', values))
+    ps = YI / inp['shares']
+    amounts = {t: leg_values(inp,t) for t in TIERS}
+    option_projects = {}
+    for key, (_, rev, profit, gross, net) in zip(('tile', 'peru_glass', 'ghana_glass', 'kenya_glass'), items):
+        option_projects[key] = {'revenue': rev, 'profit': profit, 'gross': gross, 'value': net}
+    def band(over):
+        return tiers(anchor(dict(inp, **over), t) for t in TIERS)
+    sensitivity = {
+        'lithium_growth_plus_1pp': band({'g2_li': inp['g2_li']+.01}),
+        'lithium_growth_peer': band({'g2_li': G2_LI_PEER}),
+        'africa_steady_15pct': band({'rs_afr': .15}),
+        'africa_growth_none': band({f'g2_afr_{t}': 0 for t in TIERS}),
+        'return_path_2028': band({'y2_path': 2028}),
+        'without_time_alignment': band({'n_disc': 0., 'lk_h2_parent': 0.}),
+        'anode_stress': band(dict(zip((f'roic_anode_{t}' for t in TIERS), ANODE_ROIC_STRESS))),
+        'anode_mid_all': band({f'roic_anode_{t}': inp['roic_anode_m'] for t in TIERS}),
+        'glass_price_half_value': sum(x[4] for x in opt_items(inp, pe['h']['afr'], .5)),
+        'lithium_high_persistent': (sum(ni['h'][leg]*pe['h'][leg] for leg in LEGS)
+                                    - anode_penalty(inp,'h'))*ps + window(inp,'h'),
+    }
+    sensitivity['africa_weight_cases'] = {}
+    for name, weight in zip(('fy2025', 'h1_gross_profit', 'h1_minority_full_year', 'h1_minority_half_year'), w_inf.values()):
+        sensitivity['africa_weight_cases'][name] = band({'w_afr': weight, 'w_mac': 1-weight})
+    for name, dr in (('discount_minus_05pp', -.005), ('discount_plus_05pp', .005)):
+        sensitivity[name] = band({key: inp[key]+dr for key in ('r_li','r_afr','r_mac','r_disc')})
+    for name, dg in (('africa_mid_growth_plus_1pp', .01), ('africa_mid_growth_minus_1pp', -.01)):
+        sensitivity[name] = anchor({**inp, 'g2_afr_m': inp['g2_afr_m']+dg}, 'm')
+    return {
+        'ticker': '600499.SH', 'currency': 'CNY', 'valuation_as_of': None, 'framework_as_of': None,
+        'anchors': tiers((L,M,H)), 'cut_points': {'A': A, 'B': B}, 'candidate': None,
+        'option': {'label': '海外建材项目', 'value': v_opt, 'value_unit': 'CNY_PER_SHARE', 'weights': tiers(P_TIERS),
+                   'anchors': tiers(adj), 'projects': option_projects},
+        'segments': {**{leg: tiers(amounts[t][leg]*ps for t in TIERS) for leg in LEGS},
+                     'anode': tiers(-anode_penalty(inp,t)*ps for t in TIERS),
+                     'window': tiers(window(inp,t) for t in TIERS)},
+        'key_parameters': {
+            leg: {'discount_rate': tiers((r[leg],)*3), 'growth_rate': tiers(leg_g(inp,leg,t) for t in TIERS),
+                  'forward_return': tiers(forward_roe(inp,t) for t in TIERS),
+                  'steady_return': tiers(leg_rs(inp,leg,forward_roe(inp,t),r[leg]) if leg != 'lk' and leg_g(inp,leg,t)>0 else None for t in TIERS),
+                  'multiple': tiers(pe[t][leg] for t in TIERS)} for leg in LEGS},
+        'operating': {'company_multiple': tiers(pe_company[t] for t in TIERS),
+                      'income': {leg: tiers(ni[t][leg] for t in TIERS) for leg in LEGS},
+                      'roe': tiers(forward_roe(inp,t) for t in TIERS), 'flat': tiers(flat[t] for t in TIERS),
+                      'africa_weight': inp['w_afr'], 'anode_penalty': tiers(anode_penalty(inp,t) for t in TIERS),
+                      'lithium_passby': True},
+        'sensitivity': sensitivity, 'outside_historical_band': outside_band,
+    }
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    lithium = dict(context['axes']['lithium'])
+    if lithium.pop('h_after') != 'M' or lithium.pop('h_scope') != 'lithium':
+        raise ValueError('unsupported lithium scenario transition')
+    africa = context['axes']['africa']
+    shared_axes = {'lithium': {k: lithium[k] for k in SHARED_BASIS_KEYS['lithium']},
+                   'africa': {k: africa[k] for k in SHARED_BASIS_KEYS['africa']}}
+    p = {**INPUTS, **shared_axes['lithium'], **shared_axes['africa']}
+    result = evaluate(p)
+    result['historical_financial_statement_as_of'] = '2026-09-30'
+    result['historical_research_as_of'] = '2026-10-30'
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments'] = {key: {'unit': 'CNY_PER_SHARE', 'values': values}
+                          for key, values in result['segments'].items()}
+    for data in result['key_parameters'].values():
+        for key in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+            data[key] = {'unit': 'RATIO', 'values': data[key]}
+    result['review_flags'] = ['historical_mixed_dates_and_africa_profit_inference',
+                              'historical_capital_funding_and_project_overlap_unverified',
+                              'historical_multiple_band_comparability_unverified']
+    if result.pop('outside_historical_band'):
+        result['review_flags'].append('historical_multiple_outside_band')
+    local = {'inputs': INPUTS, 'recovery_measured': RECOVERY_MEASURED,
+             'g2_li_peer': G2_LI_PEER, 'anode_roic_stress': ANODE_ROIC_STRESS,
+             'num_year': NUM_YEAR, 'p_tiers': P_TIERS, 'shared_axes': shared_axes}
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(local, BASELINE_LOCAL)
+    return result

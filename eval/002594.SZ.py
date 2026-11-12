@@ -1,74 +1,90 @@
 #!/usr/bin/env python3
-"""002594.SZ (BYD, A share) valuation eval.
+"""Historical BYD 2028 forecast model with a separate battery option.
 
-frameworks/002594.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a
-zone or a market-implied reading — the digest and the app zone on live quotes.
-
-formula_id: byd_group_ni_fy28_consensus_perpetual_gordon_v1
-
-Main ruler: one numerator (group 归母 EPS) and a Gordon multiple from a named
-perpetual g, no transition; since the 2026-10-16 framework correction
-(valuation-rules「经营价值与超额现金」) the return walks three stages and M / H
-are time-aligned:
-
-  PE_x   = path_pe(g2, ROE_x): ROE_x to Y1 2028, linear to the steady 10%
-           (ordered pick: global mature automakers 4.9% < r -> r) by Y2 2030
-           (low entry barrier), steady after
-  anchor = eps_x * PE_x * (1 + r)^-tau_x + window_x
-           tau_L = 0 (frozen regime year), tau_M = tau_H = 1.25 (2026-09-30 ->
-           2028-01-01); window = unbooked 4Q26 + FY2027 EPS x (1 - b) at
-           tau/2 (M / H only), b = g_win/ROE cut to [0, 1], g_win = the tier's own
-           consensus path FY2026E -> FY2028E annualised (2026-10-18 窗口留存口径改正;
-           was g2).  No excess-cash line (net debt), no k.
-
-r is 篮 4 常规经营 (10%), read from the Inputs row and checked against the
-篮 N tag.  g2 is one named value for all three tiers (cyclical flat-multiple
-policy; A5), ≤ the mega-hardware cap min(4%, r-4%).
-
-Numerators (A1 / A2):
-  M / H = FY2028E 归母 EPS — consensus mean / high of the post-interim house set
-          (Eastmoney F10, 19 houses); value at 2028-01-01 discounted tau 1.25
-          years to the balance-sheet date (③ 时点对齐).
-  L     = FY2025 actual EPS (the price-war digestion year) frozen as a regime
-          world; numerator year t = 1, not discounted.
-
-ROE (A6): tier EPS ÷ the numerator year's OPENING BPS (E_{n+1}/B_n).  The 3Q26
-common book (归母权益 less perpetual bonds, less the FY2025 dividend paid
-after the balance-sheet date) is rolled over the not-yet-booked earnings at
-the growth-required retention b = g_win/ROE (the same b as the window; fixed
-point, cut to [0, 1]).  M / H roll 4Q26 + FY2027 along their own house path
-(mean / 广发) at that path's FY2026E -> FY2028E growth; L rolls 4Q26 at the
-frozen FY2025 level at g2 (the regime world grows at g2 from today).
-
-③ (A9): the M numerator has never been realised (no equal-earnings months),
-so the L tier is tested; its multiple sits below the equal-earnings minimum,
-and the band is distorted (the market then priced ~25%/yr growth vs the model
-g2), so ③ is 「不可判定」 — the basket stays, and the 对账门 coordinates are
-printed; at least one independent coordinate must be within 20% of M.
-
-Run:  python3 frameworks/eval/002594.SZ.py
+Amounts and share counts follow original inputs; outputs are CNY/share. The
+document and input comments retain source names, dates and evidence gaps.
+L freezes the original price-war earnings; M/H are historical analyst
+forecasts, not updated consensus. The user-approved return path is distinct
+from the forward-profit path. The external-battery growth option enters H only,
+without an independently evidenced probability or duplication of vehicle
+earnings, and depends on future production and independently assumed economics.
 """
-
+# Historical evidence retained from the document:
+# The 19 FY2028 estimates were collected after 2026H1 and before Q3; Guangfa
+# 2026-10-08 supplies the high. They do not establish post-Q3 consensus.
+# FY2025 earnings are L's continuing condition, not a forecast of actual
+# future earnings. Its cap follows the original low-return-domain decision.
+# M/H's 2026–2028 forecast growth implies modeled full retention through the
+# window; no window distribution is added. The 2028–2030 return fade is
+# an assumption; mature 10%/10%/15% values are not realized project returns.
+# Q3 capex was about 426.76 CNY 100 million and inventory increased by
+# about 832 versus year-end. The original zero future funding gap requires
+# future capex, operating cash and financing forecasts; it is not verified.
+# Battery extra value annualizes a single April 2026 external-installation
+# snapshot, discounts another company's H1 unit profit by 30%, and deducts
+# new capacity capital. The 2030 realization and future volume/margins are
+# unverified; the separate value must not duplicate group forecast profits.
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
+from lib.gordon import check_branch, check_g_cap, check_r, g_cap, payout, payout_gap, perpetual_pe
+from lib.inputs import check_missing, ladder, require_whole_years
+from lib.tiers import flat_multiple_ladder
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import (  # noqa: E402
-    check_branch, check_g_cap, check_r, g_cap, payout, payout_gap, perpetual_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, outputs_section, parse_baskets, parse_inputs, report,
-)
-from lib.tiers import flat_multiple_ladder  # noqa: E402
-from lib.zones import cut_points  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'tiers', 'zones', 'partial_basis'), 'axes': {}}
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002594.SZ.md"
-FORMULA_ID = "byd_group_ni_fy28_consensus_perpetual_gordon_v1"
+HISTORICAL_PARTIAL_FINGERPRINT = '35f9ebdabc7cc6912ac4639a15e8859f66caf09a0bf40daa749a495f38d00c74'
+
+INPUTS = {
+    'shares': 9117197565,  # 总股本（A 54.338 亿 + H 36.834 亿）；三季报股本 9,117,198 千元; as-of 2026-09-30
+    'equity': 2489.72704,  # 普通股归母权益 = 归属于母公司所有者权益合计 2,660.53519 − 永续债 170.80815（三季报合并资产负债表，元换算）；A6; as-of 2026-09-30
+    'dps_after': 0,  # 估值基准日之后待派股息：FY2025 股息 0.358 已于 2026-07-31 派、已在 3Q26 账面里 → 0；A6; as-of 2026-09-30
+    'ni_booked': 223.44978,  # 2026 年已入账归母净利 = 1–3Q26（三季报「归属于母公司股东的净利润」22,344,978,000 元）；只用于把账面滚到分子年初; as-of 2026-09-30
+    'r_perp': 0.10,  # 篮 4 常规经营：车价自定、盈利不是商品价函数，无单一客户、无单一国别依赖（A4）；值 = `gordon.BASKET_R[4]`; as-of 2026-10-09
+    'g2': 0.03,  # 三档同一永续增长；**来源层级：无同业锚**（A5）；≤ 巨型硬件上限 min(4%, r−4%); as-of 2026-10-09
+    'tau': 1.25,  # 时点对齐年数：估值基准日 2026-09-30（三季报资产负债表日）→ M / H 分子年初 2028-01-01；L（冻结的常态年）不对齐（A17）; as-of 2026-10-30
+    'y1': 2028,  # 高回报期开始回落年 = 可见年末（FY2028 是最远 ≥2 家共识年）（A16）; as-of 2026-10-16
+    'y2': 2030,  # 回落到稳态年 = Y1 + 2（进入门槛「低」：整车厂建成约 1.5–2 年、面向消费者无 B 端认证周期、小米 / 零跑等新进入者 2–3 年内拿到可观份额）（A16）; as-of 2026-10-16
+    'rs_ss': 0.10,  # 稳态回报（三档，整车与外供电池同值）= 按序取：自身周期不可用（2022 年停燃油车、规模跳变后未走完一轮）→ 同业层：全球成熟整车（大众、通用、现代、Stellantis）穿越周期中位 4.9% < r → 取 r 10%；电芯同业三星 SDI 6.9% < r 同取 r；兜底 11% 不再托底（A16；用户 2026-10-19 认可）；按「三档各取各的稳态」本值管 L / M; as-of 2026-10-19
+    'rs_ss_h': 0.15,  # H 档稳态回报（整车与外供电池期权同值）：三档各取各的稳态 + 上调看进入门槛——整车门槛「低」，高档最多升到兜底表上一格（商品化重资产 11% → 有壁垒的重资产 15%：高档世界里比亚迪靠垂直一体化与海外溢价自建壁垒）；卖方高档前瞻 23.1% 不按永续取（A16；用户 2026-10-19 认可）; as-of 2026-10-19
+    'eps_l': 3.5777,  # **L** = FY2025 实测 EPS（归母 326.19 亿 ÷ 股本）冻结（A2）; as-of FY2025
+    'eps_m': 6.7447,  # **M** = FY2028E 共识均值（东方财富 F10，半年报后 19 家，A1）; as-of 2026-10-09
+    'eps_h': 8.16,  # **H** = FY2028E 共识最高一家（广发 2026-10-08，A1）; as-of 2026-10-08
+    'consensus_n_fy28': 19,  # FY2028E 家数（≥2 才可作分子年）; as-of 2026-10-09
+    'eps_fy28_lo': 4.40,  # FY2028E 最低一家（光大 2026-08-31）；压力坐标，**不入主公式**; as-of 2026-08-31
+    'eps_fy26_m': 4.2243,  # FY2026E 共识均值（20 家）；只经 M 档账面滚动进 ROE; as-of 2026-10-09
+    'eps_fy27_m': 5.5677,  # FY2027E 共识均值（20 家）；只经 M 档账面滚动进 ROE; as-of 2026-10-09
+    'eps_fy26_h': 4.37,  # 广发 FY2026E；只经 H 档账面滚动进 ROE; as-of 2026-10-08
+    'eps_fy27_h': 6.39,  # 广发 FY2027E；只经 H 档账面滚动进 ROE; as-of 2026-10-08
+    'eps_ttm': 3.4694,  # TTM EPS（4Q25–3Q26 归母 316.31 亿 = 1–3Q26 223.45 + FY2025 326.19 − 1–3Q25 233.33）；压力坐标，**不入主公式**; as-of 2026-09-30
+    'payout_fy25': 0.10,  # FY2025 实付派息率（0.358 × 91.17 亿股 ÷ 326.19 亿）；`check_branch` / `payout_gap`，**不入主公式**; as-of FY2025
+    'payout_3y': 0.233,  # 近三年实付派息率均值（30.0% / 30.0% / 10.0%）；对账门股息尺坐标，**不入主公式**; as-of FY2023–25
+    'pe_eq_lo': 19.68,  # L 档同等盈利月份（TTM EPS 3.15–4.01）最低 TTM PE（2024-03-31）；A9，**不入主公式**; as-of 2024-03-31
+    'pe_eq_n': 15,  # 上述同等盈利月份数；A9; as-of 2026-09-30
+    'roe_band': 0.216,  # 带下沿月份 TTM ROE；A9，**不入主公式**; as-of 2024-03-31
+    'g_exp_band': 0.25,  # 带下沿月份点时共识 FY2024→FY2025 预期增速中位；A9，**不入主公式**; as-of 2024-02-06
+    'pb_lo_5y': 3.13,  # 5 年月频 PB 下沿（2026-06-30 收盘 ÷ 2026Q1 BPS）；对账门坐标 ⑥，**不入主公式**; as-of 2026-06-30
+    'pb_lo_all': 2.23,  # 2016 年起月频 PB 下沿（2019-10-31）；对账门坐标 ⑥′，**不入主公式**; as-of 2019-10-31
+    'net_debt': 509.95,  # 净债务（含永续债）= 短借 186.70 + 一年内到期 34.93 + 长借 594.80 + 应付债券 149.94 + 租赁 90.00 + 永续债 170.81 − 货币资金 309.88 − 交易性金融资产 407.35（三季报）；A8，**不入主公式**; as-of 2026-09-30
+    'ebit_fy25': 401.85,  # FY2025 营业利润（东方财富）；A8，**不入主公式**; as-of FY2025
+    'da_1h26': 404.79,  # 2026H1 折旧摊销（固定资产 364.64 + 投资性房地产 0.01 + 使用权资产 12.96 + 无形资产 16.92 + 长期待摊 10.26）；三季报不披露折旧，沿用中报；A7 / A8，**不入主公式**; as-of 2026-06-30
+    'int_9m26': 28.10841,  # 1–3Q26 利息费用（三季报利润表「其中：利息费用」2,810,841,000 元）；eval 按 ×4/3 年化；A8，**不入主公式**; as-of 2026-09-30
+    'fd_install_apr': 11.133,  # 弗迪电池 2026 年 4 月国内装机 GWh；\(V_{opt}\) 输入（A10）; as-of 2026-04
+    'fd_ext_share': 0.42,  # 同月外供占比（1 − 自用 58.0%）；\(V_{opt}\) 输入，单月快照; as-of 2026-04
+    'unit_profit_catl': 86.92,  # 宁德 2026H1 单位净利 元/kWh（`300750.SZ`）；\(V_{opt}\) 单位经济; as-of 2026-06-30
+    'unit_disc': 0.30,  # 单位经济折扣（品牌与规模差，拍值）；\(V_{opt}\) 输入; as-of 2026-10-09
+    'capex_per_gwh': 2.3333,  # 新产能单 GWh 预算 亿元（宁德洛阳 140 亿 / 60 GWh，`300750.SZ` `dom_budget_gwh`）；\(V_{opt}\) 扣资本; as-of 2022-09-28
+    't_num': 2028,  # 分子年；\(V_{opt}\) 折现终点; as-of 2026-10-09
+    't_opt': 2030,  # 外供翻倍兑现年 = 对齐年份 + 2（无时点锚·拍值）；\(V_{opt}\) 输入；也是外供电池回报路径的起算年; as-of 2026-10-09
+    'y1_opt': 2030,  # 外供电池高回报期止点 = 兑现年：外供在放量、要过整车厂认证，翻倍的量 2030 年才到规模，此前不属于成熟阶段（A10 / A16）；\(V_{opt}\) 输入; as-of 2026-10-19
+    'y2_opt': 2034,  # 外供电池回落到稳态年 = `y1_opt` + 4（电池判中门槛：整车厂认证 1–2 年、需工艺积累；与 `300750.SZ` 电池同档）（A10 / A16）；\(V_{opt}\) 输入; as-of 2026-10-19
+    'tp_hsbc': 121,  # 汇丰 A 股 TP（SOTP）；交叉，**不入主公式**; as-of 2026-09-15
+    'tp_citi': 131,  # 花旗 A 股 TP（PEG）；交叉，**不入主公式**; as-of 2026-08-29
+    'tp_ubs': 136,  # 瑞银 A 股 TP（SOTP）；交叉，**不入主公式**; as-of 2026-09-08
+    'tp_consensus': 116.87,  # 一致 TP（Longbridge，23 家）；交叉，**不入主公式**; as-of 2026-10-08
+}
 
 TIERS = ("l", "m", "h")
 MIN_SPREAD = 0.02           # r - g2 floor (valuation-rules ①)
@@ -86,7 +102,7 @@ FORMULA_FIELDS = frozenset({
 })
 
 REQUIRED = sorted(FORMULA_FIELDS | {
-    "consensus_n_fy28", "eps_fy28_lo", "eps_ttm", "payout_fy25", "payout_3y", "g_win_m", "g_win_h",
+    "consensus_n_fy28", "eps_fy28_lo", "eps_ttm", "payout_fy25", "payout_3y",
     "pe_eq_lo", "pe_eq_n", "roe_band", "g_exp_band", "pb_lo_5y", "pb_lo_all",
     "net_debt", "ebit_fy25", "da_1h26", "int_9m26",
     "fd_install_apr", "fd_ext_share", "unit_profit_catl", "unit_disc",
@@ -245,167 +261,134 @@ def battery_option(inp: dict[str, float], base_h: float) -> dict[str, float]:
             "v_opt": (incr - k_ps) * d_real}
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    baskets = parse_baskets(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp):
+    errors = check_missing(inp, list(INPUTS))
     if errors:
-        return report(errors)
-
-    r, g2 = inp["r_perp"], inp["g2"]
-
-    # --- ladders and the numerator-year qualification (②) --------------------
-    errors += ladder("eps", inp["eps_l"], inp["eps_m"], inp["eps_h"])
-    errors += ladder("FY2028E range", inp["eps_fy28_lo"], inp["eps_m"], inp["eps_h"])
-    if inp["consensus_n_fy28"] < MIN_CONSENSUS_HOUSES:
-        errors.append(f"consensus_n_fy28={inp['consensus_n_fy28']:.0f} < {MIN_CONSENSUS_HOUSES} (A1)")
-    if abs(inp["tau"] - 1.25) > 1e-9:
-        errors.append("tau must be 1.25: 2026-09-30 balance sheet → FY2028 opening (A17)")
+        raise ValueError('; '.join(errors))
+    require_whole_years(inp, ('t_num', 'y1', 'y2', 't_opt', 'y1_opt', 'y2_opt'))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    r, g2 = inp['r_perp'], inp['g2']
+    errors += ladder('eps', inp['eps_l'], inp['eps_m'], inp['eps_h'])
+    errors += ladder('FY2028E range', inp['eps_fy28_lo'], inp['eps_m'], inp['eps_h'])
+    if inp['consensus_n_fy28'] < MIN_CONSENSUS_HOUSES:
+        errors.append('FY2028 consensus has too few houses')
+    if abs(inp['tau'] - 1.25) > 1e-9:
+        errors.append('tau must match 2026-09-30 to FY2028 opening')
+    if inp['shares'] <= 0:
+        errors.append('shares must be positive')
+    if errors:
+        raise ValueError('; '.join(errors))
     for t in TIERS:
-        if unbooked(inp, t) <= 0.0:
-            errors.append(f"unbooked EPS for {t} must be positive (A6)")
-    for t in ("m", "h"):
-        key = f"g_win_{t}"
-        if key in inp and abs(inp[key] - g_win(inp, t)) > 5e-5:
-            errors.append(f"{key}: stated {inp[key]:.4f} vs recomputed {g_win(inp, t):.4f} (A17)")
-    if errors:
-        return report(errors, "FAIL (inputs/ladders)")
-
-    # --- basket, caps, payout -------------------------------------------------
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    errors += check_g_cap(g2, r, "g2", mega_hw=MEGA_HW)
+        if unbooked(inp, t) <= 0:
+            errors.append(f'{t}: unbooked EPS must be positive')
+    errors += check_r(r, 'r_perp', 4)
+    errors += check_g_cap(g2, r, 'g2', mega_hw=MEGA_HW)
     if r - g2 < MIN_SPREAD - 1e-12:
-        errors.append(f"r - g2 = {r - g2:.2%} < {MIN_SPREAD:.0%}")
+        errors.append('r minus growth is below the pole guard')
+    if errors:
+        raise ValueError('; '.join(errors))
     rho = {t: roe(inp, t) for t in TIERS}
     for t in TIERS:
         pay = payout(g2, rho[t])
-        if not 0.0 < pay <= 1.0 + 1e-12:
-            errors.append(f"payout_{t}={pay:.3f} outside (0, 1]")
+        if not 0 < pay <= 1 + 1e-12:
+            errors.append(f'{t}: payout outside (0,1]')
         if peak_domain(inp, t):
-            if t != "l":
-                errors.append(f"ROE_{t}={rho[t]:.2%} not in the monotone domain (ROE − r < 3pp) — re-audit")
-            # L (A6, 2026-10-30): peak domain → multiple capped at 1/r; the payout gap is surplus
-            # retention into working capital / capacity — disclosed, not a branch error (retention ④)
-            if g2 > 0.0 and inp["payout_fy25"] >= 1.0:              # sign only
-                errors.append(f"g2@{t}: retention branch but the company retains nothing")
+            if t != 'l':
+                errors.append(f'{t}: forward return outside monotone domain')
+            if g2 > 0 and inp['payout_fy25'] >= 1:
+                errors.append('L retention branch but company retains nothing')
             continue
-        errors += check_branch(g2, rho[t], r, inp["payout_fy25"], f"g2@{t}")
+        errors += check_branch(g2, rho[t], r, inp['payout_fy25'], f'g2@{t}')
     if errors:
-        return report(errors, "FAIL (basket/caps/branch)")
+        raise ValueError('; '.join(errors))
 
     pe = {t: multiple(inp, t) for t in TIERS}
-
-    # --- the non-formula fields really are non-formula ------------------------
     lean = {k: v for k, v in inp.items() if k in FORMULA_FIELDS}
     if any(abs(anchor(lean, t) - anchor(inp, t)) > 1e-9 for t in TIERS):
-        errors.append("anchor path touches a non-formula field")
-
+        errors.append('anchor path touches a non-formula field')
     L, M, H = (anchor(inp, t) for t in TIERS)
-    if not (L < M < H):
-        errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
-        return report(errors)
-    A, B = cut_points(L, M, H)
+    errors += ladder('anchors', L, M, H)
+    eps_eff = tuple(inp[f'eps_{t}'] * disc(inp, t) for t in TIERS)
+    flat_errors, flat = flat_multiple_ladder(eps_eff, pe['m'])
+    errors += flat_errors + ladder('flat-multiple', *flat)
+    l_out = pe['l'] < inp['pe_eq_lo']
+    distorted = inp['g_exp_band'] - g2 >= DISTORTED_GAP
+    bps_2q = inp['equity'] * 1e8 / inp['shares']
+    coords = {'earnings_over_r': inp['eps_m'] / r * disc(inp, 'm'),
+              'dividend_value': inp['payout_3y'] * inp['eps_m'] / (r - g2) * disc(inp, 'm'),
+              'pb_5y_low': bps_2q * inp['pb_lo_5y'], 'pb_all_low': bps_2q * inp['pb_lo_all']}
+    near = [k for k, v in coords.items() if abs(M / v - 1) <= RECONCILE_TOL]
+    opt = battery_option(inp, op_anchor(inp, 'h'))
+    if any(k.startswith('p_') for k in inp):
+        errors.append('probability-style fields are not allowed in inputs')
+    band3 = tuple(base + P_K[i] * opt['v_opt'] for i, base in enumerate((L, M, H)))
+    if opt['v_opt'] > 0:
+        errors += ladder('option-adjusted anchors', *band3)
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    # A2e-2c: flat multiple, in each tier's own year terms.
-    eps_eff = tuple(inp[f"eps_{t}"] * disc(inp, t) for t in TIERS)
-    flat_errs, flat = flat_multiple_ladder(eps_eff, pe["m"])
-    errors += flat_errs + ladder("flat-multiple", *flat)
-
-    # ③ (A9): M never realised → test L against its equal-earnings months.
-    l_out = pe["l"] < inp["pe_eq_lo"]
-    distorted = inp["g_exp_band"] - g2 >= DISTORTED_GAP
-    if l_out and not distorted:
-        errors.append("③: L below the equal-earnings band and the band is clean → BLOCKED path (step 2-4)")
-
-    # 纠正对账门 (A9): independent coordinates for M.
-    bps_2q = inp["equity"] * 1e8 / inp["shares"]
-    coords = {
-        "② E_M/r": inp["eps_m"] / r * disc(inp, "m"),
-        "③ D_M/(r−g)": inp["payout_3y"] * inp["eps_m"] / (r - g2) * disc(inp, "m"),
-        "⑥ BPS×PB 5y low": bps_2q * inp["pb_lo_5y"],
-        "⑥′ BPS×PB all-period low": bps_2q * inp["pb_lo_all"],
-    }
-    near = [k for k, v in coords.items() if abs(M / v - 1.0) <= RECONCILE_TOL]
-    if not near:
-        errors.append("对账门: M outside every coordinate by > 20% → BLOCKED")
-
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-
-    # V_opt (A10) — held outside the base band; stated values must reproduce.
-    opt = battery_option(inp, op_anchor(inp, "h"))   # same basis as anchor_post (no window term)
-    if opt["v_opt"] <= 0:
-        errors.append(f"battery option non-positive: {opt['v_opt']:.2f}")
-    if any(k.startswith("p_") for k in inp):
-        errors.append("probability fields present in §3 Inputs (A2e-7a)")
-    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
-    out_sec = outputs_section(md)
-    vm = re.search(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
-    if vm is None or abs(float(vm.group(1)) - opt["v_opt"]) > 0.05:
-        errors.append(f"V_opt: stated {vm.group(1) if vm else None} vs recomputed {opt['v_opt']:.4f}")
-    for k, v in zip("LMH", band3):
-        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
-        if m3 is None or abs(float(m3.group(1)) - v) > 0.05:
-            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
-    a3, b3 = cut_points(*band3)
-    for label, want, rx in (("A′", a3, r"A′ = \*\*([0-9.]+)\*\*"), ("B′", b3, r"B′ = \*\*([0-9.]+)\*\*")):
-        mm = re.search(rx, out_sec)
-        if mm is None or abs(float(mm.group(1)) - want) > 0.05:
-            errors.append(f"{label}: stated {mm.group(1) if mm else None} vs recomputed {want:.4f}")
-
-    # --- report ---------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}  (r={r:.0%} = 篮 {baskets['r_perp']}, g2={g2:.0%}, "
-          f"cap(mega)={g_cap(r, mega_hw=True):.0%}, 三段回报 Y1 {inp['y1']:g} → Y2 {inp['y2']:g} 稳态 L/M {inp['rs_ss']:.0%} · H {inp['rs_ss_h']:.0%}，"
-          f"M/H 折 τ {inp['tau']:g} + 窗口利润)")
-    print(f"{'档':<3}{'EPS':>8}{'年初BPS':>9}{'ROE':>8}{'PE三段':>8}{'折现':>8}{'经营值':>8}{'窗口':>7}{'锚点':>9}")
-    for t in TIERS:
-        print(f"{t.upper():<3}{inp[f'eps_{t}']:8.4f}{bps_open(inp, t):9.3f}{rho[t]:8.2%}"
-              f"{pe[t]:8.3f}{disc(inp, t):8.4f}{op_anchor(inp, t):8.2f}{window(inp, t):7.2f}{anchor(inp, t):9.2f}"
-              f"（单段 PE {perpetual_pe(g2, rho[t], r):.3f}）")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%} V_opt/M={opt['v_opt'] / M:.1%}")
-    print(f"分子比 L/M={eps_eff[0] / eps_eff[1]:.3f} H/M={eps_eff[2] / eps_eff[1]:.3f} | "
-          f"倍数比 L/M={pe['l'] / pe['m']:.3f} H/M={pe['h'] / pe['m']:.3f}")
-    print(f"flat-multiple @PE_M={pe['m']:.3f}: {flat[0]:.2f} / {flat[1]:.2f} / {flat[2]:.2f}")
-    for t in TIERS:
-        model_pay, gap = payout_gap(g2, rho[t], inp["payout_fy25"])
-        excess = (1.0 - inp["payout_fy25"] - b_win(inp, t)) * unbooked(inp, t)
-        print(f"  {t.upper()}: 窗口段增速 {g_win(inp, t):.2%} / ROE {rho[t]:.2%} → b {b_win(inp, t):.3f}；未入账 "
-              f"{unbooked(inp, t):.3f} → 窗口可分配 {unbooked(inp, t) * (1 - b_win(inp, t)):.3f}（折后 {window(inp, t):.2f}）"
-              f"；稳态段 payout_gap model {model_pay:.3f} vs paid {inp['payout_fy25']:.2f} (gap {gap:.3f})；"
-              f"多留部分（实付留存 − b）× 未入账 {excess:+.2f} 元/股")
-    print(f"③ L 档：PE_L {pe['l']:.2f} vs 同等盈利月份最低 {inp['pe_eq_lo']:.2f}（{inp['pe_eq_n']:.0f} 个月）"
-          f" → {'视同出带' if l_out else '入带'}；带有效性：当时预期增速 {inp['g_exp_band']:.0%} − 模型 g "
-          f"{g2:.0%} = {inp['g_exp_band'] - g2:.0%} ≥ 10pp → {'失真 → 不可判定，篮子不动' if distorted else '干净'}")
-    print("对账门坐标：" + "；".join(f"{k} {v:.2f}（M/坐标 {M / v - 1:+.1%}）" for k, v in coords.items())
-          + f" → 20% 内：{', '.join(near)}")
-    print(f"压力坐标：TTM {inp['eps_ttm']:.3f} × 1/r = {inp['eps_ttm'] / r:.2f}；"
-          f"FY2028E 下沿 {inp['eps_fy28_lo']:.2f} × PE_M ÷ 1.1^τ = {inp['eps_fy28_lo'] * pe['m'] * disc(inp, 'm'):.2f}（不含窗口）")
-    for dg in (-0.01, 0.01):
-        alt = dict(inp, g2=g2 + dg)
-        la, ma, ha = (anchor(alt, t) for t in TIERS)
-        print(f"敏感 g2 {g2 + dg:.0%}: L {la:.2f} M {ma:.2f} H {ha:.2f}")
-    nd_ebitda = inp["net_debt"] / (inp["ebit_fy25"] + 2 * inp["da_1h26"])
-    print(f"杠杆门：净债 {inp['net_debt']:.1f} 亿 / EBITDA≈{inp['ebit_fy25'] + 2 * inp['da_1h26']:.0f} = "
-          f"{nd_ebitda:.2f}；利息(1-3Q26×4/3) / EBIT = {inp['int_9m26'] * 4 / 3 / inp['ebit_fy25']:.1%} → 未触发")
-    print(f"V_opt：{opt['gwh']:.1f} GWh × {opt['unit']:.2f} 元/kWh = {opt['d_ni']:.2f} 亿（ΔEPS {opt['d_eps']:.3f}）"
-          f" → ROE {opt['roe_post']:.2%}、电池自己的路径 {inp['t_opt']:g} 起 Y1 {inp['y1_opt']:g} → Y2 {inp['y2_opt']:g}"
-          f" PE {opt['pe_post']:.3f} → 增量 {opt['incr']:.2f}（÷1.1^τ）"
-          f" − 资本 {opt['k_ps']:.2f} = {opt['incr'] - opt['k_ps']:.2f} × {opt['d_real']:.4f}"
-          f" = {opt['v_opt']:.2f}（扣资本前 {opt['v_gross']:.2f}）")
-    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f} / {band3[1]:.2f} / {band3[2]:.2f}"
-          f"  A′={a3:.2f} B′={b3:.2f}")
-    for name, tp in (("汇丰", inp["tp_hsbc"]), ("花旗", inp["tp_citi"]), ("瑞银", inp["tp_ubs"]),
-                     ("一致", inp["tp_consensus"])):
-        print(f"  TP {name} {tp:.2f} → FY2028E 均值折现口径 PE {tp / (inp['eps_m'] * disc(inp, 'm')):.2f}")
-    return report(errors)
+    as_band = lambda xs: dict(zip('LMH', xs))
+    a, b = cut_points(L, M, H)
+    ao, bo = cut_points(*band3)
+    sensitivity = {}
+    for label, dg in (('growth_minus_1pp', -.01), ('growth_plus_1pp', .01)):
+        alt = {**inp, 'g2': g2 + dg}
+        sensitivity[label] = as_band(anchor(alt, t) for t in TIERS)
+    sensitivity['flat_multiple'] = as_band(flat)
+    sensitivity['interest_over_ebit'] = (inp['int_9m26'] * 4 / 3) / inp['ebit_fy25']
+    sensitivity['net_debt_over_ebitda'] = inp['net_debt'] / (inp['ebit_fy25'] + 2 * inp['da_1h26'])
+    sensitivity['trailing_eps_over_r'] = inp['eps_ttm'] / r
+    sensitivity['low_forecast_discounted'] = inp['eps_fy28_lo'] * pe['m'] * disc(inp, 'm')
+    sensitivity['target_multiple'] = {name: inp[key] / (inp['eps_m'] * disc(inp, 'm')) for name, key in
+                                      (('hsbc', 'tp_hsbc'), ('citi', 'tp_citi'), ('ubs', 'tp_ubs'), ('consensus', 'tp_consensus'))}
+    # 外供电池是独立价值；L 冻结利润与峰形区倍数上限，M/H 取三段 Gordon。
+    return {'ticker': '002594.SZ', 'currency': 'CNY',
+            'valuation_as_of': None, 'historical_valuation_as_of': '2026-09-30',
+            'framework_as_of': None, 'historical_research_as_of': '2026-10-30', 'historical_framework_as_of': '2026-10-30',
+            'anchors': as_band((L, M, H)), 'cut_points': {'A': a, 'B': b}, 'candidate': None,
+            'option': {'label': 'external_battery_sales', 'value': opt['v_opt'], 'weights': as_band(P_K),
+                       'anchors': as_band(band3), 'cut_points': {'A': ao, 'B': bo}, 'details': opt},
+            'segments': {'company': {'values': as_band((L, M, H))}},
+            'key_parameters': {'method': {'L': 'frozen_earnings_peak_multiple_cap', 'M': 'gordon_three_stage', 'H': 'gordon_three_stage'},
+                               'discount_rate': dict.fromkeys('LMH', r), 'growth_rate': dict.fromkeys('LMH', g2),
+                               'forward_return': as_band(rho[t] for t in TIERS),
+                               'steady_return': as_band(min(rho[t], rs_tier(inp, t)) for t in TIERS),
+                               'multiple': as_band(pe[t] for t in TIERS)},
+            'operating': {'book_value_start': as_band(bps_open(inp, t) for t in TIERS),
+                          'unbooked': as_band(unbooked(inp, t) for t in TIERS),
+                          'window_growth': as_band(g_win(inp, t) for t in TIERS),
+                          'window_retention': as_band(b_win(inp, t) for t in TIERS),
+                          'window': as_band(window(inp, t) for t in TIERS),
+                          'payout_gap': {t.upper(): payout_gap(g2, rho[t], inp['payout_fy25']) for t in TIERS},
+                          'excess_retained': as_band((1 - inp['payout_fy25'] - b_win(inp, t)) * unbooked(inp, t) for t in TIERS),
+                          'operating_anchor': as_band(op_anchor(inp, t) for t in TIERS),
+                          'band_outside': l_out, 'band_distorted': distorted,
+                          'reconciliation': coords, 'reconciliation_near': near},
+            'sensitivity': sensitivity}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    result = evaluate(INPUTS)
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'tiers': TIERS, 'option_weights': P_K,
+         'formula_fields': sorted(FORMULA_FIELDS), 'minimum_spread': MIN_SPREAD,
+         'minimum_consensus_houses': MIN_CONSENSUS_HOUSES, 'monotone_gap': MONO_GAP,
+         'distortion_gap': DISTORTED_GAP, 'reconcile_tolerance': RECONCILE_TOL,
+         'mega_hardware': MEGA_HW, 'fiscal_year_now': FY_NOW}, HISTORICAL_PARTIAL_FINGERPRINT)
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    if result['option']['value'] > 0:
+        result['option']['value_unit'] = 'CNY_PER_SHARE'
+    else:
+        result['option'] = {'status': 'unavailable', 'label': '电池外供', 'anchors': None}
+        result['option_unavailable_reason'] = 'battery_increment_not_positive'
+    result['review_flags'] = ['historical_growth_funding_gap_unverified',
+                              'historical_external_battery_volume_and_overlap_unverified',
+                              'historical_forecast_after_earnings_unverified']
+    if result['operating']['band_outside'] and not result['operating']['band_distorted']:
+        result['review_flags'].append('historical_low_multiple_below_clean_reference')
+    if not result['operating']['reconciliation_near']:
+        result['review_flags'].append('historical_reconciliation_requires_review')
+    return result

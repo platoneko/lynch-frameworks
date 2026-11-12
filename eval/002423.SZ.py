@@ -1,61 +1,63 @@
-#!/usr/bin/env python3
-"""002423.SZ (COFCO Capital) valuation eval — recompute anchors from frameworks/002423.SZ.md.
-
-frameworks/002423.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
-
-formula_id: cofco_capital_sotp_ev_v1
-
-SOTP, legs added (no blended r), all in 亿元 then per share:
-  * 中英人寿 (50%) — insurance EV ruler (valuation-rules「保险腿：内含价值尺」,
-    2026-10-09): (EV_sh + NBV / (r - g_nbv) × (1 - k_x)) × hold.  EV_sh = disclosed
-    EV less the perpetual capital bonds booked in equity.  k is measured, not
-    picked: e = (Σ EV_{t-1}·RDR_t + Σ NBV_t − ΔEV_sh) / Σ NBV_t over the
-    same-basis window; k_L = min(1, e), k_M = k_L / 2, k_H = 0.
-  * 中粮信托 (80.51%) / 中粮期货 (70.42%) — Gordon, 篮 4, retention bucket E
-    (regulatory capital grows with the book): b = 1 - payout, g = b × ROE_x
-    capped at G_cap; a capped dividend payer (trim ≤ 2pp) switches to
-    capped_payout_pe (valuation-rules「永续 g 上限」红利票截顶).
-  * 龙江银行 (20%, equity method) — 篮 5 PB-ROE at g = 0 (NI fell 2024→2025),
-    less k × the excess retention (it has paid nothing: payout 0) — the
-    600036.SH shape.
-  * 总部 — 2025 cost line capitalized at 1/r (g = 0).
-
-Run:  python3 frameworks/eval/002423.SZ.py
-"""
-
+"""中粮资本历史 SOTP：输入来源与各业务计算均在此；不读取正文。"""
 from __future__ import annotations
+import math
+from lib.gordon import capped_payout_pe, g_cap, perpetual_pe
+from lib.partial_basis import local_basis_changed
 
-import sys
-from pathlib import Path
+DEPENDENCIES = {'libraries': ('gordon', 'partial_basis'), 'axes': {}}
+TIERS = ('L', 'M', 'H')
+CAP_TRIM_MAX = .02
+BASELINE_LOCAL = '33128bab30e3c0cd84d6099c8368fece0ded9944b81a42b62c0a002c42bdbcea'
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import (  # noqa: E402
-    capped_payout_pe, check_g_cap, check_r, g_cap, perpetual_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+# 原研究 2026-10-09；金额单位为亿元人民币，股数单位为亿股。
+# 人寿新单侵蚀使用 2023–25 三个同口径年度；2022 旧口径仅作对照。
+# 2024–25 年未披露贴现率，沿用 2023 年数值；分红和注资未核。
+INPUTS = {
+    'shares': 23.04105575,  # 总股本（亿股）；2026 中报；2026-06-30
+    'r_op': 0.1,  # 篮 4 常规经营：中英 / 信托 / 期货 / 总部——非银金融，盈利非商品价函数，无单一客户（A2）；2026-10-09
+    'r_bank': 0.11,  # 篮 5 大行 / 优质股份行：龙江银行存贷业务命中 A2c-2，银行唯一可落的篮（A2）；2026-10-09
+    'payout_obs': 0.301,  # 实付派息率（2025：30.10%，A10）；2025-12-31
+    'ev_2021': 149.63,  # 中英 EV（无永续债）；中粮资本 2021 年报 / 中诚信；2021-12-31
+    'ev_2022': 151.25,  # 中英 EV（无永续债）；2022-12-31
+    'ev_2023': 170.03,  # 中英 EV（无永续债）；2023 年报 p15；2023-12-31
+    'ev_2024_disc': 216.6,  # 中英披露 EV（含永续债）；中证鹏元 2026 资本补充债评级 p20；2024-12-31
+    'perp_2024': 30.0,  # 2024 年发行永续债（中诚信：「30 亿元无固定期限资本债券的发行」）；2024-12-31
+    'ev_2025_disc': 222.68,  # 中英披露 EV（含永续债）；中证鹏元 / 中诚信 2026 永续债评级；2025-12-31
+    'perp_2025': 44.97,  # 中英永续债账面（2025 未审财报 4,497,300,000 元）；2025-12-31
+    'rdr_2022': 0.1015,  # 中英 RDR（中证鹏元 2024 永续债第二期 p21）；2022-12-31
+    'rdr_2023': 0.0975,  # 中英 RDR（同上）；2023-12-31
+    'rdr_2024': 0.0975,  # 未披露（「审慎下调」），沿用 2023 值（A14）；2024-12-31
+    'rdr_2025': 0.0975,  # 未披露，沿用 2023 值（A14）；2025-12-31
+    'nbv_2022_old': 3.79,  # 中英 NBV 旧口径（扣资本成本后；只进 4 年窗口交叉）；2022-12-31
+    'nbv_2023': 8.42,  # 中英 NBV 新口径重述；2023-12-31
+    'nbv_2024': 6.7,  # 中英 NBV 新口径重述；2024-12-31
+    'nbv_2025': 15.49,  # 中英 NBV 新口径（+131.20%）；基数（A5）；2025-12-31
+    'g_nbv': 0.0,  # NBV 永续增速：无卖方 / 同业锚 → 0（A5）；2026-10-09
+    'hold_ins': 0.5,  # 中英持股（并表；英杰华 50%）；2026-06-30
+    'ins_book_2025': 111.97,  # 中英普通股账面 = 所有者权益 156.94 − 永续债 44.97（VIF 推算用）；2025-12-31
+    'trust_eq': 92.36,  # 信托分部净资产均值（2025 末 91.62 / 2026-06 93.10）；2026-06-30
+    'hold_trust': 0.8051,  # 信托持股；2026-06-30
+    'roe_trust_l': 0.0747,  # 2025：6.551 ÷ 均值(83.70, 91.62)（A6）；2025-12-31
+    'roe_trust_m': 0.0798,  # TTM：7.373 ÷ 均值(91.62, 93.10)（A6）；2026-06-30
+    'roe_trust_h': 0.0883,  # 2024：7.031 ÷ 均值(75.57, 83.70)（A6）；2024-12-31
+    'fut_eq': 48.6,  # 期货分部净资产均值（2025 末 49.00 / 2026-06 48.20）；2026-06-30
+    'hold_fut': 0.7042,  # 期货持股（2024-12 增资后）；2026-06-30
+    'roe_fut_l': 0.0505,  # 2025：2.433 ÷ 均值(47.31, 49.00)（A7）；2025-12-31
+    'roe_fut_m': 0.0601,  # TTM：2.921 ÷ 均值(49.00, 48.20)（A7）；2026-06-30
+    'roe_fut_h': 0.068,  # 2023 年报「ROE 6.8%」（A7）；2023-12-31
+    'lj_bv': 40.124,  # 龙江银行权益法账面（20%）；2025 年报 p188；2025-12-31
+    'roe_lj_l': 0.0338,  # 2025：6.712 ÷ 均值(196.93, 200.55)（A8）；2025-12-31
+    'roe_lj_m': 0.0355,  # 2024 / 2025 均值（A8）；2025-12-31
+    'roe_lj_h': 0.0597,  # 2026H1 年化：5.986 × 2 ÷ 200.55（A8，年化）；2026-06-30
+    'k_lj_l': 1.0,  # 留存边际回报为负 → 全扣（A8）；2025-12-31
+    'k_lj_m': 0.5,  # E 桶默认上沿（A8）；2025-12-31
+    'k_lj_h': 0.3,  # E 桶默认下沿（A8）；2025-12-31
+    'hq_ni': -1.073,  # 总部年费用（A9）；2025-12-31
+    'eps_ttm': 0.522,  # TTM 归母 EPS（2025 0.4916 − 2025H1 0.3679 + 2026H1 0.3981）；③ 对带用；2026-06-30
+    'band_pe_lo': 12.6,  # 同等盈利月份 PE 下沿（2023-12，A12）；2023-12-31
+}
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "002423.SZ.md"
-FORMULA_ID = "cofco_capital_sotp_ev_v1"
-TIERS = ("L", "M", "H")
-CAP_TRIM_MAX = 0.02  # dividend-payer threshold for the capped-payout ruler
-
-REQUIRED = [
-    "shares", "r_op", "r_bank", "payout_obs",
-    "ev_2021", "ev_2022", "ev_2023", "ev_2024_disc", "perp_2024", "ev_2025_disc", "perp_2025",
-    "rdr_2022", "rdr_2023", "rdr_2024", "rdr_2025",
-    "nbv_2022_old", "nbv_2023", "nbv_2024", "nbv_2025", "g_nbv", "hold_ins", "ins_book_2025",
-    "trust_eq", "hold_trust", "roe_trust_l", "roe_trust_m", "roe_trust_h",
-    "fut_eq", "hold_fut", "roe_fut_l", "roe_fut_m", "roe_fut_h",
-    "lj_bv", "roe_lj_l", "roe_lj_m", "roe_lj_h", "k_lj_l", "k_lj_m", "k_lj_h",
-    "hq_ni", "eps_ttm", "band_pe_lo",
-]
-
+REQUIRED = ('shares', 'r_op', 'r_bank', 'payout_obs', 'ev_2021', 'ev_2022', 'ev_2023', 'ev_2024_disc', 'perp_2024', 'ev_2025_disc', 'perp_2025', 'rdr_2022', 'rdr_2023', 'rdr_2024', 'rdr_2025', 'nbv_2022_old', 'nbv_2023', 'nbv_2024', 'nbv_2025', 'g_nbv', 'hold_ins', 'ins_book_2025', 'trust_eq', 'hold_trust', 'roe_trust_l', 'roe_trust_m', 'roe_trust_h', 'fut_eq', 'hold_fut', 'roe_fut_l', 'roe_fut_m', 'roe_fut_h', 'lj_bv', 'roe_lj_l', 'roe_lj_m', 'roe_lj_h', 'k_lj_l', 'k_lj_m', 'k_lj_h', 'hq_ni', 'eps_ttm', 'band_pe_lo')
 
 def ev_series(inp: dict[str, float]) -> dict[int, float]:
     """Shareholder EV (亿): disclosed EV less perpetual bonds where they exist."""
@@ -131,105 +133,48 @@ def anchors(inp: dict[str, float]) -> tuple[float, float, float]:
     return tuple(sum(lg[lab].values()) / inp["shares"] for lab in TIERS)
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
-
-    baskets = parse_baskets(md)
-    for field in ("r_op", "r_bank"):
-        if field not in baskets:
-            errors.append(f"{field}: no 篮 N in Inputs source cell")
-        errors += check_r(inp[field], field, baskets.get(field))
-    errors += check_g_cap(inp["g_nbv"], inp["r_op"], "g_nbv")
-    for name in ("trust", "fut", "lj"):
-        errors += ladder(f"roe_{name}", *(inp[f"roe_{name}_{t.lower()}"] for t in TIERS))
-    # Worse world, more of the bank's retention wasted: 0 ≤ k_H ≤ k_M ≤ k_L ≤ 1.
-    kl = {t: inp[f"k_lj_{t.lower()}"] for t in TIERS}
-    if not (0.0 <= kl["H"] <= kl["M"] <= kl["L"] <= 1.0):
-        errors.append(f"k_lj must satisfy 0 <= h <= m <= l <= 1, got {kl}")
-    if not (0.0 < inp["payout_obs"] < 1.0):
-        errors.append(f"payout_obs={inp['payout_obs']} must be in (0, 1)")
-    if errors:
-        return report(errors, "FAIL (inputs/guards)")
-
-    try:
-        lg = legs(inp)
-    except ValueError as e:
-        return report([str(e)], "FAIL (inputs/guards)")
-    L, M, H = anchors(inp)
-    if not (L < M < H):
-        print(f"FAIL: L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}", file=sys.stderr)
-        return 1
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-
-    sh = inp["shares"]
-    ev = ev_series(inp)
-    e3 = eaten_share(inp, 2022, 2025, nbv_same_basis(inp))
-    e4 = eaten_share(inp, 2021, 2025, {**nbv_same_basis(inp), 2022: inp["nbv_2022_old"]})
-    k = k_ins(inp)
-    roev = (ev[2025] / ev[2022]) ** (1 / 3) - 1
-    stress = ev[2025] * inp["hold_ins"] * ((1 + roev) / (1 + inp["r_op"])) ** 3 / sh
-    vif = ev[2025] - inp["ins_book_2025"]
-
-    print(f"formula_id={FORMULA_ID}")
-    print("EV_sh (亿): " + " ".join(f"{y}:{v:.2f}" for y, v in ev.items()))
-    print(f"e (2022→2025 同口径 3 年) = {e3:.2f}；e (2021→2025 含 2022 旧口径 NBV) = {e4:.2f}"
-          f" → k_ins L/M/H = {k['L']:.2f}/{k['M']:.2f}/{k['H']:.2f}")
-    print(f"{'档':<3}{'中英':>8}{'信托':>8}{'期货':>8}{'龙江':>8}{'总部':>8}{'合计':>8}  (元/股)")
-    for lab, a in zip(TIERS, (L, M, H)):
-        v = lg[lab]
-        print(f"{lab:<3}{v['ins'] / sh:8.2f}{v['trust'] / sh:8.2f}{v['fut'] / sh:8.2f}"
-              f"{v['lj'] / sh:8.2f}{v['hq'] / sh:8.2f}{a:8.2f}")
-    for lab in TIERS:
-        lo = lab.lower()
-        for name, eq, hold in (("信托", "trust_eq", "hold_trust"), ("期货", "fut_eq", "hold_fut")):
-            key = "trust" if name == "信托" else "fut"
-            _, pe, g, ruler = gordon_leg(inp[eq] * inp[hold], inp[f"roe_{key}_{lo}"],
-                                         inp["r_op"], inp["payout_obs"])
-            print(f"  {lab} {name}: ROE {inp[f'roe_{key}_{lo}']:.2%} g {g:.2%} PE {pe:.2f} ({ruler})")
-    print(f"③ 整票 M ÷ TTM EPS = {M / inp['eps_ttm']:.1f}x vs 同等盈利月份带下沿 {inp['band_pe_lo']}x"
-          f" → {'入带' if M / inp['eps_ttm'] >= inp['band_pe_lo'] else '出带'}；"
-          f"L {L / inp['eps_ttm']:.1f}x / H {H / inp['eps_ttm']:.1f}x（只披露）")
-    if M / inp["eps_ttm"] < inp["band_pe_lo"]:
-        errors.append("③: M multiple below own same-earnings band")
-    print(f"压力坐标（e>1，EV 按实测 ROEV {roev:.2%} 续滚 3 年）：中英 {stress:.2f} 元/股"
-          f"（底牌 L 中英 {lg['L']['ins'] / sh:.2f}）→ 整票 {L - lg['L']['ins'] / sh + stress:.2f}")
-    print(f"VIF 推算 = EV_sh − 普通股账面 = {vif:.1f} 亿；RDR −1pp 敏感（D=10 拍值）"
-          f"≈ ±{vif * 10 * 0.01 * inp['hold_ins'] / sh:.2f} 元/股")
-    for dg in (-0.01, 0.01):
-        alt = dict(inp, payout_obs=inp["payout_obs"])
-        # g ±1pp on the Gordon legs: shift b so that g moves by dg at each tier's ROE.
-        vals = []
-        for lab in TIERS:
-            lo = lab.lower()
-            tot = lg[lab]["ins"] + lg[lab]["lj"] + lg[lab]["hq"]
-            for key, eq, hold in (("trust", "trust_eq", "hold_trust"), ("fut", "fut_eq", "hold_fut")):
-                roe = inp[f"roe_{key}_{lo}"]
-                g = min((1 - alt["payout_obs"]) * roe, g_cap(inp["r_op"])) + dg
-                tot += inp[eq] * inp[hold] * roe * perpetual_pe(g, roe, inp["r_op"])
-            vals.append(tot / sh)
-        print(f"敏感 信托/期货 g {dg:+.0%}: " + " / ".join(f"{v:.2f}" for v in vals))
-    for kv in (0.25, 0.75):
-        vals = [(sum(lg[lab].values()) - lg[lab]["ins"]
-                 + ins_leg(inp, k[lab] if lab != "M" else kv)) / sh for lab in TIERS]
-        print(f"敏感 k_ins_M={kv}: " + " / ".join(f"{v:.2f}" for v in vals))
-    alt = dict(inp, nbv_2025=inp["nbv_2025"] * 1.2)
-    print("敏感 NBV +20%: " + " / ".join(f"{v:.2f}" for v in anchors(alt)))
-    # A2e-2c flat ladder in PE space on group TTM EPS: no per-tier group EPS exists
-    # (the EV leg has no earnings numerator), so report the leg numerators instead.
-    print("2c 分子阶梯：信托 / 期货 / 龙江 ROE 三档递增（见上）；中英腿档差来自 k（实测 e）")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.3f} H/M={H / M:.3f} (H-L)/2M={(H - L) / (2 * M):.1%}")
-    return report(errors)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    inp = dict(INPUTS)
+    if any(key not in inp for key in REQUIRED):
+        raise ValueError('missing required historical inputs')
+    if any(isinstance(inp[key], bool) or not isinstance(inp[key], (int, float))
+           or not math.isfinite(inp[key]) for key in REQUIRED):
+        raise ValueError('historical inputs must be finite numbers')
+    if inp['shares'] <= 0 or inp['r_op'] <= inp['g_nbv'] or inp['r_bank'] <= 0:
+        raise ValueError('share count or discount domain is invalid')
+    lg = legs(inp)
+    prices = {tier: sum(lg[tier].values()) / inp['shares'] for tier in TIERS}
+    if not prices['L'] < prices['M'] < prices['H']:
+        raise ValueError('historical price tiers are not ordered')
+    values = lambda field: {tier: lg[tier][field] / inp['shares'] for tier in TIERS}
+    params = {}
+    for name, eq, hold in (('trust', 'trust_eq', 'hold_trust'), ('futures', 'fut_eq', 'hold_fut')):
+        prefix = 'trust' if name == 'trust' else 'fut'
+        roes = {tier: inp[f'roe_{prefix}_{tier.lower()}'] for tier in TIERS}
+        details = {tier: gordon_leg(inp[eq] * inp[hold], roes[tier], inp['r_op'], inp['payout_obs'])
+                   for tier in TIERS}
+        params[name] = {'discount_rate': {'unit': 'RATIO', 'values': {t: inp['r_op'] for t in TIERS}},
+                        'forward_return': {'unit': 'RATIO', 'values': roes},
+                        'growth_rate': {'unit': 'RATIO', 'values': {t: details[t][2] for t in TIERS}}}
+    params['insurance'] = {'discount_rate': {'unit': 'RATIO', 'values': {t: inp['r_op'] for t in TIERS}},
+                           'growth_rate': {'unit': 'RATIO', 'values': {t: inp['g_nbv'] for t in TIERS}},
+                           'erosion_share': {'unit': 'RATIO', 'values': k_ins(inp)}}
+    params['bank'] = {'discount_rate': {'unit': 'RATIO', 'values': {t: inp['r_bank'] for t in TIERS}},
+                      'growth_rate': {'unit': 'RATIO', 'values': {t: 0. for t in TIERS}},
+                      'forward_return': {'unit': 'RATIO',
+                          'values': {t: inp[f'roe_lj_{t.lower()}'] for t in TIERS}}}
+    return {'ticker': '002423.SZ', 'currency': 'CNY', 'units': {'price': 'CNY_PER_SHARE'},
+            'valuation_as_of': None, 'framework_as_of': None,
+            'historical_financial_statement_as_of': '2026-06-30',
+            'historical_research_as_of': '2026-10-09', 'anchors': prices,
+            'candidate': None, 'option': None,
+            'segments': {name: {'unit': 'CNY_PER_SHARE', 'values': values(key)}
+                         for name, key in (('insurance', 'ins'), ('trust', 'trust'),
+                                           ('futures', 'fut'), ('bank', 'lj'), ('headquarters', 'hq'))},
+            'key_parameters': params,
+            'review_flags': ['insurance_three_year_same_basis_window',
+                             'insurance_dividends_and_capital_injections_unverified',
+                             'insurance_2024_2025_discount_rate_proxy',
+                             'subsidiary_dividend_policy_proxy'],
+            'basis_changed': None,
+            'partial_basis_changed': local_basis_changed({'inputs': INPUTS, 'cap_trim_max': CAP_TRIM_MAX}, BASELINE_LOCAL)}
