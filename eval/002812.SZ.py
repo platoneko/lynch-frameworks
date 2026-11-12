@@ -256,6 +256,9 @@ def calculate(context):
          'leverage_limit': LEV_DEBT_EBITDA, 'interest_limit': LEV_INT_EBIT,
          'reconciliation_gate': RECON_GATE, 'recovery_years': N_REC_POINT}, HISTORICAL_PARTIAL_FINGERPRINT)
     result['units'] = {'price': 'CNY_PER_SHARE'}
+    # The adopted 2026-10-28 five-house FY2028 mean (5.976 CNY/share)
+    # is the M numerator; preserve this display direction without changing inputs.
+    result['own_consensus'] = {'tier': 'M', 'as_of': '2026-10-28', 'kind': 'historical'}
     result['segments']['company']['unit'] = 'CNY_PER_SHARE'
     result['review_flags'] = ['historical_growth_funding_and_future_return_unverified',
                               'historical_forecast_after_earnings_unverified']

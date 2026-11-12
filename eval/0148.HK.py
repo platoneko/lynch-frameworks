@@ -621,6 +621,9 @@ def calculate(context):
             {'inputs':INPUTS,'axes':selected,'history_result':HIST_RESULT,
              'history_assets':HIST_NET_ASSETS,'return_years':list(RET_YEARS)},HISTORICAL_PARTIAL_FINGERPRINT)
     result['units']={'price':'HKD_PER_SHARE'}
+    # The adopted 2026-09-24 peer-forecast and three-broker target-price
+    # comparison placed the direction above H; this only restores its display metadata.
+    result['own_consensus']={'tier':'>H','as_of':'2026-09-24','kind':'historical'}
     result['option']['value_unit']='HKD_PER_SHARE'
     names=('klhl','pcb','chem','rent','pud','sec','jv','debt')
     result['segments']={name:{'unit':'HKD_PER_SHARE','values':{
