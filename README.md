@@ -9,8 +9,12 @@ lynch 的估值框架内容：单票框架 `<TICKER>.md`、共享情景轴 `axes
 ```bash
 gh repo clone platoneko/lynch && cd lynch
 gh repo clone platoneko/lynch-frameworks frameworks
-cd frameworks && just check
+cd frameworks
+export LYNCH_FRAMEWORK_ARCHIVE='<应用归档清单的绝对路径>'
+just check
 ```
+
+检查会跳过归档标的，归档清单缺失时会报错。基金等模型需要额外历史数据时，须将 `LYNCH_FRAMEWORK_CHECK_INPUTS` 指向包含各票 `external_inputs`、`peer_results` 或 `rate_inputs` 的 JSON 文件绝对路径；缺少必要数据会报告对应标的的错误。不要用虚构数据代替真实历史数据。
 
 `.claude/skills/sediment-framework/` 是随本仓库保存的项目自有技能。其他研究技能由各工具的用户级环境提供，与 Longbridge 技能一样，不在本仓库存放或更新。`just check` 会拒绝项目技能目录内的绝对软链接、失效软链接，以及指向本内容仓库之外的软链接。
 

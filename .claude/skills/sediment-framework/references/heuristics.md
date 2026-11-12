@@ -80,6 +80,6 @@
 | **股息交叉（分支校验）** | 本票与同业各在哪个 ROE 域？M 隐含派息率 vs 实付？分支是否取错？（见 `valuation-rules.md`「反解分支」）。`slow_grower` / `stalwart` / 银行 / 任何 \(g_2\) 来自反解的票 **MUST** 做；DDM 作对照带 | 年报 DPS÷归母 EPS；DPS ≥3 年 CAGR；\(1-g_2/ROE_M\) vs 实付——峰形/病态区差 >20pp 回对话；单调区只看符号 |
 | **PEG（增长对价）** | PE ÷ 前瞻增速是否合理（常见 ~1–1.5）？ | 共识增速 + 候选 PE |
 | **交叉约束** | 分腿加权隐含整公司 PE 是否落在历史分位 / 卖方簇附近？ | 历史 PE 带或估值 rank |
-| **档位可比性** | \(L/M\)、\(H/M\)、\((H-L)/2M\) 在仓库分布何处？ | `python3 scripts/calibration.py` + 同类票 |
+| **档位可比性** | \(L/M\)、\(H/M\)、\((H-L)/2M\) 在仓库分布何处？ | `app/server/.venv/bin/python scripts/calibration.py` + 同类票；结果库路径取 `LYNCH_VALUATION_DB` |
 
 **落盘**：结论进 Assumptions 或 §3 来源列；勿堆整张矩阵。用户否决某维时写「未采用：原因」。

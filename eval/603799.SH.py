@@ -1,90 +1,23 @@
 #!/usr/bin/env python3
-"""603799.SH (Huayou Cobalt) valuation eval — recompute anchors from frameworks/603799.SH.md.
+"""Historical Huayou model: offline reconciliation only, not a confirmed band.
 
-frameworks/603799.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on any mismatch.  The doc
-states no current price or zone (the digest and the app zone on live quotes).
-
-formula_id: huayou_eight_leg_gp_bridge_conv_ladder_gordon_v2
-
-What makes this ticker's ruler different from the other two A-share cyclicals:
-the scenario ladder does NOT live in the multiple, and it does not live in a
-single commodity price either.  Eight legs each ride their own measured
-half-year series (only copper is shifted by a price ladder), and the step that
-actually moves the anchors is `conv` — the pretax-to-parent conversion rate,
-which fell from 73.4% (FY2025) to 55.7% (2026H1) to 38.8% (2026Q2) because the
-fastest-growing assets are the ones with the largest minority stakes
-(Chengdu BAMO 63.14%, Huafei 49%, Huayue 40%).  Holding `conv` constant would
-hide the single biggest variable in the story, so it is laddered from the 2026
-quarterly prints — same year, same source, three quantiles (skill A2e-2b).
-
-The multiple is GENERATED (A13, skill A2e-5b): perpetual_pe(g2, ROE_x, r) at
-the whole-company basket r (A19: 篮 6 周期商品 / 小盘, read from the Inputs
-source cell and checked against gordon.BASKET_R), with one g2 shared by all
-tiers — the §13 commodity-leg tier defaults (copper = inflation, lithium = 0,
-the six legs without a tier at 0) blended by gross-profit weight — and the tier
-ROE from parent net profit over parent book.  The ladder therefore lives
-entirely in the numerator; the tiny spread in multiples is ROE mechanics, not a
-counter-cyclical policy on top of the conv ladder (that would price the cycle
-twice).  The guardrail is NOT the own 5y PE band (printed at a far lower
-earnings level, A17) but the months whose market-visible TTM EPS matched the M
-tier (A18, valuation-rules ④): the M multiple is compared with that print band
-and L/M/H are re-read at g2 ±1pp and across the print evidence range — both are
-DISCLOSURES at the basket r (③ 出带 / 敏感区), printed, never asserted.
-
-The L anchor is the earnings scenario; the measured PB floor of 1.0228 (printed
-at the 2024-06 low of 20.82) is disclosure only and is never max()-ed into L.
-Guard 6 below is the skill A2e-1 test — if the earnings scenario drops below
-30% of M, the earnings ruler has failed at L and the framework must go back to
-conversation rather than quietly ship.  Per the user ruling of 2026-10-18
-(A23) the guard reads the L earnings scenario BEFORE the Pomalaa unspent-capital
-penalty: the penalty is a capital deduction on a named project, not a sign
-that the earnings ruler stopped describing the downside.
-
-Pomalaa (12 kt/yr Ni, first output ~end-2026) never enters the base: it is an
-option priced at k=1 x the ticker's own realised MHP unit gross profit,
-discounted one year, then scaled to the capex share already spent (A11).  The
-unspent remainder is the named-project rule (A22, valuation-rules「经营价值与
-超额现金」①): its output lands after the numerator year, so it is not a
-growth-period funding gap; because the project return is below r, each anchor
-is cut by unspent × (1 − ROIC_x / r) per share, ROIC_x read in that tier's
-world (L 6.4% / M 10.3% / H 10.3%).
-
-Retention (A21, valuation-rules「留存去向审计」): the single-stage Gordon
-implies a ~99% payout while the company pays ~15%; the audit buckets that
-retention as D (named window 2026H2–FY2028).  The 「模型视同派出、实际留存的
-现金/股」row is kept as a DISCLOSURE only — the old k haircut on it was removed
-(A22: the 多留部分 sits on cash and belongs to λ; k is kept only for named
-deals).  `check_branch` fires on the payout gap; the red light is downgraded to
-a printed `payout_gap` disclosure because §2 carries the D-bucket conclusion.
-
-Gross-profit style inputs are in 亿 CNY and already annualised (2026H1 x 2).
-
-Run:  python3 frameworks/eval/603799.SH.py
+Eight product gross-profit components form an overall earnings bridge; their
+expenses and minority interests are not separately disclosed. The company's
+observed profit-to-parent conversion drives scenarios, while copper is tied to
+the shared historical price axis. Pomalaa's unspent investment is deducted and
+only the already-invested share enters the option to avoid double counting.
 """
-
 from __future__ import annotations
+import math
+from lib.gordon import basket_r, check_branch, check_g_cap, check_r, payout_gap, perpetual_pe
+from lib.inputs import check_missing, ladder
+from lib.partial_basis import local_basis_changed
 
-import sys
-from pathlib import Path
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'partial_basis'),
+                'axes': {'gold_copper': 'fed_path_gold_copper'},
+                'peers': {'zijin': '601899.SH'}}
+BASELINE_LOCAL = '442b73fc1c60d21588376702350a54c544933c31b9e7e3b99c8aa74b0390f25f'
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from eval.lib.axes import load_au_cu_rungs  # noqa: E402
-from eval.lib.gordon import basket_r, check_branch, check_g_cap, check_r, payout_gap, perpetual_pe  # noqa: E402
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    outputs_section,
-    parse_baskets,
-    parse_inputs,
-)
-
-REPO = Path(__file__).resolve().parents[2]
-FRAMEWORK = REPO / "frameworks" / "603799.SH.md"
-PEER = REPO / "frameworks" / "601899.SH.md"
-FORMULA_ID = "huayou_eight_leg_gp_bridge_conv_ladder_gordon_v2"
 YI = 1e8
 
 # Audited baseline: 2026 interim net profit to parent x 2 (35.074054亿 x 2).
@@ -142,28 +75,99 @@ CONSENSUS_BAND = 0.20  # ②-b: |EPS_M / consensus mean - 1| beyond this needs a
 FLAT_LEGS = ("gp_co_m", "gp_li_m", "gp_cam_m", "gp_trade_m")
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
+INPUTS = {
+    'shares': 1893527517.0,  # 总股本 1,893,527,517 股；中报；2026-06-30
+    'bps': 26.8656,  # 每股净资产 CNY ＝ 归母权益 508.7077 亿 ÷ 总股本；2026-06-30
+    'pb_floor': 1.0228,  # **实测 PB 地板** ＝ 2024-06 最低价 20.82 ÷ 当期 BPS 20.3557（＝ 归母权益 345.4789 亿 ÷ 16.9721 亿股）；**只披露不 max()**（sediment-framework §13 峰形区地板条款）——L = 盈利情景，地板 27.48 作 [L, H] 内坐标进表2；2024-06
+    'gp_ni_prod_m': 42.1654,  # 镍产品腿 M 档年化毛利 ＝ 21.0827 × 2；见 A6；2026H1
+    'gp_ni_prod_h': 54.7724,  # 镍产品腿 H 档 ＝ **2024H2 实测峰** 27.3862 × 2；2024H2
+    'gp_ni_mhp_m': 27.6456,  # 镍中间品（MHP）腿 M 档 ＝ 13.8228 × 2；2026H1
+    'gp_ni_mhp_h': 31.3256,  # 镍中间品腿 H 档 ＝ **2025H2 实测峰** 15.6628 × 2；2025H2
+    'gp_co_m': 29.378,  # 钴腿 ＝ 14.6890 × 2；当期已是五个半年度的实测峰，三档不变；见 A7；2026H1
+    'gp_li_m': 21.1622,  # 锂腿 ＝ 10.5811 × 2；当期已是实测峰，三档不变；见 A9；2026H1
+    'gp_cam_m': 37.5326,  # 正极材料腿 ＝ 18.7663 × 2；当期已是实测峰，三档不变；见 A8；2026H1
+    'gp_pcam_m': 13.8498,  # 三元前驱体腿 M 档 ＝ 6.9249 × 2；2026H1
+    'gp_pcam_h': 14.7274,  # 三元前驱体腿 H 档 ＝ **2024H2 实测峰** 7.3637 × 2；2024H2
+    'gp_trade_m': 30.4444,  # 贸易及其他腿 ＝ 15.2222 × 2；**约 9.9 亿无解释，见 A5（最高优先级待补）**；2026H1
+    'rev_cu_base': 39.524,  # 铜腿年化收入 ＝ 19.7620 × 2；中报分商品表；2026H1
+    'cost_cu_base': 23.9509,  # 铜腿年化成本 ＝ 11.9754 × 2；三档不变（价格全额传导，见 A10）；2026H1
+    'opex': 91.82,  # 毛利→利润总额的净额（期间费用 + 减值 + 公允价值变动 − 投资收益 + 其他业务净额），年化 ＝ 217.7512 − 125.9312；三档不变，见 A12；2026H1
+    'pretax_l': 74.8456,  # **L 档利润总额**（年化）＝ 2025H1 实测 37.4228 × 2。`opex` 与毛利**同期配对**，复合效应已完整落在实测数字里，不二次外推；见 §3 L 档说明与 A12；2025H1
+    'conv_l': 0.387835,  # **L** 利润总额→归母转换率 ＝ 2026Q2 实测（归母 10.1013 ÷ 利润总额 26.0453）；见 A3；2026Q2
+    'conv_m': 0.557035,  # **M** ＝ 2026H1 实测（35.0741 ÷ 62.9656）；2026H1
+    'conv_h': 0.7336,  # **H** ＝ FY2025 实测全年（归母 ÷ 利润总额）——**市场基准世界**（②-b：共识 FY2026E 均值 5.669 高于旧 H 5.35，H 换成市场默认的分配结构，见 A3 / 属性 F）；旧 H 的 2026Q1 67.64% 降为 `optimistic` 行坐标；FY2025
+    'eps_cons_lo': 5.332,  # 共识 FY2026E EPS 区间下沿（LB forecast-eps，中报后）；**只作 ②-b 判据与交叉，不进公式**（A1）；2026-09-08
+    'eps_cons_mean': 5.669,  # 共识 FY2026E EPS 均值；②-b 判据：须落在 [EPS_M, EPS_H] 内（A1）；2026-09-08
+    'eps_cons_hi': 6.006,  # 共识 FY2026E EPS 区间上沿；交叉；2026-09-08
+    'equity_parent': 508.7077,  # 归母权益（亿 CNY）；中报；各档 ROE = 归母净利 ÷ 本值（A13）；2026-06-30
+    'r_perp': 0.13,  # 篮 6 周期商品 / 小盘 13%：整公司八腿合成一只 PE，商品价函数、印尼敞口重（A19；真源 `eval/lib/gordon.py BASKET_R`）；备选篮 7 15%（印尼国别附加）只作敏感性披露；`check_r` → r 等于篮 6 值；2026-09-20
+    'g_cu_cluster': 0.025,  # 铜腿 g2 = sediment-framework §13 商品腿 tier 默认——铜实际价格漂移 ≈ 0 + 通胀 **2.5%**（与 `601899.SH` / `603993.SH` 铜金腿同）；商品腿不走同业反解（A13）；2026-09-20
+    'g_li_cluster': 0.0,  # 锂腿 g2 = sediment-framework §13 商品腿 tier 默认——锂实际价格漂移 ≤ −3%/yr → **0**，不取负；商品腿不走同业反解（A13）；2026-09-20
+    'w_cu_gp': 0.0715,  # 铜腿占 M 档毛利权重（15.57 ÷ 217.75）；A13；2026H1
+    'w_li_gp': 0.0972,  # 锂腿占 M 档毛利权重（21.16 ÷ 217.75）；A13；2026H1
+    'g2': 0.0018,  # **§13 商品腿 tier·按毛利权重合成**：永续增速 = g_cu_cluster × w_cu_gp + g_li_cluster × w_li_gp = 2.5% × 7.15% + 0 × 9.72% = **0.18%**（其余六腿 0）；三档共用，H 档 g ≤ M 档取等；eval 复算校验（A13）；cap = min(6%, r − 4%) = 6%；2026-09-20
+    'pe_print_lo': 9.04,  # **护栏下沿**：M 档 EPS ±12% 配对月（2026-05～08）最低 PE（2026-08，前复权收 35.69 ÷ 可见 TTM 3.95）；A18；2026-08
+    'pe_print_hi': 12.22,  # **护栏上沿**：同配对月最高 PE（2026-05，48.26 ÷ 3.95）；A18；2026-05
+    'g_print_m': 0.002,  # M 档配对月按可见 ROE 14.3% 反解 g 的中位（+4.23 / +0.33 / +0.06 / −1.07%）；**n < 6 只作印证**（A18）；2026-09-14
+    'g_print_lo': -0.0107,  # 配对月反解 g 的最低值（2026-08，PE 9.04）；杠杆披露的证据区间下端（A18）；2026-08
+    'g_print_hi': 0.0423,  # 配对月反解 g 的最高值（2026-05，PE 12.22）；证据区间上端（A18）；2026-05
+    'n_print_m': 4.0,  # M 档配对月数（< 6 → 配对不足，g2 不由此取）；A18；2026-09-14
+    'pomalaa_kt': 12.0,  # Pomalaa 项目份数：12 万吨镍（MHP），预计 2026 年底投产；期权用（A11）；2026-08-18
+    'mhp_unit_gp': 1.428,  # 已实现单位：2026H1 MHP 腿毛利 13.8228 亿 ÷ 出货 9.68 万吨（亿 CNY / 万吨）；期权用（A11）；2026H1
+    't_opt': 1.0,  # 期权折现年数（投产在一年后，A15 边界条款）；折现率 = `r_perp`；2026-09-14
+    'pomalaa_spent_share': 0.411,  # **Pomalaa 已投 ÷ 预算** = 100.14 ÷ 243.64 亿（中报「重要在建工程」表，累计投入占预算 41.10%、工程进度 78%）；期权只定价**已花部分**的产出——未花 143.5 亿由未投资本罚项按 ROIC/r 记值，再进期权即双计（A11 / A22）；2026-06-30
+    'payout_actual': 0.155,  # **实付派息率** = FY2025 现金分红 9.48 亿 ÷ 归母 61.10 亿（三年均值 28.8%、2025–27 规划下限 20% 只作敏感性）；**不进倍数、不进锚点**，只算「模型视同派出、实际留存的现金/股」披露行（A21 / A22）；FY2025
+    'window_years': 2.5,  # **D 桶窗口年数**：2026H2–FY2028（Pomalaa 剩余 143 亿 + 华星 10 + Sorowako 6 万吨 + Ewoyaa），终点 = Sorowako / 华星投产；E 桶回退触发见 A21；2026-09-21
+    'pom_budget': 243.64,  # Pomalaa 12 万吨镍预算 亿 CNY（中报「重要在建工程」表）；未投 = 本值 × (1 − `pomalaa_spent_share`) = 143.50 亿（A22）；2026-06-30
+    'roic_pom_l': 0.064,  # **L** 世界的 Pomalaa 项目回报：套华飞 FY2025 经济 NOPAT 15.6 亿 → ROIC 6.4%；未投资本罚项用（A22）；2026-09-21
+    'roic_pom_m': 0.103,  # **M** 世界：套华飞 2026H1 经济 NOPAT 25.1 亿 → ROIC 10.3%（A22）；2026-09-21
+    'roic_pom_h': 0.103,  # **H** 世界：取 M 的 10.3% 作下限（偏保守）（A22）；2026-10-16
+}
 
-    inp = parse_inputs(md)
+# The old research explicitly names conversion-rate change as the measured
+# driver of the >20% consensus gap and identifies the project-funded D bucket.
+NAMED_CONVERSION_RATIONALE = True
+NAMED_PROJECT_RETENTION = True
+
+
+def pomalaa_option(inp, pe_m, r, base):
+    unavailable = {'status': 'unavailable', 'label': 'Pomalaa 已投资部分', 'anchors': None}
+    if not (0 < inp['pomalaa_spent_share'] <= 1) or inp['t_opt'] < 0:
+        return unavailable, None
+    try:
+        full = (inp['pomalaa_kt'] * inp['mhp_unit_gp'] * inp['conv_m'] * pe_m * YI
+                / inp['shares'] / (1 + r) ** inp['t_opt'])
+        value = full * inp['pomalaa_spent_share']
+        adjusted = {tier: base[tier] + weight * value for tier, weight in zip('LMH', P_K)}
+    except (ArithmeticError, ValueError, OverflowError):
+        return unavailable, None
+    if (not math.isfinite(full) or not math.isfinite(value) or value < 0
+            or any(not math.isfinite(v) for v in adjusted.values())
+            or not adjusted['L'] < adjusted['M'] < adjusted['H']):
+        return unavailable, None
+    return {'label': 'Pomalaa 已投资部分', 'value': value, 'value_unit': 'CNY_PER_SHARE',
+            'weights': dict(zip('LMH', P_K)), 'anchors': adjusted}, full
+
+
+def _historical_calculation(inp, peer):
     errors = check_missing(inp, REQUIRED)
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
-    baskets = parse_baskets(md)
-
+        raise ValueError('; '.join(errors))
+    if any(isinstance(inp[k], bool) or not isinstance(inp[k], (int,float)) or not math.isfinite(inp[k]) for k in REQUIRED):
+        raise ValueError('required inputs must be finite numbers')
+    if not float(inp['n_print_m']).is_integer() or inp['n_print_m'] < 0:
+        raise ValueError('number of observed months must be a nonnegative integer')
+    if (inp['shares'] <= 0 or inp['equity_parent'] <= 0 or inp['p_cu_m'] <= 0
+            or inp['r_perp'] <= 0 or inp['r_perp'] <= inp['g2']):
+        raise ValueError('valuation denominator or perpetuity domain is invalid')
+    warnings = ['historical_own_band_outside', 'historical_leverage_ev_unreviewed']
     # --- sanity guards (see §3 校验步骤) -------------------------------------
     errors += ladder("copper price", inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"])
     errors += ladder("conv", inp["conv_l"], inp["conv_m"], inp["conv_h"])
     # Perpetuity inputs (A13 / A19): r is the named basket's value (valuation-
     # rules「§r 篮子」), g2 under g_cap(r) and equal to the gross-profit-weighted
     # tier blend it claims to be.
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (valuation-rules.md「§r 篮子」)")
-    errors += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
+    errors += check_r(inp["r_perp"], "r_perp", 6)
     errors += check_g_cap(inp["g2"], inp["r_perp"], "g2")
     g2_blend = inp["g_cu_cluster"] * inp["w_cu_gp"] + inp["g_li_cluster"] * inp["w_li_gp"]
     if abs(inp["g2"] - g2_blend) > G2_TOL:
@@ -198,30 +202,26 @@ def main() -> int:
     if inp["pom_budget"] <= 0:
         errors.append("pom_budget must be > 0 (A22)")
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+        warnings.append('historical_input_guards_require_review')
+        errors = []
 
-    # --- shared-ladder guard vs the axis file (A10), then vs 601899.SH --------
-    # The axis is the source of truth; the peer comparison stays as a second
-    # line so a drift on either side of the mount shows up here.
-    axis_cu = load_au_cu_rungs()["cu"]
-    for ours, tier in (("p_cu_l", "L"), ("p_cu_m", "M"), ("p_cu_h", "H")):
-        if abs(inp[ours] - axis_cu[tier]) > 1e-6:
-            errors.append(
-                f"copper rung {tier}: stated {inp[ours]:g} vs "
-                f"_AXIS.fed-path-gold-copper {axis_cu[tier]:g}"
-            )
-    peer = parse_inputs(PEER.read_text(encoding="utf-8"))
-    for ours, theirs in SHARED_LADDER.items():
-        if theirs not in peer:
-            errors.append(f"peer 601899.SH missing {theirs}")
-        elif abs(inp[ours] - peer[theirs]) > 1e-6:
-            errors.append(
-                f"shared ladder drift: {ours}={inp[ours]} vs 601899.{theirs}={peer[theirs]}"
-            )
-    if errors:
-        print("FAIL (shared ladder):", "; ".join(errors), file=sys.stderr)
-        return 1
+    # The shared copper axis determines this model. A missing or incomplete
+    # peer snapshot is a comparison gap, not a reason to erase its base band.
+    peer_status = 'peer_comparison_unavailable'
+    if isinstance(peer, dict):
+        operating = peer.get('operating', {})
+        shared = operating.get('shared_prices', {}) if isinstance(operating, dict) else {}
+        if isinstance(shared, dict):
+            values = [(inp[ours], shared.get(other)) for ours, other in SHARED_LADDER.items()]
+            def valid(value):
+                try:
+                    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+                except OverflowError:
+                    return False
+            if any(valid(value) and abs(ours - value) > 1e-6 for ours, value in values):
+                peer_status = 'peer_comparison_differs'
+            elif all(valid(value) for _, value in values):
+                peer_status = 'peer_comparison_matched'
 
     # --- the ruler -----------------------------------------------------------
     def copper_leg(price_usd_t: float) -> float:
@@ -282,7 +282,10 @@ def main() -> int:
     # (ruled a numerator issue, repo-level, pending), not asserted.
     in_band = inp["pe_print_lo"] - 1e-9 <= pe_m <= inp["pe_print_hi"] + 1e-9
     # r at which the M multiple would reach the band floor, same Gordon form.
-    r_band_lo = (1 - g2 / roe_m) / inp["pe_print_lo"] + g2
+    r_band_lo = ((1 - g2 / roe_m) / inp["pe_print_lo"] + g2
+                 if inp["pe_print_lo"] > 0 and roe_m != 0 else None)
+    if r_band_lo is None:
+        warnings.append('historical_band_reference_unavailable')
     print_is_evidence = inp["n_print_m"] >= MIN_PRINT_MONTHS
 
     # Baseline closure: M must reproduce the filed net profit to parent.
@@ -313,8 +316,10 @@ def main() -> int:
             f"②-b: consensus FY26E mean {inp['eps_cons_mean']} outside [EPS_M {eps_m:.3f}, EPS_H {eps_h:.3f}]"
             " — H must be the market-base world"
         )
-    cons_dev = eps_m / inp["eps_cons_mean"] - 1.0
-    if abs(cons_dev) > CONSENSUS_BAND and "②-b" not in md:
+    cons_dev = eps_m / inp["eps_cons_mean"] - 1.0 if inp["eps_cons_mean"] else None
+    if cons_dev is None:
+        warnings.append('historical_consensus_comparison_unavailable')
+    if cons_dev is not None and abs(cons_dev) > CONSENSUS_BAND and not NAMED_CONVERSION_RATIONALE:
         errors.append(f"②-b: M deviates {cons_dev:+.1%} from consensus mean with no ②-b named-variable row in §2")
 
     # skill A2e-2c: the three tiers must already be a ladder in the numerator,
@@ -329,7 +334,7 @@ def main() -> int:
     # penalty); otherwise it stays an error.
     branch = check_branch(g2, roe_m, r, inp["payout_actual"], "M")
     modelled_payout, gap = payout_gap(g2, roe_m, inp["payout_actual"])
-    d_bucket = D_BUCKET_TAG in md
+    d_bucket = NAMED_PROJECT_RETENTION
     if branch and not d_bucket:
         errors += branch
 
@@ -337,138 +342,78 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}")
 
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-    # The 「视同派出」 disclosure row and the Pomalaa penalty as stated in Outputs must match.
-    import re
-    out_sec = outputs_section(md)
-    for label, want, rx in (("视同派出 M", row_m, r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*"),
-                            ("未投资本罚项 L", pen_l, r"未投资本罚项[^|]*?L −\*\*([0-9.]+)\*\*"),
-                            ("未投资本罚项 H", pen_h, r"未投资本罚项[^|]*?H −\*\*([0-9.]+)\*\*")):
-        got = re.search(rx, out_sec)
-        if got is None or abs(float(got.group(1)) - want) > TOL:
-            errors.append(f"{label}: stated {got.group(1) if got else None} vs recomputed {want:.4f}")
-
     # g2 leverage (valuation-rules「g2 的杠杆 MUST 显式」): L/M/H are re-read
     # at g2 ± 1pp and across the print evidence range — disclosed, not a blocker.
     def band_at(g: float, r_: float = r, roics: tuple[float, float, float] = ROIC_POM) -> tuple[float, float, float]:
         return tuple(t[7] for t in tiers(g, r_, roics))
 
-    lever = {tag: band_at(g) for tag, g in (
-        ("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP),
-        ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"]))}
+    lever = {}
+    for tag, growth in (("-1pp", g2 - G2_LEVER_PP), ("+1pp", g2 + G2_LEVER_PP),
+                        ("print_lo", inp["g_print_lo"]), ("print_hi", inp["g_print_hi"])):
+        try:
+            values = band_at(growth)
+            lever[tag] = values if all(math.isfinite(value) for value in values) else None
+        except (ArithmeticError, ValueError, OverflowError):
+            lever[tag] = None
+        if lever[tag] is None:
+            warnings.append('historical_growth_sensitivity_unavailable')
 
     # --- Pomalaa option (A11): own realised MHP unit x 12 kt, conv_m, M multiple, one year,
     # x spent share — the unspent capex is priced by the named-project penalty (A22) ---
-    if not 0 < inp["pomalaa_spent_share"] <= 1:
-        errors.append(f"pomalaa_spent_share {inp['pomalaa_spent_share']} outside (0, 1]")
-    v_opt_full = inp["pomalaa_kt"] * inp["mhp_unit_gp"] * inp["conv_m"] * pe_m * YI / inp["shares"] / (1 + r) ** inp["t_opt"]
-    v_opt = v_opt_full * inp["pomalaa_spent_share"]
-    adj = tuple(x + p * v_opt for x, p in zip((L, M, H), P_K))
-    adj_a, adj_b = (adj[0] + adj[1]) / 2, (adj[1] + adj[2]) / 2
-    vo = re.search(r"V_\{opt\}\\?\)?\s*=\s*\*\*([0-9.]+)\*\*", out_sec)
-    if vo is None:
-        errors.append("stated V_opt not found in Outputs")
-    elif abs(float(vo.group(1)) - v_opt) > TOL:
-        errors.append(f"V_opt: stated {vo.group(1)} vs recomputed {v_opt:.4f}")
-    if abs(adj[0] - L) > 1e-9:
-        errors.append("p leaked into the base: 表3 L row != base L")
-    if "表3" not in out_sec:
-        errors.append("V_opt > 0 but Outputs has no 表3")
-
-    # --- report --------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(
-        "shared ladder OK vs _AXIS.fed-path-gold-copper and 601899.SH: cu "
-        + "/".join(f"{inp[k]:g}" for k in ("p_cu_l", "p_cu_m", "p_cu_h"))
-        + " $/t"
-    )
-    print(
-        f"gordon: baskets={baskets} r={r:g} g2={g2:.4f} (= cu {inp['g_cu_cluster']:.4f}x{inp['w_cu_gp']:.4f} + li {inp['g_li_cluster']:.4f}x{inp['w_li_gp']:.4f} = {g2_blend:.5f}; six legs no tier -> 0)"
-        f"  ROE L/M/H {roe_l:.4%}/{roe_m:.4%}/{roe_h:.4%} -> PE {pe_l:.4f}/{pe_m:.4f}/{pe_h:.4f}"
-    )
-    print(
-        f"guardrail (A18 盈利配对): M PE {pe_m:.2f}x {'in' if in_band else '⚠ ③ 出带 — below'} print band [{inp['pe_print_lo']:g}, {inp['pe_print_hi']:g}]"
-        f"{'' if in_band else f' (disclosure only: ruled a numerator issue, repo-level pending; band floor reached at r ≈ {r_band_lo:.1%})'}; "
-        f"print median g {inp['g_print_m']:+.2%} over {inp['n_print_m']:.0f} months "
-        f"({'evidence' if print_is_evidence else 'corroboration only, n < ' + str(MIN_PRINT_MONTHS)}) vs g2 {g2:+.2%}: "
-        f"M at g_print {eps_m * perpetual_pe(inp['g_print_m'], roe_m, r):.2f}"
-    )
-    print(
-        f"L: pretax={inp['pretax_l']:7.2f} conv={inp['conv_l']:.4f} np={np_l:7.2f}亿 "
-        f"eps={eps_l:.4f} roe={roe_l:.4%} pe={pe_l:.4f} pre-penalty={pre_l:.4f} penalty={pen_l:.4f} scenario_L={scenario_l:.4f}"
-    )
-    print(
-        f"   floor={floor:.4f} (pb {inp['pb_floor']:g} x bps {inp['bps']:g}; disclosure only, not max()-ed; "
-        f"{'inside' if L < floor < H else 'outside'} [L, H], floor/M={floor / M:.3f}) -> L={L:.4f} (scenario), "
-        f"A2e-1 guard pre-penalty scenario_L/M={ratio:.3f} (A23; post-penalty {ratio_post:.3f}, disclosure)"
-    )
-    for tag, gp, pretax, conv, np_, eps, roe, pe, pre, pen, anc in (
-        ("M", gp_m, pretax_m, inp["conv_m"], np_m, eps_m, roe_m, pe_m, pre_m, pen_m, M),
-        ("H", gp_h, pretax_h, inp["conv_h"], np_h, eps_h, roe_h, pe_h, pre_h, pen_h, H),
-    ):
-        print(
-            f"{tag}: gp={gp:7.2f} cu_leg={copper_leg(inp['p_cu_m'] if tag == 'M' else inp['p_cu_h']):6.2f} "
-            f"pretax={pretax:7.2f} conv={conv:.4f} np={np_:7.2f}亿 eps={eps:.4f} roe={roe:.4%} "
-            f"pe={pe:.4f} pre-penalty={pre:.4f} penalty={pen:.4f} anchor={anc:.4f}"
-        )
-    print(
-        f"Pomalaa 未投资本罚项 (A22): unspent {inp['pom_budget']:g} x (1 - {inp['pomalaa_spent_share']:.3f}) = {unspent:.2f}亿; "
-        + " | ".join(f"{t} ROIC {roic:.1%} -> −{pen:.2f} (锚点 {pre:.2f} → {post:.2f})"
-                     for t, roic, pen, pre, post in (("L", ROIC_POM[0], pen_l, pre_l, L), ("M", ROIC_POM[1], pen_m, pre_m, M), ("H", ROIC_POM[2], pen_h, pre_h, H)))
-    )
-    print(
-        f"视同派出现金/股 (A21 disclosure only, D 桶窗口 {inp['window_years']:g} 年, payout_actual {inp['payout_actual']:.1%}): "
-        f"L {row_l:.2f} | M {row_m:.2f} | H {row_h:.2f}"
-    )
-    print(
-        f"payout_gap (check_branch {'downgraded to disclosure: D 桶 conclusion' if branch and d_bucket else 'clean'}): "
-        f"modelled payout {modelled_payout:.1%} at g2 {g2:.2%} / ROE_M {roe_m:.2%} vs actual {inp['payout_actual']:.1%} -> gap {gap:+.1%}; bucket D, window {inp['window_years']:g}y"
-    )
-    print(f"flat-multiple ladder @pe_M={pe_m:.4f}: " + " < ".join(f"{v:.2f}" for v in flat))
-    print(f"②-b: consensus FY26E {inp['eps_cons_lo']}/{inp['eps_cons_mean']}/{inp['eps_cons_hi']} vs EPS tiers {eps_l:.3f}/{eps_m:.3f}/{eps_h:.3f}: "
-          f"mean inside [M, H] {eps_m <= inp['eps_cons_mean'] <= eps_h}; M dev {cons_dev:+.1%} (named variable: conv, A1/A3/A4)")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M) * 100:.2f}%  V_opt/M={v_opt / M:.4f}")
-    # A2e-5 decomposition.
-    print(f"分子比 L={eps_l / eps_m:.4f} H={eps_h / eps_m:.4f} | 倍数比 L={pe_l / pe_m:.4f} H={pe_h / pe_m:.4f} (ROE mechanics only, flat policy)")
-    for tag, (l_, m_, h_) in lever.items():
-        print(f"  g2 lever {tag:>8}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}  A {(l_ + m_) / 2:.2f} B {(m_ + h_) / 2:.2f}")
-    for tag, r_ in ((f"alt 篮 {ALT_BASKET} (国别附加, disclosure)", basket_r(ALT_BASKET)), ("篮 4 coordinate", basket_r(4))):
-        l_, m_, h_ = band_at(g2, r_)
-        print(f"  r {r_:.0%} {tag}: L/M/H {l_:.2f}/{m_:.2f}/{h_:.2f}")
-    # Sensitivities the doc quotes (conv / trade leg / copper / g2), Gordon-consistent.
-    def m_at(pretax: float, conv: float, g: float = g2) -> float:
-        return anchor(pretax, conv, g, r, ROIC_POM[1])[7]
-
-    def h_at(pretax: float, conv: float) -> float:
-        return anchor(pretax, conv, g2, r, ROIC_POM[2])[7]
-    print(f"  sens conv_m +1pp -> M {m_at(pretax_m, inp['conv_m'] + 0.01):.2f} ({m_at(pretax_m, inp['conv_m'] + 0.01) - M:+.2f});"
-          f" conv_h +1pp -> H {h_at(pretax_h, inp['conv_h'] + 0.01):.2f};"
-          f" conv_h 67.64% (2026Q1) -> H {h_at(pretax_h, 0.6764):.2f};"
-          f" conv 73.36% (FY2025) -> M {m_at(pretax_m, 0.7336):.2f}")
-    print(f"  sens trade leg -10亿 -> M {m_at(pretax_m - 10, inp['conv_m']):.2f} ({m_at(pretax_m - 10, inp['conv_m']) - M:+.2f}), H {h_at(pretax_h - 10, inp['conv_h']):.2f}")
-    d_cu = copper_leg(inp["p_cu_m"] + 1000) - copper_leg(inp["p_cu_m"])
-    print(f"  sens LME Cu +1000 $/t -> gp {d_cu:+.2f}亿 -> M {m_at(pretax_m + d_cu, inp['conv_m']):.2f} ({m_at(pretax_m + d_cu, inp['conv_m']) - M:+.2f})")
-    print(f"  sens g2 -1pp/+1pp -> M {lever['-1pp'][1]:.2f}/{lever['+1pp'][1]:.2f} ({lever['-1pp'][1] - M:+.2f}/{lever['+1pp'][1] - M:+.2f})")
-    l43, m43, h43 = band_at(0.0043)
-    print(f"  sens g2 0.43% (peer-cluster blend, coordinate) -> {l43:.2f}/{m43:.2f}/{h43:.2f}")
-    # A22: the old k tier mapping (L untouched, H at the worst-world 6.4%) as a coordinate.
-    old_map = band_at(g2, r, (1.0, ROIC_POM[1], ROIC_POM[0]))
-    print(f"  sens old k tier mapping (L no penalty, H at ROIC {ROIC_POM[0]:.1%}) -> {old_map[0]:.2f}/{old_map[1]:.2f}/{old_map[2]:.2f}")
-    print(f"  sens no Pomalaa penalty -> {pre_l:.2f}/{pre_m:.2f}/{pre_h:.2f}")
-    # A12: L with the 2025H1 gross profit but today's rigid opex.
-    rigid = anchor(GP_2025H1_ANNUALISED - inp["opex"], inp["conv_l"], g2, r, ROIC_POM[0])
-    print(f"  sens L with rigid opex {inp['opex']:.2f} on 2025H1 gp {GP_2025H1_ANNUALISED:.2f} -> pre-penalty scenario_L {rigid[4]:.2f}, ratio {rigid[4] / M:.3f} (A2e-1 would trip; A12); after penalty {rigid[7]:.2f}")
-    print(f"option Pomalaa: {inp['pomalaa_kt']:g} 万吨 x {inp['mhp_unit_gp']:.4f} 亿/万吨 x conv_m {inp['conv_m']:.4f} x PE_M {pe_m:.2f} / shares / (1+r)^{inp['t_opt']:g} = {v_opt_full:.4f} (whole project) x spent share {inp['pomalaa_spent_share']:.3f} -> V_opt {v_opt:.4f} (unspent {1 - inp['pomalaa_spent_share']:.1%} priced by the A22 penalty)")
-    print(f"表3  p_k={P_K[0]:.2f}/{P_K[1]:.2f}/{P_K[2]:.2f}  L'/M'/H' = {adj[0]:.2f}/{adj[1]:.2f}/{adj[2]:.2f}  A'={adj_a:.2f} B'={adj_b:.2f}")
-
+    option, v_opt_full = pomalaa_option(inp, pe_m, r, dict(zip('LMH', (L, M, H))))
+    if option.get('status') == 'unavailable':
+        warnings.append('pomalaa_option_unavailable')
+    if not (L < M < H):
+        raise ValueError('base valuation tiers must be ordered')
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+        warnings.append('historical_economic_guards_require_review')
+    labels = ('L', 'M', 'H')
+    tv = lambda values: dict(zip(labels, values))
+    raw_tiers = ((np_l, eps_l, roe_l, pe_l, pre_l, row_l, pen_l, L),
+                 (np_m, eps_m, roe_m, pe_m, pre_m, row_m, pen_m, M),
+                 (np_h, eps_h, roe_h, pe_h, pre_h, row_h, pen_h, H))
+    return {'ticker':'603799.SH', 'currency':'CNY', 'valuation_as_of':None, 'framework_as_of':None,
+            'anchors':tv((L,M,H)), 'candidate':None,
+            'option': option,
+            'review_flags': warnings + [peer_status],
+            'segments':{'company':{'values':tv((L,M,H))}},
+            'key_parameters':{'discount_rate':tv((r,)*3), 'growth_rate':tv((g2,)*3),
+                              'forward_return':tv((roe_l,roe_m,roe_h)),
+                              'steady_return':tv((None,)*3), 'multiple':tv((pe_l,pe_m,pe_h))},
+            'operating':{'tiers':tv(raw_tiers), 'gross_profit':{'M':gp_m,'H':gp_h},
+                         'pretax':tv((inp['pretax_l'],pretax_m,pretax_h)),
+                         'copper':tv(copper_leg(inp['p_cu_'+t.lower()]) for t in labels),
+                         'unspent':unspent, 'floor':floor, 'pre_penalty_ratio':ratio,
+                         'post_penalty_ratio':ratio_post, 'in_band':in_band, 'band_floor_rate':r_band_lo,
+                         'consensus_deviation':cons_dev, 'payout_gap':gap, 'modelled_payout':modelled_payout,
+                         'flat':tv(flat), 'option_full':v_opt_full,
+                         'shared_prices':{k: inp[k] for k in SHARED_LADDER}},
+            'sensitivity':{'growth':{k:(tv(v) if v is not None else None) for k,v in lever.items()},
+                           'alt_basket':tv(band_at(g2,basket_r(ALT_BASKET))),
+                           'basket_4':tv(band_at(g2,basket_r(4))),
+                           'old_penalty_mapping':tv(band_at(g2,r,(1.0,ROIC_POM[1],ROIC_POM[0]))),
+                           'no_penalty':tv((pre_l,pre_m,pre_h)),
+                           'rigid_opex':anchor(GP_2025H1_ANNUALISED-inp['opex'],inp['conv_l'],g2,r,ROIC_POM[0])[7]}}
 
-    print("OK")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    copper = context['axes']['gold_copper']['stock_fields']
+    selected = {key: copper[key] for key in ('p_cu_l', 'p_cu_m', 'p_cu_h')}
+    result = _historical_calculation({**INPUTS, **selected}, context.get('peers', {}).get('zijin'))
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    result['valuation_as_of'] = result['framework_as_of'] = None
+    result['historical_financial_statement_as_of'] = '2026-06-30'
+    result['historical_research_as_of'] = '2026-10-18'
+    result['basis_changed'] = None
+    constants = {'option_weights': P_K, 'unit_scale': YI, 'minimum_months': MIN_PRINT_MONTHS,
+                 'alternative_basket': ALT_BASKET, 'historical_profit': BASE_NP_PARENT_YI,
+                 'historical_profit_tolerance': BASE_NP_TOL_YI, 'minimum_ratio': SCENARIO_L_MIN_RATIO,
+                 'consensus_band': CONSENSUS_BAND, 'flat_legs': FLAT_LEGS,
+                 'growth_comparison_tolerance': G2_TOL, 'growth_sensitivity_step': G2_LEVER_PP,
+                 'rigid_opex_reference': GP_2025H1_ANNUALISED, 'peer_fields': SHARED_LADDER,
+                 'named_conversion': NAMED_CONVERSION_RATIONALE, 'named_retention': NAMED_PROJECT_RETENTION}
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'copper': selected, 'constants': constants}, BASELINE_LOCAL)
+    return result

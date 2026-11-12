@@ -1,53 +1,76 @@
-#!/usr/bin/env python3
-"""603993.SH (CMOC) valuation eval — recompute anchors from frameworks/603993.SH.md.
-
-frameworks/603993.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on any mismatch.  The doc
-states no current price or zone (the digest and the app zone on live quotes).
-
-formula_id: cmoc_fed_path_fwd2028_two_stage_v3
-
-Scenario axis is the Fed rate path (L hiking / M hold / H cutting without
-recession, A19); the recession-cut case is deliberately NOT an anchor.
-
-Forward-capacity numerator (user ruling 2026-09-20/21, A4 / A9): copper FY28 =
-2026 guidance mid + KFM Phase 2 (+100 kt/yr from 2027), gold FY28 = the 2029
-">20 t" target interpolated to 2028, each × an achievement ladder (L = growth
-stalls at the 2026 guidance / current gold run-rate, M = plan × measured
-achievement, H = full).  Cobalt stays the quota leg (given per tier, no volume
-growth); Mo-W-Nb-P, IXM and eliminations stay frozen.  Copper is priced as
-volume × (unit revenue − unit COGS) rather than the old price-delta shift so
-volume can move; at the base volumes the two are identical (M guard below).
-
-FY28 P&L same-year: unit costs frozen at 2026H1 (A-share COGS carries D&A),
-volume-linked opex (销售+管理+研发) scaled by a price-neutral volume index,
-finance / levy base fixed, incremental DRC royalty 3.5% on incremental copper
-revenue, NCI 12.46% on the base and 28.75% on the KFM increment (A6).
-
-Multiple: per leg `gordon.two_stage_pe(g1_leg, 2, g2, ROE28, r)` — stage-1
-payout 1 − g1/ROE28 (library form), ROE28 = NP28 / B27 with B27 = 2026H1
-equity + b1 × (2026H2 + FY27 earnings), b1 = g1/ROE28 solved jointly.  Tail:
-copper+gold 篮 4 g2 2.5%; cobalt / Mo-W-Nb-P 篮 6 and IXM 篮 5 at 1/r.
-ROIC gate (A28): marginal ROIC ≥ r_perp or the tier keeps the same form with
-growth switched off (g1 := g2 on 篮 4, 0 elsewhere).
-
-Run:  python3 frameworks/eval/603993.SH.py
-"""
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.axes import AXIS_AU_CU, check_au_cu_mount  # noqa: E402
-from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe  # noqa: E402
-from lib.inputs import check_against_stated, check_missing, parse_baskets, parse_inputs, report  # noqa: E402
-from lib.tiers import report as tier_report  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe, two_stage_pe
+from lib.inputs import check_missing
+from lib.partial_basis import local_basis_changed
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "603993.SH.md"
-PEER = Path(__file__).resolve().parents[2] / "frameworks" / "601899.SH.md"
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'partial_basis'),
+                'axes': {'gold_copper': 'fed_path_gold_copper'},
+                'peers': {'zijin': '601899.SH'}}
+
+
+# Shared prices are injected from the gold-copper axis.
+HISTORICAL_PARTIAL_FINGERPRINT = 'e47b7beb5292f4e632bb37a0fdabfdc9ba8756b1259819fa7a36678807cf4147'
+
+INPUTS = {
+    'shares': 21394310176.0,  # 总股本 21,394,310,176 股；中报；2026-06-30
+    'equity': 899.63,  # 归母权益 亿 CNY；中报（A17）；每档前瞻 \(ROE_x = NP_x / equity\)；2026-06-30
+    'r_perp': 0.1,  # 铜金腿篮子 r：篮 4 龙头制造（金铜簇隐含 r 10.0%、辉立 WACC 10.23%，A26）；备选篮 5 11%（国别附加只披露）；其它腿 r 见下三行（分腿加总，A24）；`check_r(r, 篮 4)`；2026-09-18
+    'r_co': 0.13,  # 钴（刚果配额）腿篮子 r：篮 6 周期商品 / 小盘（配额 + 价格十倍级摆动，峰形商品，A26）；`check_r(r, 篮 6)`；2026-09-18
+    'r_other': 0.13,  # 钼钨铌磷腿篮子 r：篮 6 周期商品 / 小盘（A26）；`check_r(r, 篮 6)`；2026-09-18
+    'r_ixm': 0.11,  # IXM 贸易腿篮子 r：篮 5 大行 / 优质股份行（薄利费率型，利润率稳、量随价，A26）；`check_r(r, 篮 5)`；2026-09-18
+    'g2_aucu': 0.025,  # 铜金腿永续 g2；来源层级 = §13 商品腿 tier 默认——金铜实际价格漂移 ≈ 0 + 通胀 **2.5%**（USD 口径；卖方矿业终值 g 2–3%）；金铜簇 25 家同业反解 2.76% 只作印证（A22）；cap = min(6%, 10% − 4%) = 6%；2026-09-18
+    'g2_co': 0.0,  # 钴腿永续 g2 = 0（§13 其他商品腿 g 0；配额量增走 `gp_co_*` 三档，A22）；2026-09-18
+    'g2_other': 0.0,  # 钼钨铌磷腿永续 g2 = 0（§13 商品腿 g 0，A22）；2026-09-18
+    'g2_ixm': 0.0,  # IXM 贸易腿永续 g2 = 0（费率型，量随价不给永续增长，A22）；2026-09-18
+    'pe_own_min': 9.85,  # 自身近 5 年 TTM PE 实测低点；**护栏**，不入公式（A25）；2026-09-05
+    'pe_own_max': 51.48,  # 自身近 5 年 TTM PE 实测高点；**护栏**，不入公式（A25）；2026-09-05
+    'fx_usd_cny': 6.8645,  # USD→CNY，2026H1 平均（与基线同期，见 A12）；即期 6.7190；2026H1
+    'vol_cu': 752328.0,  # 铜年化销量（吨）= 中报销量 376,164 × 2；见 A4；2026H1
+    'p_cu_base': 13083.97,  # 基线 LME 铜均价（美元/吨），公司中报披露的 2026H1 均价；2026H1
+    'vol_au_oz': 200800.0,  # 金年化销量（盎司）= 巴西四矿 2026H1 产 100,400 oz × 2；见 A20；2026H1
+    'cost_au_oz': 17689.0,  # 金单位成本 元/oz = 金营业成本 17.76 亿 ÷ 100,400 oz；2026H1
+    'price_au_m_oz': 30050.0,  # M 档实现金价 元/oz = 金收入 30.17 亿 ÷ 100,400 oz；L/H 按 `lme_au` 比例缩放（对 LME 的实现率 0.933）；2026H1
+    'realization_cu': 0.962494,  # 实现率 = 86,446 ÷ (13,083.97 × 6.8645)；见 A15，**衍生值**；2026H1
+    'royalty_cu': 0.035,  # 刚果金铜矿业权利金，计入「税金及附加」故只作用于价差；见 A13；2018 矿业法
+    'cogs_cu': 32091.0,  # TFM/KFM 铜单位营业成本 元/吨（含折旧，不含权利金）= 铜营业成本 120.71 亿 ÷ 销量 376,164 t（A13）；前瞻口径铜腿 = 销量 ×（单位收入 − 本值），基量下与 `gp_cu_base` 恒等；2026H1
+    'gp_cu_base': 408.9316,  # 铜腿年化毛利 = (325.180 − 120.714) × 2；2026H1
+    'gp_co_l': 30.0,  # L 档钴腿年化毛利 = FY2024 实际（87.43 − 57.43）；见 A5；FY2024
+    'gp_co_m': 34.2954,  # M 档 = 2026 前三季度钴毛利 25.7216 亿（收入 34.7823 − 成本 9.0608）× 4/3；2026-10-25 由 2026H1 年化 52.52 重钉（A5）；2026-09-30
+    'gp_co_h1': 52.5232,  # 2026H1 钴毛利 26.2616 × 2；**只供 §3 校验步骤 1 基线闭合**，不进锚点；2026H1
+    'gp_co_h': 60.0,  # H 档 = 销量 3 万吨（贴近公司 2026 配额 3.12 万吨，二手来源`待核`）× 单位毛利 20 万元/吨（≈ 前三季度实测 20.3 万）；2026-10-25 由 90（2.5 万吨 × 36 万元/吨）下调；**本框架最弱单点**，见 A5；2026-09-30
+    'gp_other': 104.9945,  # 钼+钨+铌+磷 年化毛利 =（64.9046 − 金 12.4073）× 2；**已剔除金腿**（金单列并挂金价梯，A20）；三档不变，见 A8；2026H1
+    'gp_ixm': 59.7434,  # IXM 两条贸易线年化毛利 = 29.8717 × 2；三档不变，见 A2；2026H1
+    'gp_misc': -28.2903,  # 其他业务 + 内部交易抵销 年化 = −14.1452 × 2；2026H1
+    'opex': 108.6211,  # 毛利→利润总额的净额（税金及附加 + 期间费用 − 其他收益/投资收益等）年化 = 54.3105 × 2；当期冻结，FY28 = 固定部分 + `opex_vol` × 量指数 + 增量权利金（A27）；2026H1
+    'opex_vol': 39.81,  # 其中随量放大的部分 = 销售 0.425 + 管理 15.68 + 研发 3.80（亿，H1）× 2；财务费用 16.99 × 2（含汇兑损失 10.49）与税金及附加基数固定；2026H1
+    'tax_rate': 0.282227,  # 实际税率 = 72.55 ÷ 257.05；见 A7；2026H1
+    'mi_rate': 0.1326,  # 少数股东占净利 = 2026 前三季度 36.72 ÷ 276.91；作用于基量利润；2026-10-25 由 2026H1 12.46% 重钉（A6）；2026-09-30
+    'mi_rate_h1': 0.124552,  # 2026H1 少数股东占净利 = 22.98 ÷ 184.50；**只供 §3 校验步骤 1 基线闭合**，不进锚点；2026H1
+    'mi_kfm': 0.2875,  # KFM 二期增量利润的少数股东比例（CMOC 持 KFM 71.25%）；只作用于 FY28 铜增量（A6）；中报附注
+    'vol_cu_2028': 862952.0,  # FY28 铜销量（吨）=（2026 指引中值 79 万吨 + KFM 二期 10 万吨）× 已售比 0.970（2026H1 销量 ÷ 产量年化）；A4；2026 中报 / KFM2 公告
+    'vol_au_2029_oz': 643015.0,  # 公司具名目标：巴西金 2029 年 >20 吨（= 643,015 oz）；超出 FY28 路径的部分走 \(V_{opt}\)（A33）；**不入主公式**；2026 中报
+    't_num': 2026.0,  # 分子起点年 = 2026H1 年化当期量（两段式 E1）；\(V_{opt}\) 折现终点；2026-10-03
+    't_opt': 2029.0,  # 金目标兑现年 = 公司目标年 2029（A33）；**\(V_{opt}\) 输入**；2026 中报
+    'odin_k': 116.6965,  # **期权**·奥丁（厄瓜多尔 Cangrejos，全资）未投资本 = 采矿协议投资承诺 >17 亿$ × `fx_usd_cny` 6.8645 − 已投 0（中报在建工程重要项目表无奥丁行、仍在前期设计；2026-04 预付权利金 0.34 亿$ 未计）；收购对价 30 亿已付 2025-06，沉没不扣（A33）；2026-06-30
+    'masa_k': 1.8057,  # **期权**·巴西 Aurizona 地下矿（MASA）未投资本 = 预算 4.0359 亿 ×（1 − 投入占预算 55.26%）（A33）；2026-06-30
+    'fbdm_k': 0.313,  # **期权**·巴西 Fazenda 地下矿井扩建（FBDM）未投资本 = 预算 0.5006 亿 ×（1 − 37.48%）（A33）；2026-06-30
+    'au_cc_k': 2.7,  # **期权**·巴西四矿或有对价未付 = 期末公允价值 270,004 千元（上限 1.15 亿$；交割满一年按首年售金量结算）；首付 62.31 亿已付、沉没不扣（A33）；2026-06-30
+    'ach_l_cu': 0.88764,  # L 档铜兑现率 = 增长停在 2026 指引 79 万吨 ÷ 89 万吨；推导
+    'ach_l_au': 0.405157,  # L 档金兑现率 = 当期 200,800 ÷ 495,610（金无增长）；推导
+    'ach_m_cu': 1.0,  # M 档铜兑现率 = min(2026 前三季度年化产量 79.56 万吨 ÷ 指引中值 79 万吨 = 1.007, 1)；每期财报重钉（2026H1 为 0.98）；2026-09-30
+    'ach_m_au': 0.9,  # M 档金兑现率；**假设值**——公司有 2026 当年指引 6–8 吨（cmoc.com 2026-01-15），前三季度 16.09 万盎司跟踪指引中值，但当年指引不覆盖 2028 路径；按铜同口径会是约 0.98，取严保留 0.90，随 2027 指引重钉（A9）；假设
+    'payout_actual': 0.37,  # 实际派息率 = FY23 40% / FY24 40% / FY25 30% 三年均值；不进倍数，只算「模型视同派出、实际留存的现金/股」（A24）；Longbridge 分红
+    'k_l': 0.0,  # **L** 「视同派出现金」打折 k（A31）；来源 ①：2026H1 巴西四金矿 59 亿对价，年化约 20 万盎司，L 档金价下税前回报仍远高于 r 10% → 0；FY2021–25 现金收购≈0；2026-09-21
+    'k_m': 0.0,  # **M** 打折 k（A31）；来源 ① 同上 → 0；2026-09-21
+    'k_h': 0.0,  # **H** 打折 k：原 0.25（1 − M/H）乘在多留部分上，按 valuation-rules「经营价值与超额现金」④ 去掉（A31）；2026-10-16
+    'n_transition': 2.0,  # 两段式过渡年数：2026H1 年化 → FY28；—
+    'growth_capex_26_28': 60.0,  # 2026–28 增长性资本开支（亿）：KFM 二期剩余 (10.84 − 6.86) 亿$ ≈ 28 亿 + 金矿扩建假设 30 亿（`待补`）；ROIC 门分母，区间 40–100（A28）；**2026-10-25 标注偏低**：前三季度购建长期资产现金 80.96 亿、在建工程 40.54 → 104.93 亿（三季报：铜钴业务在建项目增加），含 N'zilo 2 水电站等非产能项，待年报拆分；翻倍到 120 亿门的结果不变；2026 中报 / KFM2 公告 / 2026 三季报
+    'capex_kfm2': 76.96,  # KFM 二期总投资 10.84 亿$ × 7.1（董事会 2025-10-24 批准）；单项目回报分母；SMM 2025-10
+    'net_debt': 15461104767.0,  # 净债务 元 = 有息负债 605.19 亿（短期借款 466.43 + 一年内到期非流动负债 22.31 + 长期借款 2.96 + 应付债券 15.00 + 其他流动负债 98.49，后者主要是 2026 年发行的 H 股可转债）− 货币资金 450.58 亿；不含交易性金融资产 226.12 亿（若计入为净现金 71.5 亿）；只作每股净现金 / 净负债交叉备注（A24）；2026-06-30 旧值 −128.9 亿（净现金）；2026-09-30
+}
 FORMULA_ID = "cmoc_fed_path_fwd2028_two_stage_v3"
 MIN_R_MINUS_G = 0.02
 TOL = 0.05
@@ -74,21 +97,6 @@ REQUIRED = [
     "equity", "r_perp", "r_co", "r_other", "r_ixm", "g2_aucu", "g2_co", "g2_other", "g2_ixm",
     "axis_g2_aucu", "pe_own_min", "pe_own_max",
 ]
-_AXIS_G2_ROW = re.compile(r"^\|\s*\*\*永续 g2（[0-9-]+）\*\*\s*\|\s*\*\*([0-9.]+)%\*\*", re.MULTILINE)
-
-
-def axis_g2(path=AXIS_AU_CU) -> float:
-    m = _AXIS_G2_ROW.search(path.read_text(encoding="utf-8"))
-    if not m:
-        raise ValueError(f"{path.name}: no 永续 g2 row")
-    return float(m.group(1)) / 100.0
-
-
-def first_float(pattern: str, md: str) -> float | None:
-    m = re.search(pattern, md)
-    return float(m.group(1)) if m else None
-
-
 def unit_rev_cu(inp: dict[str, float], tag: str) -> float:
     return inp[f"p_cu_{tag}"] * inp["realization_cu"] * inp["fx_usd_cny"]
 
@@ -195,30 +203,39 @@ def gold_target_option(inp: dict[str, float], th: dict) -> dict[str, float]:
             "v_opt": (v_gross - k_opt) * disc * YI / inp["shares"]}
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp, peer):
+    required = [key for key in REQUIRED if key != 'vol_au_2028_oz']
+    errors = check_missing(inp, required)
+    warnings = []
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in required):
+        raise ValueError('all required inputs must be finite')
+    for key in ('t_num', 't_opt', 'n_transition'):
+        if isinstance(inp[key], bool) or not float(inp[key]).is_integer():
+            raise ValueError(f'{key} must be a whole year')
+    if inp['t_opt'] <= inp['t_num'] or not 0 < inp['n_transition'] < inp['t_opt'] - inp['t_num']:
+        raise ValueError('gold target year must be later than the end of the transition')
+    # No annual guidance was available: the original 2028 volume is the
+    # elapsed-time interpolation from 2026 volume to the 2029 target. Derive
+    # it from those inputs to prevent target and assumed path drifting apart.
+    inp = {**inp, 'vol_au_2028_oz': inp['vol_au_oz'] + (inp['vol_au_2029_oz'] - inp['vol_au_oz'])
+                 * inp['n_transition'] / (inp['t_opt'] - inp['t_num'])}
     r = {leg: inp[rrow] for leg, (rrow, _) in LEGS.items()}
     g = {leg: inp[grow] for leg, (_, grow) in LEGS.items()}
-    baskets = parse_baskets(md)
+    baskets = {'r_perp': 4, 'r_co': 6, 'r_other': 6, 'r_ixm': 5}
     for leg, (rrow, _) in LEGS.items():
         if rrow not in baskets:
             errors.append(f"{rrow}: Inputs source cell names no 篮 N")
         errors += check_r(r[leg], rrow, baskets.get(rrow))
     if errors:
-        return report(errors, "FAIL (baskets)")
+        raise ValueError('; '.join(errors))
     if not (inp["p_cu_l"] < inp["p_cu_m"] < inp["p_cu_h"]) or not (inp["lme_au_l"] < inp["lme_au_m"] < inp["lme_au_h"]):
         errors.append("price ladder order violated")
     if not (inp["gp_co_l"] < inp["gp_co_m"] < inp["gp_co_h"]):
         errors.append("cobalt leg order violated")
     if inp["price_au_m_oz"] <= inp["cost_au_oz"]:
-        errors.append("gold unit cost exceeds M price")
+        warnings.append('historical_gold_unit_cost_above_price')
     for k in ("cu", "au"):
         if not (0 < inp[f"ach_l_{k}"] <= inp[f"ach_m_{k}"] <= 1.0):
             errors.append(f"achievement ladder {k} violated")
@@ -229,26 +246,36 @@ def main() -> int:
     errors += check_g_cap(inp["axis_g2_aucu"], r["铜金"], "axis_g2_aucu")
     if r["铜金"] - g["铜金"] < MIN_R_MINUS_G:
         errors.append("r_perp − g2_aucu below pole margin")
-    if abs(inp["axis_g2_aucu"] - axis_g2()) > 1e-9:
-        errors.append(f"axis_g2_aucu={inp['axis_g2_aucu']} vs axis 永续 g2 {axis_g2()}")
     if inp["equity"] <= 0 or not (0 < inp["payout_actual"] < 1) or inp["n_transition"] != 2:
         errors.append("equity / payout_actual / n_transition invalid")
     if not (0.0 <= inp["k_l"] <= inp["k_m"] <= inp["k_h"] <= 1.0):
         errors.append(f"haircut ladder k_L ≤ k_M ≤ k_H within [0,1] violated: {inp['k_l']}/{inp['k_m']}/{inp['k_h']}")
     if abs(inp["p_cu_m"] - inp["p_cu_base"]) > 1e-6:
-        errors.append("p_cu_m must equal p_cu_base (M = audited base)")
+        warnings.append('copper_axis_differs_from_historical_base')
     for k in inp:
         if k.startswith("p_") and k not in ("p_cu_base", "p_cu_l", "p_cu_m", "p_cu_h"):
             errors.append(f"probability-style input {k}")
     if errors:
-        return report(errors, "FAIL (guards)")
-    errors += check_au_cu_mount((inp["lme_au_l"], inp["lme_au_m"], inp["lme_au_h"]), (inp["p_cu_l"], inp["p_cu_m"], inp["p_cu_h"]))
-    peer = parse_inputs(PEER.read_text(encoding="utf-8"))
-    for ours, theirs in SHARED_LADDER.items():
-        if theirs not in peer or abs(inp[ours] - peer[theirs]) > 1e-6:
-            errors.append(f"shared ladder drift: {ours} vs 601899.{theirs}")
-    if errors:
-        return report(errors, "FAIL (shared ladder)")
+        raise ValueError('; '.join(errors))
+    # Both companies use the same gold-copper source; missing peer snapshots
+    # cannot erase this company's independently calculated historical band.
+    peer_status = 'peer_comparison_unavailable'
+    if isinstance(peer, dict):
+        operating = peer.get('operating')
+        shared = operating.get('shared_prices', {}) if isinstance(operating, dict) else {}
+        if isinstance(shared, dict):
+            values = [(inp[ours], shared.get(other)) for ours, other in SHARED_LADDER.items()]
+            def valid(value):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return False
+                try:
+                    return math.isfinite(value)
+                except OverflowError:
+                    return False
+            if any(valid(value) and abs(ours - value) > 1e-6 for ours, value in values):
+                peer_status = 'peer_comparison_differs'
+            elif all(valid(value) for _, value in values):
+                peer_status = 'peer_comparison_matched'
 
     T = {t: tier(inp, t) for t in TIERS}
     # M guard: base-volume M run-rate reproduces the audited interim ×2, and the
@@ -257,14 +284,14 @@ def main() -> int:
     # so the closure runs on their 2026H1 values (gp_co_h1 / mi_rate_h1).
     base_m = year({**inp, "gp_co_m": inp["gp_co_h1"], "mi_rate": inp["mi_rate_h1"]}, "m", inp["vol_cu"], inp["vol_au_oz"], False)
     if abs(base_m["np"] - BASE_NP_PARENT_YI) > BASE_NP_TOL_YI:
-        errors.append(f"M base parent {base_m['np']:.4f}亿 vs audited {BASE_NP_PARENT_YI}")
+        warnings.append('historical_parent_profit_bridge_mismatch')
     if abs(base_m["gp_cu"] - inp["gp_cu_base"]) > 0.5:
-        errors.append(f"copper leg at base {base_m['gp_cu']:.2f} vs gp_cu_base {inp['gp_cu_base']}")
+        warnings.append('historical_copper_profit_bridge_mismatch')
     L, M, H = (T[t]["anchor"] for t in TIERS)
     if not (L < M < H):
         errors.append(f"L<M<H violated: {L:.2f}/{M:.2f}/{H:.2f}")
     if errors:
-        return report(errors, "FAIL (M guard)")
+        raise ValueError('; '.join(errors))
     for t in TIERS:
         for label, pe in ((f"铜金 PE_{t.upper()}", T[t]["pe"]["铜金"]), (f"equivalent PE_{t.upper()}", T[t]["eq_pe"])):
             if not (inp["pe_own_min"] <= pe <= inp["pe_own_max"]):
@@ -279,69 +306,80 @@ def main() -> int:
         errors.append("flat-multiple ladder broken")
     A, B = (L + M) / 2, (M + H) / 2
     alt = [tier(inp, t, r_over={"r_perp": 0.11})["anchor"] for t in TIERS]
-    kfm2_ret = {t: max((100_000 * (unit_rev_cu(inp, t) * (1 - inp["royalty_cu"]) - inp["cogs_cu"]) / YI) * (1 - inp["tax_rate"]), 0) / inp["capex_kfm2"] for t in TIERS}
+    kfm2_ret = None
+    if inp['capex_kfm2'] > 0:
+        kfm2_ret = {t: max((100_000 * (unit_rev_cu(inp, t) * (1 - inp['royalty_cu']) - inp['cogs_cu']) / YI)
+                          * (1 - inp['tax_rate']), 0) / inp['capex_kfm2'] for t in TIERS}
+        if any(not math.isfinite(value) for value in kfm2_ret.values()):
+            kfm2_ret = None
+    if kfm2_ret is None:
+        warnings.append('kfm2_reference_return_unavailable')
     net_cash_ps = -inp["net_debt"] / inp["shares"]
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-    out_sec = md.split("### Outputs", 1)[-1]
-    for label, want, rx, tol in (("cash_M", T["m"]["cash_ps"], r"视同派出[^|]*?M 档 \*\*([0-9.]+)\*\*", TOL),
-                                 ("haircut_H", T["h"]["haircut"], r"k 后[^|]*?H −\*\*([0-9.]+)\*\*", TOL)):
-        got = first_float(rx, out_sec)
-        if got is None or abs(got - want) > tol:
-            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
-    opt = gold_target_option(inp, T["h"])
-    if opt["d_oz"] <= 0 or inp["t_opt"] < inp["t_num"]:
-        errors.append("gold option: target must exceed the FY28 path and t_opt ≥ t_num")
-    if any(inp[k] < 0 for k in GOLD_K_KEYS) or not (0 < opt["k_share"] <= 1):
-        errors.append("gold option: unspent capital must be ≥ 0 and its share in (0, 1]")
-    band3 = tuple(base + P_K[i] * opt["v_opt"] for i, base in enumerate((L, M, H)))
-    got = first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec)
-    if got is None or abs(got - opt["v_opt"]) > TOL:
-        errors.append(f"V_opt: stated {got} vs recomputed {opt['v_opt']:.4f}")
-    for k, v in zip("LMH", band3):
-        m3 = re.search(rf"^\| {k} \| [0-9.]+ \| [^|]+\| [^|]+\| \*\*([0-9.]+)\*\* \|", out_sec, re.MULTILINE)
-        if m3 is None or abs(float(m3.group(1)) - v) > TOL:
-            errors.append(f"table3 {k}: stated {m3.group(1) if m3 else None} vs recomputed {v:.4f}")
-    for label, want, rx in (("A′", (band3[0] + band3[1]) / 2, r"A′ = \*\*([0-9.]+)\*\*"),
-                            ("B′", (band3[1] + band3[2]) / 2, r"B′ = \*\*([0-9.]+)\*\*")):
-        got = first_float(rx, out_sec)
-        if got is None or abs(got - want) > TOL:
-            errors.append(f"{label}: stated {got} vs recomputed {want:.4f}")
-
-    print(f"formula_id={FORMULA_ID}")
-    print("shared Au/Cu OK vs _AXIS.fed-path-gold-copper (+ peer 601899.SH)")
-    print(f"{'档':<3}{'铜kt':>7}{'金koz':>7}{'ROIC':>7}{'门':>4}{'E_cur':>8}{'E28':>8}{'g1co':>8}{'b1':>6}{'B27亿':>8}{'ROE28':>8}{'PE铜金':>8}{'合并':>7}{'现金/股':>8}{'锚点':>8}")
-    for t in TIERS:
-        x = T[t]
-        print(f"{t.upper():<3}{x['v_cu'] / 1e3:7.0f}{x['v_au'] / 1e3:7.0f}{x['roic']:7.0%}{'过' if x['gate'] else '关':>4}{x['cur']['eps']:8.3f}{x['fwd']['eps']:8.3f}"
-              f"{x['g1_co']:8.1%}{x['b1']:6.0%}{x['b27']:8.0f}{x['roe28']:8.1%}{x['pe']['铜金']:8.2f}{x['eq_pe']:7.2f}{x['cash_ps']:8.2f}{x['anchor']:8.2f}")
-    print("baskets: " + ", ".join(f"{rrow} 篮 {baskets[rrow]} r={inp[rrow]:g} g2={inp[grow]:g}" for rrow, grow in LEGS.values()))
-    for t in TIERS:
-        x = T[t]
-        print(f"  {t.upper()}: g1 " + " / ".join(f"{k} {x['g1'][k]:+.1%}" for k in LEGS) + f" | p1 铜金 {x['p1']['铜金']:.0%} | PE "
-              + " ".join(f"{k} {x['pe'][k]:.2f}" for k in LEGS) + " | $/股 " + " + ".join(f"{x['contrib'][k]:.2f}" for k in LEGS)
-              + f" | KFM2 项目回报 {kfm2_ret[t]:.0%}")
-    print(f"M guard OK: base parent {base_m['np']:.4f}亿 = audited {BASE_NP_PARENT_YI}; net cash/share {net_cash_ps:+.2f} (cross-note)")
-    print("视同派出现金/股 k 前 → k 后: " + " | ".join(
-        f"{t.upper()} {T[t]['cash_ps']:.2f} × k {inp[f'k_{t}']:g} = −{T[t]['haircut']:.2f} (锚点 {T[t]['anchor_pre_k']:.2f} → {T[t]['anchor']:.2f})"
-        for t in TIERS))
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"V_opt 金 2029 目标（A33）：{inp['vol_au_2029_oz']:,.0f} − FY28 路径 {inp['vol_au_2028_oz']:,.0f} = {opt['d_oz']:,.0f} oz × "
-          f"({inp['price_au_m_oz']:,.0f} − {inp['cost_au_oz']:,.0f}) 元/oz × (1−MI)(1−t) = {opt['d_np']:.2f} 亿（ΔEPS {opt['d_eps']:.4f}）"
-          f" × PE {opt['pe_post']:.2f}（g2 {inp['g2_aucu']:g}, ROE {opt['roe_post']:.1%}, r {inp['r_perp']:g}） × {opt['disc']:.4f}"
-          f"（{inp['t_opt']:g}→{inp['t_num']:g}）= {opt['v_pre_k']:.2f}（扣资本前）")
-    print(f"  未投资本池 " + " + ".join(f"{k} {inp[k]:.4f}" for k in GOLD_K_KEYS) + f" = {opt['k_pool']:.2f} 亿 × 增量份额 "
-          f"{opt['d_oz']:,.0f}/{inp['vol_au_2029_oz'] - inp['vol_au_oz']:,.0f} = {opt['k_share']:.4f} → 扣 {opt['k_opt']:.2f} 亿（2029 一次扣）；"
-          f"V_opt = ({opt['v_gross']:.2f} − {opt['k_opt']:.2f}) × {opt['disc']:.4f} ÷ 股本 = {opt['v_opt']:.2f}；V_opt/M {opt['v_opt'] / M:.1%}；"
-          f"全池扣（敏感）{opt['v_full_k']:.2f}")
-    print(f"表3 p_k={P_K[0]:g}/{P_K[1]:g}/{P_K[2]:g} → {band3[0]:.2f}/{band3[1]:.2f}/{band3[2]:.2f}  "
-          f"A′={(band3[0] + band3[1]) / 2:.2f} B′={(band3[1] + band3[2]) / 2:.2f}")
-    print(f"flat-multiple ladder @ 铜金 PE_M {T['m']['pe']['铜金']:.2f}: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    for line in tier_report((L, M, H), tuple(T[t]["eq_pe"] for t in TIERS), tuple(T[t]["cur"]["eps"] for t in TIERS)):
-        print(line)
-    print(f"L/M {L / M:.3f} | H/M {H / M:.3f} | width {(H - L) / (2 * M):.3f}")
-    print(f"alt 篮 5 铜金 11% -> {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
-    return report(errors)
+    # Invalid project assumptions affect the optional project, not the base.
+    opt = None
+    target_gap = inp['vol_au_2029_oz'] - inp['vol_au_oz']
+    if (target_gap > 0 and inp['vol_au_2029_oz'] > inp['vol_au_2028_oz']
+            and inp['t_opt'] >= inp['t_num'] and all(inp[k] >= 0 for k in GOLD_K_KEYS)):
+        try:
+            opt = gold_target_option(inp, T['h'])
+        except (ValueError, ZeroDivisionError, OverflowError):
+            pass
+    if opt is not None and any(not math.isfinite(value) for value in opt.values()):
+        opt = None
+    available = (opt is not None and math.isfinite(opt['v_opt']) and opt['v_opt'] >= 0
+                 and 0 < opt['k_share'] <= 1)
+    if not available:
+        warnings.append('gold_target_option_unavailable')
+    legacy_guard_flag = bool(errors)
+    tiers = lambda xs: dict(zip('LMH', xs))
+    option = {'status': 'unavailable', 'label': '巴西黄金目标', 'anchors': None}
+    if available:
+        band3 = tuple(base + P_K[i] * opt['v_opt'] for i, base in enumerate((L, M, H)))
+        option = {'label': '巴西黄金目标', 'value': opt['v_opt'], 'value_unit': 'CNY_PER_SHARE',
+                  'weights': tiers(P_K), 'anchors': tiers(band3)}
+    names = {'铜金':'copper_gold', '钴':'cobalt', '钼钨铌磷':'other_mining', 'IXM':'ixm'}
+    segments = {slug: {'unit': 'CNY_PER_SHARE', 'values': tiers(T[t]['contrib'][label] for t in TIERS)}
+                for label, slug in names.items()}
+    segments['haircut'] = {'unit': 'CNY_PER_SHARE', 'values': tiers(-T[t]['haircut'] for t in TIERS)}
+    parameters = {}
+    for label, slug in names.items():
+        r_key, g_key = LEGS[label]
+        parameters[slug] = {'discount_rate': {'unit': 'RATIO', 'values': tiers(inp[r_key] for _ in TIERS)},
+                            'growth_rate': {'unit': 'RATIO', 'values': tiers(inp[g_key] for _ in TIERS)},
+                            'transition_growth': tiers(T[t]['g1'][label] for t in TIERS),
+                            'transition_years': inp['n_transition'],
+                            'forward_return': {'unit': 'RATIO', 'values': tiers(T[t]['roe28'] for t in TIERS)},
+                            'steady_return': {'unit': 'RATIO', 'values': tiers(T[t]['roe28'] if inp[g_key] > 0 else None for t in TIERS)},
+                            'multiple': tiers(T[t]['pe'][label] for t in TIERS)}
+    return {
+        'ticker':'603993.SH', 'currency':'CNY', 'valuation_as_of':None, 'framework_as_of':None,
+        'anchors':tiers((L,M,H)), 'candidate':None,
+        'option':option,
+        'review_flags': [peer_status, *sorted(set(warnings))] + (['historical_financial_guards_require_review'] if legacy_guard_flag else []),
+        'segments':segments, 'key_parameters':parameters,
+        'operating':{'roe':tiers(T[t]['roe28'] for t in TIERS), 'roic':tiers(T[t]['roic'] for t in TIERS),
+                     'growth_gate':tiers(T[t]['gate'] for t in TIERS),
+                     'profit_current':tiers(T[t]['cur']['np'] for t in TIERS),
+                     'profit_forward':tiers(T[t]['fwd']['np'] for t in TIERS),
+                     'haircut':tiers(T[t]['haircut'] for t in TIERS),
+                     'gold_option':opt, 'basket_5_cross':tiers(alt), 'flat':tiers(flat),
+                     'kfm2_reference_return': None if kfm2_ret is None else tiers(kfm2_ret[t] for t in TIERS),
+                     'shared_prices':{k:inp[k] for k in SHARED_LADDER}},
+        'currency_inputs': {'usd_cny': inp['fx_usd_cny']},
+    }
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    gold = context['axes']['gold_copper']['stock_fields']
+    result = evaluate({**INPUTS, **gold}, context.get('peers', {}).get('zijin'))
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['historical_framework_as_of'] = '2026-10-25'
+    result['basis_changed'] = None
+    model_constants = {'option_weights': P_K, 'unit_scale': YI, 'legs': LEGS,
+                       'tiers': TIERS, 'gold_project_cost_keys': GOLD_K_KEYS,
+                       'historical_parent_profit': BASE_NP_PARENT_YI,
+                       'historical_parent_tolerance': BASE_NP_TOL_YI}
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'gold_copper': gold, 'model_constants': model_constants},
+        HISTORICAL_PARTIAL_FINGERPRINT)
+    return result

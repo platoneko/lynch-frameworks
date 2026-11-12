@@ -1,165 +1,115 @@
 #!/usr/bin/env python3
-"""601600.SH (Chalco) valuation eval.
+"""Historical Chalco aluminium spread model, retained for migration review.
 
-frameworks/601600.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc states
-no current price or zone (the digest and the app zone on live quotes).
-
-formula_id: chalco_al_spread_gm_bridge_gordon_v5
-
-Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
-aluminium spread axis.  M is the 2026 9M filing annualised; L and H are M moved
-by 753.3万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
-marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
-g rows (flat 0% / 0% / 0% → 1/r) at the tier's own forward ROE (NP_x /
-中报归母权益), with r the basket the framework names for the single leg
-(valuation-rules「§r 篮子」, gordon.BASKET_R).  This ticker is the one
-aluminium mount that does NOT sit in 篮 6: at 13% the flat 1/r 7.69× falls
-below its own 5-year TTM PE floor 8.01× (③ 出带), the numerator (M ≈ consensus
-median +2.8%) and g-cap (axis g 0%) exits are ruled out, and the axis-mounted g
-cannot be reverse-solved for one ticker — so the framework walks the
-降篮门 one basket down to 篮 5 (11%, 9.09×), which is inside the band, and
-stops (A15).  The guard below asserts that premise: if the 篮 6 multiple ever
-re-enters the band, the market evidence for borrowing 篮 5's r is gone.
-The axis L rung 4,873 is an MS 2027 supply-glut *level* that may persist, not
-a trough that mean-reverts; IAI 3.3% is sensitivity / stretched only.  The L
-numerator is that regime, not this company's own trough year (2023H1 归母
-33.66亿 was far lower) — so it takes steady g_L=0; a v4 that ran the 谷底档
-recovery stage on it let L converge on M and was rolled back
-(valuation-rules「谷底档」适用范围); g_L 3.3%「谷底回归中枢」was likewise
-retired.  The printed 2023H1 trough x 1/r is only the deep_discount pressure
-coordinate.  The own 5-year TTM PE band is a guardrail (very wide here — the
-2023 earnings trough printed 35.7x).  The PB floor is disclosed, never
-max()'d into L.
-
-The one thing that makes Chalco different from the other three mounts is where
-the profit stops.  2026H1 operating profit was 269.4亿 but only 118.7亿 reached
-the parent — listed subsidiaries (Yunnan Aluminium and others) take 44.8% of
-net profit, up from 36.3% in 2025H1 (42.3% in 2026Q3), because their earnings are the more
-leveraged ones.  That drain is not modelled explicitly; it is carried by the
-marginal conversion rate, which is why k must stay far below the other mounts'.
-The guard below asserts exactly that, so a future revision cannot quietly
-recover the missing four-tenths.
-
-Run:  python3 frameworks/eval/601600.SH.py
+The old aluminium axis supplies three spreads, growth and a one-year high-price
+period; a separate copper axis limits aluminium's upside. The two-point
+gross-to-parent-profit bridge includes changes in subsidiary minority claims.
+The 2025H1 observation is a fit, not an independent forecast. Current model
+dates are not independently certified.
 """
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.al_bridge import (  # noqa: E402
-    REQUIRED, anchors, bridge, check_gordon, check_regression, flat_ladder,
-    multiples, pb_floor,
-)
-from lib.axes import check_al_mount  # noqa: E402
-from lib.gordon import basket_r  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.al_bridge import (REQUIRED, anchors, bridge, check_gordon,
+                           check_regression, flat_ladder, multiples, pb_floor)
+from lib.gordon import basket_r
+from lib.inputs import check_missing, ladder
+from lib.metal_axis_checks import axis_basis_snapshot, check_aluminium_price_upside
+from lib.partial_basis import local_basis_changed
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "601600.SH.md"
-FORMULA_ID = "chalco_al_spread_gm_bridge_gordon_v5"
+DEPENDENCIES = {'libraries': ('al_bridge', 'axes', 'gordon', 'inputs', 'metal_axis_checks', 'partial_basis'),
+                'axes': {'aluminium': 'fed_path_aluminium', 'gold_copper': 'fed_path_gold_copper'}}
 
-GP_M_FILING = 669.3  # 亿 CNY, 2026 9M (1,865.94 - 1,363.97) x 4/3
-NP_M_FILING = 238.9  # 亿 CNY, 2026 9M 归母 179.16 x 4/3
-K_MINORITY_CEILING = 0.50  # §1 属性 A: minorities take ~44% of net profit
-SHARES_STATIC = 171.55  # 亿股, LB static total_shares 17,154,971,327
-NP_TROUGH_2023H1 = 67.33  # 亿 CNY, 2023H1 归母 33.66 x2 — pressure coordinate only (A13)
-BASKET_INITIAL = 6  # A15: 周期商品 — the basket the leg qualifies for, overturned by ③ 出带
+INPUTS = {
+    'shares': 171.55,  # 总股本（亿股）＝ LB static total_shares 17,154,971,327；与 `bps` 分母同源（旧值 171.3 由 H1 EPS 0.693 反推，已废）；2026-09-14
+    'rev_m': 2487.9,  # **M 档**年化营收 ＝ 2026 前三季度 1,865.94 × 4/3（2026 年第三季度报告）；2026Q3
+    'gm_m': 0.269,  # **M 档**毛利率 ＝ 1 − 营业成本 1,363.97 ÷ 营收 1,865.94（2026 前三季度，三季报合并利润表）；2026H1 0.2673；2026Q3
+    'rev_ref': 2328.2,  # **k 拟合点**年化营收 ＝ 2025H1 1,164.1 × 2（A3；不是 L）；2025H1
+    'gm_ref': 0.1632,  # **k 拟合点**毛利率；Longbridge 财报五年序列；2025H1
+    'np_m': 238.9,  # **M 档**年化归母 ＝ 2026 前三季度 179.16 × 4/3（三季报；Q3 单季 60.44 ×4 = 241.8）；**回归护栏基准**；2026Q3
+    'np_ref': 141.0,  # **k 拟合点**年化归母 ＝ 2025H1 70.5 × 2（A3）；2025H1
+    'vol_al': 753.3,  # 电解铝等效年化销量万吨 ＝ 原铝分部**绝对值**年化 1,818.6 亿（909.31 × 2）÷ 24,141 元/吨（A4）；三档冻结；2026H1
+    'equity': 857.98,  # 归母权益（亿 CNY）＝ 三季报「归属于母公司股东权益合计」85,797,989 千元；三档前瞻 ROE 的分母（属性 G）；2026-09-30
+    'r_perp': 0.11,  # 永续贴现率 ＝ **篮 5 大行 / 优质股份行**（只借 r 值：市场证据、③出带降篮门；初分篮 6 周期商品 13% 下 1/r 7.69× 出自身带，A15；真源 `eval/lib/gordon.py BASKET_R`）；零增长 → PE 1/r = 9.09× ∈ 自身带 [8.01, 35.71]；初分 13% 只作「对照坐标（降篮门路径）」；2026-09-20
+    'pe_own_min': 8.01,  # 自身 5 年 TTM PE 月频实测低点（2025-04）；**护栏，不入主公式**（A12）；LB `valuation --history pe --range 5`；2026-09-11
+    'pe_own_max': 35.71,  # 自身 5 年 TTM PE 月频实测高点（2023-07，盈利谷底）；**护栏，不入主公式**（A12）；2026-09-11
+    'bps': 5.001,  # 每股净资产 CNY ＝ 报表值（`equity` 857.98 亿 ÷ 171.55 亿股，三季报股本 17,154,759 千股）；仅用于地板与 A9 的 PB 交叉，不入主公式；2026-09-30
+    'pb_low': 1.04,  # LB 5 年 PB 合理区间下沿（实测月频最低 0.85，2022-10）；地板 ＝ pb_low × bps（A9），只披露；2026-09-11
+}
+
+# Independent filing cross-checks from the 2026 first nine months, annualised.
+# Update these observations together with the underlying inputs when researching
+# a later filing; they are not inferred from the model's target result.
+GROSS_PROFIT_FILING = 669.3
+NET_PROFIT_FILING = 238.9
+SHARES_STATIC = 171.55  # 2026-09-14 Longbridge static, 100m shares.
+NP_TROUGH_2023H1 = 67.33  # 2023H1 parent earnings annualised, disclosure only.
+MINORITY_CONVERSION_CEILING = .50
+BASELINE_LOCAL = 'f843e8e58e5027cc8897d5960ef701e764259b2a16e05584dbb5b20bab4e1fa1'
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    baskets = parse_baskets(md)
-    errors = check_missing(inp, REQUIRED + ["h_pass_years"])
+def calculate(context):
+    aluminium = context['axes']['aluminium']
+    copper = context['axes']['gold_copper']
+    inp = dict(INPUTS)
+    for name in ('spread_l', 'spread_m', 'spread_h', 'g2_l', 'g2_m', 'g2_h', 'h_pass_years'):
+        inp[name] = aluminium[name]
+    errors = check_missing(inp, REQUIRED + ['h_pass_years'])
     if errors:
-        return report(errors)
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in REQUIRED + ['h_pass_years']):
+        raise ValueError('all required inputs must be finite')
+    errors += ladder('smelting spread', inp['spread_l'], inp['spread_m'], inp['spread_h'])
+    cross_axis_valid = check_aluminium_price_upside(aluminium_axis=aluminium, gold_copper_axis=copper)
+    errors += check_regression(inp, GROSS_PROFIT_FILING, NET_PROFIT_FILING)
+    errors += check_gordon(inp, 5, shared_growth={tier: aluminium[f'g2_{tier.lower()}'] for tier in 'LMH'})
+    if 1/basket_r(6) >= inp['pe_own_min']:
+        errors.append('initial basket multiple no longer falls below the historical band; reassess basket choice')
+    if abs(inp['shares'] - SHARES_STATIC) > .05:
+        errors.append('shares differ from the historical source; recheck the current share count')
+    if aluminium['h_after'] != 'M' or aluminium['h_scope'] != 'aluminium_spread':
+        errors.append('the high-spread return path is incompatible with this model')
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    errors += ladder("smelting spread", inp["spread_l"], inp["spread_m"], inp["spread_h"])
-    errors += check_al_mount((inp["spread_l"], inp["spread_m"], inp["spread_h"]))
-    errors += check_regression(inp, GP_M_FILING, NP_M_FILING)
-
-    # A15: r must be the basket the Inputs row names, not just any basket value.
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (AGENTS.md 篮子声明)")
-    errors += check_gordon(inp, baskets.get("r_perp"))
-    if abs(inp["shares"] - SHARES_STATIC) > 0.05:
-        errors.append(f"shares {inp['shares']} != LB static total_shares {SHARES_STATIC}亿")
-
-    (L, M, H_regime), eps = anchors(inp)
-    # H passes through (_AXIS.fed-path-aluminium「H 档是路过」; valuation-rules「经营价值与超额现金」②
-    # 商品腿豁免「每档 MUST 与该档的世界状态一致」): the H spread for `h_pass_years`, then the M world.
-    # g = 0 and the multiple is flat 1/r, so the H excess is an n-year annuity on top of M.
-    n_pass = inp["h_pass_years"]
-    if not n_pass > 0:
-        errors.append(f"h_pass_years {n_pass} must be > 0 (axis: H passes, MUST NOT be capitalised as a regime)")
-    H = M + (H_regime - M) * (1 - (1 + inp["r_perp"]) ** -n_pass)
+    (L, M, high_regime), eps = anchors(inp)
     pes, roes = multiples(inp)
     errors += flat_ladder(eps)
-
-    # A15 降篮门 premise: 篮 5 is borrowed only because the leg's own basket
-    # (篮 6) generates a multiple below the realised band.  With g = 0 every
-    # tier is 1/r, so one number decides it.
-    pe_initial = 1.0 / basket_r(BASKET_INITIAL)
-    if pe_initial >= inp["pe_own_min"]:
-        errors.append(
-            f"篮 {BASKET_INITIAL} 1/r {pe_initial:.2f} >= own band floor {inp['pe_own_min']} — "
-            "the ③ 出带 evidence for borrowing 篮 5's r is gone; return to the initial basket (A15 证伪点)"
-        )
-
+    n = inp['h_pass_years']
+    H = M + (high_regime - M) * (1 - (1 + inp['r_perp']) ** -n)
     br = bridge(inp)
-    if br["k"] >= K_MINORITY_CEILING:
-        errors.append(
-            f"marginal conversion k={br['k']:.4f} >= {K_MINORITY_CEILING} — "
-            "minorities take ~44% of profit (§1 属性 A); a k this high means "
-            "the drain has been modelled away"
-        )
-
-    # The asset ruler and the earnings ruler read differently here, and the
-    # framework says so (A9).  Print the PB at each anchor rather than assert
-    # on it: PB in the upper half of the realised band is a real tension, not
-    # an input error.  The floor is disclosed only: scenario L must clear it
-    # (A2e-1), it is never max()'d into L.
-    pb = [x / inp["bps"] for x in (L, M, H)]
+    if br['k'] >= MINORITY_CONVERSION_CEILING:
+        errors.append('gross-to-parent-profit conversion no longer reflects the minority claim; reassess')
     floor, floor_errors = pb_floor(inp, L)
     errors += floor_errors
-
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}
-    )
-
-    r = inp["r_perp"]
-    flat = [e * pes[1] for e in eps]
-    print(f"601600.SH  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
-    print(f"  H 路过：H 价差 regime 值 {H_regime:.2f} 维持 {n_pass:g} 年后回到 M → H {H:.2f}（轴 H 档行）")
-    print(f"  r_perp {r:.1%} = 篮 {baskets.get('r_perp')} (初分篮 {BASKET_INITIAL} 1/r {pe_initial:.2f}x < 带下沿 "
-          f"{inp['pe_own_min']} → 降篮门, A15)  "
-          f"EPS {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
-          f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
-          f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
-    print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
-          f"L numerator {br['np'][0]:.1f}亿 = axis L rung (regime), printed 2023H1 trough {NP_TROUGH_2023H1:.1f}亿 far below (A13)")
-    print(f"  L/M={L/M:.3f} = 分子比 {eps[0]/eps[1]:.3f} x 倍数比 {pes[0]/pes[1]:.3f} | "
-          f"H/M={H/M:.3f} = 分子比 {eps[2]/eps[1]:.3f} x 倍数比 {pes[2]/pes[1]:.3f} | "
-          f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
-    print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"  地板（只披露）floor={floor:.2f} = pb_low x 报表 bps < L {L:.2f}; not max()'d  "
-          f"锚点对应 PB {pb[0]:.2f}/{pb[1]:.2f}/{pb[2]:.2f}")
-    print(f"  deep_discount 压力坐标: 印过的 2023H1 x 1/r = "
-          f"{NP_TROUGH_2023H1 / inp['shares'] / r:.2f}; "
-          f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1]:.2f} @PE_M (conservative 带内坐标)")
-    return report(errors)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    if not L < M < H:
+        errors.append('L/M/H anchors are not strictly ordered')
+    if errors:
+        raise ValueError('; '.join(errors))
+    tiers = lambda values: dict(zip('LMH', values))
+    local = {'inputs': INPUTS, 'aluminium': axis_basis_snapshot(aluminium), 'gold_copper': axis_basis_snapshot(copper),
+             'historical_checks': {'gross_profit_filing': GROSS_PROFIT_FILING,
+                                   'net_profit_filing': NET_PROFIT_FILING, 'shares_static': SHARES_STATIC,
+                                   'trough_2023h1': NP_TROUGH_2023H1,
+                                   'minority_conversion_ceiling': MINORITY_CONVERSION_CEILING}}
+    return {
+        'ticker': '601600.SH', 'currency': 'CNY', 'valuation_as_of': None, 'framework_as_of': None,
+        'historical_financial_statement_as_of': '2026-09-30', 'historical_research_as_of': '2026-10-30',
+        'anchors': tiers((L,M,H)), 'candidate': None, 'option': None,
+        'units': {'price': 'CNY_PER_SHARE'},
+        'segments': {'company': {'unit': 'CNY_PER_SHARE', 'values': tiers((L,M,H))}},
+        'key_parameters': {'discount_rate': {'unit': 'RATIO', 'values': tiers((inp['r_perp'],)*3)},
+                           'growth_rate': {'unit': 'RATIO', 'values': tiers(inp[f'g2_{t}'] for t in 'lmh')},
+                           'forward_return': {'unit': 'RATIO', 'values': tiers(roes)},
+                           'steady_return': {'unit': 'RATIO', 'values': tiers((None,None,None))}},
+        'basis_changed': None, 'partial_basis_changed': local_basis_changed(local, BASELINE_LOCAL),
+        'review_flags': ['aluminium_low_macro_path_conflict'] + ([] if cross_axis_valid else ['aluminium_copper_price_upside_not_met']),
+        'operating': {'net_profit': tiers(br['np']), 'gross_profit': tiers(br['gp']),
+                      'roe': tiers(roes), 'multiple': tiers(pes), 'eps': tiers(eps),
+                      'conversion': br['k'], 'high_regime_value': high_regime,
+                      'floor': floor, 'fit_profit': inp['np_ref'], 'high_spread_years': n},
+        'sensitivity': {'historical_fit_reference': inp['np_ref']/inp['shares']*pes[1],
+                        'historical_trough': NP_TROUGH_2023H1/inp['shares']/inp['r_perp'],
+                        'flat_regime': tiers(e*pes[1] for e in eps)},
+    }

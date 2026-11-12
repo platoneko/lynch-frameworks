@@ -2,7 +2,7 @@
 
 **`rules/` 下这几份文件合起来是 skill `sediment-framework` 的语义真源**：锚点各定价什么、折现率怎么归篮、倍数怎么由增长生成、增长怎么分层表达、期权与候选带的判据、共享轴的构造要求，以及这些规则互相顶时的裁决顺序。本文件只是索引：别处写「`valuation-rules.md`「X」」时，按下表找到 X 所在的文件，**只 Read 那一份**。**怎么操作**见同目录 `construction.md` / `zone-reflection.md` / `heuristics.md`（由 `SKILL.md` 按需加载）；**仓库级契约**（五档 zone、Outputs 行格式、日报与 eval）在仓库根 `AGENTS.md`。
 
-**折现率 \(r\) 按生意性质归入 7 个篮子**（「§r 篮子」；2026-09-20 起为仓库现行口径，取代此前按腿的现金流性质分 7 / 10 / 13 三档）。由此派生：\(G_{cap}\) 随 r、域判定表、峰形区处理、单调区不可达、DDM 触发、周期票 regime / point 双口径、利率轴敏感性。篮子值真源 `eval/lib/gordon.py` `BASKET_R`，g 上限 `gordon.g_cap(r)`；eval 用 `inputs.parse_baskets` + `check_r(r, where, basket)` + `check_g_cap(g, r, where)` 校验。标 `[待建]` 的部分（利率轴 CNY / TWD 段与每票 eval 打印、日报共识 / 反向压力两行、季度篮级对账、`decay_two_stage_pe`、SOTP δ 反解库函数）尚无代码，framework 里对应项标 `待建` 而非勾选。
+**折现率 \(r\) 按生意性质归入 7 个篮子**（「§r 篮子」；2026-09-20 起为仓库现行口径，取代此前按腿的现金流性质分 7 / 10 / 13 三档）。由此派生：\(G_{cap}\) 随 r、域判定表、峰形区处理、单调区不可达、DDM 触发、周期票 regime / point 双口径、利率轴敏感性。篮子值真源 `eval/lib/gordon.py` `BASKET_R`，g 上限 `gordon.g_cap(r)`；新脚本持有各腿篮子声明并调用 `check_r(r, where, basket)` 与 `check_g_cap(g, r, where)` 校验，不从正文解析篮子。旧脚本的 `inputs.parse_baskets` 属于迁移前现状。利率轴机器数据和结果读数已有部分实现，但 CNY 仅有长期中枢、TWD 待建，个股接入未全覆盖；缺失读数标待补。季度篮级对账、`decay_two_stage_pe`、SOTP δ 反解库函数等标 `[待建]` 的部分尚无代码，framework 里对应项标 `待建` 而非勾选。
 
 ## 索引
 

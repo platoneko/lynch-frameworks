@@ -1,254 +1,270 @@
 #!/usr/bin/env python3
-"""600150.SH (China CSSC Holdings) valuation eval — recompute anchors from frameworks/600150.SH.md.
+"""Historical finite shipbuilding supercycle; not a new forecast.
 
-frameworks/600150.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading.
+Amounts and share counts are in CNY and shares; outputs are CNY/share.
+The FY2028 forecasts are from the original three analyst sources; source links
+and financial evidence remain in the framework. The 2035 plateau and 2039
+normalization are research assumptions, not a company commitment. Forward
+investment returns follow the separate 2028–2030 path. Post-cycle earnings
+use annualized reported profit, not a validated full-cycle average.
 
-formula_id: cssc_consensus_fy28_opvalue_gordon_v1
-
-Main ruler: whole company (shipbuilding & offshore 86-89% of revenue, marine
-equipment rides the same cycle; no sell-side SOTP), basket 4 r = 10%
-(newbuilds are priced contract by contract; the rule puts equipment in basket
-4).  Operating value + excess cash (valuation-rules「经营价值与超额现金」):
-every earnings figure and RONIC is on the operating basis (excess cash and its
-after-tax income taken out); the parent share of the excess cash is added back
-per share at face value (lambda = 1) on every tier.
-
-  numerator  FY2028 company consensus (Eastmoney F10, the 5 houses published
-             on/after the 2026-08-31 interim report): M = mean, H = high.
-             Demand-cycle manufacturing → the commodity「中枢」rule does not
-             apply; the cycle risk sits in L.  Gordon value at 2028-01-01,
-             discounted tau = 1.5 years to the 2026-06-30 balance sheet, plus
-             the window distributable profit (2H26 + FY2027 unbooked operating
-             EPS x (1 - g/RONIC)) at tau/2.
-  g2         4% = named macro default (layer ④): no user judgement, peer
-             cluster n <= 1 (CSSC Offshore in the flat zone, Songfa alone),
-             no own same-earnings months (the company never earned this much).
-  RONIC      FY2028 operating EPS over the start-of-2028 operating BPS
-             (book − interim dividend − excess cash, rolled with b = g/RONIC);
-             three-stage: forward through Y1 2028, linear to the steady return
-             by Y2 2030 (low entry barrier), perpetual after.  Steady M 11%
-             (business-model floor, commoditised heavy assets: own cycle and
-             mature peers unusable), H 15% (low barrier → one floor row up).
-  L          FY2025 measured parent profit (the digestion year: deliveries of
-             2021-23 contracts) on the operating basis — FY2025's own excess
-             cash income removed — at the M-tier multiple (cyclical flat), not
-             time-aligned, plus the same excess cash per share.
-
-V_opt = 0.  CNY segment of _AXIS.rates is [待建] → no r_f readings.
-
-Run:  python3 frameworks/eval/600150.SH.py
+Existing cash is recognized as in the prior decision, while occupation and
+release are sensitivity conditions, not proof of either immediate distribution
+or permanent loss. The original FY2025 downside PE is policy, not validated
+matched historical trading. The user authorized the existing scenario and its
+disclosed gaps; no unannounced asset injection or extra option is valued.
 """
-
+# Historical context and unresolved conditions retained from the document:
+# FY2028 group forecasts: Dongwu 312.45, Shenwan 300.10 and Guojin 381.49
+# CNY 100 million; Shenwan is a dated forecast-detail record without the full
+# report. They are a partially refreshed sample, not full-market consensus.
+# The 2035 plateau uses 2032–33 industry demand plus 2–3 years delivery lag;
+# the four-year fade to 2039 is a research assumption, not a company promise.
+# Cycle-normal profit uses 9M2026 annualized reported earnings less cash
+# income; it retains seasonality and nonrecurring items and is not an observed
+# full-cycle average. Forward capital returns are proxies, not proven RONIC.
+# The low 10.700106 multiple was already chosen in the prior scenario; after
+# the merger it is not backed by matched-earnings paid-price evidence.
+# Existing 937.28 CNY 100 million attributable cash is recognized as before,
+# but contract liabilities and delivery financing have not been reconciled
+# year by year. A zero cash-release scenario keeps income and principal in
+# operations; additional occupation is a separate condition, not a default.
+# FY2025 reported tax rate 1.97%, H1 2026 10.00%; H1 losses and deferred tax
+# cannot be transferred freely across entities or assumed to persist forever.
+# Guojin FY2028 forecast tax around 1.9% remains a near-term forecast input,
+# not an assumed permanent tax rate; report-profit reference uses its own
+# observed tax. Q3 merger-related 6.92 CNY 100 million tax effect is subject
+# to audit. Company reports and tax notes remain the source for those limits.
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.gordon import (  # noqa: E402
-    check_branch, check_g_cap, check_r, payout, payout_gap, perpetual_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.gordon import check_g_cap, check_r
+from lib.inputs import check_missing, ladder, require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.zones import cut_points
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600150.SH.md"
-FORMULA_ID = "cssc_consensus_fy28_opvalue_gordon_v1"
-YI = 1e8
-NUM_YEAR = 2028
-TODAY_FY = 2026
-LEV_DEBT_EBITDA = 3.0
-LEV_INT_EBIT = 1 / 3
-COORD_TOL = 0.20          # 纠正对账门: new M within 20% of at least one independent coordinate
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'partial_basis', 'zones'), 'axes': {}}
+BASELINE_LOCAL = '02122595020fc5a1ec6604a81dcd05877bb8e3c5342910a526e3f3f90b521432'
 
+INPUTS = {
+    'shares': 7525621288,  # 三季报总股本; as-of 2026-09-30
+    'equity': 153740402641.59,  # 归母权益，已反映中期股利，不重复扣；三季报; as-of 2026-09-30
+    'minority': 7090043780.99,  # 少数股东权益；现金归母比例用; as-of 2026-09-30
+    'net_cash_ext': 126897171793.24,  # 货币资金减有息债务与租赁；沿用扩展口径; as-of 2026-09-30
+    'div_payable': 3516585022.87,  # 应付股利；只从候选现金扣一次; as-of 2026-09-30
+    'np_9m': 13440070099.25,  # 已入账归母；三季报; as-of 2026-09-30
+    'np_9m_core': 13540651100,  # 三季报扣非归母，公告万元精度；仅用于周期后参照敏感性，不改近端已入账归母; as-of 2026-09-30
+    'np_ttm': 15436667884.33,  # FY2025 − 2025 年前三季度 + 本年前三季度归母; as-of 2026-09-30
+    'cash_yield': 0.01602390887095388,  # 9M 利息收入简单年化 / 期初期末平均货币资金；是估值代理，非长期保证; as-of 2026-09-30
+    'cash_tax': 0.1426234727157642,  # 9M 实际税率；只用于当前候选现金收益，非经营终值税率; as-of 2026-09-30
+    'cash_release': 1,  # 沿用原超额现金单列认定；不是即刻派现承诺。0–1 为转为经营资本的条件敏感性（A12）; as-of 2026-11-05
+    'extra_occupation': 0,  # 未来超出必要再投资的余款未被额外占用的条件；0–1 连续敏感性，不能由公式余数证明; as-of 2026-11-05
+    'r_perp': 0.10,  # 篮 4 常规经营：逐单议价的设备制造，非商品价函数；周期进入利润路径（A3）; as-of 2026-11-05
+    'g2': 0.04,  # 沿用已采用名义正常增长；平台金额仍增长，额外周期利润另由权重退出; as-of 2026-11-07
+    'ronic_ss': 0.11,  # M 新投资稳态回报，沿用原商品化重资产兜底与已采用口径; as-of 2026-10-27
+    'ronic_ss_h': 0.15,  # H 新投资稳态回报，沿用原低门槛高档上移一格；不是本次为配价上调; as-of 2026-10-27
+    'y1': 2028,  # 最远共同预测年；原新投资回报收敛路径起点，不是周期平台终点; as-of 2026-11-07
+    'y2': 2030,  # 原新投资回报收敛终点，与利润平台2035及回落终点2039分开; as-of 2026-11-07
+    'tau': 1.25,  # 2026-09-30 至 2028-01-01；窗口为 Q4 + FY2027; as-of 2026-09-30
+    'payout_obs': 0.35,  # FY2025 / 2026 中期实付比例约 35%；作资本约束及分配能力对照; as-of 2026-10-23
+    'rev_25': 151978000000,  # FY2025收入；原经营现金锚按两个月收入，沿用既有口径; as-of FY2025
+    'np_25': 7848400000,  # FY2025 实测归母；L 仅作历史消化年分子; as-of FY2025
+    'equity_25': 143419000000,  # FY2025 归母权益；历史现金归属; as-of 2025-12-31
+    'minority_25': 6171400000,  # FY2025 少数权益；历史现金归属; as-of 2025-12-31
+    'net_cash_ext_25': 110269100000,  # FY2025 扩展净现金；L 历史收益用; as-of 2025-12-31
+    'cash_yield_25': 0.02126,  # FY2025 自身现金收益率；不被本期参数覆盖; as-of FY2025
+    'cash_tax_25': 0.0197,  # FY2025 自身实际税率；不外推到经营终值; as-of FY2025
+    'dw_np26': 20034000000,  # 东吴归母预测；正文财务表，百万元转元; as-of 2026-11-02
+    'dw_np27': 25720000000,  # 同上; as-of 2026-11-02
+    'dw_np28': 31245000000,  # 同上；保留原值供归属桥; as-of 2026-11-02
+    'gj_np26': 20849000000,  # 国金归母预测；原文财务表，百万元转元; as-of 2026-10-31
+    'gj_np27': 30151000000,  # 同上; as-of 2026-10-31
+    'gj_np28': 38149000000,  # 国金原归母预测，基准保留；税率提高仅压力测试; as-of 2026-10-31
+    'annualization': 1.3333333333333333,  # 9M报告归母简单年化，存在季节性及非经常项目，不是全年指引; as-of 2026-11-07
+    'normal_scale_years': 2,  # 2026报告利润参照换算至2028名义口径，不代表保留2028物理交付规模; as-of 2026-11-07
+    'normal_profit_scale': 1,  # 周期后报告利润参照采用比例，另列±20%敏感性; as-of 2026-11-07
+    'platform_scale': 1,  # 平台经营利润保留原预测，0.9为独立盈利敏感性; as-of 2026-11-07
+    'cycle_plateau_end': 2035,  # 行业需求至2032–33年加2–3年交付滞后的研究推断，非公司承诺; as-of 2026-11-07
+    'cycle_fade_end': 2039,  # 2035起四年线性退出额外周期盈利，研究假设; as-of 2026-11-07
+    'low_pe': 10.7001061387363,  # 原已采用低档固定估值政策，不是历史市场实付倍数; as-of 2026-11-05
+    'sw_np26': 21814000000,  # 申万财报后归母预测，东方财富明细，未取得完整原文; as-of 2026-11-01
+    'sw_np27': 27460000000,  # 同一份申万预测明细; as-of 2026-11-01
+    'sw_np28': 30010000000,  # 同一份申万预测明细; as-of 2026-11-01
+}
+
+HOUSES = ("dw", "sw", "gj")
 REQUIRED = [
-    "shares", "bps", "equity", "minority_h1", "parent_ratio", "np_h1",
-    "cons_np26_m", "cons_np26_h", "cons_np27_m", "cons_np27_h", "cons_np28_l", "cons_np28_m", "cons_np28_h",
-    "np_l", "np_l_kf", "equity_25", "minority_25", "net_cash_ext_25", "rev_25",
-    "np_fy22", "np_fy25", "np_ttm",
-    "r_perp", "g2_m", "g2_h", "y1", "y2", "ronic_ss_m", "ronic_ss_h", "tau",
-    "net_cash_ext_h1", "div_declared", "div_interim", "c_ex", "cash_yield", "tax_eff",
-    "payout_obs", "payout_op", "k_l", "k_m", "k_h",
-    "net_debt", "ebitda", "ebit", "interest", "pb_own_min", "contract_liab_h1",
-]
+    "shares", "equity", "minority", "net_cash_ext", "div_payable", "rev_25",
+    "np_9m", "np_9m_core", "cash_yield", "cash_tax", "tau", "r_perp", "g2", "ronic_ss",
+    "ronic_ss_h", "y1", "y2", "cycle_plateau_end", "cycle_fade_end",
+    "annualization", "normal_scale_years", "normal_profit_scale", "platform_scale",
+    "cash_release", "extra_occupation", "payout_obs", "low_pe",
+    "np_25", "equity_25", "minority_25", "net_cash_ext_25", "cash_yield_25", "cash_tax_25",
+] + [f"{h}_np{year}" for h in HOUSES for year in (26, 27, 28)]
 
 
-def path_pe(g: float, roe: float, r: float, y1: int, y2: int, r_ss: float) -> float:
-    """Three-stage retention Gordon (valuation-rules ② 稳态回报三段) at the start of NUM_YEAR per unit
-    of NUM_YEAR earnings: RONIC = roe through y1, linear to min(roe, r_ss) by y2, perpetual after."""
-    if r - g <= 0:
-        raise ValueError("r <= g")
-    ss = min(roe, r_ss)
-    pv, e, t = 0.0, 1.0, 1
-    while True:
-        cal = NUM_YEAR + t - 1
-        if cal > y1 and cal >= y2:
-            return pv + e * payout(g, ss) / ((r - g) * (1 + r) ** (t - 1))
-        ro = roe if cal <= y1 else roe + (ss - roe) * (cal - y1) / (y2 - y1)
-        pv += e * payout(g, ro) / (1 + r) ** t
-        e *= 1 + g
-        t += 1
+def cash_basis(p: dict) -> tuple[float, float]:
+    parent = p["equity"] / (p["equity"] + p["minority"])
+    cash = (p["net_cash_ext"] - p["div_payable"] - p["rev_25"] / 6) * parent
+    interest = cash * p["cash_yield"] * (1 - p["cash_tax"])
+    return cash / p["shares"], interest / p["shares"]
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def distribution(p: dict, ronic: float) -> float:
+    available = 1 - p["g2"] / ronic
+    return available - p["extra_occupation"] * max(available - p["payout_obs"], 0)
+
+
+def supercycle_value(p: dict, house: str, release: float, steady: float) -> dict:
+    r, g, sh = p["r_perp"], p["g2"], p["shares"]
+    cps, interest = cash_basis(p)
+    peak = (p[f"{house}_np28"] / sh - release * interest) * p["platform_scale"]
+    normal = (p["np_9m"] * p["annualization"] / sh - interest)
+    normal *= (1 + g) ** p["normal_scale_years"] * p["normal_profit_scale"]
+    # Existing cash kept in operations retains its income and capital.
+    normal += (1 - release) * interest
+    unbooked = (p[f"{house}_np26"] - p["np_9m"] + p[f"{house}_np27"]) / sh
+    unbooked -= p["tau"] * release * interest
+    book = p["equity"] / sh - release * cps
+    occupied = p["extra_occupation"]
+    forward = (peak - (1 - occupied) * g * unbooked)
+    forward /= book + occupied * (1 - p["payout_obs"]) * unbooked
+    steady = min(forward, steady)
+    window = unbooked * distribution(p, forward) / (1 + r) ** (p["tau"] / 2)
+
+    start, ron_end = int(p["y1"]), int(p["y2"])
+    plateau, finish = int(p["cycle_plateau_end"]), int(p["cycle_fade_end"])
+    plateau_pv = fade_pv = 0.0
+    for year in range(start, finish):
+        fade = max(0.0, min(1.0, (year - plateau) / (finish - plateau)))
+        earnings = (peak + (normal - peak) * fade) * (1 + g) ** (year - start)
+        ronic = forward + (steady - forward) * min(1.0, (year - start) / (ron_end - start))
+        pv = earnings * distribution(p, ronic) / (1 + r) ** (p["tau"] + year - start + 1)
+        if year <= plateau:
+            plateau_pv += pv
+        else:
+            fade_pv += pv
+    terminal = normal * (1 + g) ** (finish - start) * distribution(p, steady) / (r - g)
+    terminal /= (1 + r) ** (p["tau"] + finish - start)
+    return dict(value=window + plateau_pv + fade_pv + terminal + release * cps,
+                window=window, plateau=plateau_pv, fade=fade_pv, terminal=terminal,
+                peak=peak, normal=normal, forward=forward, cash=release * cps)
+
+
+def evaluate(p: dict, release: float | None = None) -> dict:
+    release = p["cash_release"] if release is None else release
+    rows = [supercycle_value(p, h, release, p["ronic_ss"]) for h in HOUSES]
+    mean = {k: sum(row[k] for row in rows) / len(rows) for k in rows[0]}
+    upper_house = max(HOUSES, key=lambda h: p[f"{h}_np28"])
+    upper = supercycle_value(p, upper_house, release, p["ronic_ss_h"])
+    cps, interest = cash_basis(p)
+    historic_cash = (p["net_cash_ext_25"] - p["rev_25"] / 6)
+    historic_cash *= p["equity_25"] / (p["equity_25"] + p["minority_25"])
+    historic_income = historic_cash * p["cash_yield_25"] * (1 - p["cash_tax_25"])
+    low_eps = (p["np_25"] - historic_income) / p["shares"] + (1 - release) * interest
+    # Preserve the adopted downside world independently of M's cycle duration.
+    low = low_eps * p["low_pe"] + release * cps
+    mid, high = mean["value"], upper["value"]
+    a, b = cut_points(low, mid, high)
+    effective = (mid - release * cps) / mean["peak"]
+    return dict(L=low, M=mid, H=high, A=a, B=b, mean=mean, high=upper,
+                rows=rows, upper_house=upper_house, effective=effective,
+                low_eps=low_eps, release=release, cash=cps, interest=interest)
+
+
+def calculate_historical(p: dict) -> dict:
+    errors = check_missing(p, list(INPUTS))
     if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
-    r, sh = inp["r_perp"], inp["shares"]
-
-    # --- basket, g ----------------------------------------------------------------
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    if set(baskets) != {"r_perp"}:
-        errors.append(f"only r_perp may carry a basket tag, got {sorted(baskets)}")
-    for k in ("g2_m", "g2_h"):
-        errors += check_g_cap(inp[k], r, k)
-    tau = inp["tau"]
-    if abs(tau - ((NUM_YEAR - TODAY_FY) * 12 - 6) / 12) > 1e-9:
-        errors.append(f"tau {tau:g} != 2026-06-30 → {NUM_YEAR}-01-01 in years")
-    y1, y2 = int(inp["y1"]), int(inp["y2"])
-    if not (y1 == NUM_YEAR and y2 == y1 + 2):
-        errors.append("Y1 must be the visible-year end FY2028 and Y2 = Y1 + 2 (low entry barrier)")
-    # low barrier: M stays on the floor, H at most one floor row up (retention「上调看进入门槛」)
-    if not (abs(inp["ronic_ss_m"] - 0.11) < 1e-9 and abs(inp["ronic_ss_h"] - 0.15) < 1e-9):
-        errors.append("steady returns must be M 11% (commoditised heavy assets) / H 15% (one row up)")
-    errors += ladder("FY2028 consensus", inp["cons_np28_l"], inp["cons_np28_m"], inp["cons_np28_h"])
-    if not (inp["k_h"] >= inp["k_m"] >= inp["k_l"]):
-        errors.append("cyclical k must satisfy k_H >= k_M >= k_L")
-    # same-world gate: numerator year is the furthest consensus year → own >= 3y NP CAGR
-    cagr = (inp["np_fy25"] / inp["np_fy22"]) ** (1 / 3) - 1
-    if cagr > 0 and min(inp["g2_m"], inp["g2_h"]) <= 0:
-        errors.append("同世界门: own FY2022→25 NP rises but a g2 <= 0")
-
-    # --- excess cash (经营价值与超额现金 ①②) ------------------------------------------
-    anchor = inp["rev_25"] * 2 / 12
-    c_tot = inp["net_cash_ext_h1"] - inp["div_declared"] - inp["div_interim"] - anchor
-    if abs(c_tot - inp["c_ex"]) > 1e6:
-        errors.append(f"c_ex {inp['c_ex']:.4e} != net cash − dividends − anchor {c_tot:.4e}")
-    pr = inp["equity"] / (inp["equity"] + inp["minority_h1"])
-    if abs(pr - inp["parent_ratio"]) > 5e-5:
-        errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
-    c_ex = c_tot * pr
-    if c_ex < 0.15 * inp["equity"]:
-        errors.append("c_ex below 15% of equity: the excess-cash line should not exist")
-    c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])
-    cps = c_ex / sh
-    op = {t: tuple((inp[f"cons_np{y}_{t}"] - c_inc) / sh for y in (26, 27, 28)) for t in ("m", "h")}
-    eps_h1 = (inp["np_h1"] - c_inc / 2) / sh
-    unb = {t: (op[t][0] - eps_h1) + op[t][1] for t in ("m", "h")}
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(p[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    require_whole_years(p, ('y1', 'y2', 'cycle_plateau_end', 'cycle_fade_end', 'normal_scale_years'))
+    errors += check_r(p['r_perp'], 'r_perp', 4)
+    errors += check_g_cap(p['g2'], p['r_perp'], 'g2')
+    dates = (p['y1'], p['y2'], p['cycle_plateau_end'], p['cycle_fade_end'])
+    if not all(float(x).is_integer() for x in dates):
+        errors.append('calendar years must be integers')
+    if not (2028 == p['y1'] < p['y2'] <= p['cycle_plateau_end'] < p['cycle_fade_end']):
+        errors.append('investment-return and profit-cycle dates inconsistent')
+    if not (0 <= p['cash_release'] <= 1 and 0 <= p['extra_occupation'] <= 1):
+        errors.append('funding proportions outside [0,1]')
+    if not (p['g2'] < p['ronic_ss'] <= p['ronic_ss_h'] <= .15):
+        errors.append('steady investment returns invalid')
+    if not (p['tau'] == 1.25 and abs(p['annualization'] - 4 / 3) < 1e-12 and p['normal_scale_years'] == 2):
+        errors.append('report date, annualization and nominal base must agree')
+    if min(p['normal_profit_scale'], p['platform_scale'], p['low_pe'], p['shares']) <= 0:
+        errors.append('profit scales, shares and downside multiple must be positive')
     if errors:
-        return report(errors, "FAIL (basket / g / cash)")
+        raise ValueError('; '.join(errors))
+    v = evaluate(p)
+    errors += ladder('anchors', v['L'], v['M'], v['H'])
+    flat = (v['low_eps'] * v['effective'] + v['release'] * v['cash'], v['M'],
+            v['high']['peak'] * v['effective'] + v['release'] * v['cash'])
+    errors += ladder('flat-multiple', *flat)
+    for tier in ('mean', 'high'):
+        row = v[tier]
+        if row['normal'] > row['peak']:
+            errors.append(f'{tier} profit path rises instead of normalizing')
+        if abs(row['value'] - sum(row[k] for k in ('window', 'plateau', 'fade', 'terminal', 'cash'))) > 1e-10:
+            errors.append(f'{tier} decomposition does not close')
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    # --- M / H ---------------------------------------------------------------------
-    disc, disc_w = (1 + r) ** tau, (1 + r) ** (tau / 2)
-    obps = inp["bps"] - inp["div_interim"] / sh - cps   # operating book: equity − interim dividend − excess cash
-
-    def tier(t: str, g: float, rs: float, y2_: int = y2, e28: float | None = None) -> dict:
-        e28 = op[t][2] if e28 is None else e28
-        roe = e28 / obps
-        for _ in range(300):
-            bps28 = obps + g / roe * unb[t]
-            roe = e28 / bps28
-        pe = path_pe(g, roe, r, y1, y2_, rs)
-        w = max(unb[t] * (1 - g / roe), 0.0) / disc_w
-        return dict(eps=e28, roe=roe, bps=bps28, pe=pe, w=w, pe_1=perpetual_pe(g, roe, r),
-                    v=e28 * pe / disc, anchor=e28 * pe * (1 - inp[f"k_{t}"]) / disc + w + cps)
-
-    rows = {t: tier(t, inp[f"g2_{t}"], inp[f"ronic_ss_{t}"]) for t in ("m", "h")}
-    for t in ("m", "h"):
-        if rows[t]["roe"] - r < 0.03:
-            errors.append(f"{t.upper()}: RONIC {rows[t]['roe']:.1%} not in the monotone zone")
-        errors += check_branch(inp[f"g2_{t}"], rows[t]["roe"], r, inp["payout_op"], f"g2_{t}")
-        # ③ 约束 2: g <= (1 − d) x RONIC
-        if inp[f"g2_{t}"] > (1 - inp["payout_obs"]) * min(rows[t]["roe"], inp[f"ronic_ss_{t}"]):
-            errors.append(f"g2_{t} above (1 − d) x RONIC")
-
-    # --- L: FY2025 measured (digestion year), operating basis, flat M multiple -------------
-    cex25 = (inp["net_cash_ext_25"] - inp["rev_25"] / 6) * inp["equity_25"] / (inp["equity_25"] + inp["minority_25"])
-    inc25 = cex25 * inp["cash_yield"] * (1 - inp["tax_eff"])
-    e_l = (inp["np_l"] - inc25) / sh
-    pe_l = rows["m"]["pe"]
-    roe_l = (inp["np_l"] - inc25) / (inp["equity_25"] - cex25)
-    L = e_l * pe_l * (1 - inp["k_l"]) + cps
-    M, H = rows["m"]["anchor"], rows["h"]["anchor"]
-    if not (L < M < H):
-        return report(errors + [f"L<M<H violated: {L:.3f} {M:.3f} {H:.3f}"])
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
-
-    # shape (裁决顺序 ⑤): L flat on the M multiple; H's multiple sits above M only because its steady
-    # return is one floor row up (low barrier, retention「三档各取各的稳态」) — disclosed, not a policy choice
-    if abs(pe_l - rows["m"]["pe"]) > 1e-9:
-        errors.append("L must carry the M-tier multiple (cyclical flat)")
-    flat = [e_l * rows["m"]["pe"] + cps] + [rows[t]["eps"] * rows["m"]["pe"] / disc + rows[t]["w"] + cps for t in ("m", "h")]
-    errors += ladder("flat-multiple", *flat)
-    # ③ no same-earnings months → 纠正对账门 coordinates (out-of-band.md)
-    coord = {
-        "E_M/r + 现金": rows["m"]["eps"] / r + cps,
-        "股息尺 D_M/(r−g)": inp["payout_obs"] * inp["cons_np28_m"] / sh / (r - inp["g2_m"]),
-        "PB 低点 × BPS": inp["pb_own_min"] * inp["bps"],
+    cash_income = v['interest'] * p['shares']
+    core_ratio = ((p['np_9m_core'] * p['annualization'] - cash_income) /
+                  (p['np_9m'] * p['annualization'] - cash_income))
+    changes = {
+        'earlier_cycle': {'cycle_plateau_end': 2033, 'cycle_fade_end': 2037},
+        'later_cycle': {'cycle_plateau_end': 2037, 'cycle_fade_end': 2041},
+        'normal_profit_minus_20pct': {'normal_profit_scale': .8},
+        'normal_profit_plus_20pct': {'normal_profit_scale': 1.2},
+        'platform_profit_minus_10pct': {'platform_scale': .9},
+        'core_earnings_reference': {'normal_profit_scale': p['normal_profit_scale'] * core_ratio},
+        'growth_minus_1pp': {'g2': p['g2'] - .01},
+        'growth_plus_1pp': {'g2': p['g2'] + .01},
+        'extra_occupation_50pct': {'extra_occupation': .5},
+        'extra_occupation_100pct': {'extra_occupation': 1},
     }
-    if not any(abs(M / v - 1) <= COORD_TOL for v in coord.values()):
-        errors.append("纠正对账门: M outside every independent coordinate by > 20% → BLOCKED")
-    lev1, lev2 = inp["net_debt"] / inp["ebitda"], inp["interest"] / inp["ebit"]
-    if lev1 > LEV_DEBT_EBITDA or lev2 > LEV_INT_EBIT:
-        errors.append("leverage gate triggered — ROE decomposition / ROIC branch required")
-
-    # --- report ------------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(f"basket: r_perp 篮 {baskets['r_perp']} r={r:g}; FY{NUM_YEAR} consensus ÷1.1^{tau:g} = ÷{disc:.3f} + window ÷1.1^{tau / 2:g}; "
-          f"g2 {inp['g2_m']:.0%}（具名宏观默认）; 同世界门 own FY22→25 NP CAGR {cagr:+.0%}")
-    print(f"超额现金: 扩展口径净现金 {inp['net_cash_ext_h1'] / YI:.2f}亿 − 已宣派 {inp['div_declared'] / YI:.2f} − 中期 {inp['div_interim'] / YI:.2f} "
-          f"− 锚 {anchor / YI:.2f}（2 个月收入）− 缺口 0 = {c_tot / YI:.2f}亿 × 归母 {pr:.4f} = C_ex {c_ex / YI:.2f}亿"
-          f"（每股 {cps:.3f}，占归母权益 {c_ex / inp['equity']:.1%}，λ 1）；税后收益 {c_inc / YI:.2f}亿")
-    for t in ("m", "h"):
-        x = rows[t]
-        print(f"{t.upper()}: 经营EPS28 {x['eps']:.4f} 经营BPS28 {x['bps']:.3f} RONIC {x['roe']:.2%} → {inp[f'ronic_ss_{t}']:.0%} by {y2} "
-              f"PE {x['pe']:.2f}（单段 {x['pe_1']:.2f}）| 经营价值 {x['v']:.2f} + 窗口 {x['w']:.2f} + 现金 {cps:.2f} -> {x['anchor']:.2f}")
-    print(f"L: FY2025 归母 {inp['np_l'] / YI:.2f}亿 − 当年超额现金税后收益 {inc25 / YI:.2f}亿 = 经营 EPS {e_l:.4f} x PE_M {pe_l:.2f} "
-          f"+ 现金 {cps:.2f} -> {L:.2f}（当年经营回报 {roe_l:.1%}，自身 Gordon {perpetual_pe(inp['g2_m'], roe_l, r):.2f}× 只披露）")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.0%} V_opt/M=0% | "
-          f"分子比 L/M {e_l / rows['m']['eps']:.2f} H/M {rows['h']['eps'] / rows['m']['eps']:.3f} | "
-          f"倍数 L/M/H {pe_l:.2f}/{rows['m']['pe']:.2f}/{rows['h']['pe']:.2f}")
-    print(f"flat-multiple (M-tier PE): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print("对账门坐标: " + " · ".join(f"{k} {v:.2f}（M/坐标 {M / v - 1:+.0%}）" for k, v in coord.items()))
-    print(f"中性带 [{A:.2f}, {B:.2f}) 对 TTM EPS {inp['np_ttm'] / sh:.3f}: {A / (inp['np_ttm'] / sh):.1f}–{B / (inp['np_ttm'] / sh):.1f}×; "
-          f"对 FY2027E {inp['cons_np27_m'] / sh:.3f}: {A / (inp['cons_np27_m'] / sh):.1f}–{B / (inp['cons_np27_m'] / sh):.1f}×")
-
-    def band(dg: float) -> str:
-        rm = tier("m", inp["g2_m"] + dg, inp["ronic_ss_m"])
-        rh = tier("h", inp["g2_h"] + dg, inp["ronic_ss_h"])
-        ll = e_l * rm["pe"] + cps
-        return f"{ll:.2f}/{rm['anchor']:.2f}/{rh['anchor']:.2f}"
-    print(f"敏感性 g2 −1pp {band(-0.01)} | +1pp {band(0.01)}")
-    for lab, sm, shh, yy in (("稳态 M 15% / H 18%", 0.15, 0.18, y2), ("门槛「中」Y2 2032", inp["ronic_ss_m"], inp["ronic_ss_h"], y1 + 4)):
-        rm, rh = tier("m", inp["g2_m"], sm, yy), tier("h", inp["g2_h"], shh, yy)
-        print(f"敏感性 {lab}: {e_l * rm['pe'] + cps:.2f}/{rm['anchor']:.2f}/{rh['anchor']:.2f}")
-    print(f"敏感性 M 分子换 FY2028 下沿 {inp['cons_np28_l'] / YI:.2f}亿 -> M "
-          f"{(inp['cons_np28_l'] - c_inc) / sh * rows['m']['pe'] / disc + rows['m']['w'] + cps:.2f}")
-    print(f"敏感性 L 换扣非 {inp['np_l_kf'] / YI:.2f}亿 -> L {(inp['np_l_kf'] - inc25) / sh * pe_l + cps:.2f}")
-    print(f"压力坐标 只剩超额现金（回到 2016–23 年经营口径亏损）= {cps:.2f}; PB {inp['pb_own_min']} x BPS = {coord['PB 低点 × BPS']:.2f}")
-    mod, gap = payout_gap(inp["g2_m"], rows["m"]["roe"], inp["payout_op"])
-    excess = (1 - inp["payout_obs"]) - inp["g2_m"] / rows["m"]["roe"]
-    print(f"payout: model {mod:.1%} vs 经营口径 {inp['payout_op']:.1%} (gap {gap:+.1%}); 实付 {inp['payout_obs']:.1%}; "
-          f"多留部分 {excess:.1%} x 窗口经营 EPS {unb['m']:.3f} = {excess * unb['m']:.2f}/sh（落在超额现金，λ 1，PV 不进锚点）")
-    print(f"杠杆门: 净债/EBITDA {lev1:.2f}, 利息/EBIT {lev2:.1%} -> not triggered")
-    print(f"证伪线: 合同负债 {inp['contract_liab_h1'] / YI:.0f}亿 降 30% 至 {0.7 * inp['contract_liab_h1'] / YI:.0f}亿")
-    print("r_f: CNY segment of _AXIS.rates [待建] — no readings")
-    return report(errors)
+    band = lambda result: {tier: result[tier] for tier in 'LMH'}
+    sensitivity = {name: band(evaluate(p | delta)) for name, delta in changes.items()}
+    sensitivity['cash_separate'] = {str(q): band(evaluate(p, q)) for q in (0, .25, .5, .75, 1)}
+    sensitivity['flat_multiple'] = dict(zip('LMH', flat))
+    changed = p != INPUTS
+    # L 消化年固定倍数及现金；M/H 有限周期现金流。
+    return {'ticker': '600150.SH', 'currency': 'CNY',
+            'valuation_as_of': None if changed else '2026-09-30',
+            'framework_as_of': None if changed else '2026-11-07',
+            'anchors': band(v), 'cut_points': {'A': v['A'], 'B': v['B']},
+            'candidate': None, 'option': None, 'segments': {'company': {'values': band(v)}},
+            'key_parameters': {'method': {'L': 'downturn_fixed_multiple_plus_cash', 'M': 'finite_cycle_cash_flow', 'H': 'finite_cycle_cash_flow'},
+                               'discount_rate': {'L': None, 'M': p['r_perp'], 'H': p['r_perp']},
+                               'growth_rate': {'L': None, 'M': p['g2'], 'H': p['g2']},
+                               'forward_return': {'L': None, 'M': v['mean']['forward'], 'H': v['high']['forward']},
+                               'steady_return': {'L': None, 'M': sum(min(row['forward'], p['ronic_ss']) for row in v['rows']) / len(v['rows']),
+                                                 'H': min(v['high']['forward'], p['ronic_ss_h'])},
+                               'low_multiple': p['low_pe'], 'effective_multiple_m': v['effective']},
+            'components': {'M': v['mean'], 'H': v['high'], 'forecast_houses': dict(zip(HOUSES, v['rows'])),
+                           'upper_house': v['upper_house'], 'low_eps': v['low_eps'],
+                           'cash_per_share': v['cash'], 'cash_interest_per_share': v['interest']},
+            'sensitivity': sensitivity}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    # The historical downside multiple lacks matched post-merger observations;
+    # carry the chosen value and expose that gap rather than inventing evidence.
+    result = calculate_historical(dict(INPUTS))
+    result['valuation_as_of'] = result['framework_as_of'] = None
+    result['historical_financial_statement_as_of'] = '2026-09-30'
+    result['historical_research_as_of'] = '2026-11-07'
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    result['review_flags'] = ['historical_low_multiple_evidence_unverified',
+                              'historical_cash_release_and_funding_unverified',
+                              'historical_cycle_and_tax_assumptions_require_review']
+    local = {'inputs': INPUTS, 'forecast_houses': HOUSES}
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(local, BASELINE_LOCAL)
+    return result

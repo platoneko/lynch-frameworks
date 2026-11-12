@@ -1,211 +1,247 @@
-#!/usr/bin/env python3
-"""ORCL.US (Oracle) valuation eval — recompute anchors from frameworks/ORCL.US.md.
+"""ORCL historical SOTP migration draft; not a fresh financial analysis.
 
-frameworks/ORCL.US.md is the source of truth; this script re-derives
-L/M/H / A/B from the §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」): which zone a quote falls in is
-derived live by the daily digest and the app, so nothing here reads a price.
-
-formula_id: orcl_sotp_sw_gordon_oci_dbucket_split_v2
-
-Main ruler: two-leg SOTP; each leg discounts at its own basket r
-(valuation-rules.md「§r 篮子」, named in the Inputs source cells as `篮 N`).
-
-    Software annuity leg   FY28E NOPAT bridged from the FY26 segment margin
-                           (10-K Note 13) net of an estimated OCI contribution,
-                           rolled two years on named per-line growth; ROE is
-                           derived from residual invested capital; g_sw = 2.5%
-                           at basket 4 (r 10%) -> 12.68x, identical in every
-                           tier.
-    OCI leg                留存去向审计 D-bucket project value, split into two
-                           sub-legs by RPO share: non-OpenAI orders (basket 4,
-                           r 10%) and OpenAI orders (basket 7, r 15%).  Each
-                           sub-leg = K_spent x ROE_proj / r  +  a three-year
-                           window (FY29-31) of K_remain x (ROE_proj / r - 1)
-                           discounted at its own r.  The tier ladder lives in
-                           ROE_proj: L / M are the FY28E consensus low / mean
-                           residual NOPAT over K_spent (book, no improvement),
-                           H is the AWS-2024 state; in L the OpenAI sub-leg
-                           has no window (never built).  The FY28E consensus
-                           residual therefore feeds ROE_proj and is NOT
-                           multiplied by a multiple (double-count guard, A6 /
-                           A9); there is no V_opt.
-
-Guardrail (③): the band is compared to the same-basis forward PE band
-(historical month-end price / next-FY non-GAAP consensus).  M sits below the measured floor, the
-floor month passed the 1b validity check, and stepping the OpenAI sub-leg
-down 7 -> 6 -> 5 -> 4 still leaves M below the floor (A21).  The user saw
-that and landed the framework anyway, so it is not BLOCKED (valuation-rules
-「BLOCKED 的语义」: a landed file never is): the deck is the band like any
-other ticker's.  This script recomputes the band, the 降篮 path and the
-band-edge δ (表2′), and prints the ③ verdict as a diagnostic.
-
-The street's EV/EBIT read (JPM 13x / HSBC 14x on OCI EBIT) is recomputed as a
-cross-check only.  The mandatory convertible preferred is taken at its
-liquidation preference (A11).
-
-Operating value and excess cash (valuation-rules「经营价值与超额现金」, framework
-correction 2026-10-16):
-  * time alignment (③): both legs are valued at the FY2028 opening (2027-06-01);
-    discounted tau = 0.75 years to the 2026-08-31 balance sheet -- software and the
-    non-OpenAI OCI sub-leg at their basket r, the OpenAI sub-leg at its journey
-    basket r_oci_open.  The closure is today's net debt (no roll to FY28).
-  * growth-period funding gap (①): rest-FY27 capex beyond rest-FY27 OCF, times the
-    parent share, deducted as a debt-like item -- the capacity starts at FY28 and
-    its output is in the numerator year.  With a gap the window profit is 0.
-  * stable-return path (②): the software leg retains at its forward ROE through
-    y1, fading linearly to ronic_ss_sw by y2 (own cycle FY2013-22 on invested
-    capital, 20.7%; 2026-10-19 steady return taken in order).  The OCI D-bucket
-    leg has no perpetual g, so the path does not touch it.
-
-Run:  python3 frameworks/eval/ORCL.US.py
+Original research attributes OCI residual profit and capital by estimation and
+records a user decision to retain the 2026-09-27 out-of-band result. That
+historical decision is not automatic approval of later changed inputs.
 """
-
 from __future__ import annotations
-
-import re
-import sys
-from pathlib import Path
+import math
 from typing import Callable
+from lib.gordon import basket_r, check_basket_pair, check_g_cap, check_k_declared, check_r, payout, perpetual_pe
+from lib.inputs import ladder, require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.historical_precision import historical_oci_reference, preserve_reference_residual
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.axes import (  # noqa: E402
-    capex_constituent_share,
-    check_capex_constituent,
-    check_lab_mount,
-)
-from eval.lib.gordon import (  # noqa: E402
-    basket_r,
-    check_basket_pair,
-    check_g_cap,
-    check_k_declared,
-    check_r,
-    payout,
-    perpetual_pe,
-)
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    parse_baskets,
-    parse_inputs,
-    report,
-)
-from eval.lib.zones import zone_of  # noqa: E402
-
-FRAMEWORK = REPO_ROOT / "frameworks" / "ORCL.US.md"
-FORMULA_ID = "orcl_sotp_sw_gordon_oci_dbucket_split_v2"
-TOL = 0.05
-BN = 1e3  # inputs are in $M; report in $B
-# AGENTS.md「永续增长口径」: inside 2pp of the pole the multiple/g map is
-# ill-conditioned, so a g that close to r may not carry an anchor.
+DEPENDENCIES = {"libraries": ("gordon", "inputs", "historical_precision", "partial_basis"),
+                "axes": {"capex": "ai_capex", "funding": "frontier_lab_funding"}}
+BN = 1e3
 MIN_R_MINUS_G = 0.02
-# Sell-side ceiling on OCI gross margin (JPM: BYOH contracts ~48%).  The
-# residual numerator's implied EBIT margin must sit below it or the software
-# bridge has taken too little.
 OCI_EBIT_MARGIN_CAP = 0.48
-# Ex-99.1 table 10: FY26 revenue by offering must add to consolidated revenue.
 FY26_TOTAL_REVENUE = 67357.0
-# A18 / A19: AWS FY2024 segment asset turnover, the H-tier K_remain denominator.
 AWS_TURNOVER = 0.55
+# Frozen AWS FY2024 reference used solely in the 2026-10-19 precision bridge;
+# this is deliberately distinct from the editable current turnover above.
+HISTORICAL_AWS_TURNOVER = 0.55
 ROE_PROJ_TOL = 0.001
 K_REMAIN_REL_TOL = 0.01
-# ③ 降篮 path (A21): only the OpenAI sub-leg may step down, 篮 7 -> 6 -> 5 -> 4.
 OPENAI_DOWNGRADE_BASKETS = (7, 6, 5, 4)
-# 表2′ band-edge band as stated in Outputs: `带边带 78.17 / 114.72 / 195.81`.
-STATED_BAND_EDGE = re.compile(r"带边带\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)")
-NET_DEBT_SENSITIVITY = 20000.0
-G_SW_SENSITIVITY = (-0.01, +0.01)
-ROE_PROJ_SENSITIVITY = (-0.02, +0.02)
-WINDOW_SENSITIVITY = (2, 4)
-SHARE_SENSITIVITY = (0.40, 0.60)
-K_REMAIN_SENSITIVITY = (0.8, 1.2)
 ROE_PROJ_H_AWS_2025 = 0.150
-# A5: peer-implied g_sw (MSFT / IBM / CRM median), disclosed, not adopted.
 G_SW_PEER = 0.0544
-# Sell-side coordinates (A13: cross-check only).
-STREET_TPS = (("Stephens", 175.0), ("median", 240.0), ("Citi", 330.0))
-WEEK52_LOW = 114.50
+INPUTS = {
+    # **软件年金腿 r = 篮 4 龙头制造 10%**（license+support+SaaS 常规经营现金流，A22）；值 = `gordon.BASKET_R`，来源单元格篮号与值须一致（`check_r`）；OCI 两子腿另见 `r_oci_non` / `r_oci_open`; source/as-of: 2026-09-20
+    'r_perp': 0.1,
+    # **OCI · 非 OpenAI 订单子腿 r = 篮 4 龙头制造 10%**（已签约 RPO、对手方有自有资金 = 常规经营现金流、可见度高；A7 / A22）; source/as-of: 2026-09-20
+    'r_oci_non': 0.1,
+    # **OCI · OpenAI 订单子腿过渡篮 = 篮 7 单押 / 国别 / 故事 15%**（今天收入依赖对手方未落定融资；A7 / A22）；只用于把 FY29–31 窗口折回 FY28 起点；单篮对照 13 / 11 / 10% 见 Outputs; source/as-of: 2026-09-23
+    'r_oci_open': 0.15,
+    # **OCI · OpenAI 订单子腿终值篮 = 篮 4 龙头制造 10%**：OpenAI 做成了的世界里它是用自身收入付账的超大客户，与非 OpenAI 订单同类（`_AXIS.frontier-lab-funding` §3）；只用于资本化 \(K\times ROE_{proj}/r\) 与窗口每档的稳态价值；A22; source/as-of: 2026-09-23
+    'r_oci_open_t': 0.1,
+    # 正常化税率；Q1 FY27 non-GAAP ETR 16.9%（A3）; source/as-of: Ex-99.1 脚注 (5)
+    'tax_rate': 0.17,
+    # FY28E 稀释股数（百万）`估算`（A15）= 09-07 流通 3,023.7（10-Q 封面）+ 稀释效应 34（10-Q Q1 加权）+ RSU 净归属至 FY28 中点 ≈22；ATM 实际 141M 股已在 3,023.7 内; source/as-of: 10-Q 2026-08-31
+    'shares_fy28': 3080.0,
+    # FY26 Software 收入（license 4,737 + support 19,804）; source/as-of: Ex-99.1 表 10
+    'rev_software_fy26': 24541.0,
+    # FY26 Cloud applications 收入; source/as-of: Ex-99.1 表 10
+    'rev_saas_fy26': 15888.0,
+    # FY26 Hardware 收入; source/as-of: Ex-99.1 表 10
+    'rev_hw_fy26': 3084.0,
+    # FY26 Services 收入; source/as-of: Ex-99.1 表 10
+    'rev_svc_fy26': 5743.0,
+    # FY26 Cloud infrastructure 收入；Q1 FY27 7,388（+121%）; source/as-of: Ex-99.1 表 10
+    'oci_rev_fy26': 18101.0,
+    # Software 线 FY26→FY28 年增速 `估算`（Q1 −3%，license −15% / support −1%，A5）; source/as-of: 2026-09-12
+    'g_software': -0.02,
+    # SaaS 线年增速 `估算`（Q1 +10%）; source/as-of: 2026-09-12
+    'g_saas': 0.1,
+    # Hardware 线年增速 `估算`（Q1 +15%，FY26 +5%）; source/as-of: 2026-09-12
+    'g_hw': 0.03,
+    # Services 线年增速 `估算`（Q1 +5%）; source/as-of: 2026-09-12
+    'g_svc': 0.05,
+    # FY26 三分部 margin 合计（cloud&software 34,468 + hardware 2,017 + services 1,533）；**剔 SBC / 摊销 / R&D / G&A**; source/as-of: 10-K Note 13 表 70
+    'seg_margin_fy26': 38018.0,
+    # FY26 分部销售与市场费用合计（7,212 + 235），已在 `seg_margin_fy26` 内扣除；用于把 OCI 的 S&M 从软件腿剥出; source/as-of: 10-K Note 13 表 70
+    'sm_total_fy26': 7447.0,
+    # OCI 毛利率 `估算`（卖方 30–40%；Q1 成本线反推 ≈34%，A4）; source/as-of: JPM 100636 / Barclays 104792
+    'oci_gm_est': 0.35,
+    # 分部 S&M 中归 OCI 的比例 `估算`（A4）; source/as-of: 2026-09-12
+    'oci_sm_share': 0.1,
+    # FY26 分部以下经营成本 = R&D 10,272 + G&A 1,618 + 分部 SBC 1,618 + 分摊 395（不含摊销 1,671 与重组 1,838）; source/as-of: 10-K Note 13 表 71
+    'below_seg_fy26': 13903.0,
+    # 上述成本归软件腿的比例 `估算`（A4）；余 15% 归 OCI、已含在残差内; source/as-of: 2026-09-12
+    'sw_share_below': 0.85,
+    # 分部以下成本 FY26→FY28 年增速 `估算`; source/as-of: 2026-09-12
+    'g_below': 0.03,
+    # 软件腿永续增速（A5）；**无同业锚**（分线增速合成，未反解同业软件年金）；cap = min(6%, r − 4%) = 6%（篮 4）未收紧；\(r-g=7.5\%\) 远离极点; source/as-of: 2026-09-18
+    'g2_sw': 0.025,
+    # 股东权益 2026-08-31（含 ATM 19,909 与优先股 4,954）; source/as-of: 8-K 资产负债表
+    'equity_aug': 67196.0,
+    # 债务 2026-08-31 = 流动 7,625 + 非流动 117,712; source/as-of: 8-K 资产负债表
+    'debt_aug': 125337.0,
+    # 现金 36,369 + 有价证券 708; source/as-of: 8-K 资产负债表
+    'cash_aug': 37077.0,
+    # PP&E 净值 127,845 中归 OCI 的部分 `估算`（FY21 前公司 PP&E 仅 ~7B，A8）; source/as-of: 2026-09-12
+    'oci_ppe_now': 120000.0,
+    # FY28E non-GAAP EPS 共识**低端**（39 家）；L 档 ROE_proj 来源; source/as-of: yfinance 2026-09-11
+    'eps_fy28_low': 9.0,
+    # FY28E 共识**均值**；M 档 ROE_proj 来源、③ 同基分母; source/as-of: yfinance 2026-09-11
+    'eps_fy28_mid': 11.02,
+    # FY28E 共识**高端**；只作读数（H 档 ROE_proj 取 AWS 态，A18）; source/as-of: yfinance 2026-09-11
+    'eps_fy28_high': 13.51,
+    # FY28E 收入共识低端（38 家）；只用于反推各档 OCI 收入与隐含 margin（读数，不入锚点）; source/as-of: yfinance 2026-09-11
+    'rev_fy28_low': 107657.0,
+    # FY28E 收入共识均值；FY28 账面周转 = (rev − 软件线) ÷ `k_spent_gross`; source/as-of: yfinance 2026-09-11
+    'rev_fy28_mid': 131127.0,
+    # FY28E 收入共识高端; source/as-of: yfinance 2026-09-11
+    'rev_fy28_high': 139642.0,
+    # FY28E SBC `估算`（Q1 FY27 1,127/季 → 4.5B/年，微增）；从 non-GAAP 扣除（A3）; source/as-of: Ex-99.1 表 3
+    'sbc_fy28': 4800.0,
+    # FY28E 利息费用 `估算`（Q1 FY27 1,428/季 = 5.7B/年，债务续增）；加回成 NOPAT 后由闭合项统一扣净债; source/as-of: Ex-99.1 表 1
+    'int_fy28': 7000.0,
+    # OCI FY28 起点已花 gross 投入资本（= `oci_ppe_now` + `capex_rest_fy27` − `da_rest_fy27`，A8）；D 桶 \(K_{spent}\)，按 `rpo_share_openai` 拆两子腿 91,691 / 81,310；net-of-prepay 147,046 只作敏感性; source/as-of: 2026-09-20
+    'k_spent_gross': 173001.0,
+    # OpenAI 占 RPO 份额 `估算`（HSBC 99586 单家）；\(K_{spent}\)、\(K_{remain}\) 的子腿拆分权重（A19）; source/as-of: HSBC 2026-08-06
+    'rpo_share_openai': 0.47,
+    # H 档 ROE_proj = AWS-2024 态 0.55 × 0.37 × (1−0.17)（Amazon FY2025 10-K 分部数据）；敏感性 AWS-2025 态 0.150（A18）; source/as-of: AMZN 10-K FY2025
+    'roe_proj_h': 0.169,
+    # D 桶窗口年数 = FY29–31（管理层「约一半 RPO 36 个月内转化」）；窗口终点 FY2031（A19）; source/as-of: 电话会转述 ×4
+    'window_years': 3.0,
+    # FY27 余下三季毛 capex `估算` = 指引中值 92,500 − Q1 28,499; source/as-of: Ex-99.1 指引
+    'capex_rest_fy27': 64001.0,
+    # FY27 余下三季折旧 `估算`（Q1 3,156，逐季抬升）; source/as-of: 2026-09-12
+    'da_rest_fy27': 11000.0,
+    # 累计「含重大融资成分的客户预付款」`估算` = FY26Q4 4,592 + FY27Q1 11,363 + FY27 余下 10,000；作免息资本减 OCI IC，只作敏感性（A8）; source/as-of: Ex-99.1 表 9
+    'prepay_cum': 25955.0,
+    # FY27 余下三季 OCF `估算`（FY26 同期 23,838 + 净利/折旧抬升 + ~10,000 预付款；A11）; source/as-of: 2026-09-12
+    'ocf_rest_fy27': 45000.0,
+    # FY27 余下三季股息 = $0.50 × 3 × ~3,100M 股; source/as-of: Ex-99.1
+    'div_rest_fy27': 4700.0,
+    # 归母权益 2026-08-31（股东权益 67,196 − 少数股东权益 424）；归母比例 = 本项 ÷ `equity_aug` = 0.9937，乘在增长期资金缺口上（A24）; source/as-of: 8-K 资产负债表
+    'equity_parent_aug': 66772.0,
+    # 时点对齐：估值基准日 2026-08-31（Q1 资产负债表日）→ 分子年 FY2028 年初 2027-06-01 的年数；软件腿与 OCI 非 OpenAI 子腿按 10% 折、OpenAI 子腿按过渡篮 15% 折（A24）; source/as-of: 2026-08-31
+    'tau': 0.75,
+    # 回报路径第 1 年 = 分子年 FY2028（A25）; source/as-of: 2026-10-16
+    't0': 2028.0,
+    # 高回报期止点 = 可见年末 FY2028（默认路径，云厂商不继承 `_AXIS.ai-capex`；A25）; source/as-of: 2026-10-16
+    'y1': 2028.0,
+    # 稳态起点 = 可见年末 + 6（软件进入门槛「高」；A25）; source/as-of: 2026-10-16
+    'y2': 2034.0,
+    # 软件腿稳态回报 = 自身周期：FY2013–2022（上云投入前十年，非周期取 10 个完整财年）投入资本回报均值 20.7%（税后营业利润 ÷ 上年末权益 + 应付票据 + 租赁 − 现金与短期有价证券；SEC XBRL 10-K）；同业 / 兜底 30% 只作对照；≥ r、不超过前瞻 ROE（A25）; source/as-of: 2026-10-19
+    'ronic_ss_sw': 0.207,
+    # 6.50% Series D 强制可转优先股清偿额（50,000 股 × $100,000）；按负债扣、不计转股（A11）; source/as-of: 10-K Note 11
+    'pref_liq': 4954.0,
+    # FY27 收入指引下限「至少 $90B」；减软件线 FY27E 得 FY27E OCI ≈ 39,266（只作读数，A9）; source/as-of: Ex-99.1 指引
+    'rev_guide_fy27': 90000.0,
+    # RPO 2026-08-31；管理层「约一半 36 个月内转化」→ 110,667/年 = D 桶窗口的增量收入来源（`k_remain_yr_*`，A19）; source/as-of: Ex-99.1
+    'rpo': 664000.0,
+    # FY27Q1 capex；与 `dep_q1` 之比 = 折旧滞后倍数 9.0×（A10）; source/as-of: Ex-99.1 现金流量表
+    'capex_q1': 28499.0,
+    # FY27Q1 折旧; source/as-of: Ex-99.1 现金流量表
+    'dep_q1': 3156.0,
+    # FY27 capex 指引下沿 USD；`_AXIS.ai-capex.md` **构成方**校验用（A16）; source/as-of: Ex-99.1 / Cantor 转述
+    'capex_guide_low': 90000000000.0,
+    # FY27 capex 指引上沿 USD; source/as-of: Ex-99.1 / Cantor 转述
+    'capex_guide_high': 95000000000.0,
+    # trailing GAAP 稀释 EPS（含 FY26Q2 Ampere 一次性收益）；**只作披露分母，不入公式**（A12）; source/as-of: yfinance 2026-09-11
+    'eps_ttm_gaap': 6.38,
+    # **护栏（③）同基前瞻 PE 带实测底**（2022-09；月末价 ÷ 下一财年 non-GAAP EPS，2021-06→2026-09 n=64；FY23–26 事后实际、FY27–28 今日共识；A12）；`M / eps_fy28_mid ≥ pe_fwd_min` 不成立即 ③ 出带; source/as-of: `orcl_ev/fwdpe_ORCL_perfect_foresight.csv`
+    'pe_fwd_min': 10.41,
+    # 同一序列 p10; source/as-of: 同上
+    'pe_fwd_p10': 13.32,
+    # 同一序列中位; source/as-of: 同上
+    'pe_fwd_med': 17.92,
+    # 同一序列 p90; source/as-of: 同上
+    'pe_fwd_p90': 24.33,
+    # 同一序列实测顶（2025-09）；`H / eps_fy28_mid` 越出即红; source/as-of: 同上
+    'pe_fwd_max': 34.16,
+    # 自身 5 年 trailing GAAP PE 实测底（2021-09-20）；不同基、只披露（A12）; source/as-of: Longbridge 2026-09-07
+    'pe_own_min': 17.24,
+    # 同一序列实测中位；只披露; source/as-of: Longbridge 2026-09-07
+    'pe_own_p50': 31.45,
+    # 同一序列实测顶（2025-09-22）；只披露; source/as-of: Longbridge 2026-09-07
+    'pe_own_max': 74.95,
+    # **交叉校验专用**：JPM 13× EV / FY28E EBIT（105251）；不入底牌; source/as-of: Wisburg 105251
+    'xchk_ev_ebit_low': 13.0,
+    # **交叉校验专用**：HSBC Oracle 隐含 2028E EV/EBIT 14.0×（99586）；不入底牌; source/as-of: Wisburg 99586
+    'xchk_ev_ebit_high': 14.0,
+}
 
-REQUIRED = [
-    "r_perp",
-    "r_oci_non",
-    "r_oci_open",
-    "r_oci_open_t",
-    "k_lab",
-    "tax_rate",
-    "shares_fy28",
-    "rev_software_fy26",
-    "rev_saas_fy26",
-    "rev_hw_fy26",
-    "rev_svc_fy26",
-    "oci_rev_fy26",
-    "g_software",
-    "g_saas",
-    "g_hw",
-    "g_svc",
-    "seg_margin_fy26",
-    "sm_total_fy26",
-    "oci_gm_est",
-    "oci_sm_share",
-    "below_seg_fy26",
-    "sw_share_below",
-    "g_below",
-    "g2_sw",
-    "equity_aug",
-    "debt_aug",
-    "cash_aug",
-    "oci_ppe_now",
-    "eps_fy28_low",
-    "eps_fy28_mid",
-    "eps_fy28_high",
-    "rev_fy28_low",
-    "rev_fy28_mid",
-    "rev_fy28_high",
-    "sbc_fy28",
-    "int_fy28",
-    "k_spent_gross",
-    "rpo_share_openai",
-    "roe_proj_l",
-    "roe_proj_m",
-    "roe_proj_h",
-    "k_remain_yr_book",
-    "k_remain_yr_aws",
-    "window_years",
-    "capex_rest_fy27",
-    "da_rest_fy27",
-    "prepay_cum",
-    "ocf_rest_fy27",
-    "div_rest_fy27",
-    "pref_liq",
-    "rev_guide_fy27",
-    "rpo",
-    "capex_q1",
-    "dep_q1",
-    "capex_guide_low",
-    "capex_guide_high",
-    "eps_ttm_gaap",
-    "pe_fwd_min",
-    "pe_fwd_p10",
-    "pe_fwd_med",
-    "pe_fwd_p90",
-    "pe_fwd_max",
-    "pe_own_min",
-    "pe_own_p50",
-    "pe_own_max",
-    "xchk_ev_ebit_low",
-    "xchk_ev_ebit_high",
-    "tau",
-    "t0",
-    "y1",
-    "y2",
-    "ronic_ss_sw",
-    "equity_parent_aug",
-]
+# Frozen reference inputs are exclusively for preserving the original rounded
+# historical adopted values. They do not serve as current forecast inputs.
+HISTORICAL_REFERENCE = {
+    # Historical source: 正常化税率；Q1 FY27 non-GAAP ETR 16.9%（A3）; as-of: Ex-99.1 脚注 (5)
+    'tax_rate': 0.17,
+    # Historical source: FY28E 稀释股数（百万）`估算`（A15）= 09-07 流通 3,023.7（10-Q 封面）+ 稀释效应 34（10-Q Q1 加权）+ RSU 净归属至 FY28 中点 ≈22；ATM 实际 141M 股已在 3,023.7 内; as-of: 10-Q 2026-08-31
+    'shares_fy28': 3080.0,
+    # Historical source: FY26 Software 收入（license 4,737 + support 19,804）; as-of: Ex-99.1 表 10
+    'rev_software_fy26': 24541.0,
+    # Historical source: FY26 Cloud applications 收入; as-of: Ex-99.1 表 10
+    'rev_saas_fy26': 15888.0,
+    # Historical source: FY26 Hardware 收入; as-of: Ex-99.1 表 10
+    'rev_hw_fy26': 3084.0,
+    # Historical source: FY26 Services 收入; as-of: Ex-99.1 表 10
+    'rev_svc_fy26': 5743.0,
+    # Historical source: FY26 Cloud infrastructure 收入；Q1 FY27 7,388（+121%）; as-of: Ex-99.1 表 10
+    'oci_rev_fy26': 18101.0,
+    # Historical source: Software 线 FY26→FY28 年增速 `估算`（Q1 −3%，license −15% / support −1%，A5）; as-of: 2026-09-12
+    'g_software': -0.02,
+    # Historical source: SaaS 线年增速 `估算`（Q1 +10%）; as-of: 2026-09-12
+    'g_saas': 0.1,
+    # Historical source: Hardware 线年增速 `估算`（Q1 +15%，FY26 +5%）; as-of: 2026-09-12
+    'g_hw': 0.03,
+    # Historical source: Services 线年增速 `估算`（Q1 +5%）; as-of: 2026-09-12
+    'g_svc': 0.05,
+    # Historical source: FY26 三分部 margin 合计（cloud&software 34,468 + hardware 2,017 + services 1,533）；**剔 SBC / 摊销 / R&D / G&A**; as-of: 10-K Note 13 表 70
+    'seg_margin_fy26': 38018.0,
+    # Historical source: FY26 分部销售与市场费用合计（7,212 + 235），已在 `seg_margin_fy26` 内扣除；用于把 OCI 的 S&M 从软件腿剥出; as-of: 10-K Note 13 表 70
+    'sm_total_fy26': 7447.0,
+    # Historical source: OCI 毛利率 `估算`（卖方 30–40%；Q1 成本线反推 ≈34%，A4）; as-of: JPM 100636 / Barclays 104792
+    'oci_gm_est': 0.35,
+    # Historical source: 分部 S&M 中归 OCI 的比例 `估算`（A4）; as-of: 2026-09-12
+    'oci_sm_share': 0.1,
+    # Historical source: FY26 分部以下经营成本 = R&D 10,272 + G&A 1,618 + 分部 SBC 1,618 + 分摊 395（不含摊销 1,671 与重组 1,838）; as-of: 10-K Note 13 表 71
+    'below_seg_fy26': 13903.0,
+    # Historical source: 上述成本归软件腿的比例 `估算`（A4）；余 15% 归 OCI、已含在残差内; as-of: 2026-09-12
+    'sw_share_below': 0.85,
+    # Historical source: 分部以下成本 FY26→FY28 年增速 `估算`; as-of: 2026-09-12
+    'g_below': 0.03,
+    # Historical source: PP&E 净值 127,845 中归 OCI 的部分 `估算`（FY21 前公司 PP&E 仅 ~7B，A8）; as-of: 2026-09-12
+    'oci_ppe_now': 120000.0,
+    # Historical source: FY28E non-GAAP EPS 共识**低端**（39 家）；L 档 ROE_proj 来源; as-of: yfinance 2026-09-11
+    'eps_fy28_low': 9.0,
+    # Historical source: FY28E 共识**均值**；M 档 ROE_proj 来源、③ 同基分母; as-of: yfinance 2026-09-11
+    'eps_fy28_mid': 11.02,
+    # Historical source: FY28E 收入共识均值；FY28 账面周转 = (rev − 软件线) ÷ `k_spent_gross`; as-of: yfinance 2026-09-11
+    'rev_fy28_mid': 131127.0,
+    # Historical source: FY28E SBC `估算`（Q1 FY27 1,127/季 → 4.5B/年，微增）；从 non-GAAP 扣除（A3）; as-of: Ex-99.1 表 3
+    'sbc_fy28': 4800.0,
+    # Historical source: FY28E 利息费用 `估算`（Q1 FY27 1,428/季 = 5.7B/年，债务续增）；加回成 NOPAT 后由闭合项统一扣净债; as-of: Ex-99.1 表 1
+    'int_fy28': 7000.0,
+    # Historical source: FY27 余下三季毛 capex `估算` = 指引中值 92,500 − Q1 28,499; as-of: Ex-99.1 指引
+    'capex_rest_fy27': 64001.0,
+    # Historical source: FY27 余下三季折旧 `估算`（Q1 3,156，逐季抬升）; as-of: 2026-09-12
+    'da_rest_fy27': 11000.0,
+    # Historical source: RPO 2026-08-31；管理层「约一半 36 个月内转化」→ 110,667/年 = D 桶窗口的增量收入来源（`k_remain_yr_*`，A19）; as-of: Ex-99.1
+    'rpo': 664000.0,
+}
+HISTORICAL_ADOPTED = {
+    # Published historical adopted approximation; source: L 档 ROE_proj（gross 基）= `nopat_oci_L` 11,321 ÷ 173,001：共识低端、账面、无改善、OpenAI 半边未建（该子腿无窗口）（A18）; as-of: 2026-09-20
+    'roe_proj_l': 0.065,
+    # Published historical adopted approximation; source: M 档 ROE_proj = `nopat_oci_M` 17,543 ÷ 173,001：共识均值、账面、FY28 之后不改善（无共识来源）（A18）; as-of: 2026-09-20
+    'roe_proj_m': 0.101,
+    # Published historical adopted approximation; source: 窗口每年增量资本（L / M 档）= (rpo/2/3 − oci_rev_fy28_M) ÷ FY28 账面周转 0.455 = 31,937 ÷ 0.455；按份额拆 37,194 / 32,984（A19）; as-of: 2026-09-20
+    'k_remain_yr_book': 70178.0,
+    # Published historical adopted approximation; source: 窗口每年增量资本（H 档）= 31,937 ÷ AWS 周转 0.55；拆 30,776 / 27,291（A19）; as-of: 2026-09-20
+    'k_remain_yr_aws': 58067.0,
+}
 
+# FY2026 GAAP 10-K, $M: EBITDA = 22,444 EBIT + 9,294 D&A;
+# 97,647 net debt excludes lease; 124,295 includes lease; add 4,954
+# preferred for the widest measure. Interest expense 4,599 / EBIT 22,444.
+HISTORICAL_LEVERAGE = {"net_debt_ebitda_ex_lease": 3.1,
+                       "net_debt_ebitda_including_lease": 3.9,
+                       "net_debt_ebitda_lease_and_preferred": 4.1,
+                       "interest_ebit": 0.205, "equity_multiplier": 6.2}
 
 def path_pe(g: float, roe: float, r: float, t0: int, y1: int, y2: int, rs: float) -> float:
     """Gordon multiple on next-period earnings with the three-stage return path
@@ -257,67 +293,6 @@ def bisect(f: Callable[[float], float], lo: float, hi: float, iters: int = 100) 
             lo, flo = mid, fm
     return (lo + hi) / 2
 
-
-def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
-    """Ticker-specific guards on the inputs."""
-    errs: list[str] = []
-
-    # Each leg's r is a basket value and the basket named in its source cell
-    # must be the one that carries that value (AGENTS.md「篮子声明」).
-    for field in R_FIELDS:
-        if field not in baskets:
-            errs.append(f"{field}: source cell names no 篮 N (AGENTS.md「篮子声明」)")
-        errs += check_r(inp[field], field, baskets.get(field))
-    # The OpenAI sub-leg is a basket pair on the frontier-lab axis: journey
-    # basket for the window's discounting, terminal basket for capitalising,
-    # arrival risk in the shared k_lab (valuation-rules.md「篮子对」).
-    errs += check_basket_pair(inp["r_oci_open"], inp["r_oci_open_t"], "oci_open",
-                              baskets.get("r_oci_open"), baskets.get("r_oci_open_t"))
-    errs += check_k_declared(inp["r_oci_open"], inp["r_oci_open_t"], (inp["k_lab"],) * 3, "k_lab")
-    errs += [f"axis: {e}" for e in check_lab_mount(inp["k_lab"])]
-
-    # AGENTS.md「永续增长口径」: the software leg's perpetual g at or below the
-    # cap of ITS basket r.  The OCI leg has no perpetual g (D-bucket, A6).
-    r = inp["r_perp"]
-    errs += check_g_cap(inp["g2_sw"], r, "g2_sw")
-    g_sw = inp["g2_sw"]
-    if r - g_sw <= 0:
-        errs.append("perpetuity diverges on the software leg: g_sw >= r_perp")
-    elif r - g_sw < MIN_R_MINUS_G:
-        errs.append(f"r_perp - g_sw = {r - g_sw:.2%} < {MIN_R_MINUS_G:.0%} — g sits at the pole (AGENTS.md)")
-
-    errs += ladder("eps_fy28", inp["eps_fy28_low"], inp["eps_fy28_mid"], inp["eps_fy28_high"])
-    errs += ladder("rev_fy28", inp["rev_fy28_low"], inp["rev_fy28_mid"], inp["rev_fy28_high"])
-    errs += ladder("roe_proj", inp["roe_proj_l"], inp["roe_proj_m"], inp["roe_proj_h"])
-
-    if not (0.0 < inp["tax_rate"] < 0.5):
-        errs.append("tax_rate out of plausible range")
-    for k in ("oci_gm_est", "oci_sm_share", "sw_share_below", "rpo_share_openai"):
-        if not (0.0 < inp[k] < 1.0):
-            errs.append(f"{k} must be inside (0,1)")
-    if not (0.0 < inp["oci_ppe_now"] < inp["equity_aug"] + inp["debt_aug"]):
-        errs.append("oci_ppe_now implausible against the balance sheet")
-    if inp["window_years"] != 3:
-        errs.append(f"window_years={inp['window_years']:g}: A19 names a three-year window (FY29-31, ends FY2031)")
-
-    # Ex-99.1 table 10 identity — guards a stale or miskeyed revenue row.
-    rev_sum = sum(inp[f"rev_{ln}_fy26"] for ln in LINES) + inp["oci_rev_fy26"]
-    if abs(rev_sum - FY26_TOTAL_REVENUE) > 1.0:
-        errs.append(f"FY26 revenue identity: lines sum {rev_sum:.0f} != {FY26_TOTAL_REVENUE:.0f}")
-
-    errs.extend(check_capex_constituent(inp["capex_guide_low"], inp["capex_guide_high"]))
-
-    # A2e-7a: no probability may sit in the Inputs table; and the double-count
-    # guard (A9): no option row may come back.
-    p_fields = [k for k in inp if k.startswith("p_")]
-    if p_fields:
-        errs.append(f"Inputs carry probability fields {p_fields} — p_k belongs in the zone+V table only (A2e-7a)")
-    if "v_opt" in inp:
-        errs.append("Inputs carry v_opt — the FY29-31 ramp is the D-bucket window, not an option (A9)")
-
-    return errs
-
-
 def assert_flat_multiples(pe_sw: dict[str, float]) -> list[str]:
     """The software leg carries no per-tier multiple (A2e-2c); the OCI ladder is ROE_proj by design."""
     errs: list[str] = []
@@ -330,19 +305,83 @@ def assert_flat_multiples(pe_sw: dict[str, float]) -> list[str]:
     return errs
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
+def _local_basis_snapshot(axes):
+    return {
+        'inputs': INPUTS,
+        'constants': {'bn': BN, 'min_r_minus_g': MIN_R_MINUS_G, 'oci_margin_cap': OCI_EBIT_MARGIN_CAP,
+                      'fy26_total_revenue': FY26_TOTAL_REVENUE, 'aws_turnover': AWS_TURNOVER,
+                      'historical_aws_turnover': HISTORICAL_AWS_TURNOVER, 'roe_tolerance': ROE_PROJ_TOL,
+                      'remaining_tolerance': K_REMAIN_REL_TOL, 'downgrade_baskets': OPENAI_DOWNGRADE_BASKETS,
+                      'aws_2025_return': ROE_PROJ_H_AWS_2025, 'software_peer_growth': G_SW_PEER,
+                      'historical_reference': HISTORICAL_REFERENCE, 'historical_adopted': HISTORICAL_ADOPTED,
+                      'historical_leverage': HISTORICAL_LEVERAGE, 'rate_fields': R_FIELDS,
+                      'tiers': TIERS, 'lines': LINES},
+        'shared': {'capex': {'base': axes['capex']['base_2026_usd'], 'role': axes['capex']['role']},
+                   'funding': {'haircut': axes['funding']['k_lab']}},
+    }
 
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
-    errors = sanity_checks(inp, baskets)
 
+# Historic numerical assumptions only; no claim of complete source provenance.
+LOCAL_BASIS_BASELINE = '47f3f208a0c3bbf7e6f3e50ad29e14b7f5ff444939e5be1b3658f1688640b144'
+
+
+def calculate(context):
+    inp = dict(INPUTS)
+    capex, funding = context["axes"]["capex"], context["axes"]["funding"]
+    if capex["role"] != "constituent":
+        raise ValueError("ORCL is a capital-spending pool constituent")
+    inp["k_lab"] = funding["k_lab"]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in inp.values()):
+        raise ValueError("inputs must be finite numbers")
+    require_whole_years(inp, ("window_years", "t0", "y1", "y2"))
+    if inp["r_perp"] <= inp["g2_sw"] or min(inp["r_perp"], inp["r_oci_non"],
+            inp["r_oci_open"], inp["r_oci_open_t"]) <= 0:
+        raise ValueError("discount or perpetual-growth rate is mathematically invalid")
+    if inp["shares_fy28"] <= 0 or capex["base_2026_usd"] <= 0:
+        raise ValueError("shares and shared capital-spending pool must be positive")
+    review_flags = ["historical_out_of_band_user_decision_2026_09_27",
+                    "oci_profit_and_assets_estimated_from_residual",
+                    "funding_axis_haircut_evidence_pending",
+                    "historical_approximation_residual_is_carried",
+                    "fy2026_leverage_roe_multiplier_roic_reconciliation_incomplete",
+                    "oci_ev_ebit_crosscheck_available_method_choice_pending"]
+    if any(HISTORICAL_LEVERAGE[key] > 3 for key in
+           ("net_debt_ebitda_ex_lease", "net_debt_ebitda_including_lease", "net_debt_ebitda_lease_and_preferred")):
+        review_flags.append("fy2026_historical_leverage_threshold_triggered")
+    baskets = {"r_perp": 4, "r_oci_non": 4, "r_oci_open": 7, "r_oci_open_t": 4}
+    for field, basket in baskets.items():
+        if check_r(inp[field], field, basket):
+            review_flags.append("discount_basket_mismatch_" + field)
+    if check_basket_pair(inp["r_oci_open"], inp["r_oci_open_t"], "oci_open", 7, 4):
+        review_flags.append("openai_discount_pair_invalid")
+    if check_k_declared(inp["r_oci_open"], inp["r_oci_open_t"], (inp["k_lab"],) * 3, "k_lab"):
+        review_flags.append("shared_haircut_not_declared")
+    if check_g_cap(inp["g2_sw"], inp["r_perp"], "g2_sw"):
+        review_flags.append("software_growth_above_cap")
+    if inp["r_perp"] - inp["g2_sw"] < MIN_R_MINUS_G:
+        review_flags.append("software_growth_close_to_discount_rate")
+    for label, keys in (("eps", ("eps_fy28_low", "eps_fy28_mid", "eps_fy28_high")),
+                        ("revenue", ("rev_fy28_low", "rev_fy28_mid", "rev_fy28_high"))):
+        if ladder(label, *(inp[key] for key in keys)):
+            review_flags.append(label + "_not_increasing")
+    if not 0 < inp["tax_rate"] < 0.5:
+        review_flags.append("tax_rate_outside_historical_range")
+    for key in ("oci_gm_est", "oci_sm_share", "sw_share_below", "rpo_share_openai"):
+        if not 0 < inp[key] < 1:
+            review_flags.append("input_ratio_outside_range_" + key)
+    if not 0 < inp["oci_ppe_now"] < inp["equity_aug"] + inp["debt_aug"]:
+        review_flags.append("oci_assets_outside_balance_sheet")
+    if inp["window_years"] != 3:
+        review_flags.append("rpo_window_differs_from_historical_three_year_assumption")
+    if abs(sum(inp[f"rev_{ln}_fy26"] for ln in LINES) + inp["oci_rev_fy26"] - FY26_TOTAL_REVENUE) > 1:
+        review_flags.append("fy2026_revenue_reconciliation_mismatch")
+    if not inp["capex_guide_low"] <= inp["capex_guide_high"]:
+        review_flags.append("capex_guidance_order_invalid")
+    if not 0 < inp["capex_guide_high"] / capex["base_2026_usd"] < 1:
+        review_flags.append("capex_constituent_share_outside_pool")
+    if any(key.startswith("p_") for key in inp) or "v_opt" in inp:
+        review_flags.append("option_double_counts_existing_project_window")
     r = inp["r_perp"]
     r_non, r_open, r_open_t = inp["r_oci_non"], inp["r_oci_open"], inp["r_oci_open_t"]
     k_lab = inp["k_lab"]
@@ -354,18 +393,24 @@ def main() -> int:
     sw_disc = (1 + r) ** tau  # ③ FY2028 opening -> 2026-08-31
 
     # ---- Step 1: software annuity leg, FY28E numerator (A4/A5) ----
-    def rev_sw(years: int) -> float:
-        return sum(inp[f"rev_{ln}_fy26"] * (1 + inp[f"g_{ln}"]) ** years for ln in LINES)
+    def rev_sw(years: int, source=None) -> float:
+        data = inp if source is None else source
+        return sum(data[f"rev_{ln}_fy26"] * (1 + data[f"g_{ln}"]) ** years for ln in LINES)
+
+    def software_nopat(data, oci_gm):
+        # This bridge is shared by current inputs and the frozen historical
+        # input snapshot, so the rounding residual uses the identical formula.
+        oci_contrib = data["oci_rev_fy26"] * oci_gm - data["sm_total_fy26"] * data["oci_sm_share"]
+        margin_pct = (data["seg_margin_fy26"] - oci_contrib) / rev_sw(0, data)
+        ebit = margin_pct * rev_sw(2, data) - data["below_seg_fy26"] * data["sw_share_below"] * (1 + data["g_below"]) ** 2
+        return ebit * (1.0 - data["tax_rate"])
 
     rev_sw_fy26 = rev_sw(0)
     rev_sw_fy28 = rev_sw(2)
 
     def software_leg(oci_gm: float, g_sw: float) -> tuple[float, float, float, float]:
         """(NOPAT, IC, ROE, PE) of the software leg under a given OCI-GM bridge."""
-        oci_contrib = inp["oci_rev_fy26"] * oci_gm - inp["sm_total_fy26"] * inp["oci_sm_share"]
-        margin_pct = (inp["seg_margin_fy26"] - oci_contrib) / rev_sw_fy26
-        ebit = margin_pct * rev_sw_fy28 - inp["below_seg_fy26"] * inp["sw_share_below"] * (1 + inp["g_below"]) ** 2
-        nopat = ebit * keep
+        nopat = software_nopat(inp, oci_gm)
         ic = (inp["equity_aug"] + inp["debt_aug"] - inp["cash_aug"]) - inp["oci_ppe_now"]
         roe = nopat / ic
         # ② forward ROE through y1, fading to ronic_ss_sw (own cycle FY2013-22, 20.7%) by y2.
@@ -378,12 +423,13 @@ def main() -> int:
     sw_margin_pct = (inp["seg_margin_fy26"] - oci_contrib_fy26) / rev_sw_fy26
 
     if ic_sw <= 0:
-        errors.append("ic_sw must be positive — software ROE is derived from it")
+        review_flags.append('software_invested_capital_nonpositive')
     pay_sw = payout(inp["g2_sw"], roe_sw)
     if not (0.0 < pay_sw <= 1.0):
-        errors.append(f"software payout {pay_sw:.3f} outside (0, 1]")
+        review_flags.append('software_payout_outside_range')
     pe_sw = {t: pe_sw_m for t in TIERS}
-    errors.extend(assert_flat_multiples(pe_sw))
+    if assert_flat_multiples(pe_sw):
+        review_flags.append("software_multiple_not_flat")
 
     # ---- Step 3: OCI residual of the consensus EPS range -> ROE_proj L / M (A2/A3/A18) ----
     eps = {"l": inp["eps_fy28_low"], "m": inp["eps_fy28_mid"], "h": inp["eps_fy28_high"]}
@@ -401,36 +447,46 @@ def main() -> int:
     # the company; the implied margin must sit under the sell-side GM ceiling.
     for t in TIERS:
         if nopat_oci[t] <= 0:
-            errors.append(f"OCI residual NOPAT {t.upper()} = {nopat_oci[t]:.0f} <= 0 — the OCI leg must not be negative (A6)")
+            review_flags.append('oci_residual_profit_nonpositive' + "_" + t)
         if not (0.0 < oci_margin[t] <= OCI_EBIT_MARGIN_CAP):
-            errors.append(
-                f"implied OCI EBIT margin {t.upper()} = {oci_margin[t]:.1%} outside (0, {OCI_EBIT_MARGIN_CAP:.0%}]"
-                f" — the residual is inconsistent with the sell-side GM ceiling (A4/A5)"
-            )
+            review_flags.append('oci_ebit_margin_outside_reference' + "_" + t)
 
     k_spent = inp["oci_ppe_now"] + inp["capex_rest_fy27"] - inp["da_rest_fy27"]
     if abs(k_spent - inp["k_spent_gross"]) > 1.0:
-        errors.append(f"k_spent_gross: stated {inp['k_spent_gross']:.0f} vs recomputed {k_spent:.0f} (A8)")
+        review_flags.append('oci_spent_capital_reconciliation_mismatch')
     k_net = k_spent - inp["prepay_cum"]
     if k_net <= 0:
-        errors.append("K_spent net-of-prepay must be positive")
-    # D-bucket consistency (校验步骤 4): the L / M ROE_proj ARE the consensus
-    # residuals over K_spent; H is an external benchmark and is not derived.
+        review_flags.append('prepayment_adjusted_capital_nonpositive')
+    # The 2026-10-19 research adopted project returns rounded to 6.5% /
+    # 10.1%, and annual capital estimates 70,178 / 58,067 million. Their
+    # underlying ratios are more precise than those adopted inputs. Carry the
+    # difference between the historical adopted and historical unrounded
+    # values unchanged, while applying every new change in the underlying
+    # forecast, RPO, capital and software bridge immediately. The snapshot is
+    # historical calibration evidence, not a second current-input source.
+    # Historical software formula, leg list and AWS turnover are frozen in a
+    # separate source-bound reference, so changes to today's model cannot move
+    # the historical side and silently cancel their own effect.
+    historical_raw = historical_oci_reference(HISTORICAL_REFERENCE, HISTORICAL_AWS_TURNOVER)
+    hist_residual = {"l": historical_raw["roe_l"], "m": historical_raw["roe_m"]}
     roe_resid = {t: nopat_oci[t] / k_spent for t in TIERS}
-    for t in ("l", "m"):
-        if abs(roe_resid[t] - inp[f"roe_proj_{t}"]) > ROE_PROJ_TOL:
-            errors.append(f"roe_proj_{t}: stated {inp[f'roe_proj_{t}']} vs residual {roe_resid[t]:.4f} (A18)")
-    roe_proj = {t: inp[f"roe_proj_{t}"] for t in TIERS}
-
-    # K_remain per year = (RPO half over three years - FY28E OCI revenue) / turnover.
+    # H is AWS 2024 external benchmark, not the FY2028 high residual.
+    roe_proj = {"l": preserve_reference_residual(roe_resid["l"], hist_residual["l"], HISTORICAL_ADOPTED["roe_proj_l"]),
+                "m": preserve_reference_residual(roe_resid["m"], hist_residual["m"], HISTORICAL_ADOPTED["roe_proj_m"]),
+                "h": inp["roe_proj_h"]}
+    if ladder("roe_proj", *(roe_proj[t] for t in TIERS)):
+        review_flags.append("project_return_not_increasing")
     turnover_book = oci_rev_fy28["m"] / k_spent
     rpo_run_rate = inp["rpo"] / 2.0 / 3.0
     incr_rev = rpo_run_rate - oci_rev_fy28["m"]
-    for field, turn in (("k_remain_yr_book", turnover_book), ("k_remain_yr_aws", AWS_TURNOVER)):
-        calc = incr_rev / turn
-        if abs(calc - inp[field]) > K_REMAIN_REL_TOL * inp[field]:
-            errors.append(f"{field}: stated {inp[field]:.0f} vs recomputed {calc:.0f} (A19)")
-    k_remain = {"l": inp["k_remain_yr_book"], "m": inp["k_remain_yr_book"], "h": inp["k_remain_yr_aws"]}
+    hist_book = historical_raw["capital_book"]
+    hist_aws = historical_raw["capital_aws"]
+    raw_book, raw_aws = incr_rev / turnover_book, incr_rev / AWS_TURNOVER
+    adopted_book = preserve_reference_residual(raw_book, hist_book, HISTORICAL_ADOPTED["k_remain_yr_book"])
+    adopted_aws = preserve_reference_residual(raw_aws, hist_aws, HISTORICAL_ADOPTED["k_remain_yr_aws"])
+    k_remain = {"l": adopted_book, "m": adopted_book, "h": adopted_aws}
+    if min(adopted_book, adopted_aws) < 0:
+        review_flags.append("estimated_remaining_project_capital_negative")
     # L world: the OpenAI half is never built, so its sub-leg has no window (A6).
     open_window = {"l": False, "m": True, "h": True}
 
@@ -474,7 +530,7 @@ def main() -> int:
     v_oci = {t: parts[t]["total"] for t in TIERS}
     for t in TIERS:
         if v_oci[t] <= 0:
-            errors.append(f"OCI value {t.upper()} = {v_oci[t]:.0f} <= 0 — the OCI leg must not be negative (A6)")
+            review_flags.append('oci_project_value_nonpositive' + "_" + t)
 
     # ---- Step 5: closing item (A11) ----
     # Today's net debt and preferred (no roll to FY28); the rest-FY27 capex beyond
@@ -497,8 +553,7 @@ def main() -> int:
     L, M, H = band_at()
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
-        print(f"FAIL: L<M<H violated: {L}, {M}, {H}", file=sys.stderr)
-        return 1
+        review_flags.append("base_anchors_not_increasing")
 
     # ---- Step 7: ③ guardrail on the same-basis forward band, 降篮 path (A12/A20/A21) ----
     pe_fwd = {t: v / eps["m"] for t, v in zip(TIERS, (L, M, H))}
@@ -512,7 +567,7 @@ def main() -> int:
         downgrade.append((b, basket_r(b), band_b, band_b[1] / eps["m"]))
     out_after_downgrade = out_of_band and all(pe_m < inp["pe_fwd_min"] for _, _, _, pe_m in downgrade)
     if pe_fwd["h"] > inp["pe_fwd_max"]:
-        errors.append(f"H / eps_fy28_mid = {pe_fwd['h']:.2f}x > pe_fwd_max {inp['pe_fwd_max']:.2f}x (A12)")
+        review_flags.append('high_anchor_above_historical_multiple_band')
 
     # 表2′: uniform δ on both OCI sub-legs (software leg untouched, ROE_proj M
     # unchanged) that lifts M exactly to the band floor; and its ROE_proj twin.
@@ -524,161 +579,96 @@ def main() -> int:
     def m_at_roe(z: float) -> float:
         return per_share(oci_value("m", roe=z)["total"])
 
-    delta_floor = bisect(lambda d: m_at_delta(d) - m_floor, -0.09, 0.05)
-    roe_floor = bisect(lambda z: m_at_roe(z) - m_floor, 0.05, 0.6)
-    band_edge = band_at(r_n=r_non + delta_floor, r_o=r_open + delta_floor, r_ot=r_open_t + delta_floor)
-    a_edge, b_edge = (band_edge[0] + band_edge[1]) / 2, (band_edge[1] + band_edge[2]) / 2
-    sm = STATED_BAND_EDGE.search(md)
-    if sm is None:
-        errors.append("表2′ 带边带 not stated in Outputs (A21 step 4 ②)")
-    else:
-        for lbl, said, calc in zip(("L′", "M′", "H′"), (float(g) for g in sm.groups()), band_edge):
-            if abs(said - calc) > TOL:
-                errors.append(f"表2′ {lbl}: stated {said} vs recomputed {calc:.4f}")
+    try:
+        delta_floor = bisect(lambda d: m_at_delta(d) - m_floor, -0.09, 0.05)
+    except ValueError:
+        delta_floor = None
+        review_flags.append("historical_band_edge_rate_shift_unavailable")
+    try:
+        roe_floor = bisect(lambda z: m_at_roe(z) - m_floor, 0.05, 0.6)
+    except ValueError:
+        roe_floor = None
+        review_flags.append("historical_band_edge_project_return_unavailable")
+    band_edge = (None if delta_floor is None else
+                 band_at(r_n=r_non + delta_floor, r_o=r_open + delta_floor, r_ot=r_open_t + delta_floor))
 
-    # ---- Stated vs recomputed ----
-    errors.extend(check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL))
-
-    # ================= diagnostics =================
-    print(f"formula_id={FORMULA_ID}")
-    print(
-        f"baskets: " + ", ".join(f"{k} 篮 {baskets.get(k)} r {inp[k]:.1%}" for k in R_FIELDS)
-        + f" | g2_sw {inp['g2_sw']:.1%} cap {min(0.06, r - 0.04):.1%} | OCI perpetual g: none (D-bucket)"
-    )
-    print(
-        f"software leg: rev FY26 {rev_sw_fy26 / BN:.1f}B -> FY28E {rev_sw_fy28 / BN:.1f}B"
-        f" | seg margin {sw_margin_pct:.1%} (OCI contrib est {oci_contrib_fy26 / BN:.1f}B removed)"
-        f" | EBIT {nopat_sw / keep / BN:.1f}B NOPAT {nopat_sw / BN:.1f}B"
-        f" | IC {ic_sw / BN:.1f}B ROE {roe_sw:.1%} g {inp['g2_sw']:.1%} -> PE {pe_sw_m:.2f}x payout {pay_sw:.1%}"
-        f" -> {v_sw / sh:.2f}/sh (flat)"
-    )
-    print(
-        f"OCI residual (ROE_proj source): K_spent gross {k_spent / BN:.1f}B / net-of-prepay {k_net / BN:.1f}B"
-        f" | FY28 book turnover {turnover_book:.3f} | RPO/2/3y {rpo_run_rate / BN:.1f}B/yr - FY28E OCI M {oci_rev_fy28['m'] / BN:.1f}B"
-        f" = incremental {incr_rev / BN:.1f}B/yr -> K_remain {inp['k_remain_yr_book'] / BN:.1f}B (book) / {inp['k_remain_yr_aws'] / BN:.1f}B (AWS {AWS_TURNOVER})"
-        f" x {n_win}y window"
-    )
-    print("  tier  EPS    NOPAT_total  NOPAT_oci  OCI rev FY28E  impl EBIT margin  resid/K   ROE_proj")
-    for t in TIERS:
-        print(
-            f"    {t.upper()}  {eps[t]:5.2f} {nopat_total(eps[t]) / BN:10.1f}B {nopat_oci[t] / BN:8.1f}B"
-            f" {oci_rev_fy28[t] / BN:10.1f}B {oci_margin[t]:13.1%} {roe_resid[t]:9.1%} {roe_proj[t]:9.1%}"
-            f"{'' if t != 'h' else '  (AWS-2024 state, external; residual 14.6% is a reading only)'}"
-        )
-    print(
-        f"OCI D-bucket sub-legs ($M): K non-OpenAI {k_spent * (1 - share_open) / BN:.1f}B @ r {r_non:.0%}"
-        f" | K OpenAI {k_spent * share_open / BN:.1f}B @ pair r {r_open:.0%}->{r_open_t:.0%} x (1-k_lab {k_lab:g})"
-        f" | L: OpenAI window off"
-    )
-    print("  tier   nonOpenAI base / window      OpenAI base / window      OCI total   x K    $/sh")
-    for t in TIERS:
-        p = parts[t]
-        print(
-            f"    {t.upper()}  {p['base_non'] / BN:9.1f}B / {p['win_non'] / BN:+8.1f}B"
-            f"   {p['base_open'] / BN:9.1f}B / {p['win_open'] / BN:+8.1f}B"
-            f"   {v_oci[t] / BN:8.1f}B {v_oci[t] / k_spent:5.2f}x {v_oci[t] / sh:7.2f}"
-        )
-    print(
-        f"closure: net debt 08-31 {net_debt_aug / BN:.1f}B + pref {inp['pref_liq'] / BN:.1f}B"
-        f" + funding gap (capex {inp['capex_rest_fy27'] / BN:.1f} - OCF {inp['ocf_rest_fy27'] / BN:.1f}) x parent {parent:.4f}"
-        f" = {gap / BN:.2f}B ({gap / sh:.2f}/sh) -> {closure / sh:.2f}/sh; window profit 0 (gap present)"
-        f" | old FY28 roll {net_debt_fy28 / BN:.1f}B (disclosure)"
-        f" | depreciation lag capex_q1/dep_q1 = {inp['capex_q1'] / inp['dep_q1']:.1f}x (A10)"
-    )
-    print(
-        f"tau {tau} (2026-08-31 -> FY2028 opening; software + OCI non-OpenAI at {r:.0%}, OpenAI at journey {r_open:.0%});"
-        f" software path t0 {t0} y1 {y1} y2 {y2}: ROE {roe_sw:.1%} -> stable {min(roe_sw, max(inp['ronic_ss_sw'], r)):.1%},"
-        f" PE {pe_sw_m:.2f}x (no fade {pe_sw_flat:.2f}x)"
-    )
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print("  leg $/sh   software(PE)   oci nonOpenAI   oci OpenAI   closure     total")
-    for t, v in zip(TIERS, (L, M, H)):
-        p = parts[t]
-        print(
-            f"    {t.upper()}   {v_sw / sh:7.2f}({pe_sw[t]:5.2f}x) {(p['base_non'] + p['win_non']) / sh:12.2f}"
-            f" {(p['base_open'] + p['win_open']) / sh:12.2f} {closure / sh:9.2f} {v:9.2f}"
-        )
-    print(
-        f"tier decomposition (A2e-5): L/M {L / M:.3f} | H/M {H / M:.3f} | OCI value ratio L/M {v_oci['l'] / v_oci['m']:.3f}"
-        f" H/M {v_oci['h'] / v_oci['m']:.3f} | software flat 1.000 | (H-L)/2M {(H - L) / (2 * M):.3f}"
-        f" — the ladder is ROE_proj {roe_proj['l']:.1%} / {roe_proj['m']:.1%} / {roe_proj['h']:.1%}"
-    )
-    print(
-        f"③ guardrail (A12, same-basis forward PE on FY28E mid {eps['m']}): band {inp['pe_fwd_min']:.2f}-{inp['pe_fwd_max']:.2f}x"
-        f" (p10 {inp['pe_fwd_p10']:.2f} / med {inp['pe_fwd_med']:.2f} / p90 {inp['pe_fwd_p90']:.2f})"
-        f" | L {pe_fwd['l']:.2f}x M {pe_fwd['m']:.2f}x H {pe_fwd['h']:.2f}x"
-        f" -> M {'OUT OF BAND' if out_of_band else 'inside'}"
-    )
-    print("  single-basket reference path (OpenAI sub-leg as one basket, no k_lab; non-OpenAI already 篮 4):")
-    for b, rb, band_b, pe_m in downgrade:
-        print(f"    篮 {b} r {rb:.0%}: L/M/H = {band_b[0]:.2f} / {band_b[1]:.2f} / {band_b[2]:.2f}  M fwd {pe_m:.2f}x"
-              f" {'<' if pe_m < inp['pe_fwd_min'] else '>='} {inp['pe_fwd_min']}")
-    print(f"  verdict: {'篮 4 still out of band — landed on the user\'s call (A21)' if out_after_downgrade else 'in band'}")
-    print(
-        f"  表2′ band-edge δ = {delta_floor:+.2%} (r {r_non + delta_floor:.2%} / {r_open + delta_floor:.2%}->{r_open_t + delta_floor:.2%}):"
-        f" L/M/H = {band_edge[0]:.2f} / {band_edge[1]:.2f} / {band_edge[2]:.2f}  A′ {a_edge:.2f} B′ {b_edge:.2f}"
-        f" | equivalent ROE_proj {roe_floor:.1%}"
-    )
-    print(
-        "  coordinates: "
-        + " | ".join(f"{lbl} {tp:.0f} -> {zone_of(tp, L, M, H)}" for lbl, tp in STREET_TPS)
-        + f" | 52w low {WEEK52_LOW} -> {zone_of(WEEK52_LOW, L, M, H)}"
-    )
-    pe_ttm = {t: v / inp["eps_ttm_gaap"] for t, v in zip(TIERS, (L, M, H))}
-    print(
-        f"disclosure: trailing GAAP band {inp['pe_own_min']:.2f}-{inp['pe_own_max']:.2f}x (p50 {inp['pe_own_p50']:.2f}, denominator {inp['eps_ttm_gaap']})"
-        f" not same-basis — band reads L {pe_ttm['l']:.1f}x M {pe_ttm['m']:.1f}x H {pe_ttm['h']:.1f}x"
-    )
-    _lo, _hi = capex_constituent_share(inp["capex_guide_low"], inp["capex_guide_high"])
-    print(
-        f"capex axis (constituent, A16): FY27 guide ${inp['capex_guide_low'] / 1e9:.0f}-{inp['capex_guide_high'] / 1e9:.0f}B"
-        f" = {_lo:.1%}-{_hi:.1%} of the axis 2026 base"
-    )
-    print("floor: none (PP&E is debt- and prepay-funded; no hidden asset) — nothing max()'d")
-
-    # ---- sensitivities (all disclosure; none moves M back into the ③ band) ----
-    def fmt(b: tuple[float, float, float]) -> str:
-        return f"{b[0]:.2f} / {b[1]:.2f} / {b[2]:.2f}"
-
-    for kl in (0.0, 0.5):
-        b = band_at(kl=kl)
-        print(f"sensitivity k_lab={kl:g} (axis value {k_lab:g}): {fmt(b)}  M fwd {b[1] / eps['m']:.2f}x")
-    print(f"sensitivity H @ AWS-2025 state ROE_proj {ROE_PROJ_H_AWS_2025:.1%}: H = {per_share(oci_value('h', roe=ROE_PROJ_H_AWS_2025)['total']):.2f}")
-    for dp in ROE_PROJ_SENSITIVITY:
-        b = tuple(per_share(oci_value(t, roe=roe_proj[t] + dp)["total"]) for t in TIERS)
-        print(f"sensitivity ROE_proj {dp:+.0%} all tiers: {fmt(b)}  M fwd {b[1] / eps['m']:.2f}x")
-    for n in WINDOW_SENSITIVITY:
-        print(f"sensitivity window n={n}: {fmt(band_at(n=n))}")
-    for so in SHARE_SENSITIVITY:
-        print(f"sensitivity OpenAI RPO share {so:.0%}: {fmt(band_at(share=so))}")
-    for f in K_REMAIN_SENSITIVITY:
-        b = tuple(per_share(oci_value(t, kr=k_remain[t] * f)["total"]) for t in TIERS)
-        print(f"sensitivity K_remain x{f:.1f}: {fmt(b)}")
-    print(f"sensitivity K_spent net-of-prepay {k_net / BN:.1f}B (x{k_net / k_spent:.2f}, ROE_proj unchanged): {fmt(band_at(k=k_net))}")
-    for dg in G_SW_SENSITIVITY:
-        n_, _, _, pe_ = software_leg(inp["oci_gm_est"], inp["g2_sw"] + dg)
-        print(f"sensitivity g_sw={inp['g2_sw'] + dg:.1%}: software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_ / sw_disc):.2f}")
-    n_, _, _, pe_ = software_leg(inp["oci_gm_est"], G_SW_PEER)
-    print(f"sensitivity g_sw peer-implied {G_SW_PEER:.2%} (A5, not adopted): software PE {pe_:.2f}x -> M {per_share(v_oci['m'], n_ * pe_ / sw_disc):.2f}")
-    print(f"sensitivity software stable-return path off (ROE {roe_sw:.1%} permanent): M {per_share(v_oci['m'], nopat_sw * pe_sw_flat / sw_disc):.2f}")
-    print("sensitivity OCI D-bucket not discounted by tau (not adopted, round-9 ruling): M "
-          f"{per_share(v_oci['m'] * 1.0 + sum(parts['m'][k] * ((1 + (r_non if 'non' in k else r_open)) ** tau - 1) for k in ('base_non', 'win_non', 'base_open', 'win_open'))):.2f}")
-    print(
-        f"sensitivity net debt ±{NET_DEBT_SENSITIVITY / BN:.0f}B: M = "
-        f"{per_share(v_oci['m'], close=closure + NET_DEBT_SENSITIVITY):.2f} / "
-        f"{per_share(v_oci['m'], close=closure - NET_DEBT_SENSITIVITY):.2f}"
-    )
-    for m in (inp["xchk_ev_ebit_low"], inp["xchk_ev_ebit_high"]):
-        vals = [per_share(nopat_oci[t] / keep * m) for t in TIERS]
-        print(
-            f"cross-check OCI at EV/EBIT {m:.0f}x on the FY28E residual (street, NOT in the band): L/M/H = "
-            f"{vals[0]:.2f} / {vals[1]:.2f} / {vals[2]:.2f}"
-        )
-    disc = 1.0 / (1.0 + r)
-    print(f"sensitivity discount 1y at r_perp: L/M/H = {L * disc:.2f} / {M * disc:.2f} / {H * disc:.2f}")
-
-    return report(errors)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    if out_of_band:
+        review_flags.append("middle_multiple_below_historical_band")
+    if out_after_downgrade:
+        review_flags.append("middle_multiple_below_band_after_rate_comparison")
+    def band_dict(values):
+        return dict(zip(("L", "M", "H"), values))
+    def oci_part(name, tier):
+        return (parts[tier]["base_" + name] + parts[tier]["win_" + name]) / sh
+    segments = {
+        "software": {"unit": "USD_PER_SHARE", "values": dict.fromkeys(("L", "M", "H"), v_sw / sh)},
+        "oci_non_openai": {"unit": "USD_PER_SHARE", "values": {t.upper(): oci_part("non", t) for t in TIERS}},
+        "oci_openai": {"unit": "USD_PER_SHARE", "values": {t.upper(): oci_part("open", t) for t in TIERS}},
+        "debt_preferred_and_funding": {"unit": "USD_PER_SHARE", "values": dict.fromkeys(("L", "M", "H"), closure / sh)},
+    }
+    project_returns = {t.upper(): roe_proj[t] for t in TIERS}
+    sensitivity = {
+        "shared_lab_haircut_zero": band_dict(band_at(kl=0.0)),
+        "shared_lab_haircut_50pct": band_dict(band_at(kl=0.5)),
+        "aws_2025_return_high": per_share(oci_value("h", roe=ROE_PROJ_H_AWS_2025)["total"]),
+        "project_return_minus_2pp": band_dict(tuple(per_share(oci_value(t, roe=roe_proj[t] - 0.02)["total"]) for t in TIERS)),
+        "project_return_plus_2pp": band_dict(tuple(per_share(oci_value(t, roe=roe_proj[t] + 0.02)["total"]) for t in TIERS)),
+        "window_2_years": band_dict(band_at(n=2)), "window_4_years": band_dict(band_at(n=4)),
+        "openai_share_40pct": band_dict(band_at(share=0.4)), "openai_share_60pct": band_dict(band_at(share=0.6)),
+        "remaining_capital_80pct": band_dict(tuple(per_share(oci_value(t, kr=k_remain[t] * 0.8)["total"]) for t in TIERS)),
+        "remaining_capital_120pct": band_dict(tuple(per_share(oci_value(t, kr=k_remain[t] * 1.2)["total"]) for t in TIERS)),
+        "spent_capital_net_of_prepay": band_dict(band_at(k=k_net)),
+        "net_debt_minus_20bn_middle": per_share(v_oci["m"], close=closure + 20000),
+        "net_debt_plus_20bn_middle": per_share(v_oci["m"], close=closure - 20000),
+        "one_year_extra_discount": band_dict(tuple(v / (1 + r) for v in (L, M, H))),
+        "ev_ebit_13": band_dict(tuple(per_share(nopat_oci[t] / keep * inp["xchk_ev_ebit_low"]) for t in TIERS)),
+        "ev_ebit_14": band_dict(tuple(per_share(nopat_oci[t] / keep * inp["xchk_ev_ebit_high"]) for t in TIERS)),
+        "software_no_return_fade_middle": per_share(v_oci["m"], nopat_sw * pe_sw_flat / sw_disc),
+    }
+    for d, label in ((-0.01, "software_growth_minus_1pp"), (0.01, "software_growth_plus_1pp"),
+                     (G_SW_PEER - inp["g2_sw"], "software_peer_growth_reference")):
+        n_, _, _, p_ = software_leg(inp["oci_gm_est"], inp["g2_sw"] + d)
+        sensitivity[label] = per_share(v_oci["m"], n_ * p_ / sw_disc)
+    sensitivity["oci_without_alignment_discount_middle"] = per_share(
+        v_oci["m"] + sum(parts["m"][key] * ((1 + (r_non if "non" in key else r_open)) ** tau - 1)
+                          for key in ("base_non", "win_non", "base_open", "win_open")))
+    return {
+        "ticker": "ORCL.US", "currency": "USD", "valuation_as_of": None, "framework_as_of": None,
+        "historical_valuation_as_of": "2026-08-31", "historical_framework_as_of": "2026-10-19",
+        "basis_changed": None, "partial_basis_changed": local_basis_changed(_local_basis_snapshot(context['axes']), LOCAL_BASIS_BASELINE), "units": {"price": "USD_PER_SHARE"},
+        "anchors": band_dict((L, M, H)), "candidate": None, "option": None,
+        "segments": segments,
+        "key_parameters": {
+            "software": {"discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), r)},
+                         "growth_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), inp["g2_sw"])},
+                         "forward_return": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), roe_sw)},
+                         "steady_return": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), min(roe_sw, max(inp["ronic_ss_sw"], r))),
+                                           "reference_value": inp["ronic_ss_sw"]}},
+            "oci_non_openai": {"discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), r_non)},
+                               "forward_return": {"unit": "RATIO", "values": project_returns}},
+            "oci_openai": {"transition_discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), r_open)},
+                            "terminal_discount_rate": {"unit": "RATIO", "values": dict.fromkeys(("L", "M", "H"), r_open_t)},
+                            "forward_return": {"unit": "RATIO", "values": project_returns}},
+        },
+        "diagnostics": {"software_value_usd_million": v_sw, "software_nopat_usd_million": nopat_sw,
+                        "software_operating_capital_usd_million": ic_sw, "oci_parts_usd_million": parts,
+                        "oci_residual_nopat_usd_million": nopat_oci, "oci_revenue_fy28_usd_million": oci_rev_fy28,
+                        "oci_residual_margin": oci_margin, "spent_capital_usd_million": k_spent,
+                        "remaining_capital_per_year_usd_million": k_remain, "funding_gap_usd_million": gap,
+                        "project_return_before_historical_residual": roe_resid,
+                        "remaining_capital_before_historical_residual_usd_million": {"book": raw_book, "aws": raw_aws},
+                        "historical_rounded_residual": {
+                            "roe_l": HISTORICAL_ADOPTED["roe_proj_l"] - hist_residual["l"],
+                            "roe_m": HISTORICAL_ADOPTED["roe_proj_m"] - hist_residual["m"],
+                            "capital_book_usd_million": HISTORICAL_ADOPTED["k_remain_yr_book"] - hist_book,
+                            "capital_aws_usd_million": HISTORICAL_ADOPTED["k_remain_yr_aws"] - hist_aws},
+                        "historical_fy2026_leverage": HISTORICAL_LEVERAGE,
+                        "historic_interest_100bp_check_required": HISTORICAL_LEVERAGE["interest_ebit"] > 1 / 3,
+                        "capex_guidance_share_low": inp["capex_guide_low"] / capex["base_2026_usd"],
+                        "capex_guidance_share_high": inp["capex_guide_high"] / capex["base_2026_usd"],
+                        "historical_band_multiple": pe_fwd,
+                        "single_basket_comparisons": {str(b): band_dict(band) for b, _, band, _ in downgrade},
+                        "band_edge": None if band_edge is None else band_dict(band_edge),
+                        "band_edge_rate_shift": delta_floor, "band_edge_project_return": roe_floor},
+        "sensitivity": sensitivity, "review_flags": review_flags,
+    }

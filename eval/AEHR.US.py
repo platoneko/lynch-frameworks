@@ -1,193 +1,135 @@
-#!/usr/bin/env python3
-"""AEHR.US valuation eval — recompute anchors from frameworks/AEHR.US.md.
+"""AEHR historical migration draft. No financial data was refreshed here.
 
-formula_id: aehr_fy28_cons_gordon_opeq_v7
-
-One operating leg on the FY28 consensus EPS range (3 houses; the furthest year
-with a >=2-house *range*, valuation-rules 裁决顺序 ②).  Street EPS is the
-company's normalized (ex-SBC) figure, so every tier is haircut by the SBC
-share of FY28 consensus NI before it becomes an economic EPS; the haircut is
-derived from the GAAP-vs-normalized consensus gap net of acquisition
-amortisation (A9).  Multiples are generated, not borrowed:
-`perpetual_pe(g2, ROE_x, r)` with g2 = the test-equipment peer cluster's
-reverse-solved median truncated to g_cap(r) (A5), r = 10% — the whole company
-is one leg in basket 4 常规经营 (an equipment maker whose earnings follow its
-customers' capex projects, not a commodity price; size and customer
-concentration price into the L numerator and p_k, not r — valuation-rules
-「§r 篮子」 2026-09-28, A17; basket 7 is the named alternative, its
-single-customer threshold unmet, A12) — and tier ROE = FY28 core EPS over the FY28 OPENING
-*operating* book: book equity less net cash at FY26 year-end (2026-05-29, the
-latest balance sheet), rolled over the whole FY27 consensus not yet booked (no
-FY27 quarter reported yet) at the growth-required retention b1 = g2/ROE — no
-g1 window, so every tier rolls at g2 (valuation-rules 2026-09-21, A18).  The
-after-tax interest the consensus EPS earns on that cash is stripped from the
-numerator and the net cash added back per share as a closing item (A15, the
-1810.HK A15 treatment).  FY29 has no >=2-house consensus anywhere, so there is
-no g1.
-
-Steady return three segments (valuation-rules「经营价值与超额现金」② 稳态回报三段,
-A20): the leg is a 叙事换代 leg (user 2026-10-19 — TER and FORM are not the
-same business as AEHR, so the axis peer layer is empty, and AEHR's own cycle
-is unusable), so the steady return is min(tier forward, 30%) with no fallback
-to a peer or floor value — `_AXIS.burn-in-test`'s ss_return_cap_bit, with
-y1_bit / y2_bit (package / opto-electrical test link, high barrier): forward
-ROE through Y1 2030, linear to min(forward, 30%) at Y2 2035, Gordon tail
-after (gordon.py's three-segment function is [待建], so `path_value` lives
-here; the option and the candidate band ride the same path from FY30).  L / M
-forwards sit below 30% and do not move; H (33.0%), every option tier and both
-candidate tiers fall to 30%.  The axis's pre-ruling peer median
-(ss_return_bit_ref) is printed as a contrast only.
-
-Timing alignment (valuation-rules ③, A21): the Gordon value sits at the FY28
-opening (~2027-06-25); the base date is the FY26 10-K balance sheet
-2026-05-29 (the net cash's date) -> tau = 392/365 = 1.074 year; window
-distributable profit = the unbooked FY27 core EPS x (1 - g2/ROE) at tau / 2.
-The closing net cash is not discounted; the option (valued at FY28) is
-discounted tau like the deck.
-
-L is the scenario value; the tangible-book PB floor is only disclosed, never
-max()'d in (A10).  The A2e-1 ratio scenario_L / M is printed and guarded
-(>= 0.3) should the scenario ever drop below the floor.  Guardrail (③): the own realised band divides
-close by the *current-FY* consensus, so anchors are compared to it on that
-same basis (anchor / FY27 consensus) — only the lower edge binds, the upper
-edge is meaningless (2025-26 consensus EPS ~ 0).
-
-V_opt (valuation-rules「未建模期权」2026-10-05, A14; peer ruler _AXIS.burn-in-test):
-tiered quantities.  No covering house sizes any of the excluded items, so L / M
-fall back to named quantities — L = one snapshot of the lead wafer-level AI
-customer (its signed orders over the last 12 months) for the unsigned second AI
-processor customer; M = L + SiC back to its FY24 peak (FY24 EV/power revenue
-less the FY26 level the consensus is taken to carry) — on the FY28 (aligned
-year) M-tier consensus core net margin.  H is demand-side, NOT management's
-theoretical capacity (the rule: full capacity caps H only when capacity is
-capital-bound; AEHR is capital-light — FY26 capex $2.1M, contract-built
-Sonoma): the highest sell-side path (Freedom Broker FY30 revenue; Oppenheimer
-FY28 is the high FY28 point) less what the H-tier FY28 consensus already
-carries by FY30 (grown at g2), plus the named items both covering houses
-exclude (second AI customer snapshot, SiC peak).  Its unit economics are the
-two-period incremental margin (FY26 actual vs FY28 M consensus non-GAAP
-operating profit), the implied operating margin at that scale bounded by the
-axis peer range.  Every tier is valued on this ticker's ruler in FY30 —
-perpetual_pe(axis g2, success-world ROE, basket r), the base book and earnings
-grown at g2 to FY30 and the denominator growing with the quantity at the
-H-tier operating-capital / revenue ratio (mostly inventory and receivables) —
-less that extra operating capital and any committed-unspent capex, discounted
-back to FY28.  V_opt = V_H; p_k = V_k / V_H.  The CEO's theoretical capacity
-($1,440M/yr) is printed as a reading only.
-
-The doc carries no current price (AGENTS.md「现价 — 禁写契约」): which zone a
-quote falls in is derived live by the daily digest and the app, so nothing
-here reads a price.
-
-Run:  python3 frameworks/eval/AEHR.US.py
+The historical source has one reported business, a conditional funding-use
+stress, an independent candidate, and three non-additive option tiers. Shared
+axis inputs must come from the injected actual axis versions, not a local copy.
 """
-
 from __future__ import annotations
+import math
+from lib.gordon import check_g_cap, check_r, g_cap, implied_g, perpetual_pe
+from lib.inputs import ladder, require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.zones import cut_points
+from lib.valuation_guards import require_axis_alignment, option_reconciliation_status
 
-import re
-import sys
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.axes import axis_path, check_capex_mount  # noqa: E402
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.frameworks import load_framework  # noqa: E402
-from eval.lib.gordon import (  # noqa: E402
-    check_g_cap,
-    check_r,
-    g_cap,
-    implied_g,
-    perpetual_pe,
-)
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    parse_baskets,
-    parse_inputs,
-    report,
-)
-from eval.lib.rf_report import rf_block  # noqa: E402
-from eval.lib.zones import cut_points  # noqa: E402
-
-FRAMEWORK = REPO_ROOT / "frameworks" / "AEHR.US.md"
-FORMULA_ID = "aehr_fy28_cons_gordon_opeq_v7"
-LISTING_CCY = "USD"
-TOL = 0.05
-MILLION = 1e6  # money inputs are in $M, share counts are absolute
-MIN_R_MINUS_G = 0.02  # valuation-rules: below this the multiple sits at the pole
-FLOOR_RATIO_MIN = 0.3  # A2e-1: scenario below the floor AND scenario_L / M below this -> back to dialogue
-HAIRCUT_ROUNDING = 0.01  # A9: haircut may be rounded up by at most 1pp over the derived value
-BIT_AXIS = axis_path("_AXIS.burn-in-test")
-BIT_SHARED = ("g2_bit_src", "bit_opm_weak", "bit_opm_strong")  # rows that must equal the axis file
-BIT_PATH = (("ss_return", "ss_return_cap_bit"), ("y1", "y1_bit"), ("y2", "y2_bit"))  # A20, same rule
-NARRATIVE_CAP = 0.30  # valuation-rules 叙事换代的腿: min(forward, 30%), the top rung of the fallback table
-SS_REF = "ss_return_bit_ref"  # axis contrast row (pre-ruling TER / FORM median), printed only
-SS_FLOORS = ((0.20, "_AXIS.ai-capex package floor 20%"), (0.15, "rule-table equipment floor 15%"))  # contrasts only
-P_TOL = 5e-4  # stated p_k (4 dp) vs V_k / V_H
-CAND_DISC_YEARS = 2  # A19: FY30 sits two years past the undiscounted FY28 numerator
-NUM_YEAR = 2028  # FY28 numerator (t = 1, undiscounted); the option is discounted from t_opt back to here (A14)
-
-REQUIRED = [
-    "shares",
-    "shares_basic",
-    "equity",
-    "cash",
-    "net_cash",
-    "cash_yield",
-    "tangible_book",
-    "pb_floor",
-    "eps_fy27_m",
-    "payout_3y",
-    "eps_fy28_l",
-    "eps_fy28_m",
-    "eps_fy28_h",
-    "eps_fy28_gaap_m",
-    "rev_fy28_l",
-    "rev_fy28_m",
-    "rev_fy28_h",
-    "rev_fy30_fb",
-    "rev_fy28_opp",
-    "sbc_fy26",
-    "amort_fy26",
-    "tax",
-    "sbc_haircut",
-    "r_perp",
-    "g2",
-    "g2_bit_src",
-    "bit_opm_weak",
-    "bit_opm_strong",
-    "pe_own_min",
-    "pe_own_p5",
-    "pe_own_p50",
-    "unit_rev",
-    "unit_gp",
-    "unit_opex",
-    "opt_rev_ai",
-    "sic_share_fy24",
-    "rev_fy26",
-    "sic_share_fy26",
-    "t_opt",
-    "fox_units_m",
-    "fox_asp",
-    "sonoma_units_m",
-    "sonoma_asp",
-    "op_gaap_fy26",
-    "restr_fy26",
-    "capex_committed",
-    "capex_l",
-    "capex_m",
-    "capex_h",
-    "ss_return",
-    "y1",
-    "y2",
-    "tau",
-]
+# Provisional interfaces: both machine axes must be supplied by the joint axis
+# migration and reconciled with their actual sources before use.
+DEPENDENCIES = {"libraries": ("gordon", "inputs", "zones", "valuation_guards", "partial_basis"),
+                "axes": {"burn_in": "burn_in_test", "capex": "ai_capex"}}
+MILLION = 1e6
+NUM_YEAR = 2028
+CAND_DISC_YEARS = 2
+FLOOR_RATIO_MIN = 0.3
+HAIRCUT_ROUNDING = 0.01
+MIN_R_MINUS_G = 0.02
+NARRATIVE_CAP = 0.30
 TIERS = ("L", "M", "H")
-
+BASKETS = {"r_perp": 4}
+# Original 2026-11-04 research explicitly says the FY30 single-broker path
+# was not refreshed and whether new consensus includes the extra customer and
+# SiC revenue is unknown. Research must substantiate both before changing.
+OPTION_OVERLAP_RESOLVED = False
+FY30_PATH_REFRESHED = False
+INPUTS = {
+    # FY27 Q1 稀释加权股数；实际基准刷新，SBC 已扣，不另叠未来股本增长; source/as-of: 2026-09-25
+    'shares': 33520000.0,
+    # FY27 Q1 期末在外股数；只用于有形账面参照; source/as-of: 2026-09-25
+    'shares_basic': 32663000.0,
+    # FY27 Q1 股东权益 $M；经营权益 = 222.112 − 95.098 = 127.014; source/as-of: 2026-09-25
+    'equity': 222.112,
+    # FY27 Q1 现金及等价物 $M；不含受限现金 0.150; source/as-of: 2026-09-25
+    'cash': 104.902,
+    # 现金 104.902 − 经营租赁负债 0.653 − 9.151；零借款，按原结构单列; source/as-of: 2026-09-25
+    'net_cash': 95.098,
+    # Q1 利息 0.899 ÷ 平均现金 (112.308 + 104.902)/2 × 4；年化估算，非收益率指引; source/as-of: 2026-09-25
+    'cash_yield': 0.0331108144,
+    # 权益 222.112 − 商誉 10.719 − 无形资产 9.157；$M; source/as-of: 2026-09-25
+    'tangible_book': 202.236,
+    # 资产地板倍数（作用于**有形** BPS）；只披露不 max()；近 5 年 PB 低位锚（A10）; source/as-of: 对话锁定
+    'pb_floor': 1.89,
+    # yfinance FY27 normalized EPS 均值（5 家，0.90–1.23）；期末 2027-06-30，模型只滚未入账部分; source/as-of: 2026-11-04
+    'eps_fy27_m': 0.998,
+    # 近三年实付派息率（无股利，实付留存 100%）；只进 A18 的 B 桶披露行，**不进** BPS 推演（主尺按 \(b_1 = g_2/ROE\) 滚）; source/as-of: 2026-05-29
+    'payout_3y': 0.0,
+    # yfinance FY28 normalized EPS 下沿（4 家，endDate 2028-06-30）; source/as-of: 2026-11-04
+    'eps_fy28_l': 1.44,
+    # 同源四家均值；7 日前 1.375，本期 +22.36%; source/as-of: 2026-11-04
+    'eps_fy28_m': 1.6825,
+    # 同源四家上沿; source/as-of: 2026-11-04
+    'eps_fy28_h': 2.08,
+    # 历史 GAAP 共识，仅与 haircut_ref_eps / haircut_ref_shares 配对验证旧折扣；不是新版 FY28 GAAP 预测; source/as-of: 2026-09-14
+    'eps_fy28_gaap_m': 1.115,
+    # yfinance FY28 四家收入下沿 $M; source/as-of: 2026-11-04
+    'rev_fy28_l': 200.0,
+    # 同源收入均值 $M; source/as-of: 2026-11-04
+    'rev_fy28_m': 229.8965,
+    # 同源收入上沿 $M; source/as-of: 2026-11-04
+    'rev_fy28_h': 280.246,
+    # FY30 收入 $M——**Freedom Broker 单家**（2026-07-16 上调评级时公布，Investing.com 转述；无 EPS / 利润率）；**进候选带（A19）与期权 H 档的量（卖方最高路径终点，A14），不进底牌**; source/as-of: 2026-07-16
+    'rev_fy30_fb': 355.8,
+    # Oppenheimer 2026-09-10历史单家FY28收入，仅保留历史参照，已被新四家区间取代、不作当前上沿校验; source/as-of: 2026-09-10
+    'rev_fy28_opp': 218.0,
+    # FY2026 SBC $M（现金流量表）；推导出的 FY28 SBC 须 ≥ 此值（A9 下界参照）; source/as-of: 2026-05-29
+    'sbc_fy26': 6.761,
+    # 收购无形资产摊销 $M（FY2026）；GAAP–normalized 差里先剔掉它，本框架不扣摊销（A9）; source/as-of: 2026-05-29
+    'amort_fy26': 1.23,
+    # 法定联邦税率；SBC 税后、利息税后与期权单位税后用; source/as-of: FY2026 10-K
+    'tax': 0.21,
+    # 保留已讨论的经济成本假设；由历史同日 normalized/GAAP 对推，不把新 normalized 与旧 GAAP 混算；新 GAAP 共识待更新（A9）; source/as-of: 2026-09-14
+    'sbc_haircut': 0.18,
+    # 永续折现率 = 篮 4 常规经营 10%：设备商，盈利随客户 capex 项目周期、不是商品价函数；小盘与客户集中不抬 r（A17）；备选篮 7 15% 只披露（A12）；`check_r`; source/as-of: 2026-09-30
+    'r_perp': 0.1,
+    # **护栏下沿**：自身 5 年日频当期财年前瞻 PE 带最低点（2022-07-01，收 6.94 ÷ FY23 共识 0.69）；与带同基的口径 = 锚点 ÷ `eps_fy27_m`（A8）; source/as-of: 2026-09-14
+    'pe_own_min': 10.06,
+    # 同带 p5；证据坐标，不入公式（A8）; source/as-of: 2026-09-14
+    'pe_own_p5': 13.1,
+    # 同带中位；证据坐标——H 档与带同基口径 32.7× 略低于此值；M 档在合法 g 内不可达（带边 g 6.9% 越 cap，A8）; source/as-of: 2026-09-14
+    'pe_own_p50': 35.1,
+    # FY2024 实测收入 $M（客户 D 单客户填充峰值年）；与 `sic_share_fy24` 合出 SiC 峰值收入（A14）；也是历史利润率下界的分母——**只披露，不作单位经济**; source/as-of: 2024-05-31
+    'unit_rev': 66.218,
+    # FY2024 实测毛利 $M（49.1%）；只进历史利润率下界披露（A14）; source/as-of: 2024-05-31
+    'unit_gp': 32.543,
+    # FY2024 实测 opex $M（含 SBC 2.5M）；只进历史利润率下界披露（A14）; source/as-of: 2024-05-31
+    'unit_opex': 22.465,
+    # FY2024 EV / 功率半导体占收入比（10-K 终端结构）；× `unit_rev` = SiC 峰值收入 60.92M（A14）; source/as-of: 2024-05-31
+    'sic_share_fy24': 0.92,
+    # FY2026 收入 $M（10-K）；与 `sic_share_fy26` 合出共识视同已含的 SiC 水平（A14）; source/as-of: 2026-05-29
+    'rev_fy26': 50.0,
+    # FY2026 EV / 功率半导体占收入比（10-K）；FY26 SiC 收入 8.5M 视同已在 FY28 共识内（共识真实所含 SiC 份额 `待补`；只扣这一层 → SiC 份数偏上限，A14）; source/as-of: 2026-05-29
+    'sic_share_fy26': 0.17,
+    # L 档份数（M / H 档亦含）：第二家 AI 处理器客户按 1 份领先 WLBI AI 处理器客户近 12 个月已签订单 $14M（2026-02-26）+ $22M（2026-08-12），各约 6 个月交付 ≈ 一年出货；无卖方的量 → 快照（A14）; source/as-of: 2026-08-12
+    'opt_rev_ai': 36.0,
+    # 期权兑现年 = H 档卖方最高路径终点年（Freedom Broker FY30）；L / M 无公司具名年，同年计；按篮子 r 折回 FY28 两年（A14）; source/as-of: 2026-10-05
+    't_opt': 2030.0,
+    # **理论产能读数，只披露、不作 H 的量**（轻资产，A14）：Fremont 一班可做约 20 台 / 月晶圆级 FOX 系统（CEO：「20 FOX-XPs here a month」，Sonoma 改由东南亚代工直发后 Fremont 可全做晶圆级；Q4 FY26 电话会）（A14）; source/as-of: 2026-07-14
+    'fox_units_m': 20.0,
+    # 晶圆级 FOX 系统单价 $M（含 WaferPak；CEO：「ASP closer with the WaferPaks of $5 million … $100 million a month」，另说「upwards of six」）；只进理论产能读数（A14）; source/as-of: 2026-07-14
+    'fox_asp': 5.0,
+    # **理论产能读数，只披露**：东南亚代工约 20 台 / 月 Sonoma（Q3 FY26 起量；10-K 称其「significantly increases the total manufacturing capacity」）（A14）; source/as-of: 2026-07-14
+    'sonoma_units_m': 20.0,
+    # Sonoma Ultra 单价 $M（CEO：「$20 million a month of Sonomas」；标准机 $0.6–0.7M）；只进理论产能读数；eval 校验 H 世界收入 ≤ 理论产能（A14）; source/as-of: 2026-07-14
+    'sonoma_asp': 1.0,
+    # FY2026 GAAP 营业利润 $M；加回 SBC / 收购摊销 / 重组得 non-GAAP 经营利润 −6.10M，作 H 档利润率两期推断的第一期（A14）; source/as-of: 2026-05-29
+    'op_gaap_fy26': -14.1,
+    # FY2026 重组费用 $M（加回项）（A14）; source/as-of: 2026-05-29
+    'restr_fy26': 0.006,
+    # 已承诺未投的扩产资本 $M：无具名扩产预算（FY26 资本开支 2.1M、「capital-light」）→ 0；期权只扣份数所需的新增经营资本（κ × 份数，主要是存货与应收；A14）; source/as-of: 2026-07-14
+    'capex_committed': 0.0,
+    # 2026-09-25 资产负债表日至 FY28 年初 2027-06-25，273/365；A21; source/as-of: 2026-09-25
+    'tau': 0.7479452055,
+    # 2026-09-14 normalized EPS 历史参照；仅复核 18% 折扣原推导; source/as-of: 2026-09-14
+    'haircut_ref_eps': 1.3833,
+    # 与两条历史 EPS 同期的股数，防跨期混算; source/as-of: 2026-09-14
+    'haircut_ref_shares': 33170000.0,
+    # FY27 Q1 non-GAAP 净利 $M；财报 EX-99.1; source/as-of: 2026-09-25
+    'q1_non_gaap_ni': 9.357,
+    # FY27 Q1 SBC $M；已报季度扣实际，不扣估算百分比; source/as-of: 2026-09-25
+    'q1_sbc': 1.88,
+    # FY27 Q1 净利息收入 $M；按 tax 同口径剔除; source/as-of: 2026-09-25
+    'q1_interest': 0.899,
+    # 条件压力：额外营运资本占用预算的条件压力；以三倍(Q1净CF流出3.054+capex0.049)参照量级，非净CF预测、非已承诺投入; source/as-of: 2026-09-25
+    'cash_need_stress': 9.309,
+}
 
 def _lin(cal: int, y1: int, y2: int, a: float, b: float) -> float:
     """a through Y1, linear to b at Y2, b after (valuation-rules ② 稳态回报三段)."""
@@ -214,21 +156,6 @@ def path_value(t0: int, y1: int, y2: int, r_s: float, g: float, roe: float, r: f
         e *= 1 + g
         t += 1
 
-
-def stated_v_opt(md: str) -> float | None:
-    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
-    return float(m.group(1)) if m else None
-
-
-def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
-    m = re.search(
-        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
-        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
-        md,
-    )
-    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
-
 def derived_haircut(inp: dict[str, float]) -> tuple[float, float]:
     """A9: SBC share of FY28 normalized NI, from the GAAP-vs-normalized consensus gap.
 
@@ -237,98 +164,96 @@ def derived_haircut(inp: dict[str, float]) -> tuple[float, float]:
     (haircut, implied pre-tax FY28 SBC in $M) — the latter is printed against
     FY26 actual SBC as a plausibility read.
     """
-    ni_norm = inp["eps_fy28_m"] * inp["shares"] / MILLION
-    gap = (inp["eps_fy28_m"] - inp["eps_fy28_gaap_m"]) * inp["shares"] / MILLION
+    # Keep both reference EPS lines and their share count at the same vintage.
+    # The refreshed normalized forecast cannot be paired with stale GAAP EPS.
+    ni_norm = inp["haircut_ref_eps"] * inp["haircut_ref_shares"] / MILLION
+    gap = (inp["haircut_ref_eps"] - inp["eps_fy28_gaap_m"]) * inp["haircut_ref_shares"] / MILLION
     sbc_after_tax = gap - inp["amort_fy26"] * (1.0 - inp["tax"])
     return sbc_after_tax / ni_norm, sbc_after_tax / (1.0 - inp["tax"])
 
 
-def sanity_checks(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
-    errs: list[str] = []
+def _local_basis_snapshot(axes):
+    return {
+        'inputs': INPUTS,
+        'constants': {'million': MILLION, 'numerator_year': NUM_YEAR, 'candidate_years': CAND_DISC_YEARS,
+                      'floor_ratio_min': FLOOR_RATIO_MIN, 'haircut_rounding': HAIRCUT_ROUNDING,
+                      'min_r_minus_g': MIN_R_MINUS_G, 'narrative_cap': NARRATIVE_CAP,
+                      'tiers': TIERS, 'baskets': BASKETS, 'option_overlap_resolved': OPTION_OVERLAP_RESOLVED,
+                      'fy30_path_refreshed': FY30_PATH_REFRESHED},
+        'shared': {
+            'burn_in': {'growth_reference': axes['burn_in']['g2_bit_src'],
+                        'weak_margin': axes['burn_in']['bit_opm_weak'],
+                        'strong_margin': axes['burn_in']['bit_opm_strong'],
+                        'alignment': axes['burn_in']['t_align'],
+                        'return_cap': axes['burn_in']['ss_return_cap_bit'],
+                        'return_reference': axes['burn_in']['ss_return_bit_ref'],
+                        'start': axes['burn_in']['y1_bit'], 'end': axes['burn_in']['y2_bit']},
+            'capex': {'role': axes['capex']['role'], 'rungs': axes['capex']['rungs'],
+                      'return_reference': axes['capex']['ss_floor_ai_capex_package']},
+        },
+    }
 
-    # A17: one leg, r is the basket's value; the basket is named in the Inputs source cell.
-    if "r_perp" not in baskets:
-        errs.append("r_perp: Inputs source cell names no 篮 N (A17)")
-    errs += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
 
-    # A5: g2 is the peer median truncated to g_cap(r) — the truncation is a fact to check.
-    cap = g_cap(inp["r_perp"])
-    errs += check_g_cap(inp["g2"], inp["r_perp"], "g2")
-    if abs(inp["g2"] - min(inp["g2_bit_src"], cap)) > 5e-5:
-        errs.append(f"g2={inp['g2']:.4f} != min(_AXIS.burn-in-test median {inp['g2_bit_src']:.4f}, cap {cap:.3f}) — A5")
-    # _AXIS.burn-in-test: shared rows must equal the axis file (单改一边即红).
-    if BIT_AXIS.is_file():
-        peer = parse_inputs(BIT_AXIS.read_text(encoding="utf-8"))
-        for k in BIT_SHARED:
-            if k not in peer or abs(peer[k] - inp[k]) > 1e-9:
-                errs.append(f"{k} {inp[k]:g} != _AXIS.burn-in-test {peer.get(k)} — the leg ruler drifted")
-        for mine, theirs in BIT_PATH:
-            if theirs not in peer or abs(peer[theirs] - inp[mine]) > 1e-9:
-                errs.append(f"{mine} {inp[mine]:g} != _AXIS.burn-in-test {theirs} {peer.get(theirs)} (A20)")
-    else:
-        errs.append("frameworks/axes/burn-in-test.md missing — leg ruler unchecked")
+# A local snapshot does not attest the formulas, sources or user approval.
+LOCAL_BASIS_BASELINE = '1a846297ad0d2d292d71a39fc13a38f97b1fbe9ac8cb57f3f8303515f0713ff7'
+
+
+def calculate(context):
+    inp = dict(INPUTS)
+    burn, capex = context["axes"]["burn_in"], context["axes"]["capex"]
+    # The shared aligned year is FY28, the actual numerator in this model.
+    # A different year means the forecasts and path need rebuilding.
+    require_axis_alignment(burn, NUM_YEAR)
+    inp.update({"g2_bit_src": burn["g2_bit_src"], "bit_opm_weak": burn["bit_opm_weak"],
+                "bit_opm_strong": burn["bit_opm_strong"], "ss_return": burn["ss_return_cap_bit"],
+                "y1": burn["y1_bit"], "y2": burn["y2_bit"],
+                **{f"capex_{tier.lower()}": capex["rungs"][tier] for tier in TIERS}})
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in inp.values()):
+        raise ValueError("inputs must be finite numbers")
+    inp["g2"] = min(inp["g2_bit_src"], g_cap(inp["r_perp"]))
+    require_whole_years(inp, ("y1", "y2", "t_opt"))
+    if inp["r_perp"] <= inp["g2"] or inp["r_perp"] <= -1:
+        raise ValueError("perpetuity or discount factor is mathematically invalid")
+    if inp["t_opt"] != NUM_YEAR + CAND_DISC_YEARS:
+        raise ValueError("historical option and candidate observations require a rebuilt dated path")
+    review_flags = ["cash_use_stress_is_not_a_verified_bound",
+                    "gaap_consensus_refresh_missing"]
+    if not FY30_PATH_REFRESHED:
+        review_flags.append("fy30_broker_candidate_not_refreshed")
+    if not OPTION_OVERLAP_RESOLVED:
+        review_flags.append("option_customer_and_sic_may_overlap_consensus")
+    if check_r(inp["r_perp"], "r_perp", 4):
+        review_flags.append("discount_rate_basket_mismatch")
+    if check_g_cap(inp["g2"], inp["r_perp"], "g2"):
+        review_flags.append("terminal_growth_above_cap")
     if inp["ss_return"] > NARRATIVE_CAP + 1e-9:
-        errs.append(f"ss_return {inp['ss_return']:g} above the 叙事换代 cap {NARRATIVE_CAP:g} (A20)")
-    if not (NUM_YEAR <= inp["y1"] < inp["y2"]):
-        errs.append("high-return window must satisfy numerator year <= Y1 < Y2 (A20)")
-    if not (0.0 <= inp["tau"] < 3.0):
-        errs.append("tau out of range (A21)")
-    gap = inp["r_perp"] - inp["g2"]
-    if gap <= 0:
-        errs.append("perpetuity diverges: g2 >= r")
-    elif gap < MIN_R_MINUS_G:
-        errs.append(f"r - g2 = {gap:.2%} < {MIN_R_MINUS_G:.0%} — at the pole")
-
-    # 裁决顺序 ④ 同世界门: own consensus FY27 -> FY28 is up, so a g2 >= 0 source is admissible.
-    if not inp["eps_fy27_m"] < inp["eps_fy28_l"]:
-        errs.append("FY27 consensus not below FY28 low: the same-world gate for a g2 >= 0 source no longer holds (A5)")
-    if inp["g2"] < 0:
-        errs.append("g2 < 0 contradicts an upward FY27->FY28 consensus (同世界门)")
-
-    # A2e-2a: one consensus range, three points on it.
-    errs += ladder("numerator", inp["eps_fy28_l"], inp["eps_fy28_m"], inp["eps_fy28_h"])
-
-    # A9: the haircut is derived from the GAAP consensus gap, then rounded up by at most 1pp.
-    derived, sbc_fy28 = derived_haircut(inp)
-    if not (derived - 1e-9 <= inp["sbc_haircut"] <= derived + HAIRCUT_ROUNDING + 1e-9):
-        errs.append(f"sbc_haircut={inp['sbc_haircut']:.4f} outside [derived {derived:.4f}, +{HAIRCUT_ROUNDING:.2f}] (A9)")
-    if sbc_fy28 < inp["sbc_fy26"]:
-        errs.append(f"GAAP gap implies FY28 SBC {sbc_fy28:.2f}M below FY26 actual {inp['sbc_fy26']:g}M — consensus lines inconsistent, re-source (A9)")
-
-    # A15: the closing item must be what the equity field is net of.
+        review_flags.append("steady_return_above_narrative_cap")
+    if not NUM_YEAR <= inp["y1"] < inp["y2"]:
+        review_flags.append("return_fade_years_invalid")
+    if not 0 <= inp["tau"] < 3:
+        review_flags.append("fractional_discount_period_outside_range")
+    if inp["r_perp"] - inp["g2"] < MIN_R_MINUS_G:
+        review_flags.append("terminal_growth_close_to_discount_rate")
+    if not inp["eps_fy27_m"] < inp["eps_fy28_l"] or inp["g2"] < 0:
+        review_flags.append("growth_incompatible_with_forecast_direction")
+    if ladder("numerator", inp["eps_fy28_l"], inp["eps_fy28_m"], inp["eps_fy28_h"]):
+        review_flags.append("forecast_eps_not_increasing")
+    derived, implied_sbc = derived_haircut(inp)
+    if not derived - 1e-9 <= inp["sbc_haircut"] <= derived + HAIRCUT_ROUNDING + 1e-9:
+        review_flags.append("sbc_haircut_outside_historical_reference_range")
+    if implied_sbc < inp["sbc_fy26"]:
+        review_flags.append("implied_sbc_below_historical_actual")
     if not 0 < inp["net_cash"] <= inp["cash"]:
-        errs.append(f"net_cash {inp['net_cash']} must be positive and <= cash {inp['cash']} (A15)")
+        review_flags.append("net_cash_outside_cash_balance")
     if inp["equity"] - inp["net_cash"] <= 0:
-        errs.append("operating equity (equity - net_cash) is not positive (A15)")
-
-    # A14: the option is realised after the numerator year; the SiC item must be positive.
+        review_flags.append("operating_equity_nonpositive")
     if inp["t_opt"] <= NUM_YEAR:
-        errs.append("option year must lie after the FY28 numerator year (A14)")
+        review_flags.append("option_realization_not_after_numerator_year")
     if inp["unit_rev"] * inp["sic_share_fy24"] <= inp["rev_fy26"] * inp["sic_share_fy26"]:
-        errs.append("SiC item: FY24 peak not above the FY26 level the consensus carries (A14)")
-
-    # A2e-7a: probabilities stay in the zone+V table.
-    p_fields = [k for k in inp if k.startswith("p_")]
-    if p_fields:
-        errs.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
-    return errs
-
-
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
-    errors = sanity_checks(inp, baskets)
-    # Demand-side mount on the AI-capex axis (share is immaterial, rungs still must match).
-    errors += check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"]))
-
+        review_flags.append("sic_peak_not_above_consensus_baseline")
+    if any(key.startswith("p_") for key in inp):
+        review_flags.append("option_probability_inside_base_inputs")
     r, g2 = inp["r_perp"], inp["g2"]
     cap = g_cap(r)
     y1, y2, rs, tau = int(inp["y1"]), int(inp["y2"]), inp["ss_return"], inp["tau"]
@@ -343,15 +268,18 @@ def main() -> int:
     core = {t: eps[t] - int_ps for t in TIERS}
 
     # ---- Step 3-4: tier ROE = E_FY28 / opening-FY28 operating book, Gordon multiple, cash added back ----
-    # The FY26 year-end operating book (latest balance sheet) is rolled over the
-    # FY27 consensus not yet booked — the whole year, on the same core basis
+    # The latest-quarter operating book is rolled over remaining FY27
+    # consensus on the same core basis
     # (haircut, interest stripped) — at the growth-required retention b1 =
     # g2/ROE (no g1 window, A18).  ROE and BPS depend on each other; closed form
     # BPS = BPS0 / (1 - g2·N/core).  A diverging roll (g2·N/core >= 1) stops.
     equity_op = inp["equity"] - inp["net_cash"]
     cash_ps = inp["net_cash"] * MILLION / inp["shares"]
     bps_op_fy26 = equity_op * MILLION / inp["shares"]
-    unbooked = inp["eps_fy27_m"] * (1.0 - inp["sbc_haircut"]) - int_ps  # FY27 core EPS, all of it still unbooked
+    # Q1 is already in September equity/cash; only the remaining fiscal-year
+    # profit rolls into opening FY28 capital and the distributable-profit window.
+    booked_core = (inp["q1_non_gaap_ni"] - inp["q1_sbc"] - inp["q1_interest"] * (1 - inp["tax"])) * MILLION / inp["shares"]
+    unbooked = inp["eps_fy27_m"] * (1.0 - inp["sbc_haircut"]) - int_ps - booked_core
 
     def opening_bps(core_x: float, g: float) -> float:
         share = g * unbooked / core_x
@@ -384,11 +312,10 @@ def main() -> int:
     below_floor = scen["L"] < floor
     L, M, H = scen["L"], scen["M"], scen["H"]
     if not (L < M < H):
-        errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
-        return report(errors)
+        review_flags.append('base_anchors_not_increasing')
     floor_ratio = scen["L"] / M
     if below_floor and floor_ratio < FLOOR_RATIO_MIN:
-        errors.append(f"A2e-1: scenario L below floor and scenario_L/M = {floor_ratio:.2f} < {FLOOR_RATIO_MIN} — earnings ruler failed at L, back to dialogue")
+        review_flags.append('low_anchor_below_floor_and_ratio_threshold')
 
     # ---- Guardrail (裁决顺序 ③), on the band's own basis ----
     # The band is close / current-FY (FY27) consensus, so the anchor is divided by
@@ -397,7 +324,7 @@ def main() -> int:
     band_basis = {t: scen[t] / inp["eps_fy27_m"] for t in TIERS}
     for t in TIERS:
         if band_basis[t] < inp["pe_own_min"]:
-            errors.append(f"{t} anchor / FY27 consensus = {band_basis[t]:.1f}x below own band lower edge {inp['pe_own_min']:g}")
+            review_flags.append('anchor_below_historical_multiple_floor' + "_" + t.lower())
 
     def band_edge_g(target_pe: float) -> tuple[float, bool]:
         """g at M-tier ROE that puts M / FY27 consensus on `target_pe` (evidence, never an input)."""
@@ -409,10 +336,10 @@ def main() -> int:
 
     # ---- A2e-2c flat ladder + A2e-5 decomposition (both on the ex-cash earnings term) ----
     if not (core["L"] < core["M"] < core["H"]):
-        errors.append(f"numerator ladder broken: core EPS {core['L']:.3f}/{core['M']:.3f}/{core['H']:.3f} (A2e-2c)")
+        review_flags.append('core_earnings_not_increasing')
     flat = [core[t] * pes["M"] * df + win["M"] + cash_ps for t in TIERS]
     if not (flat[0] < flat[1] < flat[2]):
-        errors.append(f"flat-multiple ladder broken: {flat}")
+        review_flags.append('flat_ladder_not_increasing')
     num_lm, num_hm = core["L"] / core["M"], core["H"] / core["M"]
     pe_lm, pe_hm = pes["L"] / pes["M"], pes["H"] / pes["M"]
 
@@ -434,14 +361,14 @@ def main() -> int:
     disc_n = int(inp["t_opt"]) - NUM_YEAR
     grow = (1.0 + g2) ** disc_n  # the deck's H tier already carries FY28 x (1+g2)^n by the option year
     base_rev = rev28["H"] * grow
-    if inp["rev_fy28_opp"] < rev28["H"] or inp["rev_fy30_fb"] <= base_rev:
-        errors.append("highest sell-side path must sit above the H-tier consensus (A14)")
+    if inp["rev_fy30_fb"] <= base_rev:
+        review_flags.append('single_broker_path_not_above_high_consensus')
     path_xs = inp["rev_fy30_fb"] - base_rev
-    path_fy29 = (inp["rev_fy28_opp"] * inp["rev_fy30_fb"]) ** 0.5  # interpolated, disclosure only
+    path_fy29 = (rev28["H"] * inp["rev_fy30_fb"]) ** 0.5  # interpolated, disclosure only
     qty = {"L": inp["opt_rev_ai"], "M": inp["opt_rev_ai"] + sic_item, "H": path_xs + inp["opt_rev_ai"] + sic_item}
     scale = base_rev + qty["H"]
     if scale > cap_rev:
-        errors.append(f"H-world revenue {scale:.1f}M exceeds the stated capacity {cap_rev:.0f}M — capacity binds, revisit (A14)")
+        review_flags.append('option_revenue_above_named_capacity')
     # Margin at the H-world scale: two-period fixed / variable split of non-GAAP
     # operating profit (ex SBC, amortisation, restructuring; ex cash interest),
     # FY26 actual vs FY28 M consensus; must sit inside the axis peer range.
@@ -452,16 +379,15 @@ def main() -> int:
     opm_at = lambda rev: (var_m * rev + fixed) / rev  # noqa: E731
     opm_h = opm_at(scale)
     if not inp["bit_opm_weak"] <= opm_h <= inp["bit_opm_strong"]:
-        errors.append(f"H-world op margin {opm_h:.4f} outside axis peer range "
-                      f"[{inp['bit_opm_weak']}, {inp['bit_opm_strong']}] — clamp and say why (_AXIS.burn-in-test ⑤)")
+        review_flags.append('option_operating_margin_outside_peer_range')
     inc_core = var_m * (1.0 - inp["tax"]) * (1.0 - inp["sbc_haircut"])  # incremental core margin
-    guide27 = (var_m * 140.0 + fixed + inp["cash"] * inp["cash_yield"]) / 140.0  # vs guided 18-22% pretax, printed only
+    guide27 = (var_m * 150.0 + fixed + inp["cash"] * inp["cash_yield"]) * (1 - inp["tax"]) / 150.0  # non-GAAP net margin, disclosure only
     k_h = opening_bps(core["H"], g2) * inp["shares"] / MILLION  # FY28 opening operating capital, H
     kappa = k_h / rev28["H"]
     ni_h = core["H"] * inp["shares"] / MILLION
     unit = {"L": margin["M"], "M": margin["M"], "H": inc_core}
     if not (0 < qty["L"] < qty["M"] < qty["H"]):
-        errors.append(f"option quantity ladder broken: {qty}")
+        review_flags.append('option_quantity_not_increasing')
 
     def v_tier(dr: float, m: float, rr: float = r, kap: float = kappa, rs_: float | None = None) -> dict[str, float]:
         d_ni = dr * m
@@ -477,17 +403,10 @@ def main() -> int:
 
     vt = {t: v_tier(qty[t], unit[t]) for t in TIERS}
     v_opt = vt["H"]["v"]
+    if v_opt <= 0:
+        raise ValueError("option weights are undefined for nonpositive option value")
     p_calc = tuple(vt[t]["v"] / v_opt for t in TIERS)
     hist_margin = (inp["unit_gp"] - inp["unit_opex"]) * (1.0 - inp["tax"]) / inp["unit_rev"]  # FY24 realised, floor only
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-    said_v = stated_v_opt(md)
-    if said_v is None or abs(said_v - v_opt) > TOL:
-        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
-    p_tiers = stated_p_tiers(md)
-    if p_tiers is None or any(abs(x - y) > P_TOL for x, y in zip(p_tiers, p_calc)):
-        errors.append(f"p_L/p_M/p_H stated {p_tiers} vs V_k / V_H {tuple(round(x, 4) for x in p_calc)}")
-
     # ---- Candidate band (A19; AGENTS.md「共识升级候选带」): never a zone input ----
     # One house (Freedom Broker) prints FY30 revenue and nothing else, so each
     # tier's FY28 consensus net margin carries it to FY30: FY30 street EPS =
@@ -496,7 +415,8 @@ def main() -> int:
     # FY27-FY29 at b1 = g2/ROE (FY29 core is the geometric midpoint — the path
     # only moves the book), and FY30 is discounted two years.  The L world has
     # no second leg of growth, so L′ = L.
-    errors += ladder("FY28 revenue", rev28["L"], rev28["M"], rev28["H"])
+    if ladder("FY28 revenue", rev28["L"], rev28["M"], rev28["H"]):
+        review_flags.append("forecast_revenue_not_increasing")
 
     # Freedom Broker's FY30 is an ordinary base forecast = growth type (construction §7h): its
     # FY28-mean -> FY30 growth is shared by M and H (each tier keeps its own FY28 margin).
@@ -514,114 +434,103 @@ def main() -> int:
 
     cand_m, cand_h = fy30_tier("M"), fy30_tier("H")
     cand = (L, cand_m[2], cand_h[2])
-    stated_cand = load_framework(FRAMEWORK).candidate
-    if stated_cand is None:
-        errors.append("候选带 line missing from Outputs (A19)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, cand):
-            if abs(said - got) > TOL:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
 
-    # ---- Report ----
-    derived, sbc_fy28 = derived_haircut(inp)
-    print(f"formula_id={FORMULA_ID}")
-    print(f"r={r:g} (篮 {baskets.get('r_perp')}) g2={g2:.4f} (_AXIS.burn-in-test median {inp['g2_bit_src']:.4f} truncated to g_cap(r) {cap:.3f})  "
-          f"sbc haircut {inp['sbc_haircut']:.3f} (derived {derived:.4f} from GAAP gap; implied FY28 SBC {sbc_fy28:.2f}M vs FY26 {inp['sbc_fy26']:g}M; "
-          f"FY26-based {inp['sbc_fy26'] * (1 - inp['tax']) / (inp['eps_fy28_m'] * inp['shares'] / MILLION):.4f})")
-    print(f"operating equity {equity_op:.3f}M = book {inp['equity']:g} - net cash {inp['net_cash']:g}; "
-          f"interest stripped {int_ps:.4f}/sh (cash {inp['cash']:g}M x {inp['cash_yield']:.1%} after tax); cash added back {cash_ps:.4f}/sh")
-    for t in TIERS:
-        print(f"{t}: street {street[t]:.4f} -> econ {eps[t]:.4f} -> core {core[t]:.4f}  ROE {roe[t]:.4f}  payout {1 - g2 / roe[t]:.3f}  "
-              f"PE {pes[t]:.4f}x -> {ex_cash[t]:.4f} (FY28 opening) x df + window {win[t]:.4f} + cash = scenario {scen[t]:.4f}")
-    print(f"ROE basis (A18): BPS_op opening-FY28 = {opening_bps(core['L'], g2):.3f}/{opening_bps(core['M'], g2):.3f}/{opening_bps(core['H'], g2):.3f} "
-          f"(FY26-end op book {bps_op_fy26:.3f} rolled over FY27 unbooked core {unbooked:.3f}/sh at b1 = g2/ROE = {b1['L']:.2f}/{b1['M']:.2f}/{b1['H']:.2f}); "
-          f"FY26-book basis would read ROE {roe_fy26['L']:.4f}/{roe_fy26['M']:.4f}/{roe_fy26['H']:.4f}")
-    print(f"B bucket (actual retention {ret_actual:.0%} − b1) × FY27 unbooked → {excess_cash['L']:+.2f}/{excess_cash['M']:+.2f}/{excess_cash['H']:+.2f} USD/sh "
-          f"(cash the model deems distributed but the company keeps; disclosure only, not a leg, not in BPS)")
-    for rr, tag in ((0.13, "篮 6 13% (former basket)"), (0.15, "篮 7 15%")):
-        alt = {t: core[t] * pp(g2, roe[t], rr) * (1 + rr) ** (-tau) + window(roe[t], g2, rr) + cash_ps for t in TIERS}
-        print(f"contrast r {tag}: {alt['L']:.2f}/{alt['M']:.2f}/{alt['H']:.2f} (V_H {v_tier(qty['H'], inc_core, rr=rr)['v']:.2f})")
-    print(f"floor (disclosed only, not max()'d): pb {inp['pb_floor']:g} x tbvps {tbvps:.4f} = {floor:.4f}  scenario_L={scen['L']:.2f} "
-          f"{'BELOW' if below_floor else 'above'} floor by {abs(scen['L'] - floor):.2f}  "
-          f"scenario_L/M={floor_ratio:.3f} (A2e-1 trigger < {FLOOR_RATIO_MIN} only if below floor)")
-    print(f"steady return {rs:.2%} (叙事换代 cap, _AXIS.burn-in-test ss_return_cap_bit; per tier min(ROE, it)) · high-return window Y1 {y1} / Y2 {y2} · "
-          f"tau {tau:g} (x {df:.4f}) · window profit {unbooked:.3f} x (1 - g2/ROE) -> PV "
-          + "/".join(f"{win[t]:.2f}" for t in TIERS))
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"flat-multiple ladder @ PE_M {pes['M']:.2f}x (+cash): {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"guardrail on band basis (anchor / FY27 cons {inp['eps_fy27_m']:g}): "
-          f"L {band_basis['L']:.1f}x M {band_basis['M']:.1f}x H {band_basis['H']:.1f}x vs own band lower edge {inp['pe_own_min']:g} "
-          f"(FY28-core multiples {pes['L']:.2f}/{pes['M']:.2f}/{pes['H']:.2f}x are a different basis)")
-    print("band-edge g @ M ROE: " + " | ".join(
-        f"{k} {inp[f'pe_own_{k}']:g}x -> g {g:+.4f}{'' if cond else ' (ill-conditioned)'}{' (> cap, unreachable under ①)' if g > cap else ''}"
-        for k, (g, cond) in edges.items()) + f"  | max PE_M under ① = {pe_m_cap:.2f}x")
-    print(f"L/M {L / M:.3f} (ex-cash {ex_cash['L'] / ex_cash['M']:.3f} = num {num_lm:.3f} x pe {pe_lm:.3f}) | "
-          f"H/M {H / M:.3f} (ex-cash {ex_cash['H'] / ex_cash['M']:.3f} = num {num_hm:.3f} x pe {pe_hm:.3f}) | "
-          f"width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print(f"g2 leverage: -1pp ({g2 - 0.01:.2f}) -> {lo_l:.2f}/{lo_m:.2f}/{lo_h:.2f} "
-          f"{'(ladder broken)' if not lo_ok else ''}; +1pp exceeds cap {cap:.3f} (①, unusable)")
-    print(f"H quantity (demand side): Freedom FY30 {inp['rev_fy30_fb']:g} - H-tier FY28 {rev28['H']:g} x (1+g2)^{disc_n} {base_rev:.2f} = {path_xs:.2f}M "
-          f"+ second AI {inp['opt_rev_ai']:g} + SiC {sic_item:.2f} = {qty['H']:.2f}M; high path FY28 Oppenheimer {inp['rev_fy28_opp']:g} -> "
-          f"FY29 {path_fy29:.1f} (interpolated) -> FY30 {inp['rev_fy30_fb']:g}; H-world revenue {scale:.1f}M = {scale / cap_rev:.1%} of stated capacity {cap_rev:.0f}M")
-    print(f"two-period op margin: FY26 {op26:.2f}M @ {inp['rev_fy26']:g} / FY28M {op28:.2f}M @ {inp['rev_fy28_m']:g} -> variable {var_m:.4f}, fixed {fixed:.2f}M; "
-          f"at H-world scale {opm_h:.4f} (axis {inp['bit_opm_weak']}-{inp['bit_opm_strong']}); FY27 guide-check pretax {guide27:.4f} (guided 0.18-0.22); "
-          f"incremental core margin {inc_core:.4f}; capital/revenue kappa {kappa:.4f} (K_H {k_h:.2f}M)")
-    for t in TIERS:
-        x = vt[t]
-        print(f"V_{t}: qty {qty[t]:.2f}M x core margin {unit[t]:.4f} = dNI {x['d_ni']:.2f}M; success ROE {x['roe']:.4f} PE {x['pe']:.2f}x "
-              f"-> {x['gross']:.2f}/sh - capital {x['capital']:.2f}/sh (FY{int(inp['t_opt']) % 100} -> FY28, /{1 + r:g}^{disc_n})"
-              f" = {x['gross'] - x['capital']:.2f} at FY28 -> today {x['v']:.2f}  p={x['v'] / v_opt:.4f}")
-    print(f"V_opt = V_H = {v_opt:.2f} | SiC item {sic_item:.2f}M (FY24 {sic_peak:.2f} - FY26 {sic_in:.2f}) | FY24 realised after-tax EBIT {hist_margin:.4f} (floor only)")
-    cap_q = cap_rev - base_rev
-    sens = {
-        "path only (no named items)": v_tier(path_xs, inc_core)["v"],
-        "margin weak": v_tier(qty["H"], inp["bit_opm_weak"] * (1 - inp["tax"]) * (1 - inp["sbc_haircut"]))["v"],
-        "margin strong": v_tier(qty["H"], inp["bit_opm_strong"] * (1 - inp["tax"]) * (1 - inp["sbc_haircut"]))["v"],
-        "kappa x0.5": v_tier(qty["H"], inc_core, kap=kappa * 0.5)["v"],
-        "FY28M margin": v_tier(qty["H"], margin["M"])["v"],
-        "r 13%": v_tier(qty["H"], inc_core, rr=0.13)["v"],
-        "r 15%": v_tier(qty["H"], inc_core, rr=0.15)["v"],
+    option = tuple(scen[t] + vt[t]["v"] for t in TIERS)
+    # Historical comparisons isolate one changed assumption at a time and are
+    # not independently adopted valuation bands. The peer midpoint was
+    # excluded by the documented 2026-10-19 decision and remains a comparison.
+    option_sensitivities = {
+        "single_broker_path_only": v_tier(path_xs, inc_core)["v"],
+        "weak_peer_margin": v_tier(qty["H"], inp["bit_opm_weak"] * (1 - inp["tax"]) * (1 - inp["sbc_haircut"]))["v"],
+        "strong_peer_margin": v_tier(qty["H"], inp["bit_opm_strong"] * (1 - inp["tax"]) * (1 - inp["sbc_haircut"]))["v"],
+        "half_incremental_capital": v_tier(qty["H"], inc_core, kap=kappa * 0.5)["v"],
+        "middle_consensus_margin": v_tier(qty["H"], margin["M"])["v"],
+        "discount_rate_13pct": v_tier(qty["H"], inc_core, rr=0.13)["v"],
+        "discount_rate_15pct": v_tier(qty["H"], inc_core, rr=0.15)["v"],
     }
-    print("V_H sensitivity: " + " | ".join(f"{k} {v:.2f}" for k, v in sens.items()))
-
-    # A20 contrasts (disclosure only): what the deck and V_H read at other steady returns.
-    def deck_rs(rs_: float) -> str:
-        s = [core[t] * pp(g2, roe[t], r, rs_=rs_) * df + win[t] + cash_ps for t in TIERS]
-        return f"{s[0]:.2f}/{s[1]:.2f}/{s[2]:.2f} (V_H {v_tier(qty['H'], inc_core, rs_=rs_)['v']:.2f})"
-
-    contrasts = list(SS_FLOORS)
-    ref = parse_inputs(BIT_AXIS.read_text(encoding="utf-8")).get(SS_REF) if BIT_AXIS.is_file() else None
-    if ref is not None:
-        contrasts.insert(0, (ref, "axis pre-ruling TER/FORM median (ss_return_bit_ref)"))
-    print("steady-return contrasts (A20, not the deck): " + " | ".join(
-        f"{tag} {x:.2%} -> {deck_rs(x)}" for x, tag in contrasts))
-    print(f"theoretical-capacity reading (disclosure only, MUST NOT be H): {cap_rev:.0f}M - {base_rev:.2f} = {cap_q:.1f}M, "
-          f"op margin there {opm_at(cap_rev):.4f} -> V {v_tier(cap_q, inc_core)['v']:.2f}")
-    opt = tuple(anchor + vt[t]["v"] for anchor, t in zip((L, M, H), TIERS))
-    a2, b2 = cut_points(*opt)
-    print(f"zone+V band: {opt[0]:.2f}/{opt[1]:.2f}/{opt[2]:.2f}  A'={a2:.2f} B'={b2:.2f}")
-    print(f"候选带 (A19; Freedom Broker FY30 revenue {inp['rev_fy30_fb']:g}M = x{grow30:.4f} on FY28 mean, shared by M/H;"
-          f" FY30 rev M/H {rev28['M'] * grow30:.1f}/{rev28['H'] * grow30:.1f}M, g2, ÷(1+r)^{CAND_DISC_YEARS}; not a zone input): "
-          f"core FY30 {cand_m[0]:.3f}/{cand_h[0]:.3f}  ROE {cand_m[1]:.3f}/{cand_h[1]:.3f}  "
-          f"L′/M′/H′={cand[0]:.2f}/{cand[1]:.2f}/{cand[2]:.2f}  A′={(cand[0] + cand[1]) / 2:.2f} B′={(cand[1] + cand[2]) / 2:.2f}")
-    print(f"capex axis implied share: M {inp['rev_fy28_m'] * MILLION / inp['capex_m']:.3%} (not material)")
-
-    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # r_perp 1:1 — the only priced r; the rolled ROE, g2, the SBC-haircut core
-    # numerator and the net-cash add-back stay put.  Disclosure only.
-    def band_rf(dr: float) -> tuple[float, float, float]:
-        s = [core[t] * pp(g2, roe[t], r + dr) * (1 + r + dr) ** (-tau) + window(roe[t], g2, r + dr) + cash_ps
-             for t in TIERS]
-        return s[0], s[1], s[2]
-
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
-    if any(abs(x - y) > TOL for x, y in zip(band_rf(0.0), (L, M, H))):
-        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    # Only a clean run writes, so a FAIL never feeds the daily digest.
-    if not errors:
-        write_rf_readings("AEHR.US", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    return report(errors)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    steady_comparisons = {}
+    for name, reference in (("excluded_peer_median", burn["ss_return_bit_ref"]),
+                            ("packaging_fallback", capex["ss_floor_ai_capex_package"]),
+                            ("equipment_fallback", 0.15)):
+        steady_comparisons[name] = {
+            "return_reference": reference, "return_unit": "RATIO", "price_unit": "USD_PER_SHARE",
+            "anchors": {t: core[t] * pp(g2, roe[t], r, rs_=reference) * df + win[t] + cash_ps for t in TIERS},
+            "option_value": v_tier(qty["H"], inc_core, rs_=reference)["v"],
+        }
+    cap_qty = cap_rev - base_rev
+    theoretical_capacity = {"capacity_revenue": cap_rev, "incremental_revenue": cap_qty,
+                            "revenue_unit": "USD_MILLION", "operating_margin": opm_at(cap_rev),
+                            "operating_margin_unit": "RATIO", "option_value_unit": "USD_PER_SHARE",
+                            "option_value": v_tier(cap_qty, inc_core)["v"]}
+    discount_comparisons = {}
+    for rr, label in ((0.13, "rate_13pct"), (0.15, "rate_15pct")):
+        discount_comparisons[label] = {
+            "discount_rate": rr, "discount_rate_unit": "RATIO", "price_unit": "USD_PER_SHARE",
+            "anchors": {t: core[t] * pp(g2, roe[t], rr) * (1 + rr) ** (-tau)
+                        + window(roe[t], g2, rr) + cash_ps for t in TIERS},
+            "option_value": v_tier(qty["H"], inc_core, rr=rr)["v"],
+        }
+    # Stress varies cash used for additional operating capital; its historic
+    # amount comes from the Q1 outflow proxy, not a new cash-flow forecast.
+    funding = {}
+    for fraction, label in ((0.0, "none"), (0.5, "half"), (1.0, "full")):
+        need = fraction * inp["cash_need_stress"]
+        cash_used_ps = need * MILLION / inp["shares"]
+        interest_saved = cash_used_ps * inp["cash_yield"] * (1 - inp["tax"])
+        remaining = unbooked + interest_saved * tau
+        starting_bps = bps_op_fy26 + cash_used_ps
+        vals = {}
+        for t in TIERS:
+            c = core[t] + interest_saved
+            op_bps = starting_bps / (1 - g2 * remaining / c)
+            ro = c / op_bps
+            w = remaining * (1 - g2 / ro) * (1 + r) ** (-tau / 2)
+            vals[t] = c * pp(g2, ro, r) * df + w + cash_ps - cash_used_ps
+        funding[label] = vals
+    return {
+        "ticker": "AEHR.US", "currency": "USD", "valuation_as_of": None,
+        "framework_as_of": None, "historical_valuation_as_of": "2026-09-25",
+        "historical_framework_as_of": "2026-11-04", "basis_changed": None,
+        "partial_basis_changed": local_basis_changed(_local_basis_snapshot(context['axes']), LOCAL_BASIS_BASELINE), "units": {"price": "USD_PER_SHARE"},
+        "anchors": scen,
+        "candidate": {"label": "FY30·Freedom Broker 单家", "anchors": dict(zip(TIERS, cand))},
+        "option": {"value": v_opt, "value_unit": "USD_PER_SHARE", "weights": dict(zip(TIERS, p_calc)),
+                   "status": option_reconciliation_status(path_xs, OPTION_OVERLAP_RESOLVED, FY30_PATH_REFRESHED),
+                   "anchors": dict(zip(TIERS, option))},
+        "segments": {"operating_and_window": {"unit": "USD_PER_SHARE",
+                     "values": {t: ex_cash[t] * df + win[t] for t in TIERS}},
+                     "net_cash": {"unit": "USD_PER_SHARE", "values": dict.fromkeys(TIERS, cash_ps)}},
+        "key_parameters": {"discount_rate": {"unit": "RATIO", "values": dict.fromkeys(TIERS, r)},
+                           "growth_rate": {"unit": "RATIO", "values": dict.fromkeys(TIERS, g2),
+                                           "reference_value": inp["g2_bit_src"]},
+                           "forward_return": {"unit": "RATIO", "values": roe},
+                           "steady_return": {"unit": "RATIO",
+                               "values": {t: min(roe[t], rs) for t in TIERS}, "reference_value": rs}},
+        "diagnostics": {
+            "forecast_eps": street, "earnings_after_sbc": eps, "operating_eps": core,
+            "operating_bps": bps_op_fy26, "opening_operating_bps": {t: opening_bps(core[t], g2) for t in TIERS},
+            "unrolled_return": roe_fy26, "required_retention": b1, "actual_retention": ret_actual,
+            "cash_retained_not_added_again": excess_cash, "cash_per_share": cash_ps,
+            "booked_q1_core_eps": booked_core, "unbooked_core_eps": unbooked,
+            "window": win, "multiples": pes, "flat_ladder": dict(zip(TIERS, flat)),
+            "tangible_book_floor": floor, "below_tangible_book_floor": below_floor,
+            "low_to_middle": L / M, "high_to_middle": H / M,
+            "earnings_ratio_low_middle": num_lm, "earnings_ratio_high_middle": num_hm,
+            "multiple_ratio_low_middle": pe_lm, "multiple_ratio_high_middle": pe_hm,
+            "band_multiples_on_fy27_basis": band_basis, "max_middle_multiple_at_growth_cap": pe_m_cap,
+            "historical_band_edge_growth": edges, "option_tiers": vt,
+            "option_revenue": qty, "option_broker_path_increment": path_xs,
+            "option_fy29_interpolated_revenue": path_fy29, "option_h_world_revenue": scale,
+            "option_h_margin": opm_h, "option_incremental_core_margin": inc_core,
+            "option_capital_to_revenue": kappa, "option_h_opening_capital": k_h,
+            "option_guide_check_margin": guide27, "option_sic_increment": sic_item,
+            "historical_sbc_implied": implied_sbc, "historical_sbc_derived_haircut": derived,
+            "capex_middle_share": inp["rev_fy28_m"] * MILLION / inp["capex_m"],
+        },
+        "sensitivity": {"growth_minus_1pp": dict(zip(TIERS, (lo_l, lo_m, lo_h))),
+                        "funding_use": funding, "option_value": option_sensitivities,
+                        "option_value_unit": "USD_PER_SHARE",
+                        "steady_return": steady_comparisons, "discount_rate": discount_comparisons,
+                        "theoretical_capacity": theoretical_capacity},
+        "review_flags": review_flags,
+    }

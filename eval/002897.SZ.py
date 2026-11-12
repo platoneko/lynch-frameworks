@@ -1,96 +1,138 @@
 #!/usr/bin/env python3
-"""002897.SZ valuation eval — two-leg SOTP, thin coverage: consensus sets H only.
+"""Historical Yihua two-leg valuation; not updated financial research.
 
-formula_id: yihua_base_sotp_gordon_v6
+Amounts and shares follow the original inputs; output is CNY/share. The two
+analyst forecasts are thinly covered: the historical rule places their upper
+forecast only in H, while L/M use the company's observed segment trends. The
+solar subgroup, connector residual and minority-interest assumptions retain
+their original source and accounting limitations. The named solar project is
+already inside the base and is not a separate unmodeled option.
 
-Thin coverage (valuation-rules 数据优先级表「盈利分子与过渡」行「薄覆盖」,
-2026-10-04 as amended the same day: profit growth vs profit growth, window to
-the latest reporting period, trailing-four-quarter margins, all tiers
-attributable).  The furthest consensus year with a range, FY2028E, has two
-houses (国金 2026-08-30 7.46 / 国海 2026-05-24 8.92 亿归母); the attributable
-profit CAGR they imply (FY2025 actual -> FY2028) is >= 2x the company's own
-two-year attributable profit CAGR (TTM to 2Q2024 -> TTM to 2Q2026).  So the
-consensus only sets H (its high end); M = each leg's TTM revenue carried to
-FY2028 (2.5 years) at its own two-year revenue CAGR (TTM 2Q24 -> TTM 2Q26) x its
-TTM attributable margin; L = the digestion year (M path stops at FY2026).
-
-Legs: solar = the appraisal subgroup, 100% owned, TTM profit = FY2025
-recurring + H1'26 (subsidiary-table sum) - H1'25 (FY2025 net-to-gross-profit
-ratio; the H1'25 table lacks the Thai / HK entities) (A18); connector = company TTM attributable (ex the
-FY2025 Alpha Steel disposal gain, which sits in solar) - solar, so all minority
-interest lands on the connector leg (A7).  Solar H = solar M.
-
-Multiple form from the retention audit (A22): connector tiers whose ROE beats
-r by >= 3pp take the same-domain peer g2 (6%); tiers in the flat / peaked
-domain take the payout-policy g = (1 - payout) x ROE, clipped at the cap,
-with the dividend ruler (`capped_payout_pe`) when the clip is <= 2pp.  The
-connector book rolls at b = g/ROE through the not-yet-booked M-path earnings
-(iterated to a fixed point per tier).  Solar: D bucket (named Yueqing core-parts
-base, COD 2026-12) -> g = 0 + 1/r with the project valued separately as a
-capacity item: completed value K_total x ROE_proj / r less the unspent
-capital (budget - spent), both at the 2026 spend / COD year, discounted to
-today (valuation-rules「未建模期权」capacity rule, 2026-10-04).  Where the model pays out
-more than the company does (H tier connector, E bucket) the anchor is cut by
-k_h; k_l = k_m = 0 because those tiers' model payout equals the paid payout.
-
-Both legs basket 4 (A17); basket 6 (13%) printed as a control band.
-
-2026-10-16 framework correction (valuation-rules「经营价值与超额现金」; net debt -> no
-excess-cash line, parent share n/a; the Yueqing project's unspent capital is
-already deducted as a named item -> no growth-period funding gap):
-  * time alignment: the tier values sit at 2028-01-01 -> x (1+r)^-tau, tau 1.5
-    from the 2026-06-30 balance sheet (replaces the one-year discount), plus
-    the window distributable profit (2H26 + FY2027 unbooked profit on each
-    tier's numerator basis: L / M the own trend path n_conn + solar path, H the
-    consensus less 1H26 actual) x (1 - b), solar b = 0, at tau/2.  The project
-    value is already today's.  2026-10-18 窗口留存口径改正: the connector b =
-    g_win/ROE cut to [0, 1], g_win = the tier's connector path FY2026 -> FY2028
-    (L flat 0; M the trend g_c; H consensus FY2026E less solar -> H numerator),
-    and the book rolls n_conn at that same b; the multiple's g (peer g2 /
-    payout-policy g) is read at the resulting ROE (was: b = multiple g / ROE).
-  * three-stage return on the peer-g2 branch (H): forward ROE through Y1 2028,
-    linear to the steady 15.6% by Y2 2032 (medium barrier); steady = ordered
-    pick (2026-10-19): own cycle unusable -> domestic mature connector peers
-    (AVIC Aerospace Electric 13.4% / Hexing 17.8%, invested-capital basis);
-    TE 14.8% and the 18% floor are comparisons only.
-    L / M sit on the policy g / dividend ruler (ROE < r + 3pp): untouched.
-  * k_H 0.3 sat on the whole H connector value -> removed (no named transaction).  ③: same-earnings weeks exist, the band floor month is distorted
-(step 1b) -> not decidable -> correction gate.
-
-The doc carries no current price (AGENTS.md「现价 — 禁写契约」).
-
-Run:  python3 frameworks/eval/002897.SZ.py
+Historical valuations use a distorted equal-earnings band and an independent
+reconciliation gate. The historical inputs, dates and user decisions remain
+disclosed; the calculations do not establish that the economic forecasts or
+project return will be realized.
 """
-
+# Historical evidence and limits retained from the document:
+# Guojin 2026-08-30 and Guohai 2026-05-24 forecast FY2028 group profit;
+# neither provided segment forecasts. The H connector profit is a residual
+# after estimated solar profit, not a sell-side segment estimate. Q3 2026
+# group profit was 0.50 CNY 100 million, below the original H evidence gate;
+# the old high forecast was not recomputed after the report.
+# Solar TTM profit combines H1 2026 subsidiaries with H1 2025 estimated from
+# gross profit conversion; connector profit is a residual after group minority
+# interests and the solar estimate. Different periods use different bases.
+# A FY2026 recurring-profit upgrade can be mechanically met because a 2024
+# bad-debt charge lowered the base, even though the old H path was falsified;
+# resolve that evidence conflict before treating an upgrade as justified.
+# The named Yueqing project has budget 3.74 and spent 2.20 CNY 100 million;
+# existing 0.75 CNY/share project value is already included, net of remaining
+# spending. Remove that separate value when the project's income enters the
+# observed earnings, to avoid double counting.
+# Original sources: FY2025 report, 2025 and 2026 interim reports, 2026Q3
+# report, Yueqing New Energy appraisal 2026-04-29 and the two analyst reports.
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import math
+from lib.gordon import capped_payout_pe, check_g_cap, check_r, g_cap, perpetual_pe
+from lib.inputs import check_missing, ladder, require_whole_years
+from lib.tiers import decompose
+from lib.zones import cut_points
+from lib.partial_basis import local_basis_changed
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'tiers', 'zones', 'partial_basis'), 'axes': {}}
 
-from eval.lib.gordon import (  # noqa: E402
-    capped_payout_pe,
-    check_g_cap,
-    check_r,
-    g_cap,
-    perpetual_pe,
-)
-from eval.lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    parse_baskets,
-    parse_inputs,
-    report,
-)
-from eval.lib.tiers import decompose  # noqa: E402
-from eval.lib.zones import cut_points  # noqa: E402
+HISTORICAL_PARTIAL_FINGERPRINT = '0822c3fdb417043d7bb3de4001fe86ebfcc8159107ee2b3452082bfb9b6b56f3'
 
-FRAMEWORK = REPO_ROOT / "frameworks" / "002897.SZ.md"
-FORMULA_ID = "yihua_base_sotp_gordon_v6"
+INPUTS = {
+    'shares': 1.9388e8,  # 总股本; as-of 半年报 193,880,696 股，2026-06-30
+    'equity_total': 2.8236e9,  # 归属上市公司股东净资产 CNY; as-of 半年报 2,823,611,190.59，2026-06-30
+    'equity_solar': 1.2853e9,  # 光伏子集团所有者权益（合并口径，100% 持股）CNY；不滚动; as-of 评估报告 1,285,337,731.91，2025-12-31
+    'rev_conn_fy23': 1.784467e9,  # 连接器收入 FY2023; as-of FY2023 年报 1,784,467,423.28
+    'rev_conn_fy25': 2.633861e9,  # 连接器收入 FY2025; as-of FY2025 年报 2,633,861,475.29
+    'rev_conn_h1_23': 7.94475e8,  # 连接器收入 H1 2023; as-of 2024 半年报上年同期 794,475,264.41
+    'rev_conn_h1_24': 1.113521e9,  # 连接器收入 H1 2024; as-of 2024 半年报 1,113,520,671.00
+    'rev_conn_h1_25': 1.214393e9,  # 连接器收入 H1 2025; as-of 2025 半年报 1,214,392,755.92
+    'rev_conn_h1_26': 1.474088e9,  # 连接器收入 H1 2026; as-of 2026 半年报 1,474,087,536.11
+    'rev_solar_fy23': 3.136668e9,  # 太阳能支架收入 FY2023; as-of FY2023 年报 3,136,667,880.00
+    'rev_solar_fy25': 3.496083e9,  # 太阳能支架收入 FY2025; as-of FY2025 年报 3,496,082,838.81
+    'rev_solar_h1_23': 1.369101e9,  # 太阳能支架收入 H1 2023; as-of 2024 半年报上年同期 1,369,101,114.62
+    'rev_solar_h1_24': 1.932153e9,  # 太阳能支架收入 H1 2024; as-of 2024 半年报 1,932,153,012.99
+    'rev_solar_h1_25': 1.761128e9,  # 太阳能支架收入 H1 2025; as-of 2025 半年报 1,761,128,446.58
+    'rev_solar_h1_26': 1.223389e9,  # 太阳能支架收入 H1 2026; as-of 2026 半年报 1,223,388,833.47
+    'gm_solar_fy25': 0.1515,  # 支架毛利率 FY2025（H1'25 光伏净利换算，A18）; as-of FY2025 年报
+    'gm_solar_h1_25': 0.1323,  # 支架毛利率 H1 2025; as-of 2025 半年报
+    'ni_solar_h1_26': 0.27e8,  # 光伏腿 H1 2026 净利：子公司表直接加总（乐清 0.16 / 泰国 −0.17 / 香港 0.28；100% 持股即归母，A18）; as-of 2026 半年报
+    'nr_ttm_2q26': 2.2777e8,  # 最近四季扣非归母 = FY2025 2.854 + H1'26 0.934 − H1'25 1.510 亿（升级门槛，A10）; as-of FY2025 年报 / 2025、2026 半年报
+    'nr_ttm_2q24': 2.0919e8,  # 两年前滚动四季扣非 = 3Q23 0.323 + 4Q23 0.161 + 1Q24 0.816 + 2Q24 0.791 亿; as-of FY2023 / FY2024 年报分季度表
+    'nr_ttm_3q24': 2.3193e8,  # 3Q2024 滚动四季扣非 = 4Q23 0.161 + 1Q24 0.816 + 2Q24 0.791 + 3Q24 0.551 亿（三季报读数基数）; as-of FY2023 / FY2024 年报分季度表
+    'nr_fy24': 1.1307e8,  # FY2024 扣非归母（FY2026 年报读数基数；含 2024 坏账 1.85 亿，信用减值属经常性）; as-of FY2024 年报 113,070,619.64
+    'nr_q4_25': 0.3360e8,  # 4Q2025 扣非; as-of FY2025 年报分季度表 33,604,318.09
+    'nr_h1_26': 0.9341e8,  # H1 2026 扣非; as-of 2026 半年报 93,412,781.70
+    'ni_group_fy25': 3.183e8,  # 归母净利 FY2025（共识隐含增速起点，A10）; as-of FY2025 年报 318,295,031.33
+    'ni_ttm_2q26': 2.5712e8,  # 最近四季归母 = 3Q25 1.080 + 4Q25 0.488 + 1Q26 0.403 + 2Q26 0.601 亿; as-of Longbridge 季度利润表，2026-06-30
+    'ni_ttm_2q24': 2.2939e8,  # 两年前滚动四季归母 = 3Q23 0.342 + 4Q23 0.218 + 1Q24 0.867 + 2Q24 0.867 亿; as-of Longbridge 季度利润表，2024-06-30
+    'ni_solar_fy25r': 1.37e8,  # 光伏腿 FY2025 经常性净利 = 评估报告 1.67 − Alpha Steel 处置收益 0.30; as-of 评估报告 2026-04-29
+    'disposal_fy25': 0.30e8,  # Alpha Steel 处置收益（2025-10，在最近四季内；从公司归母里剔除）; as-of FY2025 年报 / 评估报告
+    'ni_solar_l': 0.54e8,  # L 档光伏分子：H1 2026 年化（子公司表拼 0.27 × 2；100% 持股即归母，A4）; as-of 2026 半年报
+    'cons_fy27_m': 6.47e8,  # 卖方共识 FY2027E 归母均值（只作中性带 FY+1 读数）; as-of 同花顺 2 家，2026-10-03
+    'cons_fy28_l': 7.46e8,  # 卖方共识 FY2028E 低端（触发校验）; as-of 国金 2026-08-30
+    'cons_fy28_m': 8.19e8,  # 卖方共识 FY2028E 均值（触发与升级门槛）; as-of 同花顺 2 家，2026-10-03
+    'cons_fy28_h': 8.92e8,  # 卖方共识 FY2028E 高端 = **H 分子**（A10）; as-of 国海 2026-05-24（同花顺记 05-23）
+    'g2': 0.06,  # 连接器单调区档（H）的永续增长：同篮同域同业反解截顶；cap = min(6%, r − 4%) = 6%（A13）；L / M 档用派息政策 g，由 eval 按域生成; as-of 同业反解 2026-09-14
+    'g2_solar': 0.0,  # 光伏腿永续增长：D 桶、项目单列（A22）; as-of 2026-10-04
+    'r_conn': 0.10,  # 篮 4 常规经营 10%：连接器腿——器件制造，盈利不是商品价函数（贵金属 / 铜 / 塑胶是成本项、可价格传导）；未达单押门槛（华为系占连接器 ≤ 25%、前两大 ≤ 45.6%）；初分「周期商品 / 小盘」被推翻（A17）；值 = `gordon.BASKET_R[4]`; as-of 2026-10-04
+    'r_solar': 0.10,  # 篮 4 常规经营 10%：光伏腿——跟踪支架零部件按订单加工、客户锁定原材料价、毛利率 10.7–15.2%，不是商品价函数；第一大客户占支架 41.5%、前两大 ≤ 60.5%，未达单押门槛（A17）；值 = `gordon.BASKET_R[4]`；折现同用此值; as-of 2026-10-04
+    'r_ctl': 0.13,  # 对照：被推翻的初分档「周期商品 / 小盘 13%」（A17）；只出 Outputs 对照带，不进锚点、不进 zone; as-of 2026-10-04
+    'years_to_fy28': 2.5,  # 外推年数：最近报告期末 2026-06-30 → FY2028 末; as-of 2026-10-04
+    'tau': 1.5,  # 时点对齐 τ = 估值基准日 2026-06-30 → 分子年初 2028-01-01（18 个月）；三档 ÷ (1+r)^τ，窗口可分配利润 ÷ (1+r)^(τ/2)；项目值已是今天的值，不动（A23）; as-of 2026-06-30
+    'y1': 2028,  # 高回报期止点 Y₁ = 可见年末 FY2028（默认）（A24）; as-of 2026-10-16
+    'y2': 2032,  # 回落到稳态 Y₂ = Y₁ + 4（连接器判中门槛，A24）; as-of 2026-10-16
+    'ronic_ss_cn': 0.156,  # 国内成熟连接器同业投入资本口径 FY2016–25 均值中位：航天电器 13.4%、合兴股份 17.8%（近 5 年收入 +6.6% / +9.2%/年）（A24）; as-of 2026-10-19
+    'ronic_ss_te': 0.148,  # 对照：泰科（TE Connectivity）投入资本口径 FY2016–25 均值（报表税率；税率统一 20% 时 13.1%）；旧账面口径 18.6% 撤（A24）; as-of 2026-10-19
+    'ronic_ss_floor': 0.18,  # 对照：生意模式兜底轻资产组装（连接器）18%（同业层非空，不用）; as-of 2026-10-16
+    'ronic_ss': 0.156,  # 连接器稳态回报（三档）= 按序取：自身周期不可用 → 同业层 = 国内成熟同业 15.6%（竞争场：H 世界押国产超节点、客户集中在华为体系；用户 2026-10-19 认可）（A24）; as-of 2026-10-19
+    'cons_fy26_m': 4.4156e8,  # 卖方共识 FY2026E 归母均值（EPS 2.2775 × 股本；东方财富）；只用于 H 档窗口利润（A23）; as-of 2026-10-16
+    'ni_group_h1_26': 1.0036e8,  # 2026H1 归母净利（半年报）；H 档窗口利润扣已入账部分（A23）; as-of 2026-06-30
+    'payout_fy25': 0.305,  # FY2025 实付派息率 = 每 10 股 5 元 × 1.9388 亿股 ÷ 归母 3.183 亿（病态区派息政策 g、股息尺、对账 ③；5 年平均 19% 作敏感，A13）; as-of FY2025 年报利润分配预案
+    'proj_k_spent': 2.2046e8,  # 乐清光伏支架核心部件基地：截至 FY2025 已投募集资金（未投资本 = 预算 − 已投，A22）; as-of FY2025 年报募集资金使用表 22,045.95 万元
+    'proj_k_total': 3.7371e8,  # 该项目承诺投资总额; as-of FY2025 年报 37,370.78 万元
+    'proj_years_to_cod': 0.25,  # 估值日 → 达预定可使用状态（2026-12-01，2026-02-09 延期）; as-of 2026-10-04
+    'k_l': 0,  # L 档视同派出打折：0——模型派息 = 实付（派息政策 g），无视同派出（A22）; as-of 2026-10-04
+    'k_m': 0,  # M 档：0——股息尺不给超额留存任何 credit，无视同派出（A22）; as-of 2026-10-04
+    'k_h': 0,  # H 档：0——原 0.3 乘在 H 档连接器整个经营价值上，是用错了对象（valuation-rules「经营价值与超额现金」④：经营价值的再投资回报已在回报率里，多留部分落在现金上），2026-10-16 框架纠正去掉；多留部分只披露（A22）; as-of 2026-10-16
+    'm_prev': 11.00,  # 上一版 M（2026-10-04 v6，对账门 ①）; as-of 2026-10-16
+    'bps': 14.56,  # 每股净资产 = equity_total ÷ shares（对账门 ⑥）; as-of 2026-06-30
+    'pb_own_min': 2.46,  # 自身 3 年 PB 低点（对账门 ⑥）; as-of Longbridge valuation --history pb，2024-04-22
+    'roe_peer_lo': 0.1179,  # 同业 FY2028E ROE 低：中航光电（对账门 ⑤）; as-of 同花顺 002179，2026-10-03
+    'roe_peer_med': 0.218,  # 同业 FY2028E ROE 中位：立讯精密（5 家：中航 11.8 / 电连 14.8 / 立讯 21.8 / 瑞可达 25.7 / 华丰 35.3%）; as-of 同花顺 002475，2026-10-03
+    'roe_peer_hi': 0.3526,  # 同业 FY2028E ROE 高：华丰科技（对账门 ⑤）; as-of 同花顺 688629，2026-10-03
+    'ttm_eps': 1.33,  # 最近四季 EPS（快照；中性带读数用）; as-of 2.571 亿 ÷ 股本
+    'band_pe_min': 27.59,  # 同等盈利周（TTM EPS 1.16–1.48）最低 PE（③ 带下沿，A12）; as-of Longbridge valuation --history pe，2024-09-16
+    'band_eps': 1.182,  # 带下沿那周的 TTM EPS（2Q2024 滚动四季 2.294 亿 ÷ 1.9405 亿股；步 1c 扣项目用）; as-of Longbridge 季度利润表
+    'band_fwd_growth': 0.298,  # 带下沿月份的点时预期增速：东方财富证券 FY2025E 4.83 → FY2026E 6.27 亿（③ 步 1b，A12）; as-of 东方财富证券 2024-09-12
+    'equity_conn': 1.5383e9,  # 连接器腿权益起点 = equity_total − equity_solar（派生；含商誉 2.85 亿）; as-of eval 复算
+    'rev_conn_ttm': 2.893556e9,  # 连接器最近四季收入 = FY2025 + H1'26 − H1'25（派生）; as-of eval 复算
+    'rev_solar_ttm': 2.958344e9,  # 光伏最近四季收入（派生）; as-of eval 复算
+    'g_conn': 0.1728,  # 连接器近 2 年滚动收入年复合 = (最近四季 ÷ 两年前四季)^0.5 − 1（派生）; as-of eval 复算
+    'g_solar': -0.1058,  # 光伏近 2 年滚动收入年复合（派生）; as-of eval 复算
+    'g_own_profit': 0.0587,  # 公司近 2 年滚动归母年复合（派生；薄覆盖触发分母）; as-of eval 复算
+    'g_own_recurring': 0.0435,  # 公司近 2 年滚动扣非年复合（派生；升级门槛）; as-of eval 复算
+    'ni_solar_ttm': 1.0373e8,  # 光伏最近四季归母（派生，A18）; as-of eval 复算
+    'ni_conn_ttm': 1.2339e8,  # 连接器最近四季归母（派生，A18）; as-of eval 复算
+    'ni_conn_l': 1.3363e8,  # L 连接器（派生）; as-of eval 复算
+    'ni_conn_m': 1.8381e8,  # M 连接器（派生）; as-of eval 复算
+    'ni_conn_h': 8.1356e8,  # H 连接器 = cons_fy28_h − ni_solar_m（派生）; as-of eval 复算
+    'ni_solar_m': 0.7844e8,  # M / H 光伏（派生）; as-of eval 复算
+    'n_conn': 2.2354e8,  # 连接器尚未入账的 M 路径利润 = 2H26 + FY2027（派生；三档共用）; as-of eval 复算
+    'roe_conn_l': 0.0869,  # 连接器 L 档 ROE（2028 年初账面，按窗口留存率 b 滚动，派生）; as-of eval 复算
+    'roe_conn_m': 0.1043,  # 连接器 M 档 ROE（派生）; as-of eval 复算
+    'roe_conn_h': 0.4618,  # 连接器 H 档 ROE（派生）; as-of eval 复算
+    'conn_fy26_h': 3.4347e8,  # H 档连接器 FY2026 = `cons_fy26_m` − 光伏 M 路径 FY2026（最近四季 × (1 + g_solar)^0.5）（派生；窗口段增速起点，A23）; as-of eval 复算
+    'g_win_h': 0.5391,  # H 档连接器窗口段增速 = (`ni_conn_h` ÷ `conn_fy26_h`)^(1/2) − 1：共识路径 FY2026 → FY2028 年化（派生；L 段增速 0、M 段增速 = `g_conn`，A23）; as-of eval 复算
+    'v_proj': 1.4487e8,  # 乐清项目单列价值 = (预算 × ROE_proj ÷ r − 未投资本) 折到今日（派生，A22）; as-of eval 复算
+}
+
 TOL = 0.05
 DERIVED_TOL = 5e-4
 AMT_TOL = 1e5
@@ -148,17 +190,15 @@ def domain(roe: float, r: float) -> str:
     return "病态区"
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
-    baskets = parse_baskets(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
 
+def evaluate(inp):
+    errors = check_missing(inp, list(INPUTS))
+    if errors:
+        raise ValueError('; '.join(errors))
+    require_whole_years(inp, ('y1', 'y2'))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    baskets = {'r_conn': 4, 'r_solar': 4}
     def derived(key: str, value: float, tol: float = DERIVED_TOL) -> None:
         if abs(value - inp[key]) > tol:
             errors.append(f"{key}: stated {inp[key]:.6g} vs recomputed {value:.6g}")
@@ -254,8 +294,10 @@ def main() -> int:
     if any(inp[f"k_{x}"] != 0.0 for x in ("l", "m", "h")):
         errors.append("k must be 0: no named transaction for a k to sit on (k on the whole value removed 2026-10-16)")
 
-    def conn_tier(c: float, r_: float, peer_g: float, gw: float) -> tuple[float, float, float, str, float]:
-        """(multiple g, ROE, PE, form, window b).  The book rolls n_conn at the window retention
+    def conn_tier(c: float, r_: float, peer_g: float, gw: float) -> tuple[float, float, float, str, float, float | None, float | None]:
+        """Return growth, ROE, PE, method, window retention and method parameters.
+
+        The book rolls n_conn at the window retention
         b = g_win/ROE cut to [0, 1] -- the segment's own growth, the same b as the window profit
         (valuation-rules ③ 时点对齐; 2026-10-18 窗口留存口径改正: was the multiple's perpetual g).
         The multiple's g (peer g2 / payout-policy g) is then read at that ROE."""
@@ -268,16 +310,18 @@ def main() -> int:
         roe = c / bps
         bw = min(1.0, max(0.0, gw / roe))
         if roe - r_ >= ROE_NEAR_R:
-            g, form = peer_g, f"peer g2, 三段 → {r_ss:.1%}"
+            g, form = peer_g, "peer_return_fade"
+            policy_growth, fade_target = None, r_ss
             pe = path_pe(g, roe, r_, 2028, y1, y2, r_ss)
         else:
             g_raw = (1.0 - pay) * roe
             g = min(g_raw, g_cap(r_))
+            policy_growth, fade_target = g_raw, None
             if g_raw > g_cap(r_) and (pay >= DIV_PAYOUT or g_raw - g_cap(r_) <= CLIP_TOL):
-                pe, form = capped_payout_pe(g_raw, roe, r_, pay), f"policy g {g_raw:.2%} clipped -> dividend ruler"
+                pe, form = capped_payout_pe(g_raw, roe, r_, pay), "policy_capped_payout"
             else:
-                pe, form = perpetual_pe(g, roe, r_), f"policy g {g:.2%}"
-        return g, roe, pe, form, bw
+                pe, form = perpetual_pe(g, roe, r_), "policy_perpetual"
+        return g, roe, pe, form, bw, policy_growth, fade_target
 
     # ---- project value (D bucket, A22) ----
     roe_proj = s_ttm / inp["equity_solar"]
@@ -313,7 +357,7 @@ def main() -> int:
         gws = g_win(cx)
         rows = {}
         for t in TIERS:
-            g, roe, pe_a, form, bw = conn_tier(cx[t], r_, peer_g, gws[t])
+            g, roe, pe_a, form, bw, policy_growth, fade_target = conn_tier(cx[t], r_, peer_g, gws[t])
             roe_s = sx[t] / inp["equity_solar"]
             if solar_branch == "D":
                 pe_b = perpetual_pe(inp["g2_solar"], roe_s, r_)
@@ -324,7 +368,7 @@ def main() -> int:
             val = ((cx[t] * pe_a * (1 - k[t]) + sx[t] * pe_b) * (1 + r_) ** -tau
                    + win * (1 + r_) ** -(tau / 2) + vp)
             rows[t] = dict(px=val / sh, g=g, roe=roe, pe_a=pe_a, pe_b=pe_b, form=form, roe_s=roe_s, win=win,
-                           gw=gws[t], bw=bw)
+                           gw=gws[t], bw=bw, policy_growth_rate=policy_growth, fade_target_return=fade_target)
         return rows
 
     base = deck(r)
@@ -334,7 +378,6 @@ def main() -> int:
     if not (L < M < H):
         errors.append(f"L<M<H failed: {L:.2f} {M:.2f} {H:.2f}")
     A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
     # The model's payout above the paid payout (H) is the 「多留部分」: no k any more (valuation-rules ④,
     # 2026-10-15/16: a k on the whole operating value is the wrong object); disclosed below.
 
@@ -348,20 +391,24 @@ def main() -> int:
         errors.append(f"flat-multiple ladder broken: {flat}")
 
     ctl = deck(inp["r_ctl"])
+    # The two peer-growth cases are 5% and 3%; the solar alternative uses
+    # retained earnings without the project; the 0.3 discount is an old control.
+    # Steady-return controls are the fallback, TE's reported-tax return and
+    # TE's tax-normalized return. Their old rounded names could collide.
     sens = {
-        "g2 (单调区 peer) 5%": deck(r, peer_g=0.05),
-        "g2 (单调区 peer) 3%": deck(r, peer_g=0.03),
-        "solar E bucket (retaining branch, no project)": deck(r, solar_branch="E"),
-        "k_h 0.3 (removed 2026-10-16)": None,
+        "peer_growth_5pct": ({"peer_growth_rate": 0.05}, deck(r, peer_g=0.05)),
+        "peer_growth_3pct": ({"peer_growth_rate": 0.03}, deck(r, peer_g=0.03)),
+        "solar_retained_no_project": ({"solar_method": "retained_no_project"}, deck(r, solar_branch="E")),
     }
     k_save = k["H"]
     k["H"] = 0.3
-    sens["k_h 0.3 (removed 2026-10-16)"] = deck(r)
+    sens["high_discount_30pct"] = ({"high_value_discount": 0.3}, deck(r))
     k["H"] = k_save
     rss_save = r_ss
-    for rs_alt in (inp["ronic_ss_floor"], inp["ronic_ss_te"], 0.131):
+    for name, rs_alt in (("steady_floor", inp["ronic_ss_floor"]),
+                         ("steady_peer_te", inp["ronic_ss_te"]), ("steady_tax_normalized", 0.131)):
         r_ss = rs_alt
-        sens[f"steady {rs_alt:.0%}"] = deck(r)
+        sens[name] = ({"steady_return": rs_alt}, deck(r))
     r_ss = rss_save
     # Solar H1'26 by the gross-profit conversion instead of the subsidiary-table sum (the v5 basis).
     s_alt = inp["ni_solar_fy25r"] + conv * inp["rev_solar_h1_26"] * 0.1099 - conv * gp_h25
@@ -369,7 +416,11 @@ def main() -> int:
     cx_alt = {"L": rc_now * (1 + g_c) ** (n - 2) * c_alt / rc_now, "M": rc_now * (1 + g_c) ** n * c_alt / rc_now}
     sm_alt = rs_now * (1 + g_s) ** n * s_alt / rs_now
     cx_alt["H"] = inp["cons_fy28_h"] - sm_alt
-    sens["solar H1'26 by GP conversion (v5)"] = deck(r, cx_alt, {"L": inp["ni_solar_l"], "M": sm_alt, "H": sm_alt})
+    # The alternate H1 2026 solar profit uses 10.99% gross margin instead of
+    # the subsidiary-table sum; its parameter is retained as a numeric field.
+    sens["solar_gross_profit_conversion"] = (
+        {"gross_margin": 0.1099}, deck(r, cx_alt, {"L": inp["ni_solar_l"], "M": sm_alt, "H": sm_alt})
+    )
 
     # H-tier 视同派出 line (E bucket, single-stage perpetual): excess retention capitalised.
     b_h = base["H"]["g"] / base["H"]["roe"]
@@ -381,70 +432,92 @@ def main() -> int:
     band_floor_1c = (inp["band_pe_min"] * inp["band_eps"] - v_proj / sh) / inp["band_eps"]
     model_growth = (group["M"] / (inp["ni_ttm_2q26"])) ** (1 / n) - 1
     distorted = inp["band_fwd_growth"] - model_growth >= DISTORT_G
-    if pe_m_anchor < band_floor_1c and not distorted:
-        errors.append("③ out of band on a clean band — run the ③ process (BLOCKED at basket 4)")
+    clean_band_outside = pe_m_anchor < band_floor_1c and not distorted
 
     # ---- correction reconciliation gate ----
     peer_pe = {kk: perpetual_pe(inp["g2"], inp[kk], r) for kk in ("roe_peer_lo", "roe_peer_med", "roe_peer_hi")}
+    # These IDs correspond to the prior committed midpoint, E/r, same-formula
+    # DDM, historical band floor, peer median and own PB floor, respectively.
     coords = {
-        "① previous (committed) M": inp["m_prev"],
-        "② E_M/r": group["M"] / r / sh,
-        "③ DDM (payout FY25, g_d = M-tier g)": pay * group["M"] / (r - base["M"]["g"]) / sh,
-        "④ same-earnings weeks floor (band_pe_min × E_M)": inp["band_pe_min"] * eps_m,
-        "⑤ peers same ruler (2028E ROE median), discounted": peer_pe["roe_peer_med"] * eps_m / disc,
-        "⑥ BPS × own PB low": inp["bps"] * inp["pb_own_min"],
+        "previous_midpoint": inp["m_prev"],
+        "earnings_over_rate": group["M"] / r / sh,
+        "ddm_same_formula": pay * group["M"] / (r - base["M"]["g"]) / sh,
+        "same_earnings_floor": inp["band_pe_min"] * eps_m,
+        "peer_median": peer_pe["roe_peer_med"] * eps_m / disc,
+        "book_value_floor": inp["bps"] * inp["pb_own_min"],
     }
     devs = {kk: M / v - 1.0 for kk, v in coords.items()}
     # Same-formula cells do not count (2026-10-04): the M connector leg is the dividend ruler at this payout.
-    same_formula = {"③ DDM (payout FY25, g_d = M-tier g)"}
+    same_formula = {"ddm_same_formula"}
     inside = [kk for kk, d in devs.items() if abs(d) <= GATE_BAND and kk not in same_formula]
-    if not inside:
-        errors.append("BLOCKED: new M is > 20% away from every reconciliation coordinate (纠正对账门)")
 
-    # ---- report ----
-    print(f"formula_id={FORMULA_ID}  (V_opt = 0, A15)  baskets={baskets} r={r:g} ctl={inp['r_ctl']:g} cap={cap:.0%}")
-    print(f"thin coverage: own 2y 归母 CAGR (TTM 2Q24 {inp['ni_ttm_2q24'] / 1e8:.3f} -> TTM 2Q26 {inp['ni_ttm_2q26'] / 1e8:.3f}) = {g_own:.2%}")
-    print("  consensus FY25->FY28 CAGR l/m/h " + " / ".join(f"{cons_cagr[x]:.1%} ({ratio[x]:.2f}x)" for x in ("l", "m", "h"))
-          + f"; upgrade bar {upgrade_bar:.1%}")
-    print(f"  recurring (扣非) 2y CAGR TTM 2Q24 {inp['nr_ttm_2q24'] / 1e8:.3f} -> 2Q26 {inp['nr_ttm_2q26'] / 1e8:.3f} = {g_rec:.2%} "
-          f"(trigger read on 扣非: {cons_cagr['l'] / g_rec:.2f}–{cons_cagr['h'] / g_rec:.2f}x) -> upgrade {'MET' if upgraded else 'not met'}")
-    print(f"  next readings: Q3'26 single-quarter 扣非 needs >= {need_q3 / 1e8:.2f}亿; FY2026 扣非 needs >= {need_fy26 / 1e8:.2f}亿 (vs FY2024 {inp['nr_fy24'] / 1e8:.2f})")
-    print(f"  annual-window check FY23->FY25 归母 CAGR = {(inp['ni_group_fy25'] / 1.222e8) ** 0.5 - 1:.1%} (disclosure)")
-    print(f"revenue TTM: connector {rc_then / 1e8:.3f} -> {rc_now / 1e8:.3f} ({g_c:.2%}/y); solar {rs_then / 1e8:.3f} -> {rs_now / 1e8:.3f} ({g_s:.2%}/y)")
-    print(f"TTM 归母: solar {s_ttm / 1e8:.4f} (conv {conv:.4f}) margin {m_s:.2%}; connector {c_ttm / 1e8:.4f} margin {m_c:.2%}")
-    print(f"equity_conn0={eq_c0:.4e} n_conn={n_conn / 1e8:.4f}亿 ROE_proj={roe_proj:.2%} V_proj={v_proj / 1e8:.4f}亿 ({v_proj / sh:.2f}/sh)")
-    for t in TIERS:
-        b = base[t]
-        print(f"{t}: group {group[t] / 1e8:.4f}亿 = conn {conn[t] / 1e8:.4f} (ROE {b['roe']:.2%} {domain(b['roe'], r)}, g {b['g']:.2%}, "
-              f"PE {b['pe_a']:.2f}x [{b['form']}], k {k[t]:g}) + solar {solar[t] / 1e8:.4f} (ROE {b['roe_s']:.1%} "
-              f"{domain(b['roe_s'], r)}, PE {b['pe_b']:.2f}x) + proj -> {b['px']:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"control band r_ctl {inp['r_ctl']:.0%}: {ctl['L']['px']:.2f} / {ctl['M']['px']:.2f} / {ctl['H']['px']:.2f}")
-    print(f"flat-multiple ladder @ PE_A_M {base['M']['pe_a']:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"composite PE (ex project, undiscounted) {pe_c['L']:.2f}/{pe_c['M']:.2f}/{pe_c['H']:.2f}")
-    print(f"L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f} | H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} "
-          f"x pe {dec['pe_hm']:.3f} | width {(H - L) / (2 * M):.3f} | V_opt/M 0")
-    for name, d in sens.items():
-        print(f"sens {name}: {d['L']['px']:.2f}/{d['M']['px']:.2f}/{d['H']['px']:.2f}")
-    print(f"H 多留部分 line (E bucket, capitalised, disclosure only, λ 1): {line_h:.2f}/sh; the removed k_h 0.3 would take "
-          f"{base['H']['px'] - sens['k_h 0.3 (removed 2026-10-16)']['H']['px']:+.2f}/sh off H")
-    print("window connector b = g_win/ROE: " + " / ".join(
-        f"{t} g_win {base[t]['gw']:.2%} / ROE {base[t]['roe']:.2%} -> b {base[t]['bw']:.3f} "
-        f"(unbooked {conn_unb[t] / 1e8:.3f}亿; actual retention {1 - pay:.1%})" for t in TIERS)
-        + f"; H path FY2026 connector {conn26_h / 1e8:.4f}亿 (cons {inp['cons_fy26_m'] / 1e8:.4f} - solar {solar_26 / 1e8:.4f})")
-    print("window distributable profit (亿, before ÷1.1^τ/2): " + " / ".join(f"{t} {base[t]['win'] / 1e8:.3f}" for t in TIERS)
-          + f" (solar {solar_w / 1e8:.3f}; H consensus path {cons_w / 1e8:.3f}); τ {tau:g}; 三段 Y1 {y1} Y2 {y2} 稳态 {r_ss:.1%}")
-    print(f"③: M anchor / E_M = {pe_m_anchor:.2f}x vs same-earnings floor {inp['band_pe_min']:.2f}x (1c-adjusted {band_floor_1c:.2f}x); "
-          f"band-month expected growth {inp['band_fwd_growth']:.1%} vs model {model_growth:.1%} -> {'distorted (1b), not decidable' if distorted else 'clean'}")
-    print(f"PB 1.0 = {inp['bps']:.2f}; M/BPS = {M / inp['bps']:.2f}")
-    print(f"reconciliation gate (M = {M:.2f}):")
-    for kk, v in coords.items():
-        tag = "  (same formula as M, printed not counted)" if kk in same_formula else ("  <- within 20%" if kk in inside else "")
-        print(f"  {kk}: {v:.2f} ({devs[kk]:+.1%}){tag}")
-    for name, e in (("TTM", inp["ttm_eps"]), ("M numerator FY2028", eps_m), ("FY+1 consensus FY2027E", inp["cons_fy27_m"] / sh)):
-        print(f"  neutral band [A,B) on {name} ({e:.2f}): {A / e:.1f}–{B / e:.1f}x")
-    return report(errors)
+    if errors:
+        raise ValueError('; '.join(errors))
+    result = {
+        'ticker': '002897.SZ', 'currency': 'CNY',
+        'valuation_as_of': None, 'historical_valuation_as_of': '2026-06-30',
+        'framework_as_of': None, 'historical_research_as_of': '2026-10-29', 'historical_framework_as_of': '2026-10-29',
+        'anchors': dict(zip('LMH', (L, M, H))), 'cut_points': {'A': A, 'B': B},
+        'candidate': None, 'option': None,
+        'segments': {
+            'connector': {'values': {t: conn[t] * base[t]['pe_a'] * (1-k[t]) / disc / sh for t in TIERS}},
+            'solar': {'values': {t: solar[t] * base[t]['pe_b'] / disc / sh for t in TIERS}},
+            'window': {'values': {t: base[t]['win'] / disc_w / sh for t in TIERS}},
+            'existing_project': {'values': dict.fromkeys('LMH', v_proj / sh)},
+        },
+        'key_parameters': {
+            'connector': {t: {'method': base[t]['form'], 'discount_rate': r, 'growth_rate': base[t]['g'],
+                              'forward_return': base[t]['roe'], 'multiple': base[t]['pe_a'],
+                              'policy_growth_rate': base[t]['policy_growth_rate'],
+                              'fade_target_return': base[t]['fade_target_return'],
+                              # The capped payout helper uses ROE only within its 1e-9 cap tolerance;
+                              # otherwise the dividend multiple does not use any steady return.
+                              'steady_return': (min(base[t]['roe'], r_ss) if base[t]['form'] == 'peer_return_fade'
+                                                else None if base[t]['form'] == 'policy_capped_payout'
+                                                and base[t]['policy_growth_rate'] > cap + 1e-9 else base[t]['roe'])}
+                          for t in TIERS},
+            'solar': {t: {'discount_rate': r, 'growth_rate': inp['g2_solar'], 'forward_return': base[t]['roe_s'],
+                           'multiple': base[t]['pe_b'], 'steady_return': None} for t in TIERS},
+        },
+        'operating': {'thin_growth': g_own, 'consensus_growth': cons_cagr, 'thin_ratio': ratio,
+                      'upgrade_bar': upgrade_bar, 'recurring_growth': g_rec, 'upgrade_met': upgraded,
+                      'needed_q3': need_q3, 'needed_fy26': need_fy26, 'connector_growth': g_c, 'solar_growth': g_s,
+                      'connector': conn, 'solar': solar, 'group': group, 'rows': base, 'project_value': v_proj,
+                      'project_return': roe_proj, 'matched_band_distorted': distorted, 'band_floor_1c': band_floor_1c,
+                      'coordinates': coords, 'coordinate_deviations': devs, 'independent_coordinates_inside': inside,
+                      'extra_retention_h': line_h, 'decomposition': dec},
+        'sensitivity': {'original': {name: {'parameters': params, 'anchors': {t: row[t]['px'] for t in TIERS}}
+                                     for name, (params, row) in sens.items()},
+                        'basket_6': {t: ctl[t]['px'] for t in TIERS}, 'flat_multiple': dict(zip('LMH', flat))},
+    }
+
+    result['clean_band_outside'] = clean_band_outside
+    result['independent_coordinates_missing'] = not bool(inside)
+    return result
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def calculate(context):
+    result = evaluate(INPUTS)
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(
+        {'inputs': INPUTS, 'tiers': TIERS, 'derived_tolerance': DERIVED_TOL, 'amount_tolerance': AMT_TOL,
+         'reconciliation_band': GATE_BAND, 'thin_ratio': THIN_RATIO, 'roe_near_rate': ROE_NEAR_R,
+         'clip_tolerance': CLIP_TOL, 'dividend_payout': DIV_PAYOUT,
+         'earnings_band': BAND_EPS_BAND, 'distortion_growth': DISTORT_G}, HISTORICAL_PARTIAL_FINGERPRINT)
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    for segment in result['segments'].values():
+        segment['unit'] = 'CNY_PER_SHARE'
+    # The calculation stores one parameter record per tier; the confirmation
+    # view consumes one unit-bearing set of tiers per parameter.
+    for leg in ('connector', 'solar'):
+        parameters = result['key_parameters'][leg]
+        for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+            parameters[name] = {'unit': 'RATIO', 'values': {tier: parameters[tier][name] for tier in TIERS}}
+    result['review_flags'] = ['historical_q3_weakened_high_forecast',
+                              'historical_segment_profit_inference_and_capital_unverified',
+                              'historical_high_forecast_single_source']
+    if result['clean_band_outside']:
+        result['review_flags'].append('historical_multiple_below_clean_reference')
+    if result['independent_coordinates_missing']:
+        result['review_flags'].append('historical_reconciliation_requires_review')
+    return result

@@ -1,271 +1,172 @@
 #!/usr/bin/env python3
-"""600096.SH (Yuntianhua) valuation eval.
+"""600096.SH historical valuation, with inputs independent of the prose.
 
-frameworks/600096.SH.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
-
-formula_id: ytn_realized_earnings_regime_gordon_v6
-
-Main ruler: three *already-printed or already-consensus* annual net profits,
-each at the same flat multiple 1/(r - g2):
-
-    L = FY2023 actual 45.22亿  (pricing management tightened, exports shrank)
-        -> that regime persisting.  FY2023 is this company's own trough year,
-           so the 谷底档 recovery form would apply — but the filings show the
-           recovery took ONE year (FY2024 53.37 already above M), and
-           recovery_two_stage_pe with n=1 degenerates to L >= M; a version
-           that used n=3 (a calendar span, not a measured recovery) was
-           rolled back.  A15 records the alternatives.
-    M = FY2026E consensus       (EPS 2.875 x shares)
-    H = FY2022 actual 60.21亿  (management loosened, exports opened, global peak)
-
-r is the leg's basket value (A20: basket 5, reached from the initial basket 6
-by the ③-out-of-band step-down rule — 13% gives 8.70x, below the company's own
-1y daily PE floor 8.83x); g2 is the shared axis row (IFA, 1.5%) on all three
-tiers.  The multiple is 1/(r - g) rather than the retention form because
-growth here is not funded by retention (A18: capex 2023-25 < D&A, retained
-cash goes to debt paydown) — ROE is disclosed, not used.  The retention-form
-band is printed as a cross-check.
-
-Why not a price scenario: this company's measured elasticity to the MAP ladder
-is 0.049 — MAP rose 33.6% between 2025 and 2026 while net profit rose 1.6%.
-Running a price scenario through that slope collapses the three tiers onto one
-number, which is exactly the "分子比 ≈ 1.00" red line AGENTS.md draws for
-cyclicals.  So the ticker still mounts _AXIS.phosphate-chain (the regime
-definition and tier numbering are shared, and the ladder is cross-checked
-against both the axis file and the peer mount 002895.SZ), but its numerator
-comes from the other transmission path of the same regime.
-
-V_opt (A9): the 35% stake in the Wanchang phosphate mine (1,000万吨/年, total
-capex 81.69亿, company-stated after-tax IRR 12.81%), valued with this ticker's
-own ruler — stake x (capex x IRR x PE - (capex - spent)) at the same
-1/(r - g2) — in the first full year after completion (2032) and discounted back
-to FY2026 at the basket r.  Borrow quantity, never price (valuation-rules
-「未建模期权」2026-10-03).  Only the capital not yet spent is deducted (rule of
-2026-10-04): the 9.81亿 already paid for the exploration / mining rights is
-sunk.  The IRR is the project's unlevered after-tax IRR on the whole budget, so
-the "IRR x capex" profit belongs to every source of funds — the unspent
-deduction therefore includes whatever the JV will borrow (loans repaid by the
-project count as unspent, as with 002895.SZ 老虎洞); deducting only equity
-would under-deduct, and adding the sunk rights fee back would over-deduct.
-
-The beta guard below is what keeps that honest: if the measured elasticity ever
-climbs above 0.20, the "does not transmit" premise has failed and the ruler has
-to be rebuilt rather than quietly re-fitted.
-
-Run:  python3 frameworks/eval/600096.SH.py
+The 2026-10-30 framework records that the FY2026 forecast is weakened by Q3
+results, and that the FY2027 single-broker candidate's premise is stale. The
+calculation retains those historical inputs; it does not resolve either issue.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import hashlib
+import json
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.axes import (  # noqa: E402
-    AXIS_PHOS, PHOS_INERT_BETA_CEILING, check_axis_g2_mount, check_phosphate_mount,
-)
-from lib.gordon import BASKET_R, check_g_cap, check_r, perpetual_pe  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.frameworks import load_framework  # noqa: E402
-from lib.zones import cut_points  # noqa: E402
+from lib.gordon import check_g_cap, check_r, perpetual_pe
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600096.SH.md"
-PEER = Path(__file__).resolve().parents[2] / "frameworks" / "002895.SZ.md"
+DEPENDENCIES = {"libraries": ("gordon",), "axes": {"phosphate": "phosphate_chain"}}
 FORMULA_ID = "ytn_realized_earnings_regime_gordon_v6"
 YI = 1e8
+P_TIERS = (0.0, 0.25, 1.0)
+# L and M follow the shared IFA reference unless company-specific evidence
+# supports a different common value; record its source, date and reason here.
+# H remains the 2026-09-20 decision below.
+GROWTH_LM_OVERRIDE = None
 
-NP_PEAK_FY2022_YI = 60.21  # highest annual net profit the company has printed
-NUM_YEAR = 2026  # numerator year of M (FY2026E consensus)
-P_TIERS = (0.0, 0.25, 1.0)  # table 3; p_M 无概率锚·拍值 (A9)
-TOL = 0.05
-
-
-def stated_v_opt(md: str) -> float | None:
-    m = re.search(r"V_\{opt\}\\\)\s*=\s*\*\*([0-9.]+)\*\*", md)
-    return float(m.group(1)) if m else None
-
-
-def stated_p_tiers(md: str) -> tuple[float, float, float] | None:
-    m = re.search(
-        r"p_L\s*/\s*p_M\s*/\s*p_H\\?\)?\s*[≈=]\s*\*{0,2}\s*"
-        r"([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)\s*/\s*([0-9]*\.?[0-9]+)",
-        md,
-    )
-    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
-
-REQUIRED = [
-    "shares", "np_l", "eps_m_consensus", "np_h",
-    "equity", "r_perp", "g2_l", "g2_m", "g2_h", "eps_fy27_single",
-    "pe_own_min", "pe_own_max", "map_l", "map_m", "map_h", "beta_map", "bps",
+# FY2023 and FY2022 actual parent profits (CNY 100m); FY2026E EPS is the
+# eight-house mean as of 2026-08-20. H is the company's printed FY2022 peak.
+# Shares and equity are from the 2026 interim report; the equity-derived returns
+# are disclosure only, since this ruler uses 1/(r-g), not retained-profit PE.
+INPUTS = {
+    "shares": 1822990731.0, "np_l": 45.22, "eps_m_consensus": 2.875,
+    "np_h": 60.21, "equity": 254.05, "r_perp": 0.11,
+    # Adopted high-tier growth; the 2026-09-20 company decision changed it
+    # from the axis's historic 0% reference. It may not exceed M growth.
+    "g2_h": 0.015,
+    "eps_fy27_single": 3.078, "pe_own_min": 8.83, "pe_own_max": 14.41,
+    "beta_map": 0.049, "bps": 13.9358,
+    # Original disclosure-only 2025 capex, depreciation, debt and dividend;
+    # 2026Q3 and prior-year nine-month sulphur costs support the warning.
+    "capex_fy25": 22.8, "da_fy25": 26.1, "debt_fy25": 114.0,
+    "sulfur_9m": 3738.0, "sulfur_9m_prior": 1975.0, "dps": 1.4,
+    # 35% of total project capex earns the stated unlevered IRR; 9.809 亿 CNY
+    # was already paid and is sunk. The remainder includes project borrowing.
+    "opt_capex": 81.69, "opt_spent": 9.809, "opt_stake": 0.35,
+    "opt_irr": 0.1281, "t_opt": 2032,
+}
+REQUIRED_INPUTS = frozenset({
+    "shares", "np_l", "eps_m_consensus", "np_h", "equity", "r_perp", "g2_h",
+    "eps_fy27_single", "pe_own_min", "pe_own_max", "beta_map", "bps",
+    "capex_fy25", "da_fy25", "debt_fy25", "sulfur_9m", "sulfur_9m_prior", "dps",
     "opt_capex", "opt_spent", "opt_stake", "opt_irr", "t_opt",
-]
+})
+# Local input comparison only; the runner still requires source reconciliation.
+BASELINE = "e437b2d90bc01fb7c8402ab90366e5951240c715b0313242de7cef8d76f26fab"
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
-    if errors:
-        return report(errors)
-    baskets = parse_baskets(md)
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell must name the basket (篮 N)")
-
-    errors += ladder("MAP", inp["map_l"], inp["map_m"], inp["map_h"])
-    errors += check_phosphate_mount(
-        (inp["map_l"], inp["map_m"], inp["map_h"]),
-        peer_md=PEER.read_text(encoding="utf-8"),
-    )
-    # The numerator deliberately does NOT ride the ladder (A6).  That premise is
-    # only valid while the measured elasticity stays near zero.
-    if inp["beta_map"] >= PHOS_INERT_BETA_CEILING:
-        errors.append(
-            f"beta_map={inp['beta_map']:g} >= {PHOS_INERT_BETA_CEILING:g}: this "
-            "ticker's numerator is not driven by the MAP ladder (A6) — if it now "
-            "transmits, the main ruler must be rebuilt, not re-fitted"
-        )
-    errors += check_axis_g2_mount(AXIS_PHOS, inp["g2_m"])
+def calculate(context):
+    inp = dict(INPUTS)
+    if not REQUIRED_INPUTS <= inp.keys():
+        raise ValueError(f"missing stock inputs: {sorted(REQUIRED_INPUTS - inp.keys())}")
+    if inp.keys() - REQUIRED_INPUTS:
+        raise ValueError(f"unexpected stock inputs: {sorted(inp.keys() - REQUIRED_INPUTS)}")
+    # The runner captures axis metadata separately; keep the calculation and
+    # its historical input fingerprint limited to the original axis inputs.
+    axis = dict(context["axes"]["phosphate"])
+    axis.pop("axis_metadata")
+    required = {"map_l", "map_m", "map_h", "dap_l", "dap_m", "dap_h", "axis_g2", "historic_h_growth", "scope"}
+    if set(axis) != required:
+        raise ValueError("incomplete phosphate data")
+    if axis["scope"] != "shared_regime_reference_with_historical_elasticity_guard":
+        raise ValueError("phosphate scope incompatible with 600096.SH")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in inp.values()):
+        raise ValueError("stock inputs must be finite numbers")
+    if any(name.startswith("p_") for name in inp):
+        raise ValueError("option weights do not belong in the base inputs")
+    if inp["shares"] <= 0 or inp["equity"] <= 0:
+        raise ValueError("shares and equity must be positive")
+    if inp["beta_map"] >= 0.20:
+        raise ValueError("MAP elasticity guard: valuation method needs review")
     r = inp["r_perp"]
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    for k in ("g2_l", "g2_m", "g2_h"):
-        errors += check_g_cap(inp[k], r, k)
-    # A2e-5 cyclical: the g ladder is flat-or-reverse; L shares the axis row.
-    if abs(inp["g2_l"] - inp["g2_m"]) > 1e-9:
-        errors.append(f"g2_l {inp['g2_l']} must equal g2_m {inp['g2_m']} (axis 永续 g2, flat; A15)")
-    if inp["g2_h"] > inp["g2_m"]:
-        errors.append(f"g2_h {inp['g2_h']} > g2_m {inp['g2_m']} — H may not grow faster than M (cyclical, flat-or-reverse)")
-    if abs(inp["np_h"] - NP_PEAK_FY2022_YI) > 0.01:
-        errors.append(
-            f"np_h={inp['np_h']:g}亿 must be the FY2022 realised peak "
-            f"{NP_PEAK_FY2022_YI}亿 — H is that peak itself, not an extrapolation"
-        )
+    if GROWTH_LM_OVERRIDE is not None and (isinstance(GROWTH_LM_OVERRIDE, bool) or not isinstance(GROWTH_LM_OVERRIDE, (int, float)) or not math.isfinite(GROWTH_LM_OVERRIDE)):
+        raise ValueError("growth override must be finite")
+    g = axis["axis_g2"] if GROWTH_LM_OVERRIDE is None else GROWTH_LM_OVERRIDE
+    g_high = inp["g2_h"]
+    errors = check_r(r, "r_perp", 5) + check_g_cap(g, r, "g2_m") + check_g_cap(g_high, r, "g2_h")
+    if g_high > g:
+        errors.append("high-tier growth must not exceed middle-tier growth")
     if errors:
-        return report(errors)
-
-    # --- the ruler -------------------------------------------------------------
+        raise ValueError("; ".join(errors))
+    if abs(inp["np_h"] - 60.21) > 0.01:
+        raise ValueError("high profit must be the FY2022 realised peak")
     np_m = inp["eps_m_consensus"] * inp["shares"] / YI
-    roe = {"L": inp["np_l"] / inp["equity"], "M": np_m / inp["equity"], "H": inp["np_h"] / inp["equity"]}
-    # A18: growth is not retention-funded, so the multiple is 1/(r - g) on every
-    # tier; the retention form is only a cross-check below.
-    pe = {t: 1.0 / (r - inp[f"g2_{t.lower()}"]) for t in ("L", "M", "H")}
-    for tag, val in pe.items():
-        if not (inp["pe_own_min"] <= val <= inp["pe_own_max"]):
-            errors.append(
-                f"{tag} multiple {val:.2f} outside own realised band "
-                f"[{inp['pe_own_min']}, {inp['pe_own_max']}] — ③ 出带: step the basket down, do not force g or r"
-            )
-    tiers = (("L", inp["np_l"], pe["L"]), ("M", np_m, pe["M"]), ("H", inp["np_h"], pe["H"]))
-    computed = {}
-    rows = []
-    for tag, npp, mult in tiers:
-        eps = npp * YI / inp["shares"]
-        computed[tag] = eps * mult
-        rows.append((tag, npp, eps, mult, eps * mult))
+    profits = (inp["np_l"], np_m, inp["np_h"])
+    if not profits[0] < profits[1] < profits[2]:
+        raise ValueError("profit ladder is not ordered")
+    adopted_growth = {"L": g, "M": g, "H": g_high}
+    multiples = {tier: 1 / (r - adopted_growth[tier]) for tier in "LMH"}
+    if any(not inp["pe_own_min"] <= value <= inp["pe_own_max"] for value in multiples.values()):
+        raise ValueError("multiple outside historical band; basket requires review")
+    base = tuple(value * YI / inp["shares"] * multiples[tier] for tier, value in zip("LMH", profits))
 
-    errors += ladder("net profit", inp["np_l"], np_m, inp["np_h"])
-    L, M, H = computed["L"], computed["M"], computed["H"]
-    if not (L < M < H):
-        return report(errors + [f"L<M<H violated: {L:.4f}, {M:.4f}, {H:.4f}"])
+    # A17: FY2027 single-house point as a growth candidate, never base value.
+    growth_candidate = inp["eps_fy27_single"] / inp["eps_m_consensus"] - 1
+    candidate = (base[0], inp["eps_fy27_single"] * multiples["M"],
+                 base[2] * (1 + growth_candidate))
+    if not candidate[0] < candidate[1] < candidate[2]:
+        raise ValueError("candidate band is not ordered")
 
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B})
+    # A9: the project matures in 2032, discounted to the FY2026 base year.
+    if inp["t_opt"] <= 2026 or int(inp["t_opt"]) != inp["t_opt"]:
+        raise ValueError("project completion year must be after 2026")
+    if not 0 <= inp["opt_spent"] < inp["opt_capex"]:
+        raise ValueError("project spending outside total capex")
+    investment = inp["opt_stake"] * inp["opt_capex"]
+    remaining = inp["opt_stake"] * (inp["opt_capex"] - inp["opt_spent"])
+    project_profit = investment * inp["opt_irr"]
+    discount = (1 + r) ** (inp["t_opt"] - 2026)
+    option = (project_profit * multiples["M"] - remaining) * YI / inp["shares"] / discount
+    build = range(2027, int(inp["t_opt"]))
+    spread_capex = sum(remaining / len(build) / (1 + r) ** (year - 2026) for year in build)
+    option_band = tuple(v + p * option for v, p in zip(base, P_TIERS))
+    if not option_band[0] < option_band[1] < option_band[2]:
+        raise ValueError("option band is not ordered")
 
-    # Candidate band (A17): the broker's FY2027E is an ordinary base forecast = growth type
-    # (construction §7h): its step over the FY2026E mean is shared by M and H; the L regime
-    # (FY2023 actual) bears no transition. Disclosed, not judged.
-    g1_cand = inp["eps_fy27_single"] / inp["eps_m_consensus"] - 1
-    m_cand = inp["eps_fy27_single"] * pe["M"]
-    h_cand = H * (1 + g1_cand)
-    if not (L < m_cand < h_cand):
-        errors.append(f"candidate band collapsed: L {L:.2f} < M' {m_cand:.2f} < H' {h_cand:.2f} fails (A17)")
-    stated_cand = load_framework(FRAMEWORK).candidate
-    if stated_cand is None:
-        errors.append("候选带 line missing from Outputs (A17)")
-    else:
-        for lab, said, got in zip(("L′", "M′", "H′"), stated_cand, (L, m_cand, h_cand)):
-            if abs(said - got) > 0.05:
-                errors.append(f"候选带 {lab}: stated {said} vs recomputed {got:.4f}")
+    def band_at_growth(gg):
+        return {t: p * YI / inp["shares"] / (r - gg) for t, p in zip("LMH", profits)}
 
-    # V_opt (A9): own ruler, discounted from the realisation year to the numerator year.
-    if inp["t_opt"] <= NUM_YEAR:
-        errors.append(f"t_opt {inp['t_opt']:g} must lie after the numerator year {NUM_YEAR} (A9)")
-    p_fields = [k for k in inp if k.startswith("p_")]
-    if p_fields:
-        errors.append(f"Inputs carry probability fields {p_fields} — p_k belongs in table 3 only")
-    if not (0 <= inp["opt_spent"] < inp["opt_capex"]):
-        errors.append(f"opt_spent {inp['opt_spent']:g} must lie in [0, opt_capex {inp['opt_capex']:g})")
-    k_share = inp["opt_stake"] * inp["opt_capex"]          # earns the IRR (whole budget, unlevered)
-    k_remain = inp["opt_stake"] * (inp["opt_capex"] - inp["opt_spent"])  # still to be spent, debt included
-    dni_opt = k_share * inp["opt_irr"]
-    v_at_t = (dni_opt * pe["M"] - k_remain) * YI / inp["shares"]
-    disc = (1 + r) ** (inp["t_opt"] - NUM_YEAR)
-    v_opt = v_at_t / disc
-    v_g0 = (dni_opt / r - k_remain) * YI / inp["shares"] / disc
-    v_full_k = (dni_opt * pe["M"] - k_share) * YI / inp["shares"] / disc  # pre-2026-10-04 (sunk fee re-deducted)
-    # Contrast: unspent capital spread evenly over the build years (2027 .. t_opt-1), each discounted to FY2026.
-    build = range(NUM_YEAR + 1, int(inp["t_opt"]))
-    k_pv_spread = sum(k_remain / len(build) / (1 + r) ** (y - NUM_YEAR) for y in build)
-    v_spread = (dni_opt * pe["M"] / disc - k_pv_spread) * YI / inp["shares"]
-    said_v = stated_v_opt(md[md.find("### Outputs"):])
-    if said_v is None or abs(said_v - v_opt) > TOL:
-        errors.append(f"V_opt: stated {said_v} vs recomputed {v_opt:.4f}")
-    if stated_p_tiers(md[md.find("### Outputs"):]) != P_TIERS:
-        errors.append(f"p_L/p_M/p_H stated {stated_p_tiers(md)} vs {P_TIERS}")
-    opt = tuple(a + p * v_opt for a, p in zip((L, M, H), P_TIERS))
-    A_v, B_v = cut_points(*opt)
-
-    # --- report ----------------------------------------------------------------
-    print(f"formula_id={FORMULA_ID}")
-    print(
-        f"axis OK vs _AXIS.phosphate-chain and peer 002895.SZ: MAP "
-        f"{inp['map_l']:g}/{inp['map_m']:g}/{inp['map_h']:g} 元/吨 "
-        f"(beta={inp['beta_map']:g} < {PHOS_INERT_BETA_CEILING:g}: numerator does not ride it)"
-    )
-    b = baskets["r_perp"]
-    print(f"basket: r_perp 篮 {b} {BASKET_R[b][0]} r={r:g}; g ladder L {inp['g2_l']:g} / M {inp['g2_m']:g} / H {inp['g2_h']:g} (flat); "
-          f"PE = 1/(r-g) = {pe['M']:.3f}x  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
-    labels = {
-        "L": "FY2023 actual  (regime)   ",
-        "M": "FY2026E consensus         ",
-        "H": "FY2022 actual  (loosened) ",
+    basis = {"inputs": inp, "axis": axis}
+    if GROWTH_LM_OVERRIDE is not None:
+        basis["growth_lm_override"] = GROWTH_LM_OVERRIDE
+    fingerprint = hashlib.sha256(json.dumps(basis, sort_keys=True,
+                                              allow_nan=False).encode()).hexdigest()
+    return {
+        # Neither a partial input comparison nor a digest proves that the
+        # current source set is the one researched on the historical date.
+        "ticker": "600096.SH", "currency": "CNY", "valuation_as_of": None,
+        "framework_as_of": None, "historical_research_as_of": "2026-10-30",
+        "historical_financial_statement_as_of": "2026-06-30", "forecast_source_as_of": None,
+        "units": {"price": "CNY_PER_SHARE"},
+        "formula_id": FORMULA_ID, "anchors": dict(zip("LMH", base)),
+        "limitations": ["fy2026_consensus_weakened_after_q3", "fy2027_single_broker_candidate_outdated"],
+        "candidate": {"label": "FY2027单家", "anchors": dict(zip("LMH", candidate))},
+        "option": {"anchors": dict(zip("LMH", option_band)), "value": option,
+                   "weights": dict(zip("LMH", P_TIERS))},
+        "details": {
+            "historical_map": {t: axis[f"map_{t.lower()}"] for t in "LMH"},
+            "parallel_dap": {t: axis[f"dap_{t.lower()}"] for t in "LMH"},
+            "growth_reference": axis["axis_g2"], "historical_axis_h_growth": axis["historic_h_growth"],
+            "adopted_growth": adopted_growth,
+            "discount_rate": dict.fromkeys("LMH", r),
+            "return_on_equity": {t: p / inp["equity"] for t, p in zip("LMH", profits)},
+            "multiple": multiples,
+            "candidate_growth": growth_candidate,
+            "retention_multiple": {t: perpetual_pe(adopted_growth[t], p / inp["equity"], r)
+                                    for t, p in zip("LMH", profits)},
+            "g_sensitivity": {"minus_0_5pp": band_at_growth(g - 0.005),
+                              "plus_0_5pp": band_at_growth(g + 0.005),
+                              "minus_1pp": band_at_growth(g - 0.01),
+                              "plus_1pp": band_at_growth(g + 0.01),
+                              "zero_growth": band_at_growth(0)},
+            "profit_per_100m": YI / inp["shares"] * multiples["M"],
+            "option_zero_growth": (project_profit / r - remaining) * YI / inp["shares"] / discount,
+            "option_full_capex": (project_profit * multiples["M"] - investment) * YI / inp["shares"] / discount,
+            "option_spread_capex": (project_profit * multiples["M"] / discount - spread_capex) * YI / inp["shares"],
+            "profit_trough_at_zero_growth": profits[0] * YI / inp["shares"] / r,
+            "book_value_floor": inp["bps"],
+            "observed_capex_fy25": inp["capex_fy25"], "observed_depreciation_fy25": inp["da_fy25"],
+            "observed_debt_fy25": inp["debt_fy25"], "observed_dividend": inp["dps"],
+            "sulfur_9m": inp["sulfur_9m"], "sulfur_9m_prior": inp["sulfur_9m_prior"],
+        },
+        "basis_changed": None, "partial_basis_changed": fingerprint != BASELINE,
     }
-    for tag, npp, eps, mult, anchor in rows:
-        print(f"{tag}: {labels[tag]}  np={npp:6.2f}亿  eps={eps:.4f}  ROE={roe[tag]:.2%} (disclosed)  pe={mult:.3f}  anchor={anchor:.4f}  PB={anchor / inp['bps']:.3f}")
-    ret = {t: perpetual_pe(inp[f"g2_{t.lower()}"], roe[t], r) for t in ("L", "M", "H")}
-    print("retention-form cross-check (1-g/ROE)/(r-g): "
-          + " / ".join(f"{ret[t]:.2f}x" for t in "LMH") + " -> "
-          + " / ".join(f"{rows[i][2] * ret[t]:.2f}" for i, t in enumerate("LMH")))
-    print(f"deep_discount 压力坐标: 谷底 x 1/r = {inp['np_l'] * YI / inp['shares'] / r:.2f}; "
-          f"floor (disclosed only, not max()'d): PB 1.0 = {inp['bps']:.2f}")
-    print(f"candidate band (A17, FY27 single-house {inp['eps_fy27_single']:g}, g1 {g1_cand:+.2%} on M/H): "
-          f"L'={L:.2f} M'={m_cand:.2f} H'={h_cand:.2f} A'={(L + m_cand) / 2:.2f} B'={(m_cand + h_cand) / 2:.2f}"
-          f" (disclosed, not judged); per-share EPS at A'/B' {(L + m_cand) / 2 / pe['M']:.4f}/{(m_cand + h_cand) / 2 / pe['M']:.4f}")
-    print(f"V_opt={v_opt:.4f} (stake {inp['opt_stake']:g} x capex {inp['opt_capex']:g}亿 = {k_share:.3f}亿 earning IRR; "
-          f"ΔNI {dni_opt:.4f}亿 x {pe['M']:.3f}x - K_remain {k_remain:.3f}亿 (= {inp['opt_stake']:g} x ({inp['opt_capex']:g} - spent {inp['opt_spent']:g})) "
-          f"-> {v_at_t:.4f}/sh @{inp['t_opt']:g}, ÷{disc:.4f}); deduction {k_remain * YI / inp['shares'] / disc:.4f}/sh at FY{NUM_YEAR}; "
-          f"g=0 contrast {v_g0:.4f}; full-K (old) {v_full_k:.4f}; capex spread {build.start}-{build.stop - 1} {v_spread:.4f}; V_opt/M {v_opt / M:.4f}")
-    print("table3: " + " / ".join(f"{t} {b:.2f}+{p:g}x{v_opt:.2f}={o:.2f}" for t, b, p, o in zip("LMH", (L, M, H), P_TIERS, opt))
-          + f"  A'={A_v:.2f} B'={B_v:.2f}")
-    per_yi = YI / inp["shares"] * pe["M"]
-    print(f"sensitivity: +1亿 net profit -> M anchor {per_yi:+.2f} CNY")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(
-        f"ratios: L/M={L / M:.4f} H/M={H / M:.4f} (H-L)/2M={(H - L) / (2 * M):.4f} "
-        f"| 分子比 L={rows[0][2] / rows[1][2]:.4f} H={rows[2][2] / rows[1][2]:.4f} "
-        f"| 倍数比 L={pe['L'] / pe['M']:.4f} H={pe['H'] / pe['M']:.4f} | V_opt/M {v_opt / M:.4f}"
-    )
-    return report(errors)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

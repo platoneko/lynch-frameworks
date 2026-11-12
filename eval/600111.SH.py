@@ -1,103 +1,75 @@
 #!/usr/bin/env python3
-"""600111.SH (China Northern Rare Earth) valuation eval.
+"""Historical Northern Rare Earth two-stage forecast model.
 
-frameworks/600111.SH.md is the source of truth.
-formula_id: nre_consensus_fy28_disc_two_stage_gordon_v2
+Amounts are CNY/share unless otherwise stated; sources and input dates are
+retained in comments and the framework. 2028's two-house forecast is the
+original fallback when the historical midcycle bridge failed to explain the
+full forecast gap. The price-to-earnings bridge names worlds and validates
+history; it is not the numerator in the adopted valuation.
 
-Numerator = the FY2028 sell-side range (two houses, low/mean/high).  Time
-alignment (valuation-rules「经营价值与超额现金」③, 2026-10-15): the Gordon value
-sits at the numerator-year start 2028-01-01; it is discounted to the valuation
-date (the 2026-06-30 balance sheet) over tau = 1.5 years at the basket r, and
-the window's distributable profit (unbooked consensus 2026H2 + FY2027 parent
-EPS x (1 - g1/ROE_x), b = g1 / tier forward return since bps_fwd is rolled at
-the observed retention, not g/RONIC) is added back discounted tau/2.  The old
-one-year discount at a separate r_disc 10% is gone.  This is the ②-b fallback of
-valuation-rules: the 5-year NdPr-price mid-cycle numerator (A8) sits 57% below
-the consensus mean, only half of which the one measured structural variable
-(phase-2 smelting capacity) explains, so the framework swaps to the consensus
-three points and hangs falsifiers on them (A1).
+Original research deemed the historical equal-earnings PE band distorted by
+the high growth and ROE forecasts in 2023 that later failed. This explicit
+judgment keeps the original basket; if the model re-enters the band it needs
+review rather than silently changing the judgment. FY2025 retained payout is
+one low-profit year, earlier dividends and forward book-value roll remain
+unverified. The commodity leg kept its own forecast return instead of an
+unverified separate fade; no overseas option is added without economics.
 
-Multiples are two-stage Gordon (valuation-rules「永续增长口径」「两段式过渡」):
-r is the whole-company basket (篮 6 周期商品, A10), ROE per tier = EPS28 /
-forward BPS, a GS demand-CAGR window g1 for n years after the numerator year,
-then the CNY-inflation tail g2.  Nothing is reverse-solved from the
-same-earnings band any more: at the basket r the generated PE_M sits below
-that band's lower edge, which is formally a ③ out-of-band, but the band failed
-the 1b validity check (2023-01→08 was priced on FY23E consensus that later
-collapsed), so the framework records「不可判定」and keeps the initial basket.
-This eval asserts that the out-of-band fact and the framework's declaration
-agree, and never lowers the basket or twists g.
-
-The NdPr-price → EPS bridge (A2) never enters the anchors; it names the three
-worlds in price terms, must reproduce the measured years within ±20%, and
-prints the mid-cycle / trough coordinates that the `deep_discount` row reads.
-
-The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so nothing
-here computes a zone or a market-implied reading — the digest and the app zone
-on live quotes.
+Earlier text reports a non-exempt return-fade contrast (10.76 / 12.42 /
+14.08) and an approximate financing-cost shock, but the old script contains
+no calculation or full assumptions for either. They remain historical
+disclosures and must not be mistaken for reproduced values.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
+from lib.gordon import basket_r, check_branch, check_g_cap, check_r, payout, payout_gap, perpetual_pe
+from lib.inputs import check_missing, ladder, require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.tiers import flat_multiple_ladder
+from lib.zones import zone_of
 
-from lib.gordon import (  # noqa: E402
-    basket_r,
-    check_branch,
-    check_g_cap,
-    check_r,
-    payout,
-    payout_gap,
-    perpetual_pe,
-)
-from lib.inputs import (  # noqa: E402
-    check_against_stated,
-    check_missing,
-    ladder,
-    parse_baskets,
-    parse_inputs,
-)
-from lib.tiers import flat_multiple_ladder, report as tier_report  # noqa: E402
-from lib.zones import zone_of  # noqa: E402
+DEPENDENCIES = {'libraries': ('gordon', 'inputs', 'partial_basis', 'tiers', 'zones'), 'axes': {}}
+BASELINE_LOCAL = '81f64ab3a26f52a84862d27fec8a4cf339319dfdb55367011ebef5ea832f5cda'
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "600111.SH.md"
-FORMULA_ID = "nre_consensus_fy28_disc_two_stage_gordon_v2"
-MIN_R_MINUS_G = 0.02
-TOL = 0.05
-# 纠正对账门 coordinate ②: the new M must sit within this of E_M / r.
-RECONCILE_TOL = 0.20
-# The framework's ③ verdict when the band is distorted (A10); the guardrail
-# asserts this wording is present iff the generated multiple is out of band.
-UNDECIDABLE = "不可判定"
+INPUTS = {
+    'shares': 3615065842,  # 总股本；Longbridge static; as-of 2026-09-16
+    'bps': 7.2626,  # 每股净资产 = 归母净资产 262.55 亿 ÷ 股本；2026H1 中报; as-of 2026-06-30
+    'bps_fwd': 10.203,  # 前瞻 BPS（2028 末）= bps 7.2626 + 0.79 × ((2026E 1.12 − 2026H1 已入账 0.5679) + 2027E 1.47 + 2028E 1.70)；起点 2026-06-30 BPS 已含 H1 EPS，2026E 只滚 H2 尚未入账部分（H1 去重）；留存 0.79 = FY2025 单年（低利润年），近 3 年实测分红率均值 `待补`；FY2025 DPS 0.13 若在 2026-06-30 后支付须从起点扣除 `待补`；无增发 / 回购 / 转股; as-of 2026-09-19
+    'eps28_l': 1.476,  # FY2028 共识下沿 = 国投 53.35 亿 ÷ 股本（A1）; as-of 2026-08
+    'eps28_m': 1.698,  # FY2028 共识均值 = (1.476 + 1.92) / 2（两家）; as-of 2026-08
+    'eps28_h': 1.92,  # FY2028 共识上沿 = 西部证券; as-of 2026-08-21
+    'tau': 1.5,  # 时点对齐年数 τ = 估值基准日 2026-06-30（BPS 的资产负债表日）→ 分子年初 2028-01-01；按 `r_perp` 折（无篮子对），取代原「折 1 年 @10%」（A11）; as-of 2026-10-16
+    'eps26_rem': 0.5521,  # 窗口内尚未入账的 2026 共识归母 EPS = 2026E 1.12 − 2026H1 已入账 0.5679（与 `bps_fwd` 同一组共识数；A11）; as-of 2026-10-16
+    'eps27_win': 1.47,  # 窗口内 FY2027 共识 EPS（国投 1.35 / 西部 1.70 口径，与 `bps_fwd` 同；A11）; as-of 2026-10-16
+    'r_perp': 0.13,  # 篮 6 周期商品 / 小盘 13%：整公司单腿，盈利是镨钕价 × 配额量的商品价函数（A10；真源 `eval/lib/gordon.py BASKET_R`）；13 / 11 / 10% 下 M 倍数 8.2 / 10.3 / 11.7× 均低于 `pe_band_lo` 13.8，但该带经 1b 核验失真，不能据它降篮 → ③ 不可判定，尺子留初分篮; as-of 2026-09-19
+    'capex_fy25': 13,  # FY2025 资本开支（亿元）；序列 10 / 11 / 17 / 13（2022–25）vs D&A 5 / 5 / 7 / 10 → 增长 capex 3–10 亿可忽略（§4.0 三桶，属性 D）; as-of FY2025
+    'cash': 52.8,  # 现金（亿元）vs 有息债 71–84 → 无净现金；留存进库存与现金为财务性桶，不进倍数; as-of 2026-06-30
+    'g1_window': 0.044,  # 窗口增长率 \(g_1\) = GS NdPrO 需求 2026 97.7 kt → 2035 144.6 kt 区间 CAGR（Wisburg 90834；tier 3 具名宏观）；这是两端点的 9 年平均，不是永续；量的宏观锚（配额随需求），价不进 g；cap = 6%; as-of 2026-06-02
+    'n_window': 7,  # 窗口年数 = 2029–2035（分子年 FY2028 之后到 GS 预测期末）；窗口后转 `g2`; as-of 2026-09-19
+    'pe_band_lo': 13.8,  # 同等盈利实测带下沿：TTM EPS 1.48–1.83 的 8 个月（2023-01→08）最低 PE（2023-03，TTM 1.829）；LB PE 月序列 × 自建 TTM；带经 1b 核验失真（A10），只作护栏坐标; as-of 2026-09-16
+    'pe_band_hi': 16.7,  # 同上带上沿（2023-08，TTM 1.479）；中位 15.3; as-of 2026-09-16
+    'g2': 0.025,  # 窗口后永续 \(g_2\) = 2.5%（§13 商品腿 tier 默认 = CNY 通胀；稀土实际价格漂移走轴不进 g；§4.0 留存财务性，A3 / 属性 D）；cap = min(6%, r − 4%) = 6%; as-of 2026-09-19
+    'eps28_ths': 1.83,  # 同花顺 2028E 均值（9 家，区间 1.48–1.98），vs 本仓 1.698 +8%；分子上修坐标 13.9，**不进公式**（A1）; as-of 2026-09-18
+    'payout_obs': 0.21,  # 实付派息率 = FY2025 DPS 0.13 ÷ EPS 0.6227；`check_branch`；**单年且为低利润年**，`bps_fwd` 用的留存 0.79 = 1 − 0.21 只是过渡取值，近 3 年（FY2023–25）实测分红率均值 `待补` 后替换; as-of 2026-06-11
+    'pb_floor': 2.4,  # 资产地板倍数 = 自身 5 年实测 PB 谷底（2024-02 月点；A5）；只披露不 max()（§13）——地板 17.43 > H 14.92，在 [L, H] 外; as-of 2026-09-18
+    'bridge_a': -0.6906,  # 桥截距（A2）；不入主公式; as-of 2026-09-16
+    'bridge_b': 0.02493,  # 桥斜率 EPS / (万元/吨)（A2）；不入主公式; as-of 2026-09-16
+    'ndpr_mid': 57.2,  # 5 年（2021–25）氧化镨钕年均价均值 万/吨；对照坐标（A8）; as-of 2026-09-16
+    'ndpr_now': 72.75,  # 氧化镨钕现货 万/吨；生意社；坐标; as-of 2026-09-16
+    'eps_trough': 0.2778,  # FY2024 实测谷底 EPS；`deep_discount` 压力坐标（A8）; as-of 2025-04
+}
 
-# A2 bridge reproduction: (NdPr oxide annual average 万/吨, reported EPS).  The
-# bridge was fitted on four points; the two full formula-regime years that are
-# not the trough are the reproduction gate (±20%).
-BRIDGE_GATE = {"FY2023": (53.0, 0.6558), "FY2025": (51.45, 0.6227)}
-BRIDGE_TOL = 0.20
-# Bridge worlds: consensus EPS28 read back into NdPr price at today's volume and
-# at the phase-2 run-rate (31 万吨 vs ~20 → ×1.55); printed, not anchors.
+MIN_R_MINUS_G = .02
+RECONCILE_TOL = .20
+BRIDGE_GATE = {'FY2023': (53.0, .6558), 'FY2025': (51.45, .6227)}
+BRIDGE_EXTRA = {'FY2024': (40.3, .2778), 'FY2026H1_annualized': (74.05, 1.1358)}
+BRIDGE_TOL = .20
 PHASE2_VOLUME_X = 1.55
-# Pre-control market centre (2023-11 → 2025H1, 属性 E) and the regime mid-cycle
-# NdPr price (A8) — coordinate disclosures only.
 PRE_CONTROL_PRICE = 21.0
 NDPR_REGIME_MID = 70.0
-
-REQUIRED = [
-    "shares", "bps", "bps_fwd",
-    "eps28_l", "eps28_m", "eps28_h",
-    "tau", "eps26_rem", "eps27_win", "r_perp",
-    "g1_window", "n_window", "g2",
-    "pe_band_lo", "pe_band_hi",
-    "payout_obs", "pb_floor",
-    "bridge_a", "bridge_b", "ndpr_mid", "ndpr_now", "eps_trough",
-    "eps28_ths",
-]
-
+BAND_DISTORTED = True  # Original 2023 high expectations failed; see A10.
 
 def window_pe(g1: float, n: int, g2: float, roe: float, r: float) -> float:
     """Two-stage multiple on next-period earnings, as the framework writes it.
@@ -116,166 +88,136 @@ def window_pe(g1: float, n: int, g2: float, roe: float, r: float) -> float:
     return stage1 + tail
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    errors = check_missing(inp, REQUIRED)
+def evaluate(inp, band_distorted=BAND_DISTORTED):
+    errors = check_missing(inp, list(INPUTS))
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
-
-    # --- r / g inputs against the basket table -------------------------------------
-    baskets = parse_baskets(md)
-    r = inp["r_perp"]
-    if "r_perp" not in baskets:
-        errors.append("r_perp: no 篮 N tag in its Inputs source cell (AGENTS.md「篮子声明」)")
-    errors += check_r(r, "r_perp", baskets.get("r_perp"))
-    g1, n_win, g2 = inp["g1_window"], int(inp["n_window"]), inp["g2"]
-    errors += check_g_cap(g2, r, "g2")
-    errors += check_g_cap(g1, r, "g1_window")
+        raise ValueError('; '.join(errors))
+    if any(not math.isfinite(inp[k]) for k in INPUTS):
+        raise ValueError('all model inputs must be finite')
+    require_whole_years(inp, ('n_window',))
+    r = inp['r_perp']
+    errors += check_r(r, 'r_perp', 6)
+    g1, n_win, g2 = inp['g1_window'], int(inp['n_window']), inp['g2']
+    errors += check_g_cap(g2, r, 'g2')
+    errors += check_g_cap(g1, r, 'g1_window')
     if r - g2 < MIN_R_MINUS_G:
-        errors.append(f"r − g2 = {r - g2:.4f} < {MIN_R_MINUS_G} (pole)")
-    eps28 = (inp["eps28_l"], inp["eps28_m"], inp["eps28_h"])
-    errors += ladder("eps28", *eps28)
-    for k in inp:
-        if k.startswith("p_"):
-            errors.append(f"probability-style input {k} in Inputs")
-
-    # --- two-stage Gordon multiples --------------------------------------------------
-    roe = tuple(e / inp["bps_fwd"] for e in eps28)
-    errors += check_branch(g2, roe[1], r, inp["payout_obs"], "M")
-    pes = tuple(window_pe(g1, n_win, g2, x, r) for x in roe)
-    # Guardrail (裁决顺序 ③): M and H against the same-earnings band.  Out of
-    # band is allowed only when the framework declares the band distorted (1b)
-    # and the verdict 不可判定; in band with that verdict is a stale framework.
-    out_of_band = any(
-        not (inp["pe_band_lo"] - 1e-6 <= pe <= inp["pe_band_hi"] + 1e-6) for pe in pes[1:]
-    )
-    declared = UNDECIDABLE in md.split("### Outputs", 1)[-1]
-    if out_of_band and not declared:
-        errors.append(
-            f"guardrail: PE_M/H={pes[1]:.2f}/{pes[2]:.2f} outside same-earnings band "
-            f"[{inp['pe_band_lo']}, {inp['pe_band_hi']}] and the framework does not declare {UNDECIDABLE} "
-            f"— run the ③ 出带处理流程, do not twist g / r"
-        )
-    if declared and not out_of_band:
-        errors.append(
-            f"framework declares ③ {UNDECIDABLE} but PE_M/H={pes[1]:.2f}/{pes[2]:.2f} sit inside the band "
-            f"[{inp['pe_band_lo']}, {inp['pe_band_hi']}] — drop the verdict"
-        )
-
-    # Time alignment (valuation-rules「经营价值与超额现金」③): numerator-year start → valuation date.
-    tau = inp["tau"]
+        errors.append('r minus terminal growth below pole guard')
+    eps28 = (inp['eps28_l'], inp['eps28_m'], inp['eps28_h'])
+    errors += ladder('eps28', *eps28)
+    errors += [f'probability-style input {k}' for k in inp if k.startswith('p_')]
+    if inp['bps_fwd'] <= 0 or inp['shares'] <= 0:
+        errors.append('invalid forward book value or shares')
+    tau = inp['tau']
     if tau < 0:
-        errors.append(f"tau={tau} < 0 — the rule floors it at 0")
-    disc = (1.0 + r) ** (-tau)
-    eps_d = tuple(e * disc for e in eps28)
-    win_eps = inp["eps26_rem"] + inp["eps27_win"]
-
-    def window(roe_x: float, g1_: float = g1, r_: float = r, tau_: float = tau) -> float:
-        """Distributable window profit, discounted tau/2 (b = g1 / tier forward return, floored at 0)."""
-        return max(win_eps * (1.0 - g1_ / roe_x), 0.0) / (1.0 + r_) ** (tau_ / 2)
-
-    win = tuple(window(x) for x in roe)
-    L, M, H = (e * pe + w for e, pe, w in zip(eps_d, pes, win))
-    scenario_L = L
-    floor = inp["pb_floor"] * inp["bps"]   # disclosure only, never max()-ed into L (A5)
-    A, B = (L + M) / 2, (M + H) / 2
-    if not (L < M < H):
-        errors.append(f"L<M<H violated ({L:.2f}/{M:.2f}/{H:.2f})")
-    flat_err, flat = flat_multiple_ladder(eps_d, pes[1])
-    errors += flat_err
-    if not (flat[0] < flat[1] < flat[2]):
-        errors.append(f"flat-multiple ladder broken at PE_M={pes[1]:.2f}: {flat}")
-    # 纠正对账门 ②: M within 20% of E_M / r (the coordinate the framework passes on).
-    em_over_r = eps_d[1] / r
-    if abs(M / em_over_r - 1.0) > RECONCILE_TOL:
-        errors.append(f"对账门 ②: M {M:.2f} vs E_M/r {em_over_r:.2f} ({M / em_over_r - 1:+.0%} > {RECONCILE_TOL:.0%})")
-
-    # --- A2 bridge reproduction gate ----------------------------------------------
-    a, b = inp["bridge_a"], inp["bridge_b"]
-    for year, (p, e) in BRIDGE_GATE.items():
-        fit = a + b * p
-        if abs(fit / e - 1.0) > BRIDGE_TOL:
-            errors.append(f"bridge {year}: fit {fit:.3f} vs reported {e} (>{BRIDGE_TOL:.0%})")
-
-    errors += check_against_stated(md, {"L": L, "M": M, "H": H, "A": A, "B": B}, TOL)
-    out_sec = md.split("### Outputs", 1)[-1]
-    for label, want_v, rx in (
-        ("floor", floor, r"`floor` = \*\*([0-9.]+)\*\*"),
-        ("scenario_L", scenario_L, r"`scenario_L` = \*\*([0-9.]+)\*\*"),
-    ):
-        m = re.search(rx, out_sec)
-        got = float(m.group(1)) if m else None
-        if got is None or abs(got - want_v) > TOL:
-            errors.append(f"{label}: stated {got} vs recomputed {want_v:.4f}")
+        errors.append('tau must not be negative')
     if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+        raise ValueError('; '.join(errors))
 
-    print(f"formula_id={FORMULA_ID}")
-    print(f"basket: r_perp 篮 {baskets['r_perp']} = {r:g}; time alignment tau {tau:g} y at r_perp")
-    print(f"eps28 L/M/H = {eps28[0]:g}/{eps28[1]:g}/{eps28[2]:g}  × disc {disc:.4f} → {eps_d[0]:.3f}/{eps_d[1]:.3f}/{eps_d[2]:.3f}; "
-          f"window profit {win_eps:.4f} × (1 − g1/ROE) / (1+r)^(tau/2) → +{win[0]:.3f}/+{win[1]:.3f}/+{win[2]:.3f}")
-    print(f"L/M/H = {L:.2f}/{M:.2f}/{H:.2f}  A/B = {A:.2f}/{B:.2f}")
-    print(f"floor={floor:.2f} (PB {inp['pb_floor']:g} × bps, disclosure only, not max()-ed) scenario_L={scenario_L:.2f} = L; "
-          f"tier PB on today's bps = {L / inp['bps']:.2f}/{M / inp['bps']:.2f}/{H / inp['bps']:.2f}")
-    modelled, gap = payout_gap(g2, roe[1], inp["payout_obs"])
-    print(
-        f"two-stage gordon: r={r:g} g1={g1:g} n={n_win} g2={g2:g} "
-        f"roe={roe[0]:.3f}/{roe[1]:.3f}/{roe[2]:.3f} -> pe={pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f} "
-        f"vs same-earnings band [{inp['pe_band_lo']}, {inp['pe_band_hi']}] "
-        f"(1/r {1 / r:.2f}, perpetual g1 {perpetual_pe(g1, roe[1], r):.2f}); "
-        f"payout_gap modelled {modelled:.0%} vs paid {inp['payout_obs']:.0%} = {gap:+.0%}"
-    )
-    print(f"③: out_of_band={out_of_band}, framework declares {UNDECIDABLE}={declared} "
-          f"(band distorted per 1b — basket kept, no band-edge reverse-solve)")
-    print(f"对账门 ②: E_M/r = {em_over_r:.2f}, M {M / em_over_r - 1:+.1%}")
+    roe = tuple(e / inp['bps_fwd'] for e in eps28)
+    errors += check_branch(g2, roe[1], r, inp['payout_obs'], 'M')
+    pes = tuple(window_pe(g1, n_win, g2, value, r) for value in roe)
+    out_of_band = any(not (inp['pe_band_lo'] - 1e-6 <= pe <= inp['pe_band_hi'] + 1e-6) for pe in pes[1:])
+    if out_of_band != band_distorted:
+        errors.append('historical band status changed; reassess distortion and basket')
+    disc = (1 + r) ** -tau
+    eps_d = tuple(e * disc for e in eps28)
+    win_eps = inp['eps26_rem'] + inp['eps27_win']
+
+    def window(roe_x, g1_=g1, r_=r, tau_=tau):
+        return max(win_eps * (1 - g1_ / roe_x), 0) / (1 + r_) ** (tau_ / 2)
+
+    win = tuple(window(value) for value in roe)
+    L, M, H = (e * pe + w for e, pe, w in zip(eps_d, pes, win))
+    errors += ladder('anchors', L, M, H)
+    flat_errors, flat = flat_multiple_ladder(eps_d, pes[1])
+    errors += flat_errors
+    if not (flat[0] < flat[1] < flat[2]):
+        errors.append('flat-multiple ladder broken')
+    em_over_r = eps_d[1] / r
+    if abs(M / em_over_r - 1) > RECONCILE_TOL:
+        errors.append('M differs by more than 20% from E_M/r reconciliation')
+    a, b = inp['bridge_a'], inp['bridge_b']
+    for year, (price, earnings) in BRIDGE_GATE.items():
+        if abs((a + b * price) / earnings - 1) > BRIDGE_TOL:
+            errors.append(f'bridge {year} differs by more than 20%')
+    if errors:
+        raise ValueError('; '.join(errors))
 
     def band(g1_=g1, n_=n_win, g2_=g2, r_=r, tau_=tau):
-        return [e * (1 + r_) ** (-tau_) * window_pe(g1_, n_, g2_, x, r_) + window(x, g1_, r_, tau_)
+        return [e * (1 + r_) ** -tau_ * window_pe(g1_, n_, g2_, x, r_) + window(x, g1_, r_, tau_)
                 for e, x in zip(eps28, roe)]
 
-    for tag, alt in (
-        ("g2 0%", band(g2_=0.0)), ("g2 3%", band(g2_=0.03)),
-        ("n 10", band(n_=10)), ("g1 6% (cap)", band(g1_=0.06)),
-        ("r_perp 篮 5 11%", band(r_=basket_r(5))), ("r_perp 篮 4 10%", band(r_=basket_r(4))),
-        ("tau 0 (no time alignment)", band(tau_=0.0)),
-    ):
-        print(f"  {tag:>18}: {alt[0]:.2f}/{alt[1]:.2f}/{alt[2]:.2f}")
-    for year, (p, e) in BRIDGE_GATE.items():
-        print(f"bridge {year}: fit {a + b * p:.3f} vs reported {e} ({(a + b * p) / e - 1:+.1%})")
-    for tag, e in zip("LMH", eps28):
-        print(
-            f"  world {tag}: EPS28 {e:g} ↔ NdPr {(e - a) / b:.0f} 万/吨 at today's volume, "
-            f"{(e / PHASE2_VOLUME_X - a) / b:.0f} 万/吨 at phase-2 volume (×{PHASE2_VOLUME_X})"
-        )
-    for tag, p in (("5y mid", inp["ndpr_mid"]), ("regime mid", NDPR_REGIME_MID)):
-        eps_mid = a + b * p
-        pe_mid = window_pe(g1, n_win, g2, eps_mid / inp["bps_fwd"], r)
-        print(f"对照坐标（A8）: {tag} {p:g} 万 -> EPS {eps_mid:.3f}, ROE {eps_mid / inp['bps_fwd']:.1%} "
-              f"-> {pe_mid:.2f}x -> {eps_mid * disc * pe_mid + window(eps_mid / inp['bps_fwd']):.2f}")
-    print(f"对照坐标（A8）: trough × 1/r = {inp['eps_trough'] / r:.2f}; spot {inp['ndpr_now']:g} 万")
-    ths = (inp["eps28_ths"] * disc * window_pe(g1, n_win, g2, inp["eps28_ths"] / inp["bps_fwd"], r)
-           + window(inp["eps28_ths"] / inp["bps_fwd"]))
-    print(f"numerator upgrade (同花顺 2028E {inp['eps28_ths']:g}): {ths:.2f} -> zone {zone_of(ths, L, M, H)}")
-    eps_mid = a + b * inp["ndpr_mid"]
-    print(f"pre-control centre {PRE_CONTROL_PRICE:g} (2023-11 → 2025H1) on mid-cycle EPS {eps_mid:.3f}: "
-          f"E/P (g=0 single-stage) ≈ {eps_mid / PRE_CONTROL_PRICE:.1%}")
-    for line in tier_report((scenario_L, M, H), pes, eps_d):
-        print(line)
-    print(
-        f"L/M={L / M:.2f} H/M={H / M:.2f} (H-L)/2M={(H - L) / (2 * M):.2%} V_opt/M=0 "
-        f"numerator L/M={eps_d[0] / eps_d[1]:.2f} H/M={eps_d[2] / eps_d[1]:.2f} "
-        f"| multiple ratio L/M={pes[0] / pes[1]:.3f} H/M={pes[2] / pes[1]:.3f}"
-    )
-    print("OK")
-    return 0
+    as_band = lambda xs: dict(zip('LMH', xs))
+    sensitivity = {name: as_band(band(**change)) for name, change in (
+        ('growth_terminal_zero', {'g2_': 0}), ('growth_terminal_3pct', {'g2_': .03}),
+        ('window_10_years', {'n_': 10}), ('window_growth_cap', {'g1_': .06}),
+        ('basket_5', {'r_': basket_r(5)}), ('basket_4', {'r_': basket_r(4)}),
+        ('no_time_alignment', {'tau_': 0}))}
+    bridge = {name: {'price': price, 'earnings': earnings, 'modeled': a + b * price,
+                     'relative_error': (a + b * price) / earnings - 1}
+              for name, (price, earnings) in (BRIDGE_GATE | BRIDGE_EXTRA).items()}
+    worlds = {tier: {'present_volume_price': (e - a) / b,
+                     'phase2_volume_price': (e / PHASE2_VOLUME_X - a) / b}
+              for tier, e in zip('LMH', eps28)}
+    coordinates = {}
+    for label, price in (('5y_mid', inp['ndpr_mid']), ('regime_mid', NDPR_REGIME_MID)):
+        e = a + b * price
+        ro = e / inp['bps_fwd']
+        pe = window_pe(g1, n_win, g2, ro, r)
+        coordinates[label] = {'price': price, 'eps': e, 'return_proxy': ro, 'multiple': pe,
+                              'value': e * disc * pe + window(ro)}
+    ths = inp['eps28_ths'] * disc * window_pe(g1, n_win, g2, inp['eps28_ths'] / inp['bps_fwd'], r) + window(inp['eps28_ths'] / inp['bps_fwd'])
+    sensitivity['forecast_upgrade'] = ths
+    sensitivity['forecast_upgrade_zone'] = zone_of(ths, L, M, H)
+    # The document's older 8.94% coordinate was already recorded before the
+    # 2023 band was judged distorted. It is a historical comparison, not a
+    # newly inferred rate or a permitted route to reset the basket.
+    sensitivity['historical_0894_rate'] = as_band(band(r_=.0894))
+    sensitivity['observed_retention_window_m'] = eps_d[1] * pes[1] + win_eps * inp['payout_obs'] / (1 + r) ** (tau / 2)
+    sensitivity['flat_multiple'] = as_band(flat)
+    a_cut, b_cut = (L + M) / 2, (M + H) / 2
+    changed = inp != INPUTS or band_distorted != BAND_DISTORTED
+    return {'ticker': '600111.SH', 'currency': 'CNY',
+            'valuation_as_of': None if changed else '2026-06-30',
+            'framework_as_of': None if changed else '2026-10-16',
+            'anchors': as_band((L, M, H)), 'cut_points': {'A': a_cut, 'B': b_cut},
+            'candidate': None, 'option': None, 'segments': {'company': {'values': as_band((L, M, H))}},
+            'key_parameters': {'method': dict.fromkeys('LMH', 'two_stage_gordon'),
+                               'discount_rate': dict.fromkeys('LMH', r),
+                               'growth_rate': dict.fromkeys('LMH', g2),
+                               'window_growth': dict.fromkeys('LMH', g1), 'window_years': n_win,
+                               'forward_return': as_band(roe), 'steady_return': as_band(roe), 'multiple': as_band(pes)},
+            'operating': {'eps': as_band(eps28), 'window': as_band(win), 'window_eps': win_eps,
+                          'band_outside': out_of_band, 'band_distorted': band_distorted,
+                          'pb_floor': inp['pb_floor'] * inp['bps'], 'em_over_r': em_over_r,
+                          'payout_gap': payout_gap(g2, roe[1], inp['payout_obs']),
+                          'bridge': bridge, 'worlds': worlds, 'coordinates': coordinates,
+                          'trough_coordinate': inp['eps_trough'] / r,
+                          'precontrol_earnings_yield': (a + b * inp['ndpr_mid']) / PRE_CONTROL_PRICE},
+            'sensitivity': sensitivity}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def calculate(context):
+    # The recorded midcycle-earnings check failed before the original research
+    # adopted the two-analyst forecast. Retain that historical decision and
+    # disclose its uncertainty, instead of reclassifying it as a new approval.
+    result = evaluate(dict(INPUTS), BAND_DISTORTED)
+    result['valuation_as_of'] = result['framework_as_of'] = None
+    result['historical_financial_statement_as_of'] = '2026-06-30'
+    result['historical_research_as_of'] = '2026-10-16'
+    result['units'] = {'price': 'CNY_PER_SHARE'}
+    result['segments']['company']['unit'] = 'CNY_PER_SHARE'
+    for name in ('discount_rate', 'growth_rate', 'forward_return', 'steady_return'):
+        result['key_parameters'][name] = {'unit': 'RATIO', 'values': result['key_parameters'][name]}
+    result['review_flags'] = ['historical_midcycle_forecast_fallback_requires_review',
+                              'forward_book_retention_and_dividend_unverified',
+                              'historical_fade_and_financing_contrasts_not_reconstructed']
+    local = {'inputs': INPUTS, 'constants': {
+        'min_r_minus_g': MIN_R_MINUS_G, 'reconcile_tol': RECONCILE_TOL,
+        'bridge_gate': BRIDGE_GATE, 'bridge_extra': BRIDGE_EXTRA, 'bridge_tol': BRIDGE_TOL,
+        'phase2_volume_x': PHASE2_VOLUME_X, 'pre_control_price': PRE_CONTROL_PRICE,
+        'ndpr_regime_mid': NDPR_REGIME_MID, 'band_distorted': BAND_DISTORTED,
+    }}
+    result['basis_changed'] = None
+    result['partial_basis_changed'] = local_basis_changed(local, BASELINE_LOCAL)
+    return result

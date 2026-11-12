@@ -1,165 +1,174 @@
-#!/usr/bin/env python3
-"""300308.SZ (中际旭创 / Zhongji Innolight) valuation eval — recompute anchors
-from frameworks/300308.SZ.md.
+"""300308 historical migration draft; no document is a calculation input.
 
-frameworks/300308.SZ.md is the source of truth; this script re-derives
-L/M/H / A/B and the NPO option from the §3 Inputs table and exits 1 on
-mismatch.  The doc carries no current price (AGENTS.md「现价 — 禁写契约」), so
-nothing here reads a quote.
-
-formula_id: zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v4
-
-Main ruler: the pluggable-module business only (NPO is carved out into V_opt).
-Numerator year FY2027 — the furthest year with a >=2-house consensus range
-(yfinance +1y, 4 houses) — restated from the A-share count the consensus is
-struck on to the post-H-share total count.  L = FY27 digestion year (FY26
-revenue consensus x (1 - rev_cut_l) x FY25 realised net margin), no transition.
-M / H = FY27 consensus mean / high, then ONE transition year: FY28 growth =
-mean of the two houses that state FY28 (UBS EPS, Citi NI) with the NPO share
-(UBS 10%, applied to both — A11) stripped out, then perpetual g2.  g2 is the
-peer-ruler axis value `_AXIS.pluggable-module` (frameworks/axes/pluggable-
-module.md, row g2_pluggable): user-set 2% (below the named macro 4%: a declared
-rule deviation), peer-checked by leg and market (A16); cross-file checked.
-
-Operating value + excess cash (valuation-rules「经营价值与超额现金」, 2026-10-15
-framework correction, A25): C_ex = 2026H1 extended net cash (long-term payables
-deducted) + post-period H-share net proceeds - declared interim dividend, anchor
-0 (own 2017-2026H1 min net cash / revenue is negative).  The after-tax income of
-C_ex comes out of all three numerators; RONIC is E^op_{n+1}/B^op_n: FY27
-operating EPS over the FY27 opening book (2026-06-30 equity + H-share net
-proceeds - interim dividend + the unbooked H2 FY26 consensus profit retained at
-the growth-required b = g/RONIC, g1 for M/H, g2 for L; fixed point) minus C_ex
-per share.  Anchor = operating value x (1 - k) + C_ex per share (lambda 1); the
-user-set retention haircut k (2026-09-29, A20) stays and now touches the
-operating part only.
-
-2026-10-16 framework correction (valuation-rules「经营价值与超额现金」):
-  * data fix: the 2026-09 A-share buyback (4,997.25 百万, held for the ESOP, not
-    cancelled) leaves the cash and the book (A25);
-  * parent share 95.30% = parent equity / (parent + minority 4,208) on C_ex, its
-    income and the operating book;
-  * time alignment: Gordon value at 2027-01-01 x (1+r)^-tau (tau 0.5) plus the
-    2H26 window distributable profit (unbooked consensus less half a year of
-    cash income) x (1 - b), b = g/RONIC of the book roll, at tau/2;
-  * three-stage return: forward RONIC through Y1 2028, linear to the steady
-    return by Y2 2032 (_AXIS.pluggable-module: module assembly, medium barrier),
-    steady = min(forward, axis 18%) = 18% (2026-10-19 ordered pick, no max:
-    own cycle 14.4% is the pre-AI module era, no full cycle since the
-    structural change -> own unusable, comparison only; business model
-    unchanged -> not narrative-shift; peer layer empty -> axis fallback);
-  * the user-set k on the whole operating value (A20) is removed (wrong object).
-
-2026-10-19 framework correction (user-approved parameters; rules/retention.md
-稳态回报三段「同一公司内部一致」「高回报期对产品阶段」):
-  * main margin path (A27): each tier's starting net margin (L FY25 realised,
-    M / H FY2028 company-level consensus) is held through Y1 2028 and fades
-    linearly to the normal 20% (nm_norm_main) by Y2 2032 — the profit stream in
-    path_value is scaled by that ratio; reason: CPO replaces pluggables in
-    scale-out, plus competition;
-  * NPO option (A13): count = UBS single-house path — 2028 10% of FY28 revenue,
-    2030 30% of total revenue with NPO on top of the pluggable business
-    (incremental: scale-up takes copper's share), 2029 geometric interpolation,
-    g_npo 2% after 2030; unit economics: FY2028 consensus margin and the old
-    H-tier book ROE 94.3% held to 2030, faded to 20% / 18% by 2035 (packaging
-    link of _AXIS.ai-capex, cross-file checked: near-package ships from 2027H2,
-    so it is not in the module-assembly 2028 bottleneck); payout 1 - g_t/ROE_t
-    (negative in ramp years = capital the ramp needs); valued at the start of
-    2028, back to FY2027, then tau.
-2026-10-29 event update (Q3 report): the book, C_ex and the minority share are read
-straight off the 2026-09-30 balance sheet (H-share proceeds and the September buyback
-are already inside it); the strategic stake in a listed upstream supplier (交易性
-金融资产) is not excess cash; the declared interim dividend is the 应付股利 line;
-the base date moves to 2026-09-30 (tau 0.25) and the window is the unbooked Q4.
-The buyback shares are to be cancelled, so shares_total is the post-cancellation count.
-p_L / p_M / p_H are constants here, never Inputs.
-
-Run:  python3 frameworks/eval/300308.SZ.py
+Historical sources and modelling intent were transcribed from the prior
+framework and script. This is a draft; shared-axis field contracts and
+same-input numerical equivalence have not been verified. Axis snapshots must
+be supplied by the runner and must reflect the actual selected source version.
 """
-
 from __future__ import annotations
 
-import re
-import sys
-from pathlib import Path
+import math
+from lib.gordon import check_branch, check_g_cap, check_r, check_transition_years, implied_g, payout
+from lib.inputs import require_whole_years
+from lib.partial_basis import local_basis_changed
+from lib.tiers import decompose, flat_multiple_ladder
+from lib.valuation_guards import require_axis_alignment
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from eval.lib.axes import (  # noqa: E402
-    check_capex_mount,
-    check_optical_narrow_attach,
-    check_optical_oe_mount,
-    optical_attachment,
-)
-from eval.lib.gordon import (  # noqa: E402
-    check_branch,
-    check_g_cap,
-    check_r,
-    check_transition_years,
-    g_cap,
-    implied_g,
-    payout,
-)
-from eval.lib.inputs import parse_baskets  # noqa: E402
-from eval.lib.tiers import decompose, flat_multiple_ladder  # noqa: E402
-
-FRAMEWORK = REPO_ROOT / "frameworks" / "300308.SZ.md"
-AXIS_PLUG = REPO_ROOT / "frameworks" / "axes" / "pluggable-module.md"
-AXIS_CAPEX = REPO_ROOT / "frameworks" / "axes" / "ai-capex.md"
-NPO_INTERP_YEAR = 2029  # geometric interpolation between UBS 2028 and 2030 (插值年, A13)
-NPO_LAST_NAMED = 2030   # last year with a named NPO quantity (UBS 30% of revenue)
-FORMULA_ID = "zjxc_pluggable_fy27_two_stage_gordon_npo_opt_v4"
-TOL = 0.05
-MIN_R_MINUS_G = 0.02
-N_STAGE = 1  # FY28 is the only year beyond the numerator with >=2 stated houses
+# Provisional names, to be reconciled with the shared-axis migration; these
+# modules do not exist yet, so the ordinary entry must fail closed until then.
+DEPENDENCIES = {"libraries": ("gordon", "inputs", "tiers", "valuation_guards", "partial_basis"), "axes": {
+    "pluggable": "pluggable_module", "capex": "ai_capex", "optical": "optical_comms"}}
+NPO_INTERP_YEAR = 2029
+NPO_LAST_NAMED = 2030
+NUM_YEAR = 2027
+N_STAGE = 1
 CONSENSUS_YEARS_BEYOND = 1
-NUM_YEAR = 2027  # numerator year FY2027 = t 1, not discounted
-MACRO_G = 0.04  # valuation-rules「6% 的含义」: named long-run nominal growth
-P_TIERS = (0.3, 0.6, 1.0)  # A13: 无概率锚·拍值; p_H default 1.0
+MIN_R_MINUS_G = 0.02
+P_TIERS = (0.3, 0.6, 1.0)
 TIERS = ("L", "M", "H")
+BASKETS = {"r_perp": 4}  # Original decision: non-commodity, unconcentrated module business.
+
+INPUTS = {
+    # FY2026 EPS 共识均值（yfinance `0y`，4 家 28.10–30.90；三季报当日重拉未变）；只作对照; source/as-of: 2026-10-29
+    'eps_fy26_cons': 29.9435,
+    # FY2026 收入共识均值（yfinance `0y`，15 家；三季报当日重拉未变）= L 消化年的收入起点；隐含 Q4 约 406 亿（前三季度实测 695.47 亿），财报后若下修 L 随之下移；A3; source/as-of: 2026-10-29
+    'rev_fy26_cons': 110122.98,
+    # FY2025 实测净利率 = 归母净利 10,797.25 ÷ 收入 38,239.94（年报）；L 净利率；NPO 单位经济只作下界披露（A3 / A13）; source/as-of: 2025-12-31
+    'nm_fy25': 0.2824,
+    # L 消化年收入较 FY26 共识回落幅度；A3; source/as-of: 派生
+    'rev_cut_l': 0.3,
+    # FY2027 EPS 共识下沿（yfinance `+1y`，4 家；三季报当日重拉未变）；档内坐标，不入锚; source/as-of: 2026-10-29
+    'eps_fy27_l': 49.38,
+    # FY2027 EPS 共识均值 = M 分子来源（A 股股本口径；三季报当日重拉未变）；A2; source/as-of: 2026-10-29
+    'eps_fy27_m': 66.49575,
+    # FY2027 EPS 共识上沿 = H 分子来源（同一记录两端）；A2; source/as-of: 2026-10-29
+    'eps_fy27_h': 84.333,
+    # A 股股本 = 卖方 EPS 的股本口径（卖方尚未按注销更新）；A1; source/as-of: 2026-06-30
+    'shares_a': 1115.234641,
+    # 总股本 1,177.909641 − 9 月回购股份 5.653063（2026-10-29 董事会决议改为注销，待临时股东会审议；回购现金已出、股份不再流通）；A1; source/as-of: 2026-10-29
+    'shares_total': 1172.256578,
+    # UBS FY2027 EPS（Wisburg 100474）；A4; source/as-of: 2026-08-12
+    'ubs_eps27': 60.69,
+    # UBS FY2028 EPS；A4; source/as-of: 2026-08-12
+    'ubs_eps28': 84.96,
+    # 花旗 FY2027 归母净利（Wisburg 96363）；A4; source/as-of: 2026-07-17
+    'citi_ni27': 97000.0,
+    # 花旗 FY2028 归母净利；A4; source/as-of: 2026-07-17
+    'citi_ni28': 167000.0,
+    # FY2028 NPO 占收入（UBS；花旗按同比例，A11）; source/as-of: 2026-08-12
+    'npo_share_28': 0.1,
+    # UBS FY2028 收入 3,293 亿；A13; source/as-of: 2026-08-12
+    'ubs_rev28': 329300.0,
+    # 花旗 FY2028 净利率（明示，Wisburg 96363）；与 UBS FY28 净利率（`ubs_eps28` × `shares_a` ÷ `ubs_rev28`，A1 股本口径）均值 = 对齐年份公司级共识净利率，作 NPO 单位经济共享拍值；A13; source/as-of: 2026-07-17
+    'citi_nm28': 0.365,
+    # NPO 兑现年 = 公司具名「2027 年下半年量产、2028 年更大规模出货」（投资者关系活动记录 2026-08-24）；A13; source/as-of: 2026-08-24
+    't_opt': 2028.0,
+    # 归母权益（三季报资产负债表；H 股募资、9 月回购（库存股 4,998.65）、中期股息均已在内）；A5; source/as-of: 2026-09-30
+    'equity_q3': 94363.02,
+    # 应付股利（三季报「其他应付款」下；2026 中期股息，2026-10-12 除息）：类债项从现金扣（A25）; source/as-of: 2026-09-30
+    'div_payable': 1033.05,
+    # FY26 第四季度未入账净利 = 长桥季度共识 Q4（三季报当日重拉为空，沿用 2026-09-29 值）；A5; source/as-of: 2026-09-29
+    'ni_q4_cons': 12340.18,
+    # 扩展口径净现金 2026-09-30 = 货币资金 53,532.49 − 短期借款 336.18 − 一年内到期非流动负债 870.49 − 长期借款 485.93 − 租赁负债 163.56 − 长期应付款 5,063.00（三季报注明为「子公司增资事项涉及的回购义务」，类债扣，A25）；**不含**交易性金融资产 2,279.64（主要是上游核心供应商上市公司股票的战略持股，非现金，A25）; source/as-of: 2026-09-30
+    'net_cash_ext_q3': 46613.33,
+    # 超额现金（合并口径）= `net_cash_ext_q3` − `div_payable` − 经营所需现金锚 0 − 增长期资金缺口 0（A25）；进估值的是 × `parent_ratio`; source/as-of: 2026-09-30
+    'c_ex': 45580.28,
+    # 少数股东权益（百万 CNY，三季报）；归母比例用（A25）; source/as-of: 2026-09-30
+    'minority_q3': 4951.08,
+    # 归母比例 = `equity_q3` ÷（`equity_q3` + `minority_q3`）；无子公司级现金披露（A25）；eval 重算校验; source/as-of: 2026-09-30
+    'parent_ratio': 0.9501,
+    # 时点对齐 τ = 估值基准日 2026-09-30 → 分子年初 2027-01-01（3 个月）；经营价值 ÷ (1+r)^τ，2026 第四季度窗口可分配利润 ÷ (1+r)^(τ/2)（A26）; source/as-of: 2026-09-30
+    'tau': 0.25,
+    # M 档稳态回报（三档各取各的稳态，用户 2026-10-19 认可）= 去周期的中档前瞻：常态净利率 `nm_norm_main` 20% × AI 之前（2018–23）资产周转约 1.05 = 21%；利润率台阶 FY2024–25 已入财报、门槛判中 → 中档较按序值 18% 上调（差 ≥ 2pp）；同时消掉「常态净利率 20% 只配 18% 回报要求周转 0.9、低于任何一年」的矛盾（A26）; source/as-of: 2026-10-19
+    'ss_return_m': 0.21,
+    # H 档稳态回报（三档各取各的稳态，2026-10-19）= 去周期的高档前瞻：短缺期净利率先换常态 `nm_norm_main` 20% × 自身 2018–25 平均周转（收入 ÷ 年初经营股权）1.33 = 26.6%；≥ 中档 18%、≤ 30%、≤ 高档前瞻 209.8%；L / M 取按序值 `ss_return`（A26）; source/as-of: 2026-10-19
+    'ss_return_h': 0.266,
+    # 自身一轮周期经营回报 14.4%（2018–2025 GAAP 净利扣年初超额现金收益 ÷ 年初经营股权，与前瞻同口径）；老模块时代读数，结构变化后自身不可用，只作对照、不进稳态（A26）; source/as-of: 2026-10-16
+    'own_cycle': 0.144,
+    # 主业常态净利率 20%（用户 2026-10-19 裁定）：各档起点净利率（L = FY2025 实测 28.24%，M / H = FY2028 公司级共识 32.64%）持有到 `y1` 2028、线性回落、`y2` 2032 到位，此后永续；回落理由 = CPO 在 scale-out 替代可插拔 + 竞争（A26）; source/as-of: 2026-10-19
+    'nm_norm_main': 0.2,
+    # 近封装期权腿前瞻回报 = 旧账面口径 H 档 ROE 94.3%（主线 2026-10-15 裁定期权腿沿用）；`y1_npo` 2030 → `y2_npo` 2035 回落到 `ss_return` 18%（A13）; source/as-of: 2026-10-19
+    'npo_roe': 0.943,
+    # 近封装期权常态净利率 = `nm_norm_main` 20%（同一公司同一常态，用户 2026-10-19 裁定；eval 校验相等）；FY2028 净利率 32.64% 持有到 `y1_npo` 2030、2035 回落到本值（A13）; source/as-of: 2026-10-19
+    'npo_nm_norm': 0.2,
+    # UBS 2030 年 NPO 占收入 30%（Wisburg 100474；单家路径）：2030 NPO 收入 = UBS FY28 可插拔 × (1 + g2)² × 0.30 / 0.70 ≈ 1,322 亿（按增量处理，可插拔另计）；2029 为 2028 与 2030 的几何插值年（A13）; source/as-of: 2026-08-12
+    'npo_share_30': 0.3,
+    # 现金收益率 = H 股募资（约 525 亿元人民币，占超额现金大头）2026 第三季度利息收入 1.36 亿（三季报业绩变动说明）÷ 7-30 至 9-30 共 62 天、年化；原 FY2025 全公司 2.94% 已不代表以港币为主的现金（A25）; source/as-of: 2026-09-30
+    'cash_yield': 0.0152,
+    # 实际所得税率 2026 前三季度 = 所得税 37.42 ÷ 利润总额 278.38 亿（三季报；管理层指引 13–14%）（A25）; source/as-of: 2026-09-30
+    'tax_eff': 0.1344,
+    # 经营口径派息率 = 分红 10.8% + 现金积累 17.5%（Δ超额现金 84.27 亿扣股权融资 45.38 亿），FY2018–25 归母利润合计 222.44 亿为分母（A25）；`check_branch` 用; source/as-of: FY2025
+    'payout_op': 0.282,
+    # 篮 4 常规经营：光模块器件，盈利非商品价函数，客户集中未达篮 7 阈值（A15）；`check_r`; source/as-of: 2026-09-28
+    'r_perp': 0.1,
+    # NPO 2030 年之后的增速 2%（用户 2026-10-19 认可，与主业 g2 同值）：2030 年已按 UBS 路径到占收入 30%，此后不再给额外跑道；原光通信同业横截面 6%（`LITE.US` A16 旧混簇读数截顶）只作敏感（A13）; source/as-of: 2026-10-19
+    'g_npo': 0.02,
+    # L「视同派出现金」打折（消化世界增长关掉）；来源 ②；A20; source/as-of: 2026-09-29
+    'k_l': 0.0,
+    # M：原 0.20 乘在整个经营价值上，2026-10-16 框架纠正去掉（A20）; source/as-of: 2026-10-16
+    'k_m': 0.0,
+    # H：原 0.30 同上去掉（A20）; source/as-of: 2026-10-16
+    'k_h': 0.0,
+    # 实付派息率（2025 年 14%、2026 中期 10%）；只进分支校验与披露; source/as-of: 2026-08-22
+    'payout_obs': 0.12,
+    # 自身当期财年前瞻**经营** PE 带下沿（2025-04-23；整股权口径 9.09）；A17; source/as-of: 2026-09-27
+    'pe_own_min': 8.92,
+    # 同序列上沿（2026-06-21；整股权口径 45.59）；A17; source/as-of: 2026-09-27
+    'pe_own_max': 45.63,
+    # FY2027 收入共识均值（yfinance `+1y`）；只算 ai-capex 宽口径份额; source/as-of: 2026-09-29
+    'rev_fy27_cons': 219648.45,
+    # USD/CNY（yfinance `CNY=X` 收盘）；轴份额换算; source/as-of: 2026-09-28
+    'usdcny': 6.7128,
+    # UBS 2027 年 3.2T NPO 出货（只）；A18; source/as-of: 2026-08-12
+    'npo_units_27': 50000.0,
+    # UBS 2028 年 NPO 出货（只）；A18; source/as-of: 2026-08-12
+    'npo_units_28': 2500000.0,
+}
 
 
-def parse_inputs(md: str) -> dict[str, float]:
-    """§3 Inputs: | field | value | meaning | as-of |."""
-    out: dict[str, float] = {}
-    in_inputs = False
-    for line in md.splitlines():
-        if line.startswith("### Inputs"):
-            in_inputs = True
-            continue
-        if in_inputs and line.startswith("### "):
-            break
-        if not in_inputs or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2 or cells[0] in ("字段名", "--------", "---"):
-            continue
-        try:
-            out[cells[0]] = float(cells[1].replace(",", ""))
-        except ValueError:
-            continue
-    return out
+def optical_narrow_checks(narrow, optical):
+    # Original check: narrow OE revenue may not exceed the OE BOM pool.
+    return ["optical_attachment_exceeds_pool_" + tier.lower()
+            for tier in TIERS
+            if narrow[tier] > optical["oe"][tier] * optical["oe_bom_usd"] * (1 + 1e-9)]
 
 
-def first_float(pattern: str, text: str) -> float | None:
-    m = re.search(pattern, text)
-    return float(m.group(1)) if m else None
-
-
-REQUIRED = [
-    "eps_fy26_cons", "rev_fy26_cons", "nm_fy25", "rev_cut_l",
-    "eps_fy27_l", "eps_fy27_m", "eps_fy27_h", "shares_a", "shares_total",
-    "ubs_eps27", "ubs_eps28", "citi_ni27", "citi_ni28", "npo_share_28", "ubs_rev28",
-    "citi_nm28", "t_opt",
-    "equity_q3", "div_payable", "ni_q4_cons", "r_perp", "g2", "g_npo", "k_l", "k_m", "k_h",
-    "payout_obs", "pe_own_min", "pe_own_max", "rev_fy27_cons", "usdcny",
-    "npo_units_27", "npo_units_28", "oe_l", "oe_m", "oe_h",
-    "capex_l", "capex_m", "capex_h",
-    "net_cash_ext_q3", "c_ex", "cash_yield", "tax_eff", "payout_op",
-    "minority_q3", "parent_ratio", "tau", "y1", "y2", "ss_return", "ss_return_m", "ss_return_h", "ss_return_npo", "own_cycle", "npo_roe", "npo_nm_norm",
-    "nm_norm_main", "y1_npo", "y2_npo", "npo_share_30",
-]
+def check_inputs(inp, baskets):
+    flags = []
+    if "r_perp" not in baskets or check_r(inp["r_perp"], "r_perp", baskets.get("r_perp")):
+        flags.append("discount_rate_basket_mismatch")
+    for key in ("g2", "g_npo"):
+        if check_g_cap(inp[key], inp["r_perp"], key):
+            flags.append(key + "_above_growth_cap")
+        if inp["r_perp"] - inp[key] < MIN_R_MINUS_G:
+            flags.append(key + "_too_close_to_discount_rate")
+    if inp["g2"] <= 0:
+        flags.append("growth_incompatible_with_rising_consensus")
+    if check_transition_years(N_STAGE, CONSENSUS_YEARS_BEYOND, "g1"):
+        flags.append("transition_year_not_supported_by_consensus")
+    if not inp["eps_fy27_l"] < inp["eps_fy27_m"] < inp["eps_fy27_h"]:
+        flags.append("forecast_eps_not_increasing")
+    if not (0 < inp["rev_cut_l"] < 1 and 0 < inp["nm_fy25"] < 1 and 0 < inp["npo_share_28"] < 1):
+        flags.append("revenue_margin_or_npo_share_outside_range")
+    if any(inp[f"k_{key}"] != 0 for key in "lmh"):
+        flags.append("removed_legacy_value_haircut_reintroduced")
+    if inp["shares_a"] >= inp["shares_total"]:
+        flags.append("a_share_count_not_below_total")
+    if inp["t_opt"] <= NUM_YEAR:
+        flags.append("npo_realization_not_after_numerator_year")
+    if not 0 < inp["citi_nm28"] < 1:
+        flags.append("citi_margin_outside_range")
+    if not inp["npo_share_28"] < inp["npo_share_30"] < 1:
+        flags.append("npo_share_path_not_increasing")
+    if abs(inp["npo_nm_norm"] - inp["nm_norm_main"]) > 1e-9:
+        flags.append("main_and_npo_normal_margins_differ")
+    if not inp["t_opt"] <= inp["y1_npo"] < inp["y2_npo"]:
+        flags.append("npo_return_fade_years_invalid")
+    if not 0 < inp["nm_norm_main"] < 1:
+        flags.append("normal_margin_outside_range")
+    if any(key == "p" or key.startswith("p_") for key in inp):
+        flags.append("option_probability_inside_base_inputs")
+    return flags
 
 
 def lin_path(cal: int, a: float, b: float, y1: int, y2: int) -> float:
@@ -191,81 +200,66 @@ def path_value(g1: float, n: int, g2: float, roe: float, r: float, t0: int, y1: 
         t += 1
 
 
-def check_inputs(inp: dict[str, float], baskets: dict[str, int]) -> list[str]:
-    e: list[str] = []
-    if "r_perp" not in baskets:
-        e.append("r_perp: Inputs source cell names no 篮 N (A15)")
-    e += check_r(inp["r_perp"], "r_perp", baskets.get("r_perp"))
-    for key in ("g2", "g_npo"):
-        e += check_g_cap(inp[key], inp["r_perp"], key)
-        if inp["r_perp"] - inp[key] < MIN_R_MINUS_G:
-            e.append(f"r - {key} < {MIN_R_MINUS_G:.0%}: at the pole")
-    if inp["g2"] <= 0:
-        e.append("g2 <= 0 barred: FY27 -> FY28 consensus rises (同世界门, A16)")
-    e += check_transition_years(N_STAGE, CONSENSUS_YEARS_BEYOND, "g1")
-    if not (inp["eps_fy27_l"] < inp["eps_fy27_m"] < inp["eps_fy27_h"]):
-        e.append("FY27 consensus range must be ordered low < mean < high (one record, two ends)")
-    if not (0 < inp["rev_cut_l"] < 1 and 0 < inp["nm_fy25"] < 1 and 0 < inp["npo_share_28"] < 1):
-        e.append("rev_cut_l / nm_fy25 / npo_share_28 must be fractions")
-    if any(inp[f"k_{x}"] != 0.0 for x in ("l", "m", "h")):
-        e.append("k must be 0: the k on the whole operating value was removed 2026-10-16 (A20)")
-    if inp["shares_a"] >= inp["shares_total"]:
-        e.append("shares_a must be below shares_total (H-share dilution)")
-    if inp["t_opt"] <= NUM_YEAR:
-        e.append("option realisation year must lie after the numerator year (A13)")
-    if not 0 < inp["citi_nm28"] < 1:
-        e.append("citi_nm28 must be a fraction")
-    if not inp["npo_share_28"] < inp["npo_share_30"] < 1:
-        e.append("npo_share_30 must be a fraction above npo_share_28 (UBS 2030 path, A13)")
-    if abs(inp["npo_nm_norm"] - inp["nm_norm_main"]) > 1e-9:
-        e.append("npo_nm_norm must equal nm_norm_main: one normal margin inside one company (A13 / A26)")
-    if not (inp["t_opt"] <= inp["y1_npo"] < inp["y2_npo"]):
-        e.append("NPO high-return window must satisfy t_opt <= y1_npo < y2_npo")
-    if not 0 < inp["nm_norm_main"] < 1:
-        e.append("nm_norm_main must be a fraction")
-    leaked = [k for k in inp if k == "p" or k.startswith("p_")]
-    if leaked:
-        e.append(f"p-class fields must not appear in Inputs (A2e-7a): {leaked}")
-    return e
+
+def _local_basis_snapshot(axes):
+    return {
+        'inputs': INPUTS,
+        'constants': {'npo_interpolation_year': NPO_INTERP_YEAR, 'npo_last_named': NPO_LAST_NAMED,
+                      'numerator_year': NUM_YEAR, 'stage_years': N_STAGE,
+                      'consensus_years_beyond': CONSENSUS_YEARS_BEYOND, 'min_r_minus_g': MIN_R_MINUS_G,
+                      'option_weights': P_TIERS, 'tiers': TIERS, 'baskets': BASKETS},
+        'shared': {
+            'pluggable': {'growth': axes['pluggable']['g2_pluggable'], 'alignment': axes['pluggable']['t_align'],
+                          'return': axes['pluggable']['ss_return_plug'], 'start': axes['pluggable']['y1_plug'],
+                          'end': axes['pluggable']['y2_plug']},
+            'capex': {'role': axes['capex']['role'], 'rungs': axes['capex']['rungs'],
+                      'start': axes['capex']['y1_ai_capex_package'],
+                      'end': axes['capex']['y2_ai_capex_package'],
+                      'floor': axes['capex']['ss_floor_ai_capex_package']},
+            'optical': {'engines': axes['optical']['oe'], 'bom': axes['optical']['oe_bom_usd']},
+        },
+    }
 
 
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing from framework", file=sys.stderr)
-        return 1
-    inp = parse_inputs(md)
-    missing = [k for k in REQUIRED if k not in inp]
-    if missing:
-        print(f"FAIL: missing inputs {missing}", file=sys.stderr)
-        return 1
-    baskets = parse_baskets(md)
-    errors = check_inputs(inp, baskets)
-    # Peer-ruler axis (contracts.md「同业尺轴」): g2 is the leg ruler, single source = the axis file.
-    if AXIS_PLUG.is_file():
-        ax = parse_inputs(AXIS_PLUG.read_text(encoding="utf-8"))
-        if "g2_pluggable" not in ax or abs(ax["g2_pluggable"] - inp["g2"]) > 1e-9:
-            errors.append(f"g2 {inp['g2']:g} != _AXIS.pluggable-module g2_pluggable {ax.get('g2_pluggable')} — the leg ruler drifted")
-        for mine, theirs in (("ss_return", "ss_return_plug"), ("y1", "y1_plug"), ("y2", "y2_plug")):
-            if theirs not in ax or abs(ax[theirs] - inp[mine]) > 1e-9:
-                errors.append(f"{mine} {inp[mine]:g} != _AXIS.pluggable-module {theirs} {ax.get(theirs)}")
-    else:
-        errors.append("frameworks/axes/pluggable-module.md missing — g2 unchecked")
-    # NPO high-return window = the packaging link of _AXIS.ai-capex §4b (near-package product, A13).
-    if AXIS_CAPEX.is_file():
-        axc = parse_inputs(AXIS_CAPEX.read_text(encoding="utf-8"))
-        for mine, theirs in (("y1_npo", "y1_ai_capex_package"), ("y2_npo", "y2_ai_capex_package"),
-                             ("ss_return_npo", "ss_floor_ai_capex_package")):
-            if theirs not in axc or abs(axc[theirs] - inp[mine]) > 1e-9:
-                errors.append(f"{mine} {inp[mine]:g} != _AXIS.ai-capex {theirs} {axc.get(theirs)}")
-    else:
-        errors.append("frameworks/axes/ai-capex.md missing — NPO Y1/Y2 unchecked")
-    errors += check_optical_oe_mount((inp["oe_l"], inp["oe_m"], inp["oe_h"]))
-    errors += check_capex_mount((inp["capex_l"], inp["capex_m"], inp["capex_h"]))
-    if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
+# Local inputs and specifically used shared values only. Source versions,
+# formulas, full basis and user confirmation are tracked independently.
+LOCAL_BASIS_BASELINE = '1b6dbb8e41d952d832560d3147e5735d64b16a5747a8fe76f7a6ac0d40eb7821'
 
+
+def calculate(context):
+    inp = dict(INPUTS)
+    shared = context["axes"]
+    plug, capex, optical = shared["pluggable"], shared["capex"], shared["optical"]
+    # This peer-ruler's alignment year is the FY28 transition observation;
+    # a changed shared year requires a new earnings path, not a silent splice.
+    require_axis_alignment(plug, NUM_YEAR + N_STAGE)
+    # All shared facts used by this ticker come exclusively from the three
+    # injected axis snapshots. No ticker-local duplicate can override them.
+    inp.update({"g2": plug["g2_pluggable"], "ss_return": plug["ss_return_plug"],
+                "y1": plug["y1_plug"], "y2": plug["y2_plug"],
+                "y1_npo": capex["y1_ai_capex_package"], "y2_npo": capex["y2_ai_capex_package"],
+                "ss_return_npo": capex["ss_floor_ai_capex_package"],
+                **{f"capex_{tier.lower()}": capex["rungs"][tier] for tier in TIERS},
+                **{f"oe_{tier.lower()}": optical["oe"][tier] for tier in TIERS}})
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+           for value in inp.values()):
+        raise ValueError("inputs must be finite numbers")
+    require_whole_years(inp, ("t_opt", "y1", "y2", "y1_npo", "y2_npo"))
+    # The source has two named observations, 2028 and 2030, and 2029 is the
+    # intervening interpolation. Reusing them for a changed first year would
+    # overwrite an observation or invent a different path.
+    if int(inp["t_opt"]) + 1 != NPO_INTERP_YEAR or int(inp["t_opt"]) + 2 != NPO_LAST_NAMED:
+        raise ValueError("NPO dated observation path must be rebuilt for the changed first year")
+    if inp["r_perp"] <= max(inp["g2"], inp["g_npo"]) or inp["r_perp"] <= -1:
+        raise ValueError("perpetuity or discount factor is mathematically invalid")
+    if any(optical["oe"][tier] <= 0 for tier in TIERS) or optical["oe_bom_usd"] <= 0:
+        raise ValueError("optical axis OE pool must be positive")
+    # Historical user decisions and evidence gaps remain visible in the result;
+    # they are not waived merely because this is a migration.
+    review_flags = ["growth_reference_single_comparable",
+                    "npo_single_broker_volume_path",
+                    "cyclical_middle_uses_forward_consensus"]
+    review_flags.extend(check_inputs(inp, BASKETS))
     r, g2 = inp["r_perp"], inp["g2"]
     sh = inp["shares_total"]  # 百万股; money inputs are 百万 CNY
     adj = inp["shares_a"] / sh
@@ -287,13 +281,13 @@ def main() -> int:
     eq0 = inp["equity_q3"]
     c_tot = inp["net_cash_ext_q3"] - div  # operating-cash anchor 0 (A25)
     if abs(c_tot - inp["c_ex"]) > 1.0:
-        errors.append(f"c_ex {inp['c_ex']:.2f} != net_cash_ext_q3 - dividend payable {c_tot:.2f}")
+        review_flags.append('excess_cash_reconciliation_mismatch')
     pr = eq0 / (eq0 + inp["minority_q3"])          # ① 归母份额: no subsidiary cash disclosure
     if abs(pr - inp["parent_ratio"]) > 5e-5:
-        errors.append(f"parent_ratio {inp['parent_ratio']} != recomputed {pr:.4f}")
+        review_flags.append('parent_share_reconciliation_mismatch')
     c_ex = c_tot * pr
     if c_ex < 0.15 * eq0:
-        errors.append("c_ex below 15% of parent equity: the excess-cash line should not exist")
+        review_flags.append('excess_cash_below_materiality_threshold')
     c_inc = c_ex * inp["cash_yield"] * (1 - inp["tax_eff"])  # after-tax, out of every numerator
     cps = c_ex / sh
     eop = {t: eps[t] - c_inc / sh for t in TIERS}
@@ -303,13 +297,13 @@ def main() -> int:
     # M steady: de-cycled M forward (normal margin x pre-AI turnover 1.05; the margin step is in the
     # FY2024-25 reports, medium barrier -> raised, A26); H: normal margin x own mean turnover 1.33.
     if abs(inp["ss_return_m"] - round(inp["nm_norm_main"] * 1.05, 3)) > 5e-4:
-        errors.append(f"ss_return_m {inp['ss_return_m']} != nm_norm_main x pre-AI turnover 1.05 (A26)")
+        review_flags.append('middle_steady_return_turnover_mismatch')
     if not r_s + 0.02 - 1e-9 <= inp["ss_return_m"] <= inp["ss_return_h"] + 1e-9:
-        errors.append(f"ss_return_m {inp['ss_return_m']} outside [ordered {r_s} + 2pp, H {inp['ss_return_h']}] (A26)")
+        review_flags.append('middle_steady_return_outside_ruling_range')
     if not inp["ss_return_m"] - 1e-9 <= inp["ss_return_h"] <= 0.30 + 1e-9:
-        errors.append(f"ss_return_h {inp['ss_return_h']} outside [ss_return_m {inp['ss_return_m']}, 30%] (A26)")
+        review_flags.append('high_steady_return_outside_ruling_range')
     if abs(inp["ss_return_h"] - round(inp["nm_norm_main"] * 1.33, 3)) > 5e-4:
-        errors.append(f"ss_return_h {inp['ss_return_h']} != nm_norm_main x own mean turnover 1.33 (A26)")
+        review_flags.append('high_steady_return_turnover_mismatch')
     # Ordered pick (2026-10-19): own cycle unusable (no full cycle after the structural change), so the
     # steady return is the axis value as-is (checked against the axis above); own_cycle is display only.
 
@@ -356,21 +350,22 @@ def main() -> int:
     L, M, H = (pre[t] * (1 - k[t]) + win[t] + cps for t in TIERS)
     A, B = (L + M) / 2, (M + H) / 2
     if not (L < M < H):
-        errors.append(f"L<M<H violated: {L:.2f}, {M:.2f}, {H:.2f}")
+        review_flags.append('base_anchors_not_increasing')
     ret_obs = 1 - inp["payout_obs"]
     for t in TIERS:
         if roe[t] - r < 0.03:
-            errors.append(f"{t}: RONIC {roe[t]:.3f} not in the monotone domain at r {r:g}")
-        errors += check_branch(g2, roe[t], r, inp["payout_op"], f"g2@{t}")
+            review_flags.append('return_outside_monotone_domain' + "_" + t.lower())
+        if check_branch(g2, roe[t], r, inp["payout_op"], f"g2@{t}"):
+            review_flags.append("retention_branch_incompatible_" + t.lower())
         if g2 > ret_obs * roe[t]:  # ③ constraint 2: g <= (1 - d) x RONIC
-            errors.append(f"{t}: g2 {g2:.2%} above (1 - d) x RONIC {ret_obs * roe[t]:.2%}")
+            review_flags.append('growth_exceeds_observed_retention_capacity' + "_" + t.lower())
     for t in ("M", "H"):
         if not (0 < g1 / roe[t] < 1):
-            errors.append(f"{t}: stage-1 b1 = g1/RONIC {g1 / roe[t]:.3f} outside (0,1)")
+            review_flags.append('transition_reinvestment_outside_range' + "_" + t.lower())
 
     # ③ guardrail: M operating multiple inside own realised operating forward-PE band (A17).
     if not (inp["pe_own_min"] <= pe["M"] <= inp["pe_own_max"]):
-        errors.append(f"M multiple {pe['M']:.2f}x outside own band [{inp['pe_own_min']}, {inp['pe_own_max']}] — ③ 出带")
+        review_flags.append('middle_multiple_outside_historical_band')
 
     # ---- Step 5: NPO option (A13): aligned-year margin, own ruler, timed discount ----
     # Count (A13, 2026-10-19): UBS single-house path — 2028 NPO = 10% of FY28 revenue; 2030 NPO = 30% of
@@ -421,7 +416,8 @@ def main() -> int:
 
     # ---- A2e-2c flat ladder + decomposition ----
     flat_errs, flat_op = flat_multiple_ladder((eop["L"], eop["M"], eop["H"]), pe["M"] * (1 - k["M"]))
-    errors += flat_errs
+    if flat_errs:
+        review_flags.append("flat_numerator_ladder_invalid")
     flat = tuple(x * (1 + r) ** -tau + win[t] + cps for x, t in zip(flat_op, TIERS))
     # Decomposition on the operating part (anchor - C_ex per share); full L/M, H/M printed beside it.
     dec = decompose((L - cps, M - cps, H - cps),
@@ -435,133 +431,96 @@ def main() -> int:
         "M": inp["ubs_rev28"] * inp["npo_share_28"] * 1e6 / inp["usdcny"],
         "H": inp["ubs_rev28"] * inp["npo_share_28"] * 1e6 / inp["usdcny"],
     }
-    errors += check_optical_narrow_attach(narrow)
+    review_flags.extend(optical_narrow_checks(narrow, optical))
     oe = {"L": inp["oe_l"], "M": inp["oe_m"], "H": inp["oe_h"]}
 
-    # ---- Reconcile stated Outputs ----
-    out_sec = md.split("### Outputs", 1)[-1]
-    stated = {
-        "L": first_float(r"L = \*\*([0-9.]+)\*\*", out_sec),
-        "M": first_float(r"M = \*\*([0-9.]+)\*\*", out_sec),
-        "H": first_float(r"H = \*\*([0-9.]+)\*\*", out_sec),
-        "A": first_float(r"A = \*\*([0-9.]+)\*\*", out_sec),
-        "B": first_float(r"B = \*\*([0-9.]+)\*\*", out_sec),
-        "V": first_float(r"V_\{opt\}\\\) = \*\*([0-9.]+)\*\*", out_sec),
+
+    def anchor(t, g=g2, g1_override=None, steady=None, norm=None):
+        _, forward, multiple, retained = tier(eop[t], stage[t], g,
+            rs=rs_tier[t] if steady is None else steady, mr=mratio(t, norm))
+        if stage[t] and g1_override is not None:
+            multiple = path_value(g1_override, N_STAGE, g, forward, r, NUM_YEAR,
+                                  y1, y2, rs_tier[t] if steady is None else steady,
+                                  m_ratio=mratio(t, norm))
+        return eop[t] * multiple * (1 - k[t]) * (1 + r) ** -tau + window(retained) + cps
+
+    def margin_band(norm):
+        return {tier: anchor(tier, norm=norm) for tier in TIERS}
+
+    # Original sensitivity inputs and interpolation are retained; these are
+    # comparison cases only, not additional official bands.
+    alt_total = (84.96 / 60.69 + 1670 / 970 + 79 / 59.89 + 82.4 / 59.67) / 4
+    alt_g1 = alt_total * (1 - inp["npo_share_28"]) - 1
+    sensitivity = {
+        "normal_margin_12pct": {"anchors": margin_band(0.12), "option": npo_value(0.12) / disc},
+        "normal_margin_15pct": {"anchors": margin_band(0.15), "option": npo_value(0.15) / disc},
+        "normal_margin_28pct": {"anchors": margin_band(0.28), "option": npo_value(0.28) / disc},
+        "no_margin_fade": {"anchors": {t: anchor(t, norm=nm0[t]) for t in TIERS},
+                           "option": npo_value(nm_opt) / disc},
+        "growth_minus_1pp": {t: anchor(t, g=g2 - 0.01) for t in TIERS},
+        "growth_plus_1pp": {t: anchor(t, g=g2 + 0.01) for t in TIERS},
+        "growth_4pct": {t: anchor(t, g=0.04) for t in TIERS},
+        "four_house_growth": {t: anchor(t, g1_override=alt_g1) for t in TIERS},
+        "forward_return_no_fade": {t: anchor(t, steady=1.0) for t in TIERS},
+        "capex_default_window": {
+            t: eop[t] * tier(eop[t], stage[t], yy=(2030, 2035), mr=mratio(t),
+                             rs=rs_tier[t])[2] * (1 + r) ** -tau + win[t] + cps
+            for t in TIERS},
+        "option_growth_6pct": npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06) / disc,
+        "option_growth_0pct": npo_value(inp["npo_nm_norm"], path=npo_path(after=0), g_term=0) / disc,
+        "option_fixed_2028_volume": npo_value(inp["npo_nm_norm"],
+            path={year: rev28_npo * (1 + inp["g_npo"]) ** (year - t_opt)
+                  for year in range(t_opt, 2101)}) / disc,
+        "option_cannibalization": v_opt - npo_value(inp["npo_nm_norm"], a1=y1, a2=y2) / disc,
+        "option_cannibalization_growth_6pct": (
+            npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06)
+            - npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06,
+                        a1=y1, a2=y2)) / disc,
     }
-    for key, got in {"L": L, "M": M, "H": H, "A": A, "B": B, "V": v_opt}.items():
-        said = stated.get(key)
-        if said is None:
-            errors.append(f"stated {key} not found in Outputs")
-        elif abs(said - got) > TOL:
-            errors.append(f"{key}: stated {said} vs recomputed {got:.4f}")
-    p_line = re.search(r"p_L/p_M/p_H\\\) = \*\*([0-9.]+) / ([0-9.]+) / ([0-9.]+)\*\*", out_sec)
-    if p_line is None or tuple(float(x) for x in p_line.groups()) != P_TIERS:
-        errors.append(f"Outputs p_L/p_M/p_H must state {P_TIERS}")
+    for cut, key in ((0.2, "revenue_decline_20pct"), (0.4, "revenue_decline_40pct")):
+        earnings = inp["rev_fy26_cons"] * (1 - cut) * inp["nm_fy25"] / sh - c_inc / sh
+        _, _, multiple, retained = tier(earnings, False, mr=mratio("L"))
+        sensitivity[key] = earnings * multiple * (1 + r) ** -tau + window(retained) + cps
 
-    # ---- Report ----
-    print(f"formula_id={FORMULA_ID}")
-    print(f"share basis: consensus EPS on A shares {inp['shares_a']:.3f}M -> total {sh:.3f}M (x{adj:.4f})")
-    print(f"FY28: UBS {inp['ubs_eps28'] / inp['ubs_eps27'] - 1:+.1%}, Citi {inp['citi_ni28'] / inp['citi_ni27'] - 1:+.1%}"
-          f" -> mean {g_total - 1:+.1%}, NPO {inp['npo_share_28']:.0%} stripped -> g1 {g1:+.2%} (M/H, n={N_STAGE})")
-    print(f"g2 {g2:.2%} (user-set; named macro {MACRO_G:.0%}, cap {g_cap(r):.0%}) r {r:g} (篮 {baskets['r_perp']})")
-    print(f"FY27 opening equity: 2026-09-30 {eq0:.0f} + retained share of Q4 NI {inp['ni_q4_cons']:.0f} (百万 CNY)")
-    print(f"超额现金: 扩展口径净现金 2026-09-30 {inp['net_cash_ext_q3']:.0f}（不含战略持股）− 应付股利 {div:.0f}"
-          f" − 锚 0 − 增长期资金缺口 0 = {c_tot:.0f} × 归母比例 {pr:.4f} = C_ex {c_ex:.0f} 百万"
-          f"（每股 {cps:.2f}，占归母权益 {eq0:.0f} 的 {c_ex / eq0:.1%}，λ 1）；"
-          f"税后收益 {c_inc:.0f} 百万 = 每股 {c_inc / sh:.4f}，三档分子同扣")
-    print(f"三段回报: Y1 {y1} → Y2 {y2}（_AXIS.pluggable-module），稳态 {r_s:.0%}（按序取 = 轴；自身周期 {inp['own_cycle']:.1%} 结构变化后不可用、只对照，"
-          f"≤ 前瞻）= L 档；M 档 {inp['ss_return_m']:.1%}、H 档 {inp['ss_return_h']:.1%}（去周期前瞻）；τ {tau:g}；k 全为 0")
-    for t in TIERS:
-        print(f"{t}: EPS {eps[t]:.4f} -> 经营 EPS {eop[t]:.4f} 经营 BPS_open {bps[t]:.2f} RONIC {roe[t]:.3f} PE(三段) {pe[t]:.2f}"
-              f" -> V_op x 1.1^-τ {pre[t]:.2f} + 窗口 {win[t]:.2f}（b {bb_[t]:.3f}）+ C_ex {cps:.2f} = {pre[t] + win[t] + cps:.2f}")
-    print(f"L={L:.2f} M={M:.2f} H={H:.2f} A={A:.2f} B={B:.2f}")
-    print(f"branch: payout_op {inp['payout_op']:.1%} (分红 + 现金积累, FY2018–25); 实付派息 {inp['payout_obs']:.0%}; "
-          f"约束 2 上限 (1-d) x RONIC: " + " ".join(f"{t} {ret_obs * roe[t]:.1%}" for t in TIERS) + f" vs g2 {g2:.0%}")
-    print(f"NPO option: FY28 net margin UBS {nm_ubs28:.4f} / Citi {inp['citi_nm28']:.4f} -> {nm_opt:.4f}"
-          f" (FY25 realised {inp['nm_fy25']:.4f}, lower-bound disclosure only)")
-    pth = npo_path()
-    print("NPO path (亿 CNY; 2029 = geometric interpolation): "
-          + " ".join(f"{yr} {pth[yr] / 100:.1f}" for yr in range(t_opt, NPO_LAST_NAMED + 3))
-          + f" | 2030 NPO / total {pth[NPO_LAST_NAMED] / (pth[NPO_LAST_NAMED] + plug30):.1%}"
-          f" = ${pth[NPO_LAST_NAMED] * 1e6 / inp['usdcny'] / 1e9:.2f}B")
-    print(f"main margin path: start L {nm0['L']:.2%} / M,H {nm0['M']:.2%} held to {y1} -> {inp['nm_norm_main']:.0%} by {y2}"
-          f" (ratio L {mratio('L'):.3f} / M,H {mratio('M'):.3f})")
-    print(f"NPO option: FY28 NI {npo_ni:.0f} 百万 -> EPS {eps_npo:.4f}; margin {nm_opt:.2%} held to {y1n} -> {inp['npo_nm_norm']:.0%} by {y2n},"
-          f" return {roe_book_h:.1%} -> {min(roe_book_h, inp['ss_return_npo']):.0%} (after {NPO_LAST_NAMED} g {inp['g_npo']:.0%}) -> value in {t_opt} {v_opt_t:.2f}"
-          f" (implied x{pe_npo:.2f} FY28 NPO EPS) / 1.1^{inp['t_opt'] - NUM_YEAR + tau:g} = V_opt {v_opt:.2f}"
-          f"; p {P_TIERS} -> +V {plus_v[0]:.2f}/{plus_v[1]:.2f}/{plus_v[2]:.2f}"
-          f" A' {(plus_v[0] + plus_v[1]) / 2:.2f} B' {(plus_v[1] + plus_v[2]) / 2:.2f}")
-    print(f"guardrail: M operating {pe['M']:.2f}x (after k {pe['M'] * (1 - k['M']):.2f}x) vs own operating band "
-          f"[{inp['pe_own_min']}, {inp['pe_own_max']}]; L {pe['L']:.2f}x H {pe['H']:.2f}x")
-    for t in TIERS:
-        g_lo, _ = implied_g(inp["pe_own_min"], roe[t], r)
-        g_hi, _ = implied_g(inp["pe_own_max"], roe[t], r)
-        print(f"  band-edge implied g @ RONIC_{t} {roe[t]:.3f}: [{g_lo:+.2%}, {g_hi:+.2%}]")
-    print(f"flat ladder @ M {pe['M']:.2f}x x (1-k_M) + C_ex: " + "/".join(f"{x:.2f}" for x in flat))
-    print(f"L/M {L / M:.3f} H/M {H / M:.3f} | operating part: L/M {dec['lm']:.3f} = num {dec['num_lm']:.3f} x pe {dec['pe_lm']:.3f}"
-          f" | H/M {dec['hm']:.3f} = num {dec['num_hm']:.3f} x pe {dec['pe_hm']:.3f}"
-          f" | width {(H - L) / (2 * M):.3f} | V_opt/M {v_opt / M:.3f}")
-    print("多留部分 (1 - b - d, 元/股/年, FY27 经营分子; 落在超额现金, λ 1, PV 不进锚点; k 另作用于经营价值): "
-          + " ".join(f"{t} {ret_obs - (g1 if stage[t] else g2) / roe[t]:.1%} = "
-                     f"{(ret_obs - (g1 if stage[t] else g2) / roe[t]) * eop[t]:.2f}" for t in TIERS)
-          + f"  [actual retention {ret_obs:.0%}]")
-
-    def anchor(t: str, g: float = g2, g1_: float | None = None, rs: float | None = None,
-               norm: float | None = None) -> float:
-        e_ = eop[t]
-        mr_ = mratio(t, norm)
-        if rs is None:
-            rs = rs_tier[t]
-        _, r_, pe_, b_ = tier(e_, stage[t], g, rs=rs, mr=mr_)
-        if stage[t] and g1_ is not None:
-            pe_ = path_value(g1_, N_STAGE, g, r_, r, NUM_YEAR, y1, y2, r_s if rs is None else rs, m_ratio=mr_)
-        return e_ * pe_ * (1 - k[t]) * (1 + r) ** -tau + window(b_) + cps
-
-    for nrm in (0.12, 0.15, 0.28):
-        print(f"  sens normal net margin {nrm:.0%} (main and NPO together): "
-              + "/".join(f"{anchor(t, norm=nrm):.2f}" for t in TIERS)
-              + f" | V_opt {npo_value(nrm) / disc:.2f}")
-    print("  sens no margin fade (main at its starting margin; NPO held at FY28 consensus): "
-          + "/".join(f"{anchor(t, norm=nm0[t]):.2f}" for t in TIERS)
-          + f" | V_opt {npo_value(nm_opt) / disc:.2f}")
-    for g in (g2 - 0.01, g2 + 0.01, MACRO_G):
-        print(f"  sens g2={g:.2%}: " + "/".join(f"{anchor(t, g):.2f}" for t in TIERS))
-    for lab, gt in (("derived 4-house mean", (84.96 / 60.69 + 1670 / 970 + 79 / 59.89 + 82.4 / 59.67) / 4),):
-        g1_alt = gt * (1 - inp["npo_share_28"]) - 1
-        print(f"  sens g1 from {lab} ({g1_alt:+.1%}): " + "/".join(f"{anchor(t, g1_=g1_alt):.2f}" for t in TIERS))
-    for cut in (0.20, 0.40):
-        e_ = inp["rev_fy26_cons"] * (1 - cut) * inp["nm_fy25"] / sh - c_inc / sh
-        _, _, pe_c, b_c = tier(e_, False, mr=mratio("L"))
-        print(f"  sens rev_cut_l={cut:.0%}: L {e_ * pe_c * (1 + r) ** -tau + window(b_c) + cps:.2f}")
-    print("  sens steady return = forward (no return fade; margin still fades): "
-          + "/".join(f"{anchor(t, rs=1.0):.2f}" for t in TIERS))
-    print("  sens Y1/Y2 = ai-capex default 2030/2035 (return and margin move together): " + "/".join(
-        f"{eop[t] * tier(eop[t], stage[t], yy=(2030, 2035), mr=mratio(t), rs=rs_tier[t])[2] * (1 + r) ** -tau + win[t] + cps:.2f}"
-        for t in TIERS))
-    # NPO option sensitivities (A13)
-    v_g6 = npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06) / disc
-    v_g0 = npo_value(inp["npo_nm_norm"], path=npo_path(after=0.0), g_term=0.0) / disc
-    v_fix = npo_value(inp["npo_nm_norm"],
-                      path={yr: rev28_npo * (1 + inp["g_npo"]) ** (yr - t_opt) for yr in range(t_opt, 2101)}) / disc
-    v_can = v_opt - npo_value(inp["npo_nm_norm"], a1=y1, a2=y2) / disc
-    v_can6 = (npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06)
-              - npo_value(inp["npo_nm_norm"], path=npo_path(after=0.06), g_term=0.06, a1=y1, a2=y2)) / disc
-    print(f"  NPO sens: after-2030 growth 6% {v_g6:.2f} · 0% {v_g0:.2f} · 2028 count held (no 2030 step) {v_fix:.2f}"
-          f" · if NPO cannibalises own pluggable (valued on the main {y1}/{y2} path), net add {v_can:.2f}"
-          f" (after-2030 6%: {v_can6:.2f})")
-    print("optical narrow (NPO, USD): " + " ".join(
-        f"{t} ${narrow[t] / 1e9:.3f}B attach {optical_attachment(narrow[t], t):.1%} (OE share {n_ / oe[t]:.1%})"
-        for t, n_ in (("L", inp["npo_units_27"]), ("M", inp["npo_units_28"]), ("H", inp["npo_units_28"]))))
-    rev_usd = inp["rev_fy27_cons"] * 1e6 / inp["usdcny"]
-    print(f"capex axis implied share (wide, FY27 revenue ${rev_usd / 1e9:.1f}B): M {rev_usd / inp['capex_m']:.2%}")
-    print("r_f readings: CNY segment of _AXIS.rates 待建 — not printed")
-
-    if errors:
-        print("FAIL:", "; ".join(errors), file=sys.stderr)
-        return 1
-    print("OK")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    # Each business's actual terminal return is capped by its forward return.
+    # An option is an independent conditional result; its weights are not
+    # statistical probabilities and must not be added again elsewhere.
+    return {
+        "ticker": "300308.SZ", "currency": "CNY",
+        "valuation_as_of": None, "framework_as_of": None,
+        "historical_valuation_as_of": "2026-09-30", "historical_framework_as_of": "2026-10-29",
+        "basis_changed": None, "partial_basis_changed": local_basis_changed(_local_basis_snapshot(context['axes']), LOCAL_BASIS_BASELINE),
+        "units": {"price": "CNY_PER_SHARE"},
+        "anchors": dict(zip(TIERS, (L, M, H))), "candidate": None,
+        "option": {"value": v_opt, "value_unit": "CNY_PER_SHARE", "weights": dict(zip(TIERS, P_TIERS)),
+                   "anchors": dict(zip(TIERS, plus_v))},
+        "segments": {
+            "pluggable_module_and_window": {"unit": "CNY_PER_SHARE",
+                "values": {t: pre[t] * (1 - k[t]) + win[t] for t in TIERS}},
+            "excess_cash": {"unit": "CNY_PER_SHARE", "values": dict.fromkeys(TIERS, cps)}},
+        "key_parameters": {
+            "discount_rate": {"unit": "RATIO", "values": dict.fromkeys(TIERS, r)},
+            "growth_rate": {"unit": "RATIO", "values": dict.fromkeys(TIERS, g2)},
+            "forward_return": {"unit": "RATIO", "values": roe},
+            "steady_return": {"unit": "RATIO", "values": {tier: min(roe[tier], rs_tier[tier]) for tier in TIERS},
+                              "reference_value": r_s},
+            "option_discount_rate": r, "option_terminal_growth": inp["g_npo"],
+            "option_forward_return": roe_book_h,
+            "option_steady_return": min(roe_book_h, inp["ss_return_npo"]),
+            "normal_margin": inp["nm_norm_main"],
+        },
+        "cash_bridge": {"per_share": cps, "parent_share": pr, "taxed_income": c_inc},
+        "diagnostics": {"operating_eps": eop, "opening_operating_bps": bps,
+                        "multiples": pe, "window": win, "flat": dict(zip(TIERS, flat)),
+                        "decomposition": dec, "npo_revenue_path": npo_path(end=2032),
+                        "npo_2028_income": npo_ni, "npo_2028_eps": eps_npo,
+                        "npo_2028_value": v_opt_t,
+                        "optical_narrow_revenue_usd": narrow,
+                        "optical_attachment": {t: narrow[t] / (optical["oe"][t] * optical["oe_bom_usd"]) for t in TIERS},
+                        "capex_share_middle": inp["rev_fy27_cons"] * 1e6 / inp["usdcny"] / inp["capex_m"],
+                        "observed_retention": ret_obs,
+                        "retention_after_required_growth": {t: ret_obs - (g1 if stage[t] else g2) / roe[t] for t in TIERS},
+                        "band_edge_implied_growth": {t: {"low": implied_g(inp["pe_own_min"], roe[t], r),
+                                                         "high": implied_g(inp["pe_own_max"], roe[t], r)} for t in TIERS}},
+        "review_flags": review_flags, "sensitivity": sensitivity,
+    }

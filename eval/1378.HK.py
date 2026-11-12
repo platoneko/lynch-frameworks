@@ -1,169 +1,166 @@
 #!/usr/bin/env python3
-"""1378.HK (China Hongqiao) valuation eval.
+"""1378.HK historical aluminium spread valuation; not a publication.
 
-frameworks/1378.HK.md is the source of truth; this script re-derives
-L/M/H / A/B from its §3 Inputs table and exits 1 on mismatch.  The doc carries
-no current price (AGENTS.md「现价 — 禁写契约」), so nothing here computes a zone
-or a market-implied reading — the digest and the app zone on live quotes.
-
+Amounts are CNY hundred million, volume ten thousand tonnes, spreads CNY/tonne,
+shares hundred million, and values HKD/share. Rates are fractions. Inputs and
+method reproduce the 2026-10-16 framework; they are not fresh research.
 formula_id: hongqiao_al_spread_gm_bridge_gordon_v5
-
-Main ruler: the shared gross-margin bridge (eval/lib/al_bridge.py) on the
-aluminium spread axis.  M is the 2026H1 filing annualised; L and H are M moved
-by 562.2万吨 x the axis's spread steps (−4,006 / +1,028 元/吨) through the
-marginal conversion rate.  Each tier's multiple is Gordon on the axis's shared
-g rows (0% / 0% / 0% → flat 1/r) at the tier's own forward ROE (NP_x / 中报归母权益),
-with r the basket the framework names for the single leg (篮 6 周期商品, 13% →
-7.69×; valuation-rules「§r 篮子」, gordon.BASKET_R).
-The L numerator is the axis's L rung — MS 2027 supply-glut level that may
-persist, not a trough that mean-reverts, and not this company's own trough year
-(2023H1 本公司擁有人應佔溢利 24.57亿 was far lower) — so g_L = 0 with g_M/g_H;
-IAI/CRU 3.3% is sensitivity / stretched only.  A v4 that ran the 谷底档 recovery
-stage on the axis rung let L converge on M and was rolled back (valuation-rules
-「谷底档」适用范围); the later g_L 3.3%「谷底回归中枢」overlay is also retired.
-The printed 2023H1 trough x 1/r is only the deep_discount pressure coordinate.
-The H-share cluster median that used to be typed in as `pe` is only a cross
-coordinate.  The PB floor is disclosed, never max()'d into L.  Anchors are HKD:
-CNY earnings ÷ fx_hkd_cny (1/1.1668).
-
-What is specific to this ticker is the shape of its integration.  Hongqiao's
-alumina is *sold outward*, so a high-alumina year pays the upstream leg while
-it squeezes the smelter — 2026H1 ran +88亿 on aluminium against **-49亿** on
-alumina.  But the axis's L world is the supply-glut one, with alumina frozen
-low: there is nothing for the upstream leg to catch, and Hongqiao's k (0.72)
-is the highest of the four mounts, so its L/M is the *deepest*, not the
-shallowest.  The guard below asserts that ordering against Tianshan, whose
-alumina is captive: if the two ever invert, one framework has treated the
-L world's alumina differently from the axis.
-
-Run:  python3 frameworks/eval/1378.HK.py
 """
-
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import math
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
-from lib.al_bridge import (  # noqa: E402
-    REQUIRED, anchors, bridge, check_gordon, check_regression, flat_ladder,
-    multiples, pb_floor,
-)
-from lib.axes import check_al_mount  # noqa: E402
-from lib.inputs import (  # noqa: E402
-    check_against_stated, check_missing, ladder, parse_baskets, parse_inputs, report,
-)
-from lib.zones import cut_points  # noqa: E402
+from lib.al_bridge import (REQUIRED, anchors, bridge, check_gordon,
+                           check_regression, flat_ladder, multiples, pb_floor)
+from lib.inputs import check_missing, ladder
+from lib.metal_axis_checks import axis_basis_snapshot, check_aluminium_price_upside
+from lib.partial_basis import local_basis_changed
+from lib.rf_report import axis_loader, calculate_rf_readings
 
-# rf_report / bands_io import eval.lib.*, so the repo root must be importable too.
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-from eval.lib.bands_io import write_rf_readings  # noqa: E402
-from eval.lib.rf_report import rf_block  # noqa: E402
+DEPENDENCIES = {'libraries': ('al_bridge', 'axes', 'gordon', 'inputs', 'metal_axis_checks', 'partial_basis', 'rf_report'),
+                'axes': {'aluminium': 'fed_path_aluminium', 'gold_copper': 'fed_path_gold_copper', 'rates': 'rates'},
+                'peers': {'tianshan': '002532.SZ'}}
 
-FRAMEWORK = Path(__file__).resolve().parents[2] / "frameworks" / "1378.HK.md"
-PEER_CAPTIVE = Path(__file__).resolve().parents[2] / "frameworks" / "002532.SZ.md"
-FORMULA_ID = "hongqiao_al_spread_gm_bridge_gordon_v5"
-LISTING_CCY = "HKD"
+# 2026-06-30 interim report, note 16: 9,819,397,841 shares; rounded to
+# 98.194 hundred million. BPS HKD 15.82 uses the interim parent equity and
+# 1.1668 CNY-to-HKD; 0.43 is the 2024-01-22 five-year PB low (LB, 2026-09-07).
+# 2026-09-04 market cross rate, HKD to CNY 0.8570 (1 / 1.1668).
+# The 2026H1 interim: revenue 875.1, parent net income 172.1, equity 1331.08;
+# annualised revenue and net income below are each twice the half-year amount.
+# Gross margin 31.5% (BOCI, 2026-08-24); annualised sales 562.2 from 281.1
+# ten thousand tonnes (CICC, 2026-08-26). The 2025H1 comparison is annualised
+# revenue 1620.6, margin 25.7%, parent net profit 247.2, and fits conversion
+# from gross profit to net profit; it is not the low-tier scenario.
+# Shared aluminium axis: spreads 4873 / 8879 / 9907 CNY/t, from Morgan Stanley
+# 2027 scenario (2026-09-21), 2026H1, and 2026-07-10 respectively; perpetuity
+# growth 0% in all tiers (2026-09-20). The 13% rate is basket 6 for a cyclical
+# commodity business. LB five-year monthly TTM PE range 3.59–20.16 as of
+# 2026-09-11 is a guardrail only, not an input to the value calculation.
+INPUTS = {
+    'shares': 98.194, 'fx_hkd_cny': .8570,
+    'rev_m': 1750.2, 'gm_m': .315, 'rev_ref': 1620.6, 'gm_ref': .257,
+    'np_m': 344.2, 'np_ref': 247.2, 'vol_al': 562.2,
+    'equity': 1331.08, 'r_perp': .13,
+    'pe_own_min': 3.59, 'pe_own_max': 20.16, 'bps': 15.82, 'pb_low': .43,
+}
+TIERS = 'LMH'
+GROSS_PROFIT_FILING = 551.3
+NET_PROFIT_FILING = 344.2
+SHARES_STATIC = 98.194
+# Existing 002532 same-input audit: parent profit L/M in CNY 100m; used only
+# to report whether a supplied peer ratio differs from that historical basis.
+HISTORICAL_TIANSHAN_LOW = 52.75921694987036
+HISTORICAL_TIANSHAN_MID = 83.5
+BASELINE_LOCAL = 'a53a8545f61a3d04e5ded17c9cf423c64e0f00310341ddf1f39c5c6173bb4eed'
 
-GP_M_FILING = 551.3  # 亿 CNY, 2026H1 x2 at the stated 31.5% margin
-NP_M_FILING = 344.2  # 亿 CNY, 2026H1 归母 172.1 x2
-SHARES_INTERIM = 98.194  # 亿股, issued at 2026-06-30 (interim note 16) — A14
-NP_TROUGH_2023H1 = 49.13  # 亿 CNY, 2023H1 本公司擁有人應佔溢利 2,456,623 千元 x2 — pressure coordinate only (A16)
 
-
-def main() -> int:
-    md = FRAMEWORK.read_text(encoding="utf-8")
-    if FORMULA_ID not in md:
-        print(f"FAIL: formula_id {FORMULA_ID} missing", file=sys.stderr)
-        return 1
-
-    inp = parse_inputs(md)
-    baskets = parse_baskets(md)
-    errors = check_missing(inp, REQUIRED + ["fx_hkd_cny"])
+def calculate(context):
+    aluminium = context['axes']['aluminium']
+    copper = context['axes']['gold_copper']
+    rates = context['axes']['rates']
+    peer = context['peers'].get('tianshan')
+    inp = dict(INPUTS)
+    for name in ('spread_l', 'spread_m', 'spread_h', 'g2_l', 'g2_m', 'g2_h'):
+        inp[name] = aluminium[name]
+    errors = check_missing(inp, REQUIRED + ['fx_hkd_cny'])
     if errors:
-        return report(errors)
-
-    errors += ladder("smelting spread", inp["spread_l"], inp["spread_m"], inp["spread_h"])
-    errors += check_al_mount((inp["spread_l"], inp["spread_m"], inp["spread_h"]))
-    errors += check_regression(inp, GP_M_FILING, NP_M_FILING)
-    # A18: r must be the basket the Inputs row names, not just any basket value.
-    if "r_perp" not in baskets:
-        errors.append("r_perp: Inputs source cell names no 篮 N (AGENTS.md 篮子声明)")
-    errors += check_gordon(inp, baskets.get("r_perp"))
-    # A14: the per-share denominator is the interim's issued count, not a
-    # number backed out of a mis-stated EPS (the old 107.9亿 was).
-    if abs(inp["shares"] - SHARES_INTERIM) > 0.05:
-        errors.append(f"shares {inp['shares']} != interim issued {SHARES_INTERIM}亿 (A14)")
-
-    (L, M, H), eps = anchors(inp, fx=inp["fx_hkd_cny"])
+        raise ValueError('; '.join(errors))
+    errors += ladder('smelting spread', inp['spread_l'], inp['spread_m'], inp['spread_h'])
+    cross_axis_valid = check_aluminium_price_upside(aluminium_axis=aluminium, gold_copper_axis=copper)
+    errors += check_regression(inp, GROSS_PROFIT_FILING, NET_PROFIT_FILING)
+    errors += check_gordon(inp, 6, shared_growth={tier: aluminium[f'g2_{tier.lower()}'] for tier in TIERS})
+    if abs(inp['shares'] - SHARES_STATIC) > .05:
+        errors.append('shares differ from the 2026 interim issued count')
+    values, eps = anchors(inp, fx=inp['fx_hkd_cny'])
     pes, roes = multiples(inp)
     errors += flat_ladder(eps)
-
-    # Same L world for both mounts (alumina frozen), so the ordering is set by
-    # k and by tonnes per yuan of profit — both higher here.  Tianshan's ratio
-    # is recomputed from its own Inputs table so the two cannot drift apart.
-    peer = parse_inputs(PEER_CAPTIVE.read_text(encoding="utf-8"))
-    if REQUIRED_PEER <= peer.keys():
-        peer_eps = anchors(peer)[1]
-        mine, theirs = eps[0] / eps[1], peer_eps[0] / peer_eps[1]
-        if mine >= theirs:
-            errors.append(
-                f"numerator ratio L {mine:.3f} >= 002532.SZ's {theirs:.3f} — "
-                "in the frozen-alumina L world the outward alumina leg has no "
-                "cushion and Hongqiao's higher k makes its downside the deeper "
-                "one (§1 属性 A)"
-            )
-
-    # H is a price scenario, not a re-rating: the multiple it implies on M-tier
-    # EPS must stay inside the multiple this stock has actually printed.
-    pe_at_h = H / (eps[1] / inp["fx_hkd_cny"])
-    if pe_at_h > inp["pe_own_max"]:
-        errors.append(f"H implies {pe_at_h:.2f}x on M EPS, above own realised high {inp['pe_own_max']}")
-
-    # Floor is disclosed only (A10): scenario L must clear it, never max() with it.
-    floor, floor_errors = pb_floor(inp, L)
+    peer_ratio = None
+    review_flags = ['aluminium_low_macro_path_conflict', 'historical_high_spread_perpetual_vs_one_year_axis']
+    if not cross_axis_valid:
+        review_flags.append('aluminium_copper_price_upside_not_met')
+    if peer is None:
+        review_flags.append('tianshan_comparison_unavailable')
+    else:
+        # A version-bound draft is not evidence that the peer result was
+        # independently confirmed; the consumer must retain this status.
+        if peer.get('confirmation_status') == 'unconfirmed':
+            review_flags.append('tianshan_comparison_unconfirmed')
+        if peer.get('ticker') != '002532.SZ' or peer.get('currency') != 'CNY':
+            raise ValueError('Tianshan comparison has the wrong ticker or currency')
+        for alias in ('aluminium', 'gold_copper'):
+            if peer['source_versions'].get(f'axis:{alias}') != context['axis_versions'][alias]:
+                raise ValueError(f'Tianshan comparison uses another {alias} axis version')
+        profits = peer['operating']['net_profit']
+        if not all(isinstance(profits.get(t), (int, float)) and not isinstance(profits[t], bool)
+                   and math.isfinite(profits[t]) and profits[t] > 0 for t in ('L', 'M')):
+            raise ValueError('Tianshan low and middle profit must be finite and positive')
+        peer_ratio = profits['L'] / profits['M']
+        if not math.isclose(peer_ratio, peer['operating']['low_profit_ratio'], rel_tol=1e-12):
+            raise ValueError('Tianshan profit ratio does not match its underlying profits')
+        if eps[0] / eps[1] >= peer_ratio:
+            review_flags.append('tianshan_low_profit_ratio_comparison_not_met')
+    if values[2] / (eps[1] / inp['fx_hkd_cny']) > inp['pe_own_max']:
+        errors.append('high-tier value exceeds the historical PE guardrail on middle EPS')
+    floor, floor_errors = pb_floor(inp, values[0])
     errors += floor_errors
+    errors += ladder('anchors', *values)
+    if errors:
+        raise ValueError('; '.join(errors))
 
-    A, B = cut_points(L, M, H)
-    errors += check_against_stated(
-        md, {"L": L, "M": M, "H": H, "A": A, "B": B}
-    )
+    def band_rf(dr):
+        return tuple(anchors(dict(inp, r_perp=inp['r_perp'] + dr), fx=inp['fx_hkd_cny'])[0])
 
+    rf = calculate_rf_readings(rate_currency='HKD', price_currency='HKD', price_unit='per_share',
+                               priced_r={'r_perp': inp['r_perp']}, band_at=band_rf,
+                               rates_loader=axis_loader(rates), base_anchors=tuple(values))
+    as_band = lambda series: dict(zip(TIERS, series))
     br = bridge(inp)
-    fx = inp["fx_hkd_cny"]
-    r = inp["r_perp"]
-    flat = [e * pes[1] / fx for e in eps]
-    print(f"1378.HK  L={L:.2f} M={M:.2f} H={H:.2f}  A={A:.2f} B={B:.2f}")
-    print(f"  r_perp {r:.1%} = 篮 {baskets['r_perp']}  "
-          f"EPS(CNY) {eps[0]:.3f}/{eps[1]:.3f}/{eps[2]:.3f}  k={br['k']:.4f}  "
-          f"ROE {roes[0]:.1%}/{roes[1]:.1%}/{roes[2]:.1%}  "
-          f"PE {pes[0]:.2f}/{pes[1]:.2f}/{pes[2]:.2f}  guardrail [{inp['pe_own_min']}, {inp['pe_own_max']}] OK")
-    print(f"  Gordon g (axis rows) L {inp['g2_l']:.1%} | M {inp['g2_m']:.1%} | H {inp['g2_h']:.1%}; "
-          f"L numerator {br['np'][0]:.1f}亿 = axis L rung (regime), printed 2023H1 trough {NP_TROUGH_2023H1:.1f}亿 far below (A16)")
-    print(f"  L/M={L/M:.3f} = 分子比 {eps[0]/eps[1]:.3f} x 倍数比 {pes[0]/pes[1]:.3f} | "
-          f"H/M={H/M:.3f} = 分子比 {eps[2]/eps[1]:.3f} x 倍数比 {pes[2]/pes[1]:.3f} | "
-          f"width {(H-L)/(2*M):.1%} | V_opt/M 0")
-    print(f"  flat-multiple ladder @PE_M {pes[1]:.2f}x: {flat[0]:.2f}/{flat[1]:.2f}/{flat[2]:.2f}")
-    print(f"  地板（只披露）floor={floor:.2f} (5y low PB x 报表 bps) < L {L:.2f} (L 对应 PB {L/inp['bps']:.2f}); not max()'d")
-    print(f"  deep_discount 压力坐标: L = 低位 regime x 1/r = {eps[0] / r / fx:.2f} (flat@1/r, =底牌L); "
-          f"印过的 2023H1 x 1/r = {NP_TROUGH_2023H1 / inp['shares'] / r / fx:.2f}; "
-          f"2025H1 参照 {inp['np_ref'] / inp['shares'] * pes[1] / fx:.2f} @PE_M (conservative 带内坐标)")
-    print(f"  交叉尺 (A17): 锚点 PB {L/inp['bps']:.2f}/{M/inp['bps']:.2f}/{H/inp['bps']:.2f}")
-    # r_f readings (_AXIS.rates, valuation-rules「利率轴与 r_f 敏感性」): Δr_f moves
-    # r_perp 1:1; the spread ladder, g rows, k and fx stay put.  Disclosure only.
-    def band_rf(dr: float) -> tuple[float, float, float]:
-        return tuple(anchors(dict(inp, r_perp=r + dr), fx=fx)[0])
-
-    rf = rf_block(LISTING_CCY, {"r_perp": r}, band_rf)
-    if any(abs(x - y) > 1e-9 for x, y in zip(band_rf(0.0), (L, M, H))):
-        errors.append("r_f readings: the dr = 0 column does not reproduce L/M/H")
-    # Only a clean run feeds the daily digest.
-    if not errors:
-        write_rf_readings("1378.HK", rf.seg, (L, M, H), rf.consensus, rf.pressure)
-    return report(errors)
-
-
-REQUIRED_PEER = frozenset(REQUIRED)
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    def sensitivity(**changes):
+        return as_band(anchors(dict(inp, **changes), fx=changes.get('fx_hkd_cny', inp['fx_hkd_cny']))[0])
+    gp_delta = inp['rev_m'] * inp['gm_m'] - inp['rev_ref'] * inp['gm_ref']
+    # HKD is linked to USD in this axis. Exclude unrelated unbuilt currency
+    # segments so changes unrelated to this stock do not claim input drift.
+    relevant_rates = {'segment': rates['segments']['HKD'], 'as_of': rates['as_of'], 'provenance': rates['provenance']}
+    local = {'inputs': INPUTS, 'aluminium': axis_basis_snapshot(aluminium), 'gold_copper': axis_basis_snapshot(copper), 'rates_hkd': relevant_rates,
+             'historical_checks': {'gross_profit_filing': GROSS_PROFIT_FILING,
+                                   'net_profit_filing': NET_PROFIT_FILING, 'shares_static': SHARES_STATIC,
+                                   'peer_low': HISTORICAL_TIANSHAN_LOW, 'peer_mid': HISTORICAL_TIANSHAN_MID}}
+    peer_changed = (peer_ratio is not None and not math.isclose(
+        peer_ratio, HISTORICAL_TIANSHAN_LOW / HISTORICAL_TIANSHAN_MID, rel_tol=1e-12))
+    return {
+        'ticker': '1378.HK', 'currency': 'HKD',
+        'valuation_as_of': None, 'historical_valuation_as_of': '2026-06-30',
+        'framework_as_of': None, 'historical_research_as_of': '2026-10-16',
+        'anchors': as_band(values), 'candidate': None, 'option': None,
+        'units': {'price': 'HKD_PER_SHARE'},
+        'segments': {'company': {'unit': 'HKD_PER_SHARE', 'values': as_band(values)}},
+        'basis_changed': None, 'partial_basis_changed': local_basis_changed(local, BASELINE_LOCAL) or peer_changed,
+        'review_flags': review_flags,
+        'bridge': {'gross_profit_cny_100m': as_band(br['gp']),
+                   'net_profit_cny_100m': as_band(br['np']), 'conversion_rate': br['k']},
+        'key_parameters': {'discount_rate': {'unit': 'RATIO', 'values': as_band([inp['r_perp']]*3)},
+                           'growth_rate': {'unit': 'RATIO', 'values': as_band([inp[f'g2_{t}'] for t in 'lmh'])},
+                           'forward_return': {'unit': 'RATIO', 'values': as_band(roes)},
+                           'steady_return': {'unit': 'RATIO', 'values': as_band([None]*3)}},
+        'operating': {'eps_cny': as_band(eps), 'multiple': as_band(pes), 'pb_floor_hkd': floor,
+                      'tianshan_low_profit_ratio': peer_ratio},
+        'sensitivity': {
+            'g_minus_1pp': sensitivity(g2_l=-.01, g2_m=-.01, g2_h=-.01),
+            'g_plus_1pp': sensitivity(g2_l=.01, g2_m=.01, g2_h=.01),
+            'spread_l_minus_1000': sensitivity(spread_l=inp['spread_l']-1000),
+            'spread_l_plus_1000': sensitivity(spread_l=inp['spread_l']+1000),
+            'spread_h_plus_1000': sensitivity(spread_h=inp['spread_h']+1000),
+            'spread_l_4250': sensitivity(spread_l=4250),
+            'g_mh_3_3pct': sensitivity(g2_m=.033, g2_h=.033),
+            'g_l_3_3pct': sensitivity(g2_l=.033), 'g_l_5pct': sensitivity(g2_l=.05),
+            'g_all_minus_3_5pct': sensitivity(g2_l=-.035, g2_m=-.035, g2_h=-.035),
+            'r_10pct': sensitivity(r_perp=.10), 'r_15pct': sensitivity(r_perp=.15),
+            'k_minus_0_1': sensitivity(np_ref=inp['np_m']-(br['k']-.1)*gp_delta),
+            'k_plus_0_1': sensitivity(np_ref=inp['np_m']-(br['k']+.1)*gp_delta),
+            'old_shares': sensitivity(shares=107.9), 'old_fx': sensitivity(fx_hkd_cny=1/1.1465),
+        },
+        # Historical 1378 calculation capitalizes H indefinitely. The shared
+        # axis instead says H lasts one year; keep both facts and the old value.
+        'rate': {'inputs': rf['segment'], 'low': rf['step_down'], 'high': rf['step_up'],
+                 'consensus': rf['consensus'], 'pressure': rf['pressure']},
+    }
