@@ -23,6 +23,7 @@ description: >
 
 | 时机 | Read |
 |------|------|
+| 出网取原始资料前、讨论框架需要追溯引用、或向子代理分派取数 | `references/research-materials.md` |
 | 第 2 块业务地图 / 定 pe 带 / 银行票 | `references/heuristics.md` |
 | 第 3 块归篮 / 任何涉及 \(r\) 的讨论 | `references/rules/basket.md`「§r 篮子」 |
 | 第 7 块定锚**之前**、任何选倍数形式（完整式 / \(1/r\) / \(1/(r-g)\) / 窗口 NPV）的讨论 | `references/rules/retention.md`「经营价值与超额现金」+「留存去向审计」+「杠杆门」（先拉 ≥7 年 capex / NPPE / 净债 / 现金，拆超额现金、定 RONIC 层级、分桶、算净债 / EBITDA 与利息 / EBIT 后才许定形式；2026-10-13） |
